@@ -6,7 +6,7 @@ export function explainedRoundingReviewRows(request: PayrollSetupRequest, transf
     || !request.rowIds.length || request.rowIds.some(id => !id.trim()) || new Set(request.rowIds).size !== request.rowIds.length) return []
   const selected = new Set(request.rowIds), counts = new Map<string, number>()
   for (const row of rows) counts.set(row.rowId, (counts.get(row.rowId) || 0) + 1)
-  return rows.filter(row => selected.has(row.rowId) && counts.get(row.rowId) === 1 && row.version === 'source-core-currency-v1'
+  return rows.filter(row => selected.has(row.rowId) && counts.get(row.rowId) === 1 && ['source-core-currency-v1', 'source-core-arithmetic-v2'].includes(row.version)
     && row.status === 'Explained rounding' && Number.isSafeInteger(row.sourceRow) && row.sourceRow > 0 && /^[a-f0-9]{64}$/i.test(row.proofHash))
 }
 

@@ -9,19 +9,49 @@ namespace Payroll.API.Repositories;
 
 public partial class PayRunRepository
 {
+    // This cache is owned by one attendance read/transaction, never shared across requests.
+    private sealed class SourcePayableValidationCache
+    {
+        public Dictionary<(int ClientId,string ImportId,string BatchId),(ExcelPayrollSetupRequest Request,ExcelPayrollSetupResult Result)> Receipts { get; }=[];
+        public Dictionary<(int ClientId,string BatchId),string> SourceHashes { get; }=[];
+    }
+
     private static async Task ValidateSourcePayableOverrideAsync(MySqlConnection db, MySqlTransaction tx, int clientId,
-        string month, PayRunAttendance row)
+        string month, PayRunAttendance row, SourcePayableValidationCache? cache=null)
     {
         if (row.SourceType != SourcePayableOverride.SourceType) return;
         if (decimal.Truncate(row.WorkingDays) != row.WorkingDays) throw new InvalidOperationException("Excel payable override needs an integer divisor.");
         var evidence = SourcePayableOverride.Read(row.Remarks, clientId, row.EmployeeId, month, (int)row.WorkingDays, row.PayableDays, row.PresentDays);
+        var receiptKey=(clientId,evidence.ImportId,evidence.BatchId);
+        ExcelPayrollSetupRequest? request;ExcelPayrollSetupResult? result;
+        if(cache is not null&&cache.Receipts.TryGetValue(receiptKey,out var cached)){request=cached.Request;result=cached.Result;}
+        else
+        {
         var raw = await db.QuerySingleOrDefaultAsync<PayableOverrideReceiptJson>(@"SELECT CAST(request_json AS CHAR) RequestJson, CAST(result_json AS CHAR) ResultJson
 FROM excel_payroll_setup_imports WHERE id=@ImportId AND client_id=@ClientId AND batch_id=@BatchId AND status='Applied'",
             new { evidence.ImportId, ClientId = clientId, evidence.BatchId }, tx);
         if (raw is null) throw new InvalidOperationException("Excel payable override has no applied source transfer receipt.");
         var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
-        var request = JsonSerializer.Deserialize<ExcelPayrollSetupRequest>(raw.RequestJson, json);
-        var result = JsonSerializer.Deserialize<ExcelPayrollSetupResult>(raw.ResultJson, json);
+        request = JsonSerializer.Deserialize<ExcelPayrollSetupRequest>(raw.RequestJson, json);
+        result = JsonSerializer.Deserialize<ExcelPayrollSetupResult>(raw.ResultJson, json);
+        }
+        RequireSourcePayableReceipt(request,result,evidence,row,month);
+        if(cache is not null&&!cache.Receipts.ContainsKey(receiptKey))cache.Receipts[receiptKey]=(request!,result!);
+        var sourceKey=(clientId,evidence.BatchId);
+        var sourceHash=cache is not null&&cache.SourceHashes.TryGetValue(sourceKey,out var current)?current:
+            await ExcelPayrollSetupRepository.CurrentSourceHashAsync(db,tx,clientId,evidence.BatchId);
+        if(sourceHash!=evidence.SourceHash)
+            throw new InvalidOperationException("The saved Excel source changed after payable override. Review its current source transfer before payroll.");
+        if(cache is not null)cache.SourceHashes[sourceKey]=sourceHash;
+        row.InputSource = "Reviewed Excel payable override; native physical presence retained separately";
+        row.PolicySnapshot = new(1, DateOnly.ParseExact(evidence.CycleStart, "yyyy-MM-dd", CultureInfo.InvariantCulture),
+            DateOnly.ParseExact(evidence.CycleEnd, "yyyy-MM-dd", CultureInfo.InvariantCulture),
+            $"Excel payable override; batch {evidence.BatchId}; import {evidence.ImportId}; source {evidence.SourceHash}; physical presence not certified by Excel", [], []);
+    }
+
+    internal static void RequireSourcePayableReceipt(ExcelPayrollSetupRequest? request,ExcelPayrollSetupResult? result,
+        SourcePayableOverrideEvidence evidence,PayRunAttendance row,string month)
+    {
         var receipt = result?.PayableOverrides.SingleOrDefault(r => r.EmployeeId == row.EmployeeId && r.RowId == evidence.RowId);
         if (request is null || !request.OverrideSourcePayableAttendance || request.ImportAttendance || request.LocationAllocations is not null
             || result?.Transfer?.SourceHash != evidence.SourceHash || receipt is null || receipt.Month != month
@@ -29,12 +59,6 @@ FROM excel_payroll_setup_imports WHERE id=@ImportId AND client_id=@ClientId AND 
             || result.TransferRows.Count(r => r.EmployeeId == row.EmployeeId && r.RowId == evidence.RowId && r.PayableDays == row.PayableDays) != 1)
             throw new InvalidOperationException("Excel payable override differs from its applied source receipt.");
         SourcePayableAttendance.EnsureIndependent(request.Components.SelectMany(c => new[] { c.Formula, c.BaseComponent }.Concat(c.RowFormulas.Values)));
-        if (await ExcelPayrollSetupRepository.CurrentSourceHashAsync(db, tx, clientId, evidence.BatchId) != evidence.SourceHash)
-            throw new InvalidOperationException("The saved Excel source changed after payable override. Review its current source transfer before payroll.");
-        row.InputSource = "Reviewed Excel payable override; native physical presence retained separately";
-        row.PolicySnapshot = new(1, DateOnly.ParseExact(evidence.CycleStart, "yyyy-MM-dd", CultureInfo.InvariantCulture),
-            DateOnly.ParseExact(evidence.CycleEnd, "yyyy-MM-dd", CultureInfo.InvariantCulture),
-            $"Excel payable override; batch {evidence.BatchId}; import {evidence.ImportId}; source {evidence.SourceHash}; physical presence not certified by Excel", [], []);
     }
     private sealed class PayableOverrideReceiptJson
     {

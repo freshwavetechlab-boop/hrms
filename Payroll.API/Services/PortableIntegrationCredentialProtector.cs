@@ -16,12 +16,14 @@ public sealed class PortableIntegrationCredentialProtector
     private const string StoragePrefix = "storage-credential:v2:";
     private const string PlanPrefix = "frevopilot-plan:v1:";
     private const string RecoveryPrefix = "llm-control-credential:v1:";
+    private const string ResumeLearningPrefix = "resume-learning:v1:";
     private const int NonceSize = 12;
     private const int TagSize = 16;
     private static readonly byte[] AiPurpose = Encoding.UTF8.GetBytes("Payroll.API.RecruitmentAiCredentials.v2");
     private static readonly byte[] StoragePurpose = Encoding.UTF8.GetBytes("Payroll.API.AttachmentStorageCredentials.v2");
     private static readonly byte[] PlanPurpose = Encoding.UTF8.GetBytes("Payroll.API.FrevoPilotVerifiedPlans.v1");
     private static readonly byte[] RecoveryPurpose = Encoding.UTF8.GetBytes("Payroll.API.LocalLlmRecovery.v1");
+    private static readonly byte[] ResumeLearningPurpose = Encoding.UTF8.GetBytes("Payroll.API.ResumeLearning.v1");
     private readonly byte[] encryptionKey;
     private readonly IDataProtector legacyAiProtector;
     private readonly IDataProtector legacyStorageProtector;
@@ -50,6 +52,9 @@ public sealed class PortableIntegrationCredentialProtector
         TryUnprotect(value, AiPrefix, AiPurpose, legacyAiProtector, out plaintext);
 
     public bool IsPortableStorage(string value) => IsPortable(value, StoragePrefix);
+    internal string ProtectAttendanceAdapter(string value) => Protect(value, "attendance-adapter:v1:", Encoding.UTF8.GetBytes("Payroll.API.AttendanceAdapterCredentials.v1"));
+    internal string? UnprotectAttendanceAdapter(string value) =>
+        IsPortable(value, "attendance-adapter:v1:") && TryUnprotect(value, "attendance-adapter:v1:", Encoding.UTF8.GetBytes("Payroll.API.AttendanceAdapterCredentials.v1"), legacyStorageProtector, out var plaintext) ? plaintext : null;
     public string ProtectStorage(string value) => Protect(value, StoragePrefix, StoragePurpose);
     public bool TryUnprotectStorage(string value, out string plaintext) =>
         TryUnprotect(value, StoragePrefix, StoragePurpose, legacyStorageProtector, out plaintext);
@@ -62,6 +67,13 @@ public sealed class PortableIntegrationCredentialProtector
             ? plaintext : null;
 
     internal string ProtectRecovery(string value) => Protect(value, RecoveryPrefix, RecoveryPurpose);
+    internal string ProtectResumeLearning(string value) => Protect(value, ResumeLearningPrefix, ResumeLearningPurpose);
+    internal string ProtectResumeTraining(string value) => Protect(value, "resume-training:v1:", Encoding.UTF8.GetBytes("Payroll.API.ResumeTrainingOutbox.v1"));
+    internal string? UnprotectResumeTraining(string value) =>
+        IsPortable(value, "resume-training:v1:") && TryUnprotect(value, "resume-training:v1:", Encoding.UTF8.GetBytes("Payroll.API.ResumeTrainingOutbox.v1"), legacyAiProtector, out var plaintext) ? plaintext : null;
+    internal string? UnprotectResumeLearning(string value) =>
+        IsPortable(value, ResumeLearningPrefix) && TryUnprotect(value, ResumeLearningPrefix, ResumeLearningPurpose, legacyAiProtector, out var plaintext)
+            ? plaintext : null;
     internal string? UnprotectRecovery(string value) =>
         IsPortable(value, RecoveryPrefix) && TryUnprotect(value, RecoveryPrefix, RecoveryPurpose, legacyAiProtector, out var plaintext)
             ? plaintext : null;

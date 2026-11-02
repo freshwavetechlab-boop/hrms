@@ -13,26 +13,26 @@ public sealed class ExcelPayslipDashboardTests
     };
 
     [Fact]
-    public void RepeatUploadsRemainInHistoryButOnlyLatestSavedBatchCountsInMonthlyTrend()
+    public void ExistingDuplicateUploadsShowOneCurrentRecordPerMonth()
     {
         var oldSeptember = Batch(1, "2026-09", 1);
         var october = Batch(2, "2026-10", 2);
         var newSeptember = Batch(3, "2026-09", 3);
         var result = ExcelPayslipRepository.SelectDashboardBatches(11, [oldSeptember, october, newSeptember], null)!;
-        Assert.Equal(new[] { newSeptember.Id, october.Id, oldSeptember.Id }, result.History.Select(batch => batch.Id));
+        Assert.Equal(new[] { october.Id, newSeptember.Id }, result.History.Select(batch => batch.Id));
         Assert.Same(newSeptember, result.SelectedBatch); // Latest save, even when its salary month is earlier.
         Assert.Equal(new[] { newSeptember.Id, october.Id }, result.TrendBatches.Select(batch => batch.Id));
         Assert.Equal(5, result.TrendBatches.Sum(batch => batch.RowCount));
     }
 
     [Fact]
-    public void SelectingAnOlderVersionDoesNotReplaceTheLatestVersionUsedByTrend()
+    public void ALinkedLegacyRecordRemainsReadableWithoutAddingItToTheCurrentMonthlyList()
     {
         var oldSeptember = Batch(1, "2026-09", 1); var latestSeptember = Batch(2, "2026-09", 2);
         var result = ExcelPayslipRepository.SelectDashboardBatches(11, [latestSeptember, oldSeptember], oldSeptember.Id)!;
         Assert.Same(oldSeptember, result.SelectedBatch);
         Assert.Same(latestSeptember, Assert.Single(result.TrendBatches));
-        Assert.Equal(2, result.History.Count);
+        Assert.Same(latestSeptember,Assert.Single(result.History));
     }
 
     [Fact]

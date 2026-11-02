@@ -24,6 +24,8 @@ public sealed partial class ExcelPayslipPdfService
         ArgumentNullException.ThrowIfNull(batch);
         ArgumentNullException.ThrowIfNull(rows);
         if (rows.Count == 0) throw new InvalidOperationException("Select at least one Excel payslip row.");
+        ExcelPayslipPresentation.RequireCurrentSalary(rows);
+        rows=rows.Select(ExcelPayslipPresentation.Current).ToArray();
         EnsureFonts();
         using var measure = XGraphics.CreateMeasureContext(new XSize(595.28, 841.89), XGraphicsUnit.Point, XPageDirection.Downwards);
         foreach (var row in rows)
@@ -38,6 +40,8 @@ public sealed partial class ExcelPayslipPdfService
         ArgumentNullException.ThrowIfNull(rows);
         ValidateAmountDecimalPlaces(amountDecimalPlaces);
         if (rows.Count == 0) throw new InvalidOperationException("Select at least one Excel payslip row.");
+        ExcelPayslipPresentation.RequireCurrentSalary(rows);
+        rows=rows.Select(ExcelPayslipPresentation.Current).ToArray();
         EnsureFonts();
         using var logoStream = new MemoryStream(Resource("PrivateAssets.ExcelPayslips.GADLogo.png"));
         using var logo = XImage.FromStream(logoStream);
@@ -139,10 +143,11 @@ public sealed partial class ExcelPayslipPdfService
     private static Plan MakePlan(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, int amountDecimalPlaces = 2)
     {
         var info = new List<Cell>();
+        var displayInformation=ExcelPayslipPresentation.Information(row);
         if (!string.IsNullOrWhiteSpace(row.EmployeeCode)) info.Add(new("Employee Code", row.EmployeeCode));
-        if (!string.IsNullOrWhiteSpace(batch.ClientName) && !row.Information.Any(x => x.Label.Contains("client", StringComparison.OrdinalIgnoreCase)))
+        if (!string.IsNullOrWhiteSpace(batch.ClientName) && !displayInformation.Any(x => x.Label.Contains("client", StringComparison.OrdinalIgnoreCase)))
             info.Add(new("Client", batch.ClientName));
-        info.AddRange(row.Information.Where(x => !string.IsNullOrWhiteSpace(x.Label)
+        info.AddRange(displayInformation.Where(x => !string.IsNullOrWhiteSpace(x.Label)
             && !x.Label.Equals("Employee Name", StringComparison.OrdinalIgnoreCase)
             && !(!string.IsNullOrWhiteSpace(row.EmployeeCode) && x.Label.Equals("Employee Code", StringComparison.OrdinalIgnoreCase)))
             .Select(x => new Cell(x.Label, InformationValue(x, row, amountDecimalPlaces))));

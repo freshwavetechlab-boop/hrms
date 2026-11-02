@@ -50,6 +50,8 @@ public sealed class ExcelPayslipAmount
 public sealed class ExcelPayslipRow
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ExcelPayslipMasterDetails? MasterDetails { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ExcelPayslipNegativeAmountReview? NegativeAmountReview { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ExcelPayslipEmployment? Employment { get; set; }
@@ -66,6 +68,28 @@ public sealed class ExcelPayslipRow
     public decimal? DeclaredGross { get; set; }
     public decimal? DeclaredDeductions { get; set; }
     public List<string> Warnings { get; set; } = [];
+}
+
+public sealed record ExcelPayslipMasterDetails(int EmployeeId, string Designation)
+{
+    public bool Linked { get; init; }
+    public string EmployeeCode { get; init; } = "";
+    public string EmployeeName { get; init; } = "";
+    public string Email { get; init; } = "";
+    public decimal AnnualCtc { get; init; }
+    public string SalaryStructureId { get; init; } = "";
+    public Dictionary<string,string> Fields { get; init; } = [];
+    public Dictionary<string,decimal> SalaryInputs { get; set; } = [];
+    public ExcelPayslipCurrentSalary? Salary { get; set; }
+}
+public sealed record ExcelPayslipCurrentSalary(string Status,string Message,List<ExcelPayslipAmount> Earnings,
+    List<ExcelPayslipAmount> Deductions,List<ExcelPayslipAmount> EmployerContributions,decimal? Gross,decimal? TotalDeductions,decimal? NetPay);
+public sealed record ExcelPayslipMasterLink(string RowId,int EmployeeId,int SourceRow,string IdentityHash,string SalaryHash,
+    int PayrollDays,decimal? PresentDays,decimal PayableDays,bool ReviewedExtraDutyUnits)
+{
+    public string SourceBatchId {get;init;}="";
+    public string SourceHash {get;init;}="";
+    public string ImportId {get;init;}="";
 }
 
 public sealed record ExcelPayslipNegativeAmountReview(string AmountsHash, string ReviewedBy, DateTime ReviewedAtUtc);

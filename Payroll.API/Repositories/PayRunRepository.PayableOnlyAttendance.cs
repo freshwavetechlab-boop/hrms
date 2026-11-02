@@ -16,6 +16,24 @@ public partial class PayRunRepository
     internal static decimal? ClampKnownPresence(decimal? actualPresent,int payrollDays) =>
         actualPresent.HasValue ? Math.Clamp(actualPresent.Value,0,payrollDays) : null;
 
+    internal static decimal NativePayableUnits(PayRunAttendance row, int payrollDays) =>
+        row.PayableOnlyEvidence is { ReviewedExtraDutyUnits: true } evidence
+            && evidence.PayrollDays == payrollDays && evidence.PayableDays == row.PayableDays
+            ? row.PayableDays : Math.Clamp(row.PayableDays, 0, payrollDays);
+
+    internal static bool HasReviewedExtraDutySnapshot(string details, int clientId, int employeeId, string period, int days, decimal payable)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(details);
+            var inputs = document.RootElement.EnumerateArray().Where(line => line.TryGetProperty("Id", out var id)
+                && id.GetString() == "ATTENDANCE_INPUT").ToArray();
+            if (inputs.Length != 1 || !inputs[0].TryGetProperty("sourceEvidence", out var source)) return false;
+            return SourcePayableAttendance.Read(source.GetRawText(), clientId, employeeId, period, days, payable).ReviewedExtraDutyUnits;
+        }
+        catch (Exception error) when (error is JsonException or InvalidOperationException) { return false; }
+    }
+
     internal static void ReadPayableOnlyAttendance(PayRunAttendance row,int clientId,string payPeriod)
     {
         if(row.PresentDays.HasValue)

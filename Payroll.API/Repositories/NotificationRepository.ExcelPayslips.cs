@@ -180,7 +180,7 @@ CAST(send_state_json AS CHAR) AS SendStateJson FROM excel_payslip_batches WHERE 
         if (batch is null || state?.Deliveries is null || !state.Deliveries.TryGetValue(ids[1], out var document) || document is null)
             throw new InvalidOperationException("The queued Excel payslip batch or delivery information is unavailable.");
         var source = batch.SimpleLayout ? await ExcelPayslipRepository.ReadCalculationSourceAsync(db, clientId, batch.Id) : null;
-        await ExcelPayslipRepository.AnnotateEmploymentAsync(db, batch);
+        await ExcelPayslipRepository.AnnotateEmploymentAsync(db, batch, configuration:configuration);
         AttachExcelPayslipPdf(builder, row, document, batch, source);
     }
 

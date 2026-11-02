@@ -11,6 +11,7 @@ public class WorkflowActionMiddleware(RequestDelegate next, ILogger<WorkflowActi
     // still run in the outer middleware.
     internal static bool IsCalculationOnlyRequest(string method, string? path) =>
         HttpMethods.IsPost(method) && (path?.TrimEnd('/').Equals("/api/payroll-calculation/simulate", StringComparison.OrdinalIgnoreCase) == true
+            || path?.TrimEnd('/').Equals("/api/payroll-calculation/formula-workbook", StringComparison.OrdinalIgnoreCase) == true
             || path?.TrimEnd('/').Equals("/api/excel-payroll-setup/preview", StringComparison.OrdinalIgnoreCase) == true
             || path?.TrimEnd('/').Equals("/api/excel-payslips/employee-code-preview", StringComparison.OrdinalIgnoreCase) == true
             || path?.TrimEnd('/').Equals("/api/excel-payslips/employee-identity-preview", StringComparison.OrdinalIgnoreCase) == true);

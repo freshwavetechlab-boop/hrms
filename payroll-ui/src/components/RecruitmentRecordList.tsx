@@ -31,7 +31,7 @@ type RecordFilter<T> = { key: string; label: string; value: (row: T) => string; 
 type QuickFilter<T> = { key: string; label: string; tone: string; matches: (row: T) => boolean }
 
 // The same rows, column renderers and action handlers drive both views.
-export default function RecruitmentRecordList<T extends { id: number }>({ rows, columns, title, subtitle, filters, quickFilters = [], actions, selection, rowSelection, selectionGroup, exportFileName, onExcelExport, emptyText = 'No records match these filters.', view: requestedView, searchValue, onSearchChange, remoteSearch = false, loading = false, actionsWidth, searchPlaceholder = 'Search by name, job or reference', hiddenCardColumns = [], cardSummaryColumns, cardExtra, selectAllDescription, rowClassName }: {
+export default function RecruitmentRecordList<T extends { id: string | number }>({ rows, columns, title, subtitle, filters, quickFilters = [], actions, selection, rowSelection, selectionGroup, exportFileName, onExcelExport, emptyText = 'No records match these filters.', view: requestedView, searchValue, onSearchChange, remoteSearch = false, loading = false, actionsWidth, searchPlaceholder = 'Search by name, job or reference', hiddenCardColumns = [], cardSummaryColumns, cardExtra, selectAllDescription, rowClassName }: {
   rows: T[]; columns: Column<T>[]; title: (row: T) => string; subtitle?: (row: T) => string
   filters: RecordFilter<T>[]; quickFilters?: QuickFilter<T>[]; actions?: (row: T) => ReactNode
   onExcelExport?: (rows: T[]) => void; selection?: (row: T) => ReactNode; rowSelection?: TableRowSelection<T>; exportFileName?: string; emptyText?: string

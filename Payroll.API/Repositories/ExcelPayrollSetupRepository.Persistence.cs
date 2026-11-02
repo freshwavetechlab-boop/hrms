@@ -67,8 +67,9 @@ public sealed partial class ExcelPayrollSetupRepository
             || proofs[0].SourceHash != sourceHash || proofs[0].SourceRow != row.SourceRow
             || proofs[0].PayrollDays != row.Preview.PayrollDays || proofs[0].PayableDays != row.Preview.PayableDays)
             throw new InvalidOperationException("Payable-only attendance needs the exact reviewed saved-source proof for this row, client, month and day inputs. Refresh preview; no present value is inferred.");
-        return new(null, SourcePayableAttendance.SourceType, SourcePayableAttendance.Encode(new(1, clientId, row.Employee.Id,
-            plan.Batch.Month, request.BatchId, row.RowId, importId, sourceHash, row.Preview.PayrollDays, row.Preview.PayableDays)));
+        return new(null, SourcePayableAttendance.SourceType, SourcePayableAttendance.Encode(new(request.ReviewedExtraDutyUnits ? 2 : 1, clientId, row.Employee.Id,
+            plan.Batch.Month, request.BatchId, row.RowId, importId, sourceHash, row.Preview.PayrollDays, row.Preview.PayableDays,
+            ReviewedExtraDutyUnits: request.ReviewedExtraDutyUnits)));
     }
 
     private static async Task InsertMastersAsync(MySqlConnection db, MySqlTransaction tx, int clientId, ExcelPayrollSetupRequest request, Plan plan)
@@ -89,11 +90,13 @@ VALUES(@Id,@Code,'Excel reviewed',@ComponentRole,@StatutoryType,@Category,@Name,
         for (var v = 0; v < variants.Count; v++)
         {
             var variant = variants[v];
+            var update = plan.UpdatedTemplateIds.Contains(variant.Key);
             var name = plan.Preview.Transfer?.Templates.SingleOrDefault(t => t.TemplateId == variant.Key && t.Action == "Create reviewed variant")?.Name
                 ?? request.TemplateName.Trim() + (allVariants.Count > 1 ? $" / {allVariants.FindIndex(g => g.Key == variant.Key) + 1}" : "");
-            if (await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM salarystructures WHERE ClientId=@ClientId AND LOWER(Name)=LOWER(@Name)", new { ClientId = clientId, Name = name }, tx) != 0)
+            if (!update && await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM salarystructures WHERE ClientId=@ClientId AND LOWER(Name)=LOWER(@Name)", new { ClientId = clientId, Name = name }, tx) != 0)
                 throw new InvalidOperationException("A salary template variant name is already in use. Review a new template name.");
-            await db.ExecuteAsync(@"INSERT INTO salarystructures(Id,ClientId,ClientRef,Name,AnnualCtc,Active)
+            if(update) await db.ExecuteAsync("DELETE FROM salarystructurelines WHERE StructureId=@Id",new {Id=variant.Key},tx);
+            else await db.ExecuteAsync(@"INSERT INTO salarystructures(Id,ClientId,ClientRef,Name,AnnualCtc,Active)
 VALUES(@Id,@ClientId,@ClientRef,@Name,0,TRUE)", new { Id = variant.Key, ClientId = clientId, ClientRef = clientId.ToString(CultureInfo.InvariantCulture), Name = name }, tx);
             var index = 0;
             foreach (var c in variant.First().Components)
@@ -148,7 +151,7 @@ VALUES(@ClientId,@EmployeeId,@Month,@Days,@Present,@Payable,@Lop,@SourceType,@Re
 ON DUPLICATE KEY UPDATE working_days=VALUES(working_days),present_days=VALUES(present_days),payable_days=VALUES(payable_days),lop_days=VALUES(lop_days),source_type=VALUES(source_type),remarks=VALUES(remarks)";
             await db.ExecuteAsync(insert,
                 new { ClientId = clientId, EmployeeId = row.Employee.Id, Month = plan.Batch.Month, Days = row.Preview.PayrollDays,
-                    Present = reviewedAttendance.PresentDays, Payable = row.Preview.PayableDays, Lop = row.Preview.PayrollDays-row.Preview.PayableDays,
+                    Present = reviewedAttendance.PresentDays, Payable = row.Preview.PayableDays, Lop = Math.Max(0, row.Preview.PayrollDays-row.Preview.PayableDays),
                     reviewedAttendance.SourceType, reviewedAttendance.Remarks }, tx);
         }
         return result.AttendanceAssignments.First().GroupId;

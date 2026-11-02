@@ -9,7 +9,8 @@ namespace Payroll.API.Services;
 // This is a reviewed payroll input, not evidence of actual presence or leave.
 public sealed record SourcePayableAttendanceEvidence(int Version,int ClientId,int EmployeeId,string PayPeriod,
     string BatchId,string RowId,string ImportId,string SourceHash,int PayrollDays,decimal PayableDays,
-    decimal? ActualPresentDays=null,string PresentMeaning="NotMapped",string PayableMeaning="AlreadyPayable",string Mode="SourceSeed");
+    decimal? ActualPresentDays=null,string PresentMeaning="NotMapped",string PayableMeaning="AlreadyPayable",string Mode="SourceSeed",
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] bool ReviewedExtraDutyUnits=false);
 
 public static class SourcePayableAttendance
 {
@@ -52,11 +53,11 @@ AND ((TABLE_NAME='employee_monthly_attendance' AND COLUMN_NAME='present_days')
 
     private static void Validate(SourcePayableAttendanceEvidence e,int clientId,int employeeId,string period,int payrollDays,decimal payableDays)
     {
-        if(e.Version!=1||e.ClientId<=0||e.EmployeeId<=0||e.ClientId!=clientId||e.EmployeeId!=employeeId||e.PayPeriod!=period
+        if(e.Version!=(e.ReviewedExtraDutyUnits?2:1)||e.ClientId<=0||e.EmployeeId<=0||e.ClientId!=clientId||e.EmployeeId!=employeeId||e.PayPeriod!=period
             ||!DateOnly.TryParseExact(e.PayPeriod+"-01","yyyy-MM-dd",CultureInfo.InvariantCulture,DateTimeStyles.None,out _)
             ||!Guid.TryParse(e.BatchId,out _)||!Guid.TryParse(e.ImportId,out _)||string.IsNullOrWhiteSpace(e.RowId)||e.RowId.Length>100
             ||!Regex.IsMatch(e.SourceHash??"",@"\A[a-fA-F0-9]{64}\z")||e.PayrollDays is <1 or >31||e.PayrollDays!=payrollDays
-            ||e.PayableDays<0||e.PayableDays>e.PayrollDays||e.PayableDays!=payableDays||e.ActualPresentDays is not null
+            ||e.PayableDays<0||e.PayableDays>(e.ReviewedExtraDutyUnits?999.99m:e.PayrollDays)||decimal.Round(e.PayableDays,2)!=e.PayableDays||e.PayableDays!=payableDays||e.ActualPresentDays is not null
             ||e.Mode!="SourceSeed"||e.PresentMeaning!="NotMapped"||e.PayableMeaning!="AlreadyPayable")
             throw new InvalidOperationException("Payable-only attendance does not match its reviewed employee, client, month, source or day inputs. Actual presence remains unknown.");
     }

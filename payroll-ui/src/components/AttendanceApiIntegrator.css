@@ -1,0 +1,20 @@
+.attendance-adapter-workspace { gap: 10px; container: recruitment-workspace / inline-size; }
+#attendance-adapters-page-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.attendance-adapter-workspace > .ant-alert { flex: 0 0 auto; }
+.attendance-adapter-workspace .recruitment-record-facts { overflow-wrap: anywhere; }
+.adapter-secondary { display: block; color: var(--text-muted, #64748b); margin-top: 3px; }
+.attendance-adapter-editor { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.attendance-adapter-editor .adapter-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 24px; padding: 6px 0 18px; }
+.attendance-adapter-editor .ant-form-item { margin-bottom: 0; min-width: 0; }
+.attendance-adapter-editor .ant-form-item-explain { font-size: 12px; padding-top: 4px; }
+.attendance-adapter-editor .adapter-wide { grid-column: 1 / -1; min-width: 0; }
+.attendance-adapter-editor .adapter-json { font-family: Consolas, monospace; font-size: 12px; }
+.attendance-adapter-editor .ant-input-number { width: 100%; }
+.attendance-adapter-editor .ant-tabs-content { min-width: 0; }
+.attendance-adapter-editor .ant-checkbox-wrapper { margin-top: 8px; }
+.attendance-adapter-editor label > .ant-input { margin-top: 6px; }
+.adapter-errors { max-height: 200px; overflow: auto; margin: 0; padding-left: 24px; }
+@media (max-width: 640px) {
+  #attendance-adapters-page-controls { margin-left: 0; }
+  .attendance-adapter-editor .adapter-form-grid { grid-template-columns: minmax(0, 1fr); }
+}

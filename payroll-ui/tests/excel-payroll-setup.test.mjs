@@ -15,6 +15,113 @@ const { proposeExcelPayrollSetup } = load('excelPayrollSetup')
 const { defaultPayslipMapping, payslipHeaders, buildExcelPayslipRows, buildPayslipCalculationSource } = load('excelPayslipImport')
 const { validateSalaryComponent } = load('salaryComponentConfig')
 
+test('later client imports reuse configuration while new employees and changed formulas come from the new sheet',()=>{
+  const columns=['Employee name','Total Days','Payble Days','Basic','Basic','HRA','Professional Tax'].map((sourceHeader,columnIndex)=>({sourceHeader,label:sourceHeader,columnIndex,kind:['employeeName','info','info','info','earning','earning','deduction'][columnIndex]}))
+  const oldSource={headerRow:2,columnCount:7,columns,rows:[{sourceRow:3,cells:['One','26','17','10000','6538.4615384615','326.9230769231','200'].map((value,i)=>({value,...(i===4?{formulaText:'D3/B3*C3'}:i===5?{formulaText:'E3*0.05'}:{})}))}]}
+  const oldBatch={id:'september',clientId:9,clientName:'Synthetic',month:'2026-09',rows:[{id:'old',sourceRow:3,employeeCode:'SYN-1',employeeName:'One'}]}
+  const oldContext={source:oldSource,components:[],employees:[],workWeeks:[],workLocations:[]}
+  const previous=proposeExcelPayrollSetup(oldBatch,oldContext,['old']).request
+  Object.assign(previous,{monthlyCtcColumnIndex:3,reviewedFixedInputs:true,reviewedPolicyScope:true,reviewedExtraDutyUnits:true,importAttendance:true,roundingReviews:{old:'old-proof'},templateDecisions:[{createVariant:true}]})
+  previous.employeeDecisions[0].allowCreate=true
+  previous.components.find(component=>component.code==='BASIC').formula='999999'
+  const source={...oldSource,rows:[{sourceRow:4,cells:['Two','26','20','11000','8461.5384615385','846.1538461538','0'].map((value,i)=>({value,...(i===4?{formulaText:'D4/B4*C4'}:i===5?{formulaText:'E4*0.1'}:{})}))}]}
+  const batch={...oldBatch,id:'october',month:'2026-10',rows:[{id:'new',sourceRow:4,employeeCode:'SYN-2',employeeName:'Two'}]}
+  const context={...oldContext,source,clientConfiguration:{clientId:9,month:oldBatch.month,sourceColumns:columns,savedRequest:previous}}
+  const before=JSON.stringify({batch,context})
+  const {extendClientPayrollConfiguration}=load('excelPayrollReuseBasis')
+  const next=extendClientPayrollConfiguration(batch,context,['new'])
+  assert.deepEqual(next.rowIds,['new']);assert.equal(next.batchId,'october');assert.equal(next.effectiveFrom,'2026-10-01')
+  assert.equal(next.templateName,previous.templateName);assert.equal(next.monthlyCtcColumnIndex,3)
+  assert.ok(JSON.stringify(next.components.find(component=>component.code==='HRA')).includes('0.1'))
+  assert.ok(!JSON.stringify(next.components).includes('999999'))
+  assert.equal(next.employeeDecisions[0].rowId,'new');assert.equal(next.employeeDecisions[0].allowCreate,false)
+  assert.equal(next.importAttendance,false);assert.equal(next.reviewedExtraDutyUnits,false);assert.deepEqual(next.templateDecisions,[]);assert.deepEqual(next.roundingReviews,{})
+  assert.equal(JSON.stringify({batch,context}),before)
+  assert.equal(extendClientPayrollConfiguration({...batch,clientId:10},context,['new']),null)
+  const changed=structuredClone(context);changed.source.columns=changed.source.columns.map(column=>({...column}));changed.source.columns[3].sourceHeader='Daily Rate'
+  assert.equal(extendClientPayrollConfiguration(batch,changed,['new']),null)
+})
+
+test('different literal PT amounts use one reviewed input rule and one reusable template name', () => {
+  const columns=['Employee name','Total Days','Payble Days','Basic','Professional Tax','Net paid'].map((sourceHeader,columnIndex)=>({sourceHeader,label:sourceHeader,columnIndex,kind:['employeeName','info','info','earning','deduction','netPay'][columnIndex]}))
+  const source={headerRow:1,columnCount:6,columns,rows:[{sourceRow:2,cells:['One','26','26','1000','200','800'].map(value=>({value}))},{sourceRow:3,cells:['Two','26','26','1000','0','1000'].map(value=>({value}))}]}
+  const batch={id:'saved',clientId:9,clientName:'Synthetic',month:'2026-09',rows:[{id:'one',sourceRow:2,employeeName:'One',employeeCode:'SYN-1'},{id:'two',sourceRow:3,employeeName:'Two',employeeCode:'SYN-2'}]}
+  const context={source,components:[],employees:[],workWeeks:[],workLocations:[]}
+  const request=proposeExcelPayrollSetup(batch,context,['one','two']).request
+  const pt=request.components.find(component=>component.code==='PT')
+  assert.equal(pt.calculationType,'Fixed Amount');assert.equal(pt.sourceColumnIndex,4);assert.equal(pt.expectedColumnIndex,4)
+  assert.equal(pt.proRata,false);assert.equal(pt.rowFormulas,undefined)
+  assert.equal(request.updateExistingConfiguration,true)
+  assert.equal(request.templateName,proposeExcelPayrollSetup({...batch,id:'reimport',month:'2026-10'},context,['one','two']).request.templateName)
+  assert.equal(source.rows[0].cells[4].value,'200');assert.equal(source.rows[1].cells[4].value,'0')
+})
+
+test('transport day aliases stay dynamic and an ignored side recovery after net stays excluded', () => {
+  const headers = ['Total Days', 'Payble Days', 'Basic', 'DA', 'Bonus', 'Monthly Total', 'Basic', 'DA', 'recovery', 'net paid', 'Recovery']
+  const kinds = ['info', 'info', 'info', 'info', 'info', 'info', 'earning', 'earning', 'deduction', 'netPay', 'ignore']
+  const values = ['26', '29', '10000', '500', '874.65', '11374.65', '11153.8461538462', '557.6923076923', '0', '11711.5384615385', '900']
+  const source = { headerRow: 2, columnCount: headers.length,
+    columns: headers.map((sourceHeader, columnIndex) => ({ sourceHeader, columnIndex, label: sourceHeader, kind: kinds[columnIndex] })),
+    rows: [{ sourceRow: 3, cells: values.map((value, i) => ({ value, ...(i === 6 ? { formulaText: 'C3/A3*B3' } : i === 7 ? { formulaText: 'D3/A3*B3' } : {}) })) }] }
+  const batch = { id: 'synthetic', clientId: 42, clientName: 'Synthetic', month: '2026-09', rows: [{ id: 'row', sourceRow: 3, employeeName: 'Synthetic employee', employeeCode: 'SYN-1' }] }
+  const context = { source, components: [], workWeeks: [], workLocations: [], employees: [] }
+  const before = JSON.stringify({ batch, context })
+  const { request } = proposeExcelPayrollSetup(batch, context, ['row'])
+  assert.equal(request.payrollDaysColumnIndex, 0); assert.equal(request.payableDaysColumnIndex, 1)
+  assert.equal(request.sourceColumnRoles[10], 'ignore')
+  assert.equal(request.components.find(c => c.code === 'BASIC').sourceColumnIndex, 2)
+  assert.ok(!request.components.some(c => c.expectedColumnIndex === 10))
+  assert.equal(request.reviewedExtraDutyUnits, undefined, 'an operator must review extra-duty meaning')
+  assert.equal(request.monthlyCtcColumnIndex, undefined, 'a monthly total is not automatically approved as CTC')
+  assert.equal(JSON.stringify({ batch, context }), before)
+})
+
+test('reusing a saved-batch basis regenerates new-row literals and clears every cohort approval', () => {
+  const source = { headerRow: 2, columnCount: 5,
+    columns: ['Total Days', 'Payble Days', 'Basic', 'Basic', 'Professional Tax'].map((sourceHeader, columnIndex) => ({ sourceHeader, label: sourceHeader, columnIndex, kind: columnIndex === 3 ? 'earning' : columnIndex === 4 ? 'deduction' : 'info' })),
+    rows: [3, 4].map((sourceRow, i) => ({ sourceRow, cells: ['26', i ? '44' : '17', i ? '12000' : '10000', i ? '20307.6923076923' : '6538.4615384615', i ? '0' : '200'].map((value, column) => ({ value, ...(column === 3 ? { formulaText: `C${sourceRow}/A${sourceRow}*B${sourceRow}` } : {}) })) })) }
+  const batch = { id: 'same-batch', month: '2026-09', rows: [{ id: 'one', sourceRow: 3, employeeCode: 'SYN-1', employeeName: 'One' }, { id: 'two', sourceRow: 4, employeeCode: 'SYN-2', employeeName: 'Two' }] }
+  const context = { source, components: [], employees: [], workWeeks: [], workLocations: [] }
+  const previous = proposeExcelPayrollSetup(batch, context, ['one']).request
+  Object.assign(previous, { monthlyCtcColumnIndex: 2, reviewedExtraDutyUnits: true, reviewedFixedInputs: true, reviewedPolicyScope: true, roundingReviews: { one: 'a'.repeat(64) }, templateDecisions: [{ variantKey: '1', createVariant: true }], importAttendance: false,
+    templateScope: { reviewed: true, workLocationIds: [10], newLocationNames: [], categories: [] },
+    attendanceReview: { mode: 'SourceSeed', reviewed: true, boundSourceInputs: 'old-binding' } })
+  previous.employeeDecisions[0].allowCreate = true
+  const before = JSON.stringify({ batch, context, previous })
+  const { reuseExcelPayrollBasis } = load('excelPayrollReuseBasis')
+  const next = reuseExcelPayrollBasis(batch, context, ['two'], previous)
+  assert.deepEqual(next.rowIds, ['two']); assert.equal(next.monthlyCtcColumnIndex, 2)
+  assert.equal(next.components.find(c => c.code === 'PT').sourceColumnIndex, 4)
+  assert.equal(next.components.find(c => c.code === 'PT').calculationType, 'Fixed Amount')
+  assert.deepEqual(next.components.find(c => c.code === 'PT').rowFormulas, {})
+  assert.equal(next.employeeDecisions[0].allowCreate, false)
+  assert.equal(next.templateScope.reviewed, false); assert.equal(next.attendanceReview.reviewed, false)
+  assert.equal(next.attendanceReview.boundSourceInputs, undefined)
+  assert.equal(next.reviewedFixedInputs, false); assert.equal(next.reviewedPolicyScope, false)
+  assert.deepEqual(next.roundingReviews, {}); assert.deepEqual(next.templateDecisions, [])
+  assert.notEqual(next.templateScope.workLocationIds, previous.templateScope.workLocationIds)
+  assert.equal(JSON.stringify({ batch, context, previous }), before)
+  assert.throws(() => reuseExcelPayrollBasis(batch, context, ['one'], previous))
+  assert.throws(() => reuseExcelPayrollBasis({ ...batch, id: 'other-batch' }, context, ['two'], previous))
+})
+
+test('source evidence keeps raw numeric cache text and the explicit CTC basis while withholding identifiers', () => {
+  const batch = { id: 'source', rows: [{ id: 'one', sourceRow: 3 }] }
+  const source = { headerRow: 2, columns: [
+    { columnIndex: 0, sourceHeader: 'Basic', label: 'Basic', kind: 'earning' },
+    { columnIndex: 1, sourceHeader: 'Monthly total', label: 'Monthly total', kind: 'info' },
+    { columnIndex: 2, sourceHeader: 'UAN', label: 'UAN', kind: 'info' },
+  ], rows: [{ sourceRow: 3, cells: [{ value: '615.38461538461547' }, { value: '1000' }, { value: 'private-identifier' }] }] }
+  const request = { batchId: 'source', rowIds: ['one'], payrollDaysColumnIndex: -1, payableDaysColumnIndex: -1, monthlyCtcColumnIndex: 1,
+    components: [{ sourceColumnIndex: 2, expectedColumnIndex: 0 }] }
+  const before = JSON.stringify(source)
+  const rows = load('payrollSourceEvidence').payrollSourceEvidence(batch, source, request)
+  assert.equal(rows.find(row => row.cell === 'A3').cached, '615.38461538461547')
+  assert.equal(rows.find(row => row.cell === 'B3').cached, '1000')
+  assert.ok(!JSON.stringify(rows).includes('private-identifier'))
+  assert.equal(JSON.stringify(source), before)
+})
+
 function fixture() {
   const { sheet, headerRow } = JSON.parse(readFileSync(new URL('./fixtures/nhdc-salary-import.json', import.meta.url), 'utf8'))
   const contextCells = Array.from({ length: 40 }, () => ({ value: '' }))
@@ -174,7 +281,7 @@ test('component mapping, cohort template names and manual additions remain indep
   const { batch, context, rowIds } = fixture(), before = JSON.stringify(batch)
   const first = proposeExcelPayrollSetup(batch, context, rowIds.slice(0, 2)).request
   const next = proposeExcelPayrollSetup(batch, context, rowIds.slice(2)).request
-  assert.notEqual(first.templateName, next.templateName)
+  assert.equal(first.templateName, next.templateName, 'source cohorts share the same reusable configuration name')
   assert.deepEqual(first.employeeDecisions.map(row => row.allowCreate), [false, false])
   assert.equal(JSON.stringify(batch), before)
 })

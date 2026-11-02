@@ -49,7 +49,7 @@ export const getAttendanceReviewContext = (clientId: number, month: string, work
 export const getMonthlyAttendanceResult = (clientId: number, month: string, workLocationId = 0) => getJsonResult<EmployeeMonthlyAttendance[]>(`/api/leave-attendance/attendance/monthly?${new URLSearchParams({ clientId: String(clientId), month, ...(workLocationId ? { workLocationId: String(workLocationId) } : {}) })}`, [])
 export const getAttendanceReviewContextResult = (clientId: number, month: string, workLocationId = 0) => getJsonResult<AttendanceReviewContext>(`/api/leave-attendance/attendance/context?${new URLSearchParams({ clientId: String(clientId), month, ...(workLocationId ? { workLocationId: String(workLocationId) } : {}) })}`, reviewContextFallback)
 export async function saveMonthlyAttendance(clientId: number, month: string, rows: EmployeeMonthlyAttendance[]) {
-  return postJson('/api/leave-attendance/attendance/monthly', { clientId, month, rows }, [])
+  return postJson('/api/leave-attendance/attendance/monthly', { clientId, month, rows }, [], { timeoutMs: 180000, timeoutMessage: 'Monthly attendance save could not be confirmed. Refresh the review before retrying.' })
 }
 export const getDailyAttendance = (clientId: number, employeeId: number, month: string) => getJson<EmployeeDailyAttendance[]>(`/api/leave-attendance/attendance/daily?clientId=${clientId}&employeeId=${employeeId}&month=${month}`, [])
 export const getDailyAttendanceGrid = (clientId: number, month: string, workLocationId = 0) => getJson<EmployeeDailyAttendance[]>(`/api/leave-attendance/attendance/daily-grid?${new URLSearchParams({ clientId: String(clientId), month, ...(workLocationId ? { workLocationId: String(workLocationId) } : {}) })}`, [])

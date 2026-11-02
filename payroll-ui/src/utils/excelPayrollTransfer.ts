@@ -108,7 +108,7 @@ function reviewedPayableOnly(result: PayrollSetupResult, source: NonNullable<Pay
 
 function roundingProof(result: PayrollSetupResult, source: NonNullable<PayrollSetupResult['transferRows']>[number], observed: CapturedVerification, request: PayrollSetupRequest): TransferAmountReview | null {
   const transfer = result.transfer!, data = observed.data!, proofs = transfer.amountComparisons?.filter(proof => proof.rowId === source.rowId) || [], proof = proofs[0]
-  if (proofs.length !== 1 || proof.version !== 'source-core-currency-v1' || proof.status !== 'Explained rounding' || proof.acknowledged !== true
+  if (proofs.length !== 1 || !['source-core-currency-v1', 'source-core-arithmetic-v2'].includes(proof.version) || proof.status !== 'Explained rounding' || proof.acknowledged !== true
     || !hash(proof.proofHash) || request.roundingReviews?.[source.rowId] !== proof.proofHash || !Number.isSafeInteger(proof.sourceRow) || proof.sourceRow < 1
     || !same(proof.sourceNetRaw, source.sourceNet) || proof.sourceNetDisplay !== currency(proof.sourceNetRaw, false)
     || !source.lines.length || !unique(source.lines.map(line => code(line.code))) || !unique(proof.lines.map(line => code(line.code)))

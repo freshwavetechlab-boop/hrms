@@ -19,6 +19,10 @@ public sealed partial class ExcelPayslipRepository
         await RequireMutableConsolidationSnapshotAsync(db,tx,clientId,id);
         var json = await db.ExecuteScalarAsync<string?>("SELECT CAST(batch_json AS CHAR) FROM excel_payslip_batches WHERE client_id=@ClientId AND id=@Id FOR UPDATE", new { ClientId = clientId, Id = id }, tx);
         if (json is null) return (null, "The saved batch was not found for this client.");
+        var current=JsonSerializer.Deserialize<ExcelPayslipBatch>(json,JsonOptions)!;
+        await AnnotateEmploymentAsync(db,current,tx,configuration);
+        if(request.Updates?.Any(update=>current.Rows.Any(row=>row.Id==update.RowId&&Services.ExcelPayslipPresentation.Linked(row)&&row.MasterDetails!.Email!=update.Email))==true)
+            return (null,"These employees are linked to Employee Master. Change their email in Employee Master; Excel Payslips refreshes it automatically. No source-only email change was saved.");
         var source = await db.ExecuteScalarAsync<string?>("SELECT CAST(source_json AS CHAR) FROM excel_payslip_calculation_sources WHERE client_id=@ClientId AND batch_id=@Id FOR UPDATE", new { ClientId = clientId, Id = id }, tx);
         var patched = PatchEmailDocuments(json, source, clientId, id, request, actor, DateTime.UtcNow);
         if (patched.Changed > 0)
@@ -28,7 +32,7 @@ public sealed partial class ExcelPayslipRepository
                 await db.ExecuteAsync("UPDATE excel_payslip_calculation_sources SET source_json=CAST(@Json AS JSON) WHERE client_id=@ClientId AND batch_id=@Id", new { ClientId = clientId, Id = id, Json = patched.SourceJson }, tx);
         }
         var batch = JsonSerializer.Deserialize<ExcelPayslipBatch>(patched.BatchJson, JsonOptions)!;
-        await AnnotateEmploymentAsync(db, batch, tx);
+        await AnnotateEmploymentAsync(db, batch, tx, configuration);
         await tx.CommitAsync();
         return (batch, null);
     }

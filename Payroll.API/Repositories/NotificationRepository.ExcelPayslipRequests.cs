@@ -36,7 +36,7 @@ CAST(send_state_json AS CHAR) AS SendStateJson FROM excel_payslip_batches WHERE 
         var document = saved.Deserialize<ExcelPayslipMailDocument>(ExcelPayslipRepository.JsonOptions)
             ?? throw new InvalidOperationException("The queued salary PDF attachment information is invalid.");
         var source = batch.SimpleLayout ? await ExcelPayslipRepository.ReadCalculationSourceAsync(db, clientId, batch.Id) : null;
-        await ExcelPayslipRepository.AnnotateEmploymentAsync(db, batch);
+        await ExcelPayslipRepository.AnnotateEmploymentAsync(db, batch, configuration:configuration);
         AttachExcelPayslipEmailRequestPdf(builder, row, document, batch, source);
     }
 

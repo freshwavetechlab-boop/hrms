@@ -11,6 +11,33 @@ public sealed class SourcePayableAttendanceTests
     private static SourcePayableAttendanceEvidence Evidence()=>new(1,11,7,"2026-09",new string('a',32),"synthetic-row",new string('b',32),new string('c',64),31,19);
 
     [Fact]
+    public void ExtraDutyUnitsNeedVersionedReviewAndAreNeverClampedToTheSalaryDivisor()
+    {
+        var e=Evidence() with {Version=2,PayrollDays=26,PayableDays=29,ReviewedExtraDutyUnits=true};
+        var encoded=SourcePayableAttendance.Encode(e);
+        var row=new PayRunRepository.PayRunAttendance {EmployeeId=7,WorkingDays=26,PresentDays=null,PayableDays=29,SourceType=SourcePayableAttendance.SourceType,Remarks=encoded};
+        PayRunRepository.ReadPayableOnlyAttendance(row,11,"2026-09");
+        Assert.Equal(29,PayRunRepository.NativePayableUnits(row,26));Assert.Null(row.PresentDays);
+        Assert.Throws<InvalidOperationException>(()=>SourcePayableAttendance.Encode(e with {Version=1}));
+        Assert.Throws<InvalidOperationException>(()=>SourcePayableAttendance.Encode(e with {ReviewedExtraDutyUnits=false}));
+        Assert.Throws<InvalidOperationException>(()=>SourcePayableAttendance.Encode(e with {PayableDays=1000}));
+        Assert.Equal(44,SourcePayableAttendance.Read(SourcePayableAttendance.Encode(e with {PayableDays=44}),11,7,"2026-09",26,44).PayableDays);
+        var known=new PayRunRepository.PayRunAttendance {EmployeeId=7,WorkingDays=26,PresentDays=26,PayableDays=29,SourceType="Monthly"};
+        Assert.Equal(26,PayRunRepository.NativePayableUnits(known,26));
+    }
+
+    [Fact]
+    public void NativeSalaryKeepsReviewedSalaryUnitsAboveCalendarDaysAndReconciliationBindsTheirEvidence()
+    {
+        var result=Calculate(null,payrollDays:26,payable:44,extraDuty:true);
+        Assert.Null(result.PresentDays);Assert.Equal(44,result.PayableDays);Assert.Equal(50769.23m,result.GrossPay);
+        Assert.True(PayRunRepository.HasReviewedExtraDutySnapshot(result.DetailsJson,11,7,"2026-09",26,44));
+        Assert.False(PayRunRepository.HasReviewedExtraDutySnapshot(result.DetailsJson,11,7,"2026-10",26,44));
+        Assert.False(PayRunRepository.HasReviewedExtraDutySnapshot(result.DetailsJson,11,7,"2026-09",26,43));
+        Assert.Throws<InvalidOperationException>(()=>Calculate(null,payrollDays:26,payable:44));
+    }
+
+    [Fact]
     public void SourceEvidenceRetainsUnknownRatherThanZeroAndBindsExactScope()
     {
         var encoded=SourcePayableAttendance.Encode(Evidence());Assert.True(encoded.Length<=600);
@@ -90,14 +117,15 @@ public sealed class SourcePayableAttendanceTests
         ReportingRepository.EnsureBillingActualPresenceKnown(0,"Present Days");
     }
 
-    private static PayRunEmployee Calculate(decimal? present,string formula="MIN(BASIC_EARNED,15000)*12%",bool withProvenance=true)
+    private static PayRunEmployee Calculate(decimal? present,string formula="MIN(BASIC_EARNED,15000)*12%",bool withProvenance=true,
+        int payrollDays=31,decimal payable=19,bool extraDuty=false)
     {
         var type=typeof(PayRunRepository).GetNestedType("PayRunSourceEmployee",BindingFlags.NonPublic)!;
         var employee=Activator.CreateInstance(type)!;
         void Set(string property,object? value)=>type.GetProperty(property)!.SetValue(employee,value);
         Set("Id",7);Set("ClientId",11);Set("EmployeeCode","SYNTH-7");Set("FirstName","Synthetic");Set("AnnualCtc",360000m);Set("SalaryStructureId","one");Set("HasPersonalDetails",true);
         Set("SalaryComponents",new Dictionary<string,decimal>{{"1",30000m}});
-        if(withProvenance)Set("PayableOnlyAttendance",Evidence());
+        if(withProvenance)Set("PayableOnlyAttendance",extraDuty?Evidence() with {Version=2,PayrollDays=payrollDays,PayableDays=payable,ReviewedExtraDutyUnits=true}:Evidence());
         var components=new object[]
         {
             new{id="1",code="BASIC",name="Basic",calculationType="Fixed Amount",value="0",formula="",category="Earning",proRata=true,active=true,priority=100,payType="Fixed Pay",taxable=true,statutoryType="None"},
@@ -105,7 +133,7 @@ public sealed class SourcePayableAttendanceTests
         };
         var settings=JsonSerializer.Serialize(new{salaryComponents=components,salaryStructures=new[]{new{id="one",clientId="11",active=true,lines=new[]{new{componentId="1"},new{componentId="2"}}}}});
         try{return (PayRunEmployee)typeof(PayRunRepository).GetMethod("BuildEmployee",BindingFlags.Static|BindingFlags.NonPublic)!
-            .Invoke(null,[1,employee,settings,"2026-09",31,present,19m,Array.Empty<PayrollAdjustment>(),0m,0m,-1m,false,"TDS"])!;}
+            .Invoke(null,[1,employee,settings,"2026-09",payrollDays,present,payable,Array.Empty<PayrollAdjustment>(),0m,0m,-1m,false,"TDS"])!;}
         catch(TargetInvocationException error){throw error.InnerException!;}
     }
 }

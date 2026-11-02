@@ -9,6 +9,40 @@ namespace Payroll.API.Services;
 // assesses the full original document and owns mandatory eligibility.
 internal static class LocalRecruitmentEvidence
 {
+    internal static string ResumeDocument(string source)
+    {
+        const int budget = 7_500;
+        if (Encoding.UTF8.GetByteCount(source) <= budget) return source;
+        var lines = source.Split('\n').Select(line => line.Trim()).Where(line => line.Length > 0).ToArray();
+        var chosen = new SortedSet<int>();
+        var used = 0;
+        void Add(int index, int groupLimit, ref int groupBytes)
+        {
+            if (index < 0 || index >= lines.Length || chosen.Contains(index)) return;
+            var size = Encoding.UTF8.GetByteCount(lines[index]) + 1;
+            if (used + size > budget || groupBytes + size > groupLimit) return;
+            chosen.Add(index); used += size; groupBytes += size;
+        }
+        var header = 0;
+        for (var i = 0; i < Math.Min(lines.Length, 12); i++) Add(i, 1_200, ref header);
+        var career = 0;
+        foreach (var index in Enumerable.Range(0, lines.Length).Where(i => Regex.IsMatch(lines[i],
+                     @"\b(?:present|current|onwards|still working|till date)\b", RegexOptions.IgnoreCase)).Take(4))
+            for (var i = index - 2; i <= index + 3; i++) Add(i, 2_500, ref career);
+        var education = 0;
+        foreach (var index in Enumerable.Range(0, lines.Length).Where(i => Regex.IsMatch(lines[i],
+                     @"^(?:education|academic|qualifications?)\b|\b(?:ph\.?d|b\.?tech|m\.?tech|mba|bachelor|master(?:s|'s)? of)\b", RegexOptions.IgnoreCase)).Take(8))
+            for (var i = index; i <= index + 2; i++) Add(i, 1_800, ref education);
+        var skills = 0;
+        foreach (var index in Enumerable.Range(0, lines.Length).Where(i => Regex.IsMatch(lines[i],
+                     @"^(?:(?:technical|core|key|professional)\s+)?(?:skills|competencies|strengths|technologies|expertise)\b", RegexOptions.IgnoreCase)).Take(3))
+            for (var i = index; i <= index + 6; i++) Add(i, 2_000, ref skills);
+        var other = 0;
+        for (var i = 0; i < lines.Length; i++) Add(i, budget, ref other);
+        return "SELECTED VERBATIM EXCERPTS FROM THE COMPLETE RESUME. Omitted text is an evidence gap, not proof of absence. HRMS validates against the full source.\n"
+            + string.Join('\n', chosen.Select(i => lines[i]));
+    }
+
     internal static string ScoringResume(RecruitmentAiAnalysisRequest job, string resume)
     {
         if (Encoding.UTF8.GetByteCount(resume) <= 5_000) return resume;

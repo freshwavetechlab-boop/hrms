@@ -154,7 +154,7 @@ public sealed partial class ExcelPayrollSetupRepository
         var components = ComponentsForRow(resolved, row.Id);
         var currentSourceAcknowledgment = original.TransferReviewVersion==0 && nativeInputs is not null && nativeDetailsJson is not null;
         if(currentSourceAcknowledgment)components=AppliedCurrentTemplateRules(templates[0],components);
-        else if (TransferTemplateDifferences(templates[0], components).Count != 0)
+        else if (TransferTemplateDifferences(templates[0], components, employeeInputOverridesFallback: true).Count != 0)
             throw AppliedSourceConflict("The current assigned template differs from this source row's rules, proration or component coverage.");
         // This is a new current-source review. The historical receipt remains
         // immutable; its original column/classification mapping is retained,
@@ -169,7 +169,8 @@ public sealed partial class ExcelPayrollSetupRepository
         var compatibleMetadata = ReviewAppliedComponentMetadata(masters, components, nativeDetailsJson);
         ValidateSharedPayrollDaysBinding(original, source, [row], batch.Rows);
         var arithmetic = CalculateRow(clientId, reviewedRequest, components, cellRows[0], row,
-            source.Columns.Where(c => c.BlankAsZero).Select(c => c.ColumnIndex).ToHashSet());
+            source.Columns.Where(c => c.BlankAsZero).Select(c => c.ColumnIndex).ToHashSet(), source,
+            reviewedRequest.UpdateExistingConfiguration && !reviewedRequest.MonthlyCtcColumnIndex.HasValue && currentEmployee.AnnualCtc > 0 ? currentEmployee.AnnualCtc : null);
         if (arithmetic.Issues.Any(i => i.Severity == "Error") || arithmetic.Preview.Net is null
             || currentEmployee.AnnualCtc != arithmetic.Preview.AnnualCtc
             || arithmetic.Inputs.Any(p => !currentEmployee.SalaryComponents.TryGetValue(p.Key, out var actual) || actual != p.Value))

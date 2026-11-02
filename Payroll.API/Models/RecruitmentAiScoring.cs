@@ -210,6 +210,12 @@ public sealed class RecruitmentAiResumeDocumentSuggestion
     public string LanguageCode { get; set; } = "und";
     public string SummaryText { get; set; } = "";
     public int? TotalExperienceMonths { get; set; }
+    public string CurrentCompany { get; set; } = "";
+    public string CurrentTitle { get; set; } = "";
+    public string CurrentEmploymentEvidence { get; set; } = "";
+    public string HighestQualification { get; set; } = "";
+    public string QualificationEvidence { get; set; } = "";
+    public List<string> Skills { get; set; } = [];
     public List<RecruitmentAiResumeSectionSuggestion> Sections { get; set; } = [];
     public Dictionary<string, RecruitmentAiHiringFieldTrace> FieldMetadata { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }

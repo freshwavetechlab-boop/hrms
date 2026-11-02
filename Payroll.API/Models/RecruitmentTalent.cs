@@ -1,4 +1,5 @@
 using Payroll.API.Repositories;
+using Payroll.API.Services;
 
 namespace Payroll.API.Models;
 
@@ -761,6 +762,7 @@ public class RecruitmentCandidateDetail
 
 public class CandidateResumeUploadRequest
 {
+    public long? ApplicationId { get; set; }
     public long FieldConfigurationId { get; set; }
     public string DocumentNumber { get; set; } = "";
     public DateTime? IssueDate { get; set; }
@@ -809,6 +811,9 @@ public class RecruitmentResumePreviewRequest
 
 public class RecruitmentResumePreview
 {
+    public string AiReviewStatus { get; set; } = "";
+    public int LearnedFieldCount { get; set; }
+    public IReadOnlyList<ResumeFieldReviewIssue> ReviewIssues { get; set; } = [];
     public string FileName { get; set; } = "";
     public string ParsingStatus { get; set; } = "";
     public string ParsingError { get; set; } = "";

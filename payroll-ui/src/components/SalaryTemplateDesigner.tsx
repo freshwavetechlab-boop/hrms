@@ -46,6 +46,7 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, compone
   const [builderOpen, setBuilderOpen] = useState(false)
   const [simulationOpen, setSimulationOpen] = useState(false)
   const [simulationTemplate, setSimulationTemplate] = useState<Structure | null>(null)
+  const [simulationFromMaster, setSimulationFromMaster] = useState(false)
   const [formulaMode, setFormulaMode] = useState<FormulaMode>('default')
   const [baseToken, setBaseToken] = useState('')
   const [percent, setPercent] = useState('')
@@ -96,7 +97,8 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, compone
     next.splice(Math.max(0, target), 0, source)
     setStructure({ ...structure, lines: next })
   }
-  const openSimulation = (template: Structure) => {
+  const openSimulation = (template: Structure, fromMaster = false) => {
+    setSimulationFromMaster(fromMaster)
     setSimulationTemplate(template)
     setSimulationOpen(true)
   }
@@ -134,7 +136,7 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, compone
         <label>Annual CTC<input value={structure.annualCtc} onChange={event => setStructure({ ...structure, annualCtc: event.target.value.replace(/\D/g, '') })} /></label>
         <button type="button" disabled={saving || calculationErrors.length > 0} onClick={() => void saveTemplate()}>{saving ? 'Saving...' : 'Save Template'}</button>
       </div>
-      <div className="salary-template-actions"><Button disabled={!structure.lines.length} onClick={() => openSimulation(structure)}>Simulate draft</Button><PayrollAdvisor components={components} template={structure} clients={clients} fixedClientId={fixedClientId}
+      <div className="salary-template-actions"><Button disabled={!structure.lines.length} onClick={event => { event.currentTarget.blur(); openSimulation(structure) }}>Simulate draft</Button><PayrollAdvisor components={components} template={structure} clients={clients} fixedClientId={fixedClientId}
         onDisableProration={code => { const c = components.find(item => item.code === code); if (c) updateLine(String(c.id), { proRataOverride: 'false' }) }} /></div>
       {onDownloadTemplate && onUploadTemplate && <div className="salary-template-actions">
         <Space size={8} wrap>
@@ -173,7 +175,7 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, compone
           <div className="salary-template-preview"><b>Preview net</b><span>{hasDailyRates ? '30-day equivalent' : 'Monthly'} Rs {salaryAmount(preview)}</span><span>{hasDailyRates ? 'Annual equivalent' : 'Annual'} Rs {salaryAmount(preview * 12)}</span></div>
         </section>
       </div>
-      {simulationOpen && <PayrollSimulation template={playerTemplate} components={components} clients={clients} fixedClientId={fixedClientId} onClose={() => setSimulationOpen(false)} />}
+      {simulationOpen && <PayrollSimulation template={playerTemplate} components={components} clients={clients} fixedClientId={fixedClientId} preferEmployeeSalary={simulationFromMaster} onClose={() => setSimulationOpen(false)} />}
       {builderOpen && <div className="formula-modal-backdrop" role="dialog" aria-modal="true">
         <section className="salary-formula-builder formula-modal">
           <button type="button" className="formula-modal-close" onClick={() => setBuilderOpen(false)} aria-label="Close formula builder">x</button>
@@ -238,7 +240,7 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, compone
         </section>
       </div>}
     </div>
-    <DataTable rows={templates} actions={row => <><Button size="small" onClick={() => setStructure(fixedClientId ? { ...row, clientId: String(fixedClientId) } : row)}>Edit</Button><Button size="small" className="salary-simulate-button" onClick={() => openSimulation(row)}>Simulate</Button></>} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client', value: row => clientName(row.clientId) }, { key: 'annualCtc', label: 'Annual CTC' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} />
+    <DataTable rows={templates} actions={row => <><Button size="small" onClick={() => setStructure(fixedClientId ? { ...row, clientId: String(fixedClientId) } : row)}>Edit</Button><Button size="small" className="salary-simulate-button" onClick={event => { event.currentTarget.blur(); openSimulation(row, true) }}>Simulate</Button></>} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client', value: row => clientName(row.clientId) }, { key: 'annualCtc', label: 'Annual CTC' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} />
   </Card>
 }
 

@@ -5,7 +5,7 @@ import {
   Select, Space, Statistic, Switch, Tag, Typography, Upload,
 } from 'antd'
 import type { UploadFile, UploadProps } from 'antd'
-import { EditOutlined, FileSearchOutlined, InboxOutlined } from '@ant-design/icons'
+import { DeleteOutlined, EditOutlined, FileSearchOutlined, InboxOutlined } from '@ant-design/icons'
 import DataTable from './DataTable'
 import { getClients } from '../services/payrollService'
 import { getRecruitmentOpenPositions } from '../services/recruitmentService'
@@ -15,6 +15,7 @@ import { intakeRecruitmentResumes, previewRecruitmentResume, updateCandidateInta
 import type { Client, RecruitmentOpenPosition, RecruitmentResumeIntakeItem, RecruitmentResumeIntakeResult } from '../types/payroll'
 import type { DynamicFormVersion, RecruitmentJobDescriptionVersion, RecruitmentJobPosting } from '../types/recruitmentOrchestration'
 import { useToast } from './ToastProvider'
+import { fillMissingResumeNumbers, retainResumeDrafts } from '../utils/resumeDraftReview'
 import './RecruitmentResumeIntake.css'
 
 export type RecruitmentResumeIntakeMode = 'single' | 'bulk'
@@ -288,9 +289,10 @@ export default function RecruitmentResumeIntake({
         .slice(0, mode === 'single' ? 1 : 50)
       setFileList(next)
       setResult(null)
-      setDrafts([])
+      setDrafts(current => retainResumeDrafts(current, next.flatMap(row => row.originFileObj ? [row.originFileObj as File] : [])))
+      setEditingDraftIndex(null)
+      setEditingDraft(null)
     },
-    onRemove: file => { setFileList(current => current.filter(row => row.uid !== file.uid)); setDrafts([]); return true },
     disabled: busy,
   }
 
@@ -357,6 +359,24 @@ export default function RecruitmentResumeIntake({
   const openDraftEditor = (index: number) => {
     setEditingDraftIndex(index)
     setEditingDraft({ ...drafts[index] })
+  }
+
+  const removeDraft = (index: number) => {
+    if (busy) return
+    const removed = drafts[index]
+    if (!removed) return
+    setFileList(current => current.filter(row => row.originFileObj !== removed.file))
+    setDrafts(current => current.filter(draft => draft.file !== removed.file))
+    setEditingDraftIndex(null)
+    setEditingDraft(null)
+    setResult(null)
+  }
+
+  const fillMissingWithZero = () => {
+    if (busy || !draftsReady) return
+    const next = fillMissingResumeNumbers(drafts)
+    setDrafts(next.rows)
+    notify(next.changed ? `${next.changed} missing CTC / notice-period values filled with 0. Existing values were kept.` : 'No missing CTC or notice-period values.', 'info')
   }
 
   const saveDraftEditor = () => {
@@ -430,7 +450,7 @@ export default function RecruitmentResumeIntake({
         {previewing && <div className="resume-intake-progress" aria-live="polite">
           <div className="resume-progress-heading"><strong>Preparing editable drafts — nothing is being saved</strong><b>{progress}%</b></div>
           <Progress percent={progress} status="active" showInfo={false} />
-          <div className="resume-progress-meta"><span>Parsing {selectedFiles.length} selected file(s)</span><span>No database or file-storage write</span></div>
+          <div className="resume-progress-meta"><span>Parsing {selectedFiles.length} selected file(s)</span><span>Candidate and resume remain unsaved</span></div>
         </div>}
         {uploading && <div className="resume-intake-progress" aria-live="polite">
           <div className="resume-progress-heading"><strong>{progressMessage(progressDetail)}</strong><b>{progress}%</b></div>
@@ -441,17 +461,18 @@ export default function RecruitmentResumeIntake({
 
       {drafts.length > 0 && <Card size="small" className="resume-intake-drafts" title="Review parsed candidate drafts">
         <Alert type="info" showIcon message="Draft only — nothing has been saved yet" description="Review or edit the parsed information. Candidate, application and resume storage records are created only when you click Final upload." />
+        <div className="resume-draft-tools"><Typography.Text>{drafts.length} candidate draft(s)</Typography.Text><Button data-testid="resume-drafts-fill-zero" disabled={busy || !draftsReady} onClick={fillMissingWithZero}>Fill missing CTC / notice with 0</Button></div>
         <div className="resume-draft-list" data-testid="resume-intake-drafts">
           {drafts.map((draft, index) => {
             const required = missingFields(draft)
             return <div className={`resume-draft-row${required.length ? ' is-incomplete' : ''}`} key={`${draft.file.name}-${draft.file.lastModified}-${index}`}>
-            <div className="resume-draft-file"><FileSearchOutlined /><div><strong>{draft.fileName}</strong><span>{draft.parsingStatus}{draft.parsingError ? ` · ${draft.parsingError}` : ''}</span></div></div>
+            <div className="resume-draft-file"><FileSearchOutlined /><div><strong>{draft.fileName}</strong><span>{draft.parsingStatus}{draft.aiReviewStatus ? ` · AI: ${draft.aiReviewStatus}` : ''}{draft.parsingError ? ` · ${draft.parsingError}` : ''}</span></div></div>
             <div className="resume-draft-person"><strong>{`${draft.firstName} ${draft.lastName}`.trim() || 'Candidate name required'}</strong><span>{draft.email || 'No email'} · {draft.phone || 'No phone'}</span><span>{draft.currentTitle || 'Title needs review'} · {draft.skills.length} skill(s)</span>{required.length > 0 && <span className="resume-draft-required">Mandatory: {required.join(', ')}</span>}</div>
             <div className="resume-draft-outcome">
               {draft.existingApplicationId ? <Tag color="blue">Already registered · resume update</Tag> : draft.existingCandidateId ? <Tag color="cyan">Existing profile · new application</Tag> : <Tag color="green">New candidate</Tag>}
               {draft.existingCandidateCode && <span>{draft.existingCandidateCode}</span>}
             </div>
-            <Button data-testid={`resume-draft-edit-${index}`} icon={<EditOutlined />} onClick={() => openDraftEditor(index)}>Edit</Button>
+            <Space wrap><Button data-testid={`resume-draft-edit-${index}`} disabled={busy} icon={<EditOutlined />} onClick={() => openDraftEditor(index)}>Edit</Button><Button data-testid={`resume-draft-remove-${index}`} disabled={busy} danger icon={<DeleteOutlined />} onClick={() => removeDraft(index)} aria-label={`Remove ${draft.fileName} from upload`}>Remove</Button></Space>
           </div>
           })}
         </div>
@@ -576,9 +597,9 @@ function ResumeIntakeResults({ result, talentPoolOnly = false, onEditCandidate }
         { key: 'fileName', label: 'Resume', width: '210px' },
         { key: 'candidate', label: 'Candidate', width: '220px', render: row => <div className="resume-result-person"><b>{row.candidate?.candidateName || row.detectedName || 'Not detected'}</b><span>{row.candidate?.candidateCode || row.parsingStatus || '-'}</span></div>, exportValue: row => row.candidate?.candidateName || row.detectedName },
         { key: 'contact', label: 'Contact extracted', width: '240px', render: row => <div className="resume-result-person"><b>{row.detectedEmail || row.candidate?.email || '-'}</b><span>{row.detectedPhone || row.candidate?.phone || '-'}</span></div>, exportValue: row => `${row.detectedEmail || row.candidate?.email || ''} ${row.detectedPhone || row.candidate?.phone || ''}` },
-        { key: 'noticePeriod', label: 'Notice period', width: '190px', render: row => <InlineIntakeNumber candidate={row.candidate} field="noticePeriodDays" label="Notice period" max={3650} allowMonths />, exportValue: row => row.candidate?.noticePeriodDays ? `${row.candidate.noticePeriodDays} days` : '' },
-        { key: 'currentCtc', label: 'Current CTC (LPA)', width: '165px', render: row => <InlineIntakeNumber candidate={row.candidate} field="currentCtc" label="Current CTC" max={1000000000} scale={100000} unit="LPA" />, exportValue: row => row.candidate?.currentCtc ? Number((row.candidate.currentCtc / 100000).toFixed(2)) : '' },
-        { key: 'expectedCtc', label: 'Expected CTC (LPA)', width: '165px', render: row => <InlineIntakeNumber candidate={row.candidate} field="expectedCtc" label="Expected CTC" max={1000000000} scale={100000} unit="LPA" />, exportValue: row => row.candidate?.expectedCtc ? Number((row.candidate.expectedCtc / 100000).toFixed(2)) : '' },
+        { key: 'noticePeriod', label: 'Notice period', width: '190px', render: row => <InlineIntakeNumber candidate={row.candidate} field="noticePeriodDays" label="Notice period" max={3650} allowMonths />, exportValue: row => row.candidate?.noticePeriodDays != null ? `${row.candidate.noticePeriodDays} days` : '' },
+        { key: 'currentCtc', label: 'Current CTC (LPA)', width: '165px', render: row => <InlineIntakeNumber candidate={row.candidate} field="currentCtc" label="Current CTC" max={1000000000} scale={100000} unit="LPA" />, exportValue: row => row.candidate?.currentCtc != null ? Number((row.candidate.currentCtc / 100000).toFixed(2)) : '' },
+        { key: 'expectedCtc', label: 'Expected CTC (LPA)', width: '165px', render: row => <InlineIntakeNumber candidate={row.candidate} field="expectedCtc" label="Expected CTC" max={1000000000} scale={100000} unit="LPA" />, exportValue: row => row.candidate?.expectedCtc != null ? Number((row.candidate.expectedCtc / 100000).toFixed(2)) : '' },
         { key: 'detectedAddress', label: 'Residential address', width: '230px', render: row => row.detectedAddress || row.candidate?.currentLocation || '-' },
         { key: 'ats', label: 'ATS score', width: '130px', render: row => talentPoolOnly ? <Tag>Run later</Tag> : <RecruitmentEligibilityBadge row={row.application || {}} showScore showReason />, exportValue: row => talentPoolOnly ? 'Run later' : row.application?.atsScore ?? row.application?.scoreStatus ?? '' },
         { key: 'stage', label: talentPoolOnly ? 'Bucket' : 'Pipeline stage', width: '150px', render: row => talentPoolOnly ? 'Resume Bank' : row.application?.currentStage || '-' },
@@ -605,11 +626,11 @@ function ResumeIntakeResults({ result, talentPoolOnly = false, onEditCandidate }
 
 function InlineIntakeNumber({ candidate, field, label, max, scale = 1, unit, allowMonths = false }: { candidate?: RecruitmentResumeIntakeItem['candidate']; field: 'noticePeriodDays' | 'currentCtc' | 'expectedCtc'; label: string; max: number; scale?: number; unit?: string; allowMonths?: boolean }) {
   const notify = useToast()
-  const normalized = candidate?.[field] == null || Number(candidate[field]) <= 0 ? null : Number(candidate[field])
+  const normalized = candidate?.[field] == null ? null : Number(candidate[field])
   const [value, setValue] = useState<number | null>(normalized)
   const [noticeUnit, setNoticeUnit] = useState<'Days' | 'Months'>('Days')
   const [saving, setSaving] = useState(false)
-  useEffect(() => setValue(candidate?.[field] == null || Number(candidate[field]) <= 0 ? null : Number(candidate[field])), [candidate?.id, candidate?.[field]])
+  useEffect(() => setValue(candidate?.[field] == null ? null : Number(candidate[field])), [candidate?.id, candidate?.[field]])
   if (!candidate?.id) return <span className="resume-inline-unavailable">Save candidate first</span>
   const factor = allowMonths && noticeUnit === 'Months' ? 30 : scale
   const displayValue = value == null ? undefined : Number((value / factor).toFixed(2))

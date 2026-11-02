@@ -217,6 +217,15 @@
   gap: 10px;
 }
 
+.resume-draft-tools {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+  margin: 12px 0;
+}
+
 .resume-draft-row {
   align-items: center;
   background: #fbfbff;
@@ -251,6 +260,23 @@
   margin-top: 2px;
 }
 
+.resume-draft-file > div {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+}
+
+.resume-draft-file strong {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.resume-draft-tools .ant-btn {
+  height: auto;
+  max-width: 100%;
+  white-space: normal;
+}
+
 .resume-draft-file div,
 .resume-draft-person,
 .resume-draft-outcome {
@@ -266,6 +292,10 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.resume-draft-file strong {
+  white-space: normal;
 }
 
 .resume-draft-file span,
@@ -297,6 +327,9 @@
 }
 
 @media (max-width: 560px) {
+  .resume-draft-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .resume-intake-submit-row {
     align-items: stretch;
     flex-direction: column;

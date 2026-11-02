@@ -27,7 +27,9 @@ export function payrollSourceColumns(source: ExcelPayslipCalculationSource, role
   for (const column of result) {
     const name = key(column.sourceHeader)
     if (granular && /^(?:GROSS|GROSSSALARY|EARNEDGROSS|FINALSALARY|TOTAL|TOTALEARNING|TOTALEARNINGS|TOTALSALARY)$/.test(name)) column.kind = 'grossTotal'
-    else if (column.kind === 'ignore' && defaults[column.columnIndex] && ['deduction', 'employer'].includes(defaults[column.columnIndex].kind)) {
+    else if (column.kind === 'ignore' && column.columnIndex <= net && defaults[column.columnIndex] && ['deduction', 'employer'].includes(defaults[column.columnIndex].kind)) {
+      // A reviewed side/billing column after final net must not be revived just
+      // because its heading resembles an employee deduction. Explicit roles remain available.
       // Keep explicitly combined PF output; do not add its individual split twice.
       if (/^(?:EPF|PF)\d+$/.test(name) && result.some(item => item.kind === 'deduction' && /^(?:TOTALEPF|TOTALPF)$/.test(key(item.sourceHeader)))) continue
       column.kind = defaults[column.columnIndex].kind

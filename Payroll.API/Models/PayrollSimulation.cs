@@ -15,6 +15,8 @@ public sealed class PayrollSimulationRequest
     public decimal? PresentDays { get; set; }
     public decimal? PayableDays { get; set; }
     public decimal? AnnualCtc { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ReviewedExtraDutyUnits { get; set; }
     public Dictionary<string, decimal> AmountOverrides { get; set; } = [];
 }
 public sealed record PayrollSimulationInput(string Name, decimal? Value, string Source, string Unit);
@@ -25,7 +27,23 @@ public sealed record PayrollAttendanceInputEvidence(string SourceKind, string Pa
     public bool ActualPresenceKnown => PresentDays.HasValue;
 }
 public sealed record PayrollSimulationIssue(string Severity, string Component, string Message, string Action);
-public sealed record PayrollSimulationLine(string Code, string Name, string Category, string Formula, string Substituted, decimal Raw, decimal Monthly, decimal Earned, bool ProRata, string Source, string Rounding, Dictionary<string, decimal> Inputs) { public decimal? UnroundedEarned { get; init; } }
+public sealed record PayrollSimulationLine(string Code, string Name, string Category, string Formula, string Substituted, decimal Raw, decimal Monthly, decimal Earned, bool ProRata, string Source, string Rounding, Dictionary<string, decimal> Inputs)
+{
+    public decimal? UnroundedEarned { get; init; }
+    public string ComponentId { get; init; } = "";
+    public string CalculationType { get; init; } = "";
+    public string BaseComponent { get; init; } = "";
+    public string PayType { get; init; } = "";
+    public decimal? DailyRate { get; init; }
+    public bool AmountOverride { get; init; }
+    public decimal? MonthlyTarget { get; init; }
+}
+public sealed record PayrollFormulaWorkbookRequest(int ClientId, string PayPeriod, List<int> EmployeeIds)
+{
+    public string AttendancePolicyBatchId {get;init;}="";
+    public List<int> AttendanceGroupIds {get;init;}=[];
+}
+public sealed record PayrollFormulaWorkbookEmployee(int EmployeeId,string EmployeeCode,string EmployeeName,PayrollSimulationResult Calculation,bool ReviewedExtraDutyUnits=false);
 public sealed class PayrollSimulationResult
 {
     public int ClientId { get; set; }

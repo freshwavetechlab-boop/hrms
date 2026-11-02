@@ -8,6 +8,30 @@ namespace Payroll.API.Tests.Services;
 
 public sealed partial class ExcelPayrollTransferTests
 {
+    [Fact]
+    public void ExplicitEmployeeInputDoesNotDuplicateATemplateBecauseItsUnusedFallbackDiffers()
+    {
+        var (plan,request)=Fixture();var template=Template();
+        template["lines"]![0]!["value"]="250";
+        Assert.Empty(ExcelPayrollSetupRepository.TransferTemplateDifferences(template,plan.Components, employeeInputOverridesFallback: true));
+        Assert.NotEmpty(ExcelPayrollSetupRepository.TransferTemplateDifferences(template,plan.Components));
+        var effective=JsonSerializer.Deserialize<ExcelPayrollSetupComponent>(JsonSerializer.Serialize(plan.Components[0].Definition))!;
+        effective.Value="250";
+        var current=plan.Components.ToList();current[0]=current[0] with{Definition=effective};
+        Assert.Equal(ExcelPayrollSetupRepository.TransferRulesSignature(current),ExcelPayrollSetupRepository.ReusedTemplateRulesSignature(template,plan.Components));
+        request.Components[0].SourceColumnIndex=null;
+        Assert.Contains(ExcelPayrollSetupRepository.TransferTemplateDifferences(template,plan.Components),difference=>difference.Contains("value"));
+        request.Components[0].SourceColumnIndex=2;template["lines"]![0]!["formula"]="250";
+        Assert.Contains(ExcelPayrollSetupRepository.TransferTemplateDifferences(template,plan.Components),difference=>difference.Contains("formula"));
+    }
+
+    [Fact]
+    public void ReconfigurationRetainsAnExistingCtcUnlessANewSourceTargetIsExplicitlyChosen()
+    {
+        var (plan,request)=Fixture();
+        var result=ExcelPayrollSetupRepository.CalculateRow(42,request,plan.Components,plan.Source.Rows[0],plan.Batch.Rows[0],calculationSource:plan.Source,retainedAnnualCtc:5000m);
+        Assert.Equal(5000m,result.Preview.AnnualCtc);Assert.Equal(100m,result.Inputs["1"]);Assert.Equal(88m,result.Preview.Net);
+    }
     private static (ExcelPayrollSetupRepository.Plan Plan, ExcelPayrollSetupRequest Request) Fixture()
     {
         var request = new ExcelPayrollSetupRequest { TransferReviewVersion=1, ReviewedPolicyScope=true, ReviewedFixedInputs=true, BatchId=new string('a',32), RowIds=["one"], TemplateName="Synthetic variant", EffectiveFrom="2026-09-01", PayrollDaysColumnIndex=0, PayableDaysColumnIndex=1,

@@ -23,8 +23,8 @@ FROM excel_payslip_batches b JOIN clients c ON c.Id=b.client_id AND c.IsActive=T
             new { ClientIds = allowedClientIds }, tx)).ToArray();
         foreach (var row in rows) { row.ClientName = ExcelPayslipOverviewService.SafeText(row.ClientName); row.FileName = ExcelPayslipOverviewService.SafeText(row.FileName); row.SheetName = ExcelPayslipOverviewService.SafeText(row.SheetName); }
         var kept = await FilterCatalogConsolidatedSummariesAsync(db, tx,
-            rows.Select(row => new ExcelPayslipBatchSummary { Id = row.BatchId, ClientId = row.ClientId }).ToArray());
-        var visible = kept.Select(batch => (batch.ClientId, batch.Id)).ToHashSet();
+            rows.Select(row => new ExcelPayslipBatchSummary { Id = row.BatchId, ClientId = row.ClientId, Month=row.Month }).ToArray());
+        var visible = CurrentMonths(kept).Select(batch => (batch.ClientId, batch.Id)).ToHashSet();
         await tx.RollbackAsync();
         return rows.Where(row=>visible.Contains((row.ClientId,row.BatchId))).ToArray();
     }
@@ -51,7 +51,9 @@ FROM excel_payslip_batches b JOIN clients c ON c.Id=b.client_id AND c.IsActive=T
             if (batch is null || batch.ClientId != savedBatch.ClientId || batch.Id != savedBatch.BatchId || ValidateBatch(batch) is not null)
                 throw new InvalidOperationException("A selected source snapshot is invalid. Review that saved batch before aggregating it.");
             // Reuse existing client-scoped identity/month eligibility checks. Protected inputs stay inside the repository, never in overview DTOs.
-            await AnnotateEmploymentAsync(db, batch, tx);
+            await AnnotateEmploymentAsync(db, batch, tx, configuration);
+            Services.ExcelPayslipPresentation.RequireCurrentSalary(batch.Rows);
+            batch.Rows=batch.Rows.Select(Services.ExcelPayslipPresentation.Current).ToList();
             input.Add(new(batch, savedBatch.HasCalculationSource));
         }
         var duplicates = await db.QueryAsync<DuplicateOverviewCode>(@"SELECT ClientId,UPPER(TRIM(EmployeeCode)) AS Code FROM employees

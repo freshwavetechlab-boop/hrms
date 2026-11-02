@@ -9,11 +9,12 @@ public sealed class ExcelPayrollTransferTemplateDecision
     public string ScopeReason { get; set; } = "";
     public bool KeepExisting { get; set; }
     public bool CreateVariant { get; set; }
+    public bool UpdateExisting { get; set; }
 }
 public sealed record ExcelPayrollTransferComponent(string Code, string Category, string Action, string MasterId);
 public sealed record ExcelPayrollTransferFormula(string RowId, string Code, int SourceRow, int? SourceColumn, string SourceHash, string Status, string Reason);
 public sealed record ExcelPayrollTransferDifference(string Component, string Field, string Existing, string ExcelDerived);
-public sealed record ExcelPayrollTransferTemplateCandidate(string Id, string Name, bool Exact, IReadOnlyList<string> Differences, IReadOnlyList<ExcelPayrollTransferDifference> Details) { public List<ExcelPayrollRecordedTemplateScope> RecordedScopes { get; init; } = []; public bool ConfigurationExact { get; init; } public string ScopeStatus { get; init; } = "Legacy comparison"; public string ScopeReason { get; init; } = ""; }
+public sealed record ExcelPayrollTransferTemplateCandidate(string Id, string Name, bool Exact, IReadOnlyList<string> Differences, IReadOnlyList<ExcelPayrollTransferDifference> Details) { public List<ExcelPayrollRecordedTemplateScope> RecordedScopes { get; init; } = []; public bool ConfigurationExact { get; init; } public bool CanUpdate { get; init; } public string ScopeStatus { get; init; } = "Legacy comparison"; public string ScopeReason { get; init; } = ""; }
 public sealed record ExcelPayrollTransferExistingResult(string RowId,string TemplateId,bool Complete,decimal? Net,decimal SourceNet,decimal? Variance,string Coverage,IReadOnlyList<ExcelPayrollSetupLine> Lines);
 public sealed record ExcelPayrollTransferKeptRow(string RowId,int EmployeeId,string TemplateId,string Reason);
 public sealed class ExcelPayrollTransferTemplate

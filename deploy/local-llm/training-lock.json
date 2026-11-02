@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "trainingBaseMode": "serving-gguf-fp32",
+  "pythonVersion": "3.11.9",
+  "torchCpuVersion": "2.10.0+cpu",
+  "transformersVersion": "5.22.1",
+  "peftVersion": "0.21.2",
+  "accelerateVersion": "1.15.0",
+  "cryptographyVersion": "50.0.2",
+  "psutilVersion": "7.2.2",
+  "safetensorsVersion": "0.8.0",
+  "baseModel": "Qwen/Qwen3.5-4B",
+  "baseRevision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+  "converterRevision": "785322d17f2d51e5185cf996a1f4e46d87640841",
+  "upstreamSources": [
+    "https://huggingface.co/Qwen/Qwen3.5-4B",
+    "https://github.com/ggml-org/llama.cpp",
+    "https://huggingface.co/docs/peft/package_reference/lora",
+    "https://download.pytorch.org/whl/cpu/torch/",
+    "https://www.python.org/ftp/python/3.11.9/"
+  ]
+}

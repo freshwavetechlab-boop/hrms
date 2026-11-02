@@ -53,7 +53,7 @@ export default function RecruitmentBatchCandidateEditor({ item, clients, onClose
       uploadOverride={(configuration, attachment, onProgress) => !attachment.file
         ? Promise.resolve({ ok: false, error: 'Select a file.' })
         : configuration.attributeCode === 'RESUME'
-          ? uploadCandidateResume(draft.id, configuration.id, attachment.file, attachment, onProgress)
+          ? uploadCandidateResume(draft.id, configuration.id, attachment.file, { ...attachment, applicationId: item.applicationId }, onProgress)
           : uploadEntityAttachment(configuration.id, 'CANDIDATE', draft.id, attachment.file, attachment, onProgress)}
       onChanged={() => void onSaved()} />
   </CandidateEditorDrawer>

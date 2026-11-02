@@ -3,6 +3,7 @@ import { Alert, Button, Descriptions, Spin, Tag } from 'antd'
 import { getPayslipMasterComparison, type ExcelPayslipRow, type PayslipMasterComparison, type PayslipIdentityMatch } from '../services/excelPayslipService'
 import { payslipMasterComparisonLines, payslipMasterFieldKeys, validPayslipMasterComparison } from '../utils/excelPayslipMasterComparison'
 import DataTable from './DataTable'
+import { payslipCurrentMasterFields, payslipDisplayInformation } from '../utils/excelPayslipPresentation'
 
 export default function ExcelPayslipRowDetails(p: { clientId: number; row: ExcelPayslipRow & {previewIdentity?:PayslipIdentityMatch}; compareMaster: boolean; importOpen: boolean; deliveryDetails: string }) {
   const [state, setState] = useState<{key:string;data:PayslipMasterComparison|null;error:string}>({key:'',data:null,error:''})
@@ -23,13 +24,15 @@ export default function ExcelPayslipRowDetails(p: { clientId: number; row: Excel
   },[compare,identityReview,requestKey,retry,p.row.previewIdentity?.status])
   const snapshot=state.key===requestKey?state.data:null,error=state.key===requestKey?state.error:''
   const lines=payslipMasterComparisonLines(p.row,snapshot)
-  return <section aria-label="Source employee details">
+  return <section aria-label={p.row.masterDetails?.linked&&!p.importOpen?'Current employee details':'Source employee details'}>
+    {!p.importOpen&&p.row.masterDetails?.linked&&<Alert type={p.row.masterDetails.salary?.status==='Review required'?'warning':'info'} showIcon message="Linked to Employee Master" description={p.row.masterDetails.salary?.message||'Current profile, contact, bank, CTC and salary inputs come from Employee Master. Original Excel amounts are retained.'} />}
     <Descriptions bordered column={1} size="small">{[
       {key:'source',label:'Source row',children:p.row.sourceRow},
       ...(!compare?[{key:'email',label:'Email',children:p.row.email||'Not supplied'}]:[]),
       {key:'delivery',label:'Delivery details',children:p.deliveryDetails},
-      ...(!compare?[{key:'code',label:'Employee code',children:p.row.employeeCode||(p.importOpen?'Auto on save':'Not supplied')},...p.row.information.map((item,index)=>({key:`info-${index}`,label:item.label,children:item.value||'-'}))]:[]),
+      ...(!compare?[{key:'code',label:'Employee code',children:p.row.employeeCode||(p.importOpen?'Auto on save':'Not supplied')},...(p.importOpen?p.row.information:payslipDisplayInformation(p.row)).map((item,index)=>({key:`info-${index}`,label:item.label,children:item.value||'-'}))]:[]),
     ].map(item=><Descriptions.Item key={item.key} label={item.label}>{item.children}</Descriptions.Item>)}</Descriptions>
+    {!p.importOpen&&p.row.masterDetails?.linked&&<details><summary>Current Employee Master profile</summary><Descriptions bordered column={1} size="small">{payslipCurrentMasterFields(p.row).map(field=><Descriptions.Item key={field.label} label={field.label}>{field.value}</Descriptions.Item>)}</Descriptions></details>}
     {compare && <section aria-label="Master versus Excel comparison">
       <Alert type="info" showIcon message="Old: Current Master · New: This Excel" description="This is a read-only field comparison. Existing personal, contact and bank fields are kept by salary import. Salary components and earned/net amounts are compared separately in the salary setup review." />
       {!snapshot&&!error&&!identityReview&&p.row.previewIdentity?.status!=="No match"&&<Spin tip="Reading current Master values…"><div style={{minHeight:40}} /></Spin>}

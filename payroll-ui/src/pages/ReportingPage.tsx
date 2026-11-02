@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { emptyEmployeeFields, getEmployeeFields, type EmployeeFieldExchange } from '../utils/employeeFields'
 import { Alert, Button, Select, Spin } from 'antd'
-import { getClients, getEmployees, getPayRuns } from '../services/payrollService'
+import { getClients, getEmployees, getPayrollEmployeeOptions, getPayRuns } from '../services/payrollService'
 import { runReportResult, type ReportResult } from '../services/reportingService'
 import { getEmployeeManagerUsers, getSetup, getWorkLocations } from '../services/settingsService'
 import { setup0 } from '../data/payrollDefaults'
@@ -15,6 +15,7 @@ import { downloadXlsx } from '../utils/xlsx'
 import { reportAttendanceValue } from '../utils/payrollAttendanceDisplay'
 import { workforceValue } from '../utils/employeeWorkforce'
 import { useAuthSession } from '../components/AuthGate'
+import { canOpenReport } from '../utils/workspaceAccess'
 
 export type ReportingMenu = (typeof reportingMenus)[number]
 export type ReportDefinition = { name: string; code?: string }
@@ -61,7 +62,9 @@ const catalogue = {
   'Report Builder': [{ name: 'Ad-hoc Report Builder' }, { name: 'Saved Report Layouts' }, { name: 'Shared Reports' }]
 } satisfies Record<string, ReportDefinition[]>
 export const reportItems = (menu: ReportingMenu) => catalogue[menu] ?? []
-export default function ReportingPage({ activeReport }: { activeMenu: ReportingMenu; activeReport: ReportDefinition }) {
+export default function ReportingPage({ activeMenu, activeReport }: { activeMenu: ReportingMenu; activeReport: ReportDefinition }) {
+  const session = useAuthSession()
+  if (!canOpenReport(session?.user.permissions ?? [], activeMenu, activeReport.code)) return <Alert type="warning" showIcon message="You do not have access to this report." />
   if (activeReport.code === 'excel-payslips') return <ExcelPayslips />
   return activeReport.code === 'payslip-register' ? <PayslipRegister /> : <ReportingWorkspace activeReport={activeReport} />
 }
@@ -132,9 +135,9 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
   useEffect(() => {
     let active = true
     setEmployeeDataReady(false)
-    if (needsEmployees) void getEmployees().then(rows => { if (active) { setEmployees(rows); setEmployeeDataReady(true) } })
+    if (needsEmployees) void (showClassifications ? getEmployees() : getPayrollEmployeeOptions()).then(rows => { if (active) { setEmployees(rows); setEmployeeDataReady(true) } })
     return () => { active = false }
-  }, [needsEmployees, clientScoped, scopedClientId])
+  }, [needsEmployees, showClassifications, clientScoped, scopedClientId])
   useEffect(() => {
     let active = true
     setSetupReady(false)

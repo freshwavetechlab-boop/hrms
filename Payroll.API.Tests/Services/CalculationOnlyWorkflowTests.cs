@@ -10,6 +10,8 @@ public class CalculationOnlyWorkflowTests
 {
     [Theory]
     [InlineData("/api/payroll-calculation/simulate")]
+    [InlineData("/api/payroll-calculation/formula-workbook")]
+    [InlineData("/API/PAYROLL-CALCULATION/FORMULA-WORKBOOK/")]
     [InlineData("/API/PAYROLL-CALCULATION/SIMULATE/")]
     [InlineData("/api/excel-payroll-setup/preview")]
     [InlineData("/api/excel-payslips/employee-code-preview")]
@@ -33,6 +35,8 @@ public class CalculationOnlyWorkflowTests
     [InlineData("POST", "/api/excel-payroll-setup/draft")]
     [InlineData("POST", "/api/payruns/submit")]
     [InlineData("POST", "/api/payroll-calculation/simulate-other")]
+    [InlineData("POST", "/api/payroll-calculation/formula-workbook-other")]
+    [InlineData("DELETE", "/api/payroll-calculation/formula-workbook")]
     [InlineData("DELETE", "/api/payroll-calculation/simulate")]
     [InlineData("POST", "/api/excel-payslips/batches")]
     [InlineData("POST", "/api/excel-payslips/employee-code-preview-other")]

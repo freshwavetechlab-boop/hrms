@@ -18,7 +18,7 @@ export function sharedPayrollDivisor(source: ExcelPayslipCalculationSource, atte
 }
 export function payrollSourceEvidence(batch: ExcelPayslipBatch, source: ExcelPayslipCalculationSource, request: PayrollSetupRequest): PayrollSourceEvidence[] {
   if (request.batchId !== batch.id || !request.rowIds.length) return []
-  const indexes = new Set<number>([request.payrollDaysColumnIndex, request.payableDaysColumnIndex, request.presentDaysColumnIndex ?? -1,
+  const indexes = new Set<number>([request.payrollDaysColumnIndex, request.payableDaysColumnIndex, request.presentDaysColumnIndex ?? -1, request.monthlyCtcColumnIndex ?? -1,
     ...request.components.flatMap(c => [c.sourceColumnIndex ?? -1, c.expectedColumnIndex ?? -1]),
     ...source.columns.filter(c => financial.has(request.sourceColumnRoles?.[c.columnIndex] || c.kind)).map(c => c.columnIndex)])
   const columns = source.columns.filter(c => indexes.has(c.columnIndex) && !privateHeading.test(c.sourceHeader + ' ' + c.label))
@@ -27,7 +27,7 @@ export function payrollSourceEvidence(batch: ExcelPayslipBatch, source: ExcelPay
     const cell = rows.get(row.sourceRow)?.cells[column.columnIndex], raw = cell?.value?.trim() || '', amount = raw ? parsePayslipAmount(raw) : null
     return { key: `${row.id}:${column.columnIndex}`, sourceRow: row.sourceRow, cell: `${excelColumnLetter(column.columnIndex)}${row.sourceRow}`,
       heading: column.sourceHeader || column.label, formula: cell?.formulaText ? redactSourceFormula(cell.formulaText) : 'No captured formula',
-      cached: !/^\d{8,}$/.test(raw.replace(/[,\s-]/g, '')) && amount != null && Number.isFinite(amount) && Math.abs(amount) < 100_000_000 ? String(amount) : raw ? 'Non-numeric/large value withheld' : 'Blank',
+      cached: !/^\d{8,}$/.test(raw.replace(/[,\s-]/g, '')) && amount != null && Number.isFinite(amount) && Math.abs(amount) < 100_000_000 ? raw : raw ? 'Non-numeric/large value withheld' : 'Blank',
       state: !cell ? 'Missing cell' : cell.error || cell.calculationError ? 'Excel error — resolve original source' : cell.missingCachedValue ? 'Formula cache missing' : cell.formulaText ? 'Captured formula + saved cache; not recalculated here' : 'Saved input; no formula' }
   }))
   const shared = sharedPayrollDivisor(source, request.payableDaysColumnIndex)
@@ -70,7 +70,7 @@ function referencedPayrollInputs(source: ExcelPayslipCalculationSource, evidence
       result.push({ key: 'reference:' + cellAddress, sourceRow: p.row, cell: cellAddress,
         heading: 'Referenced input · ' + (heading || 'Column meaning unreviewed'),
         formula: cell?.formulaText ? redactSourceFormula(cell.formulaText) : 'No captured formula',
-        cached: invalid ? 'Unavailable' : safe ? String(amount) : raw ? 'Value withheld; review input meaning' : 'Blank',
+        cached: invalid ? 'Unavailable' : safe ? raw : raw ? 'Value withheld; review input meaning' : 'Blank',
         state: !targetRows?.length ? 'Referenced source row missing; re-capture the exact source. No period default is substituted.'
           : targetRows.length !== 1 ? 'Referenced source row is ambiguous; source review required.'
           : !cell ? 'Referenced source cell missing; source review required.'

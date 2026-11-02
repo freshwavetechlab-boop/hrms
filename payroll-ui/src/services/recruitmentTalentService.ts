@@ -78,8 +78,9 @@ export const completeCandidateChecklistItem = (applicationId: number, itemId: nu
 export type EmployeeConversionPreview = { identity: import('./settingsService').EmployeeImportPreflight['rows'][number]; customFields: { field: string; label: string; oldValue: string; newValue: string }[] }
 export const previewEmployeeConversion = (applicationId: number, row: ConvertCandidateToEmployeeRequest) => postJson(`/api/recruitment/applications/${applicationId}/employee-preview`, row, null as EmployeeConversionPreview | null)
 export const convertCandidateToEmployee = (applicationId: number, row: ConvertCandidateToEmployeeRequest) => postJson(`/api/recruitment/applications/${applicationId}/convert-to-employee`, row, null as Employee | null, { successMessage: 'Candidate converted to employee.' })
-export const uploadCandidateResume = (candidateId: number, fieldConfigurationId: number, file: File, metadata: { documentNumber?: string; issueDate?: string; expiryDate?: string }, onProgress: (value: number) => void) => {
+export const uploadCandidateResume = (candidateId: number, fieldConfigurationId: number, file: File, metadata: { documentNumber?: string; issueDate?: string; expiryDate?: string; applicationId?: number | null }, onProgress: (value: number) => void) => {
   const body = new FormData(); body.append('fieldConfigurationId', String(fieldConfigurationId)); body.append('file', file)
+  if (metadata.applicationId) body.append('applicationId', String(metadata.applicationId))
   if (metadata.documentNumber) body.append('documentNumber', metadata.documentNumber); if (metadata.issueDate) body.append('issueDate', metadata.issueDate); if (metadata.expiryDate) body.append('expiryDate', metadata.expiryDate)
   return postFormWithProgress<{ attachment: EntityAttachment }>(`/api/recruitment/candidates/${candidateId}/resume`, body, {} as { attachment: EntityAttachment }, onProgress,
     660000, 'Resume upload or parsing took too long. Refresh the candidate and check the current resume before uploading again; the file may already be saved.')

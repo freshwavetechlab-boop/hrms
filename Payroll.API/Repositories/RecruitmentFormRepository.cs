@@ -1705,19 +1705,19 @@ JOIN form_field_types typeRow ON typeRow.Id=fieldRow.FieldTypeId
 LEFT JOIN form_field_semantic_mappings mapping ON mapping.FieldId=fieldRow.Id
 LEFT JOIN form_semantic_attributes semantic ON semantic.Id=mapping.SemanticAttributeId
 WHERE submission.Id=@SubmissionId", new { SubmissionId = submissionId })).ToList();
+        return BuildResumePrefillValues(parse, fields.Select(field => (field.FieldId, field.SemanticCode)));
+    }
+
+    internal static IReadOnlyList<PublicFormValue> BuildResumePrefillValues(
+        ResumeParseResult parse, IEnumerable<(long FieldId, string SemanticCode)> fields)
+    {
         var facts = parse.Facts;
         var names = Regex.Split((facts.FullName ?? "").Trim(), @"\s+").Where(value => value.Length > 0).ToArray();
         var firstName = names.FirstOrDefault() ?? "";
         var lastName = names.Length > 1 ? string.Join(" ", names.Skip(1)) : "";
-        var experience = parse.Sections.FirstOrDefault(section => section.SectionCode.Equals("EXPERIENCE", StringComparison.OrdinalIgnoreCase))?.Content ?? "";
-        var education = parse.Sections.FirstOrDefault(section => section.SectionCode.Equals("EDUCATION", StringComparison.OrdinalIgnoreCase))?.Content ?? "";
         var certifications = parse.Sections.FirstOrDefault(section => section.SectionCode.Equals("CERTIFICATIONS", StringComparison.OrdinalIgnoreCase))?.Content ?? "";
-        var fallbackRole = CurrentRoleFromResume(experience);
-        var currentDesignation = string.IsNullOrWhiteSpace(facts.CurrentTitle) ? fallbackRole.Designation : facts.CurrentTitle;
-        var currentCompany = string.IsNullOrWhiteSpace(facts.CurrentCompany) ? fallbackRole.Company : facts.CurrentCompany;
-        var highestQualification = string.IsNullOrWhiteSpace(facts.HighestQualification)
-            ? FirstResumeLine(education).Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? ""
-            : facts.HighestQualification;
+        // Use the same canonical facts as admin/bulk intake. A separate first-line
+        // guess here can turn a date or sidebar skill into a public-form job/degree.
         var values = new List<PublicFormValue>();
         foreach (var field in fields.GroupBy(row => row.FieldId).Select(group => group.First()))
         {
@@ -1729,9 +1729,9 @@ WHERE submission.Id=@SubmissionId", new { SubmissionId = submissionId })).ToList
                 case "EMAIL": value.TextValue = facts.Email; break;
                 case "PHONE": value.TextValue = facts.Phone; break;
                 case "CURRENT_LOCATION": value.TextValue = string.IsNullOrWhiteSpace(facts.CurrentLocation) ? facts.ResidentialAddress : facts.CurrentLocation; break;
-                case "CURRENT_DESIGNATION": value.TextValue = currentDesignation; break;
-                case "CURRENT_COMPANY": value.TextValue = currentCompany; break;
-                case "HIGHEST_QUALIFICATION": value.TextValue = highestQualification; break;
+                case "CURRENT_DESIGNATION": value.TextValue = facts.CurrentTitle; break;
+                case "CURRENT_COMPANY": value.TextValue = facts.CurrentCompany; break;
+                case "HIGHEST_QUALIFICATION": value.TextValue = facts.HighestQualification; break;
                 case "CERTIFICATIONS": value.TextValue = facts.Certifications.Count > 0 ? ResumeSectionText(string.Join('\n', facts.Certifications), 2000) : ResumeSectionText(certifications, 2000); break;
                 case "SKILLS" or "TECHNICAL_SKILLS": value.TextValue = ResumeSectionText(string.Join(", ", facts.Skills), 2000); break;
                 case "TOTAL_EXPERIENCE_MONTHS" when facts.TotalExperienceMonths.HasValue:
@@ -1744,23 +1744,6 @@ WHERE submission.Id=@SubmissionId", new { SubmissionId = submissionId })).ToList
         }
         return values;
     }
-
-    private static (string Designation, string Company) CurrentRoleFromResume(string experience)
-    {
-        var line = FirstResumeLine(experience);
-        if (line.Length == 0) return ("", "");
-        var parts = line.Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length >= 2) return (Truncate(parts[0], 180), Truncate(parts[1], 180));
-        var at = Regex.Match(line, @"^(?<title>[^,]{2,100})\s+(?:at|@)\s+(?<company>[^,]{2,100})", RegexOptions.IgnoreCase);
-        return at.Success
-            ? (Truncate(at.Groups["title"].Value.Trim(), 180), Truncate(at.Groups["company"].Value.Trim(), 180))
-            : (Truncate(line, 180), "");
-    }
-
-    private static string FirstResumeLine(string value) => (value ?? "")
-        .Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
-        .Select(line => Regex.Replace(line, @"^[\s\u2022\-*]+", "").Trim())
-        .FirstOrDefault(line => line.Length > 0) ?? "";
 
     private static string ResumeSectionText(string value, int maximumLength)
     {

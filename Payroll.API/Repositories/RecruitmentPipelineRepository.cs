@@ -2944,8 +2944,8 @@ WHERE j.Id=@Id LIMIT 1", new { Id = id }, transaction);
         await db.ExecuteScalarAsync<long>("SELECT Id FROM recruitment_open_positions WHERE Id=@PositionId FOR UPDATE", source, transaction);
 
         await db.ExecuteAsync(@"INSERT INTO recruitment_job_postings
-(ClientId,PositionId,JobDescriptionVersionId,ApplicationFormVersionId,PublicSlug,PublicTitle,Status,AutoRunAts,SearchEngineVisible,CreatedByUserId)
-SELECT @ClientId,@PositionId,@JobDescriptionVersionId,NULL,@PublicSlug,@PublicTitle,'Draft',TRUE,FALSE,@ActorUserId FROM DUAL
+(ClientId,PositionId,JobDescriptionVersionId,ApplicationFormVersionId,PublicSlug,PublicTitle,Status,AutoRunAts,EnableResumeParsing,EnableAiParsing,SearchEngineVisible,CreatedByUserId)
+SELECT @ClientId,@PositionId,@JobDescriptionVersionId,NULL,@PublicSlug,@PublicTitle,'Draft',TRUE,TRUE,TRUE,FALSE,@ActorUserId FROM DUAL
 WHERE NOT EXISTS (
     SELECT 1 FROM recruitment_job_postings
     WHERE PositionId=@PositionId AND Status IN ('Draft','Published')

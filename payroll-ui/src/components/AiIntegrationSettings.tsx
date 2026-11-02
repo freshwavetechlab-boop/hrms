@@ -23,6 +23,7 @@ import {
 import type { RecruitmentAiProviderPool, RecruitmentAiScoringSettings } from '../types/payroll'
 import { aiModelEndpointLabel, canMakeAiModelActive, localPrimaryModel } from './aiModelActions'
 import LocalLlmRuntimeControl from './LocalLlmRuntimeControl'
+import ResumeTrainingExamples from './ResumeTrainingExamples'
 
 const providerOptions: Array<{ value: RecruitmentAiScoringSettings['providerCode']; label: string }> = [
   { value: 'Gemini', label: 'Google Gemini' },
@@ -253,13 +254,17 @@ export default function AiIntegrationSettings() {
 
   return <section className="orchestration-shell ai-integration-settings" data-testid="ai-integration-settings" style={{ minWidth: 0 }}>
     <Card
+      className="ai-model-pool-card"
       size="small"
       loading={loading}
       style={{ minWidth: 0, overflow: 'hidden' }}
       title={<Space><ApiOutlined />AI model pool</Space>}
-      extra={<Space>
-        <Typography.Text strong>Auto Switch</Typography.Text>
-        <Switch data-testid="ai-auto-switch" loading={switching} disabled={activatingId > 0} checked={pool.autoSwitchEnabled} onChange={value => void changeAutoSwitch(value)} />
+      extra={<Space wrap>
+        <ResumeTrainingExamples />
+        <Space>
+          <Typography.Text strong>Auto Switch</Typography.Text>
+          <Switch data-testid="ai-auto-switch" loading={switching} disabled={activatingId > 0} checked={pool.autoSwitchEnabled} onChange={value => void changeAutoSwitch(value)} />
+        </Space>
       </Space>}
     >
       <Alert

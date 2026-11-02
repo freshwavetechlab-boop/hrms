@@ -34,5 +34,8 @@ public static class PayrollCalculationEndpoints
             PayRunRepository.ValidateSimulationRequest(request);
             return Results.Ok(request.Mode == "Employee" ? await repository.SimulateEmployeeAsync(request, context.RequestAborted) : PayRunRepository.SimulateTemplate(request));
         });
+        group.MapPost("/formula-workbook",async (PayrollFormulaWorkbookRequest request,HttpContext context,PayRunRepository repository)=>
+            context.Items["User"] is AuthUser user && CanAccess(user,request.ClientId,true)
+                ? Results.Ok(await repository.FormulaWorkbookAsync(request,context.RequestAborted)) : Results.StatusCode(403));
     }
 }

@@ -13,3 +13,6 @@ export async function login(email: string, password: string) {
 }
 
 export const logout = () => postEmpty('/api/auth/logout', null, { toast: false })
+
+export const changePassword = (currentPassword: string, newPassword: string) =>
+  postJson('/api/auth/change-password', { currentPassword, newPassword }, null as AuthUser | null, { toast: false })

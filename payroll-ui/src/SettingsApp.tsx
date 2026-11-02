@@ -14,6 +14,7 @@ import FrevoPilot from './components/FrevoPilot'
 import SecurityPanel from './components/SecurityPanel'
 import NotificationSettings from './components/NotificationSettings'
 import AiIntegrationSettings from './components/AiIntegrationSettings'
+import AttendanceApiIntegrator from './components/AttendanceApiIntegrator'
 import { recruitmentDashboardAccess } from './utils/recruitmentDashboardAccess'
 import { appSettingsMenus, leaveAttendanceMenus, org0, reportingMenus, securityMenus, settingsMenus, workflowMenus } from './data/payrollDefaults'
 import DashboardPage, { type DashboardView } from './pages/DashboardPage'
@@ -26,6 +27,7 @@ import PayHistoryPage from './pages/PayHistoryPage'
 import PayrollAttendancePage from './pages/PayrollAttendancePage'
 import PayrollPage from './pages/PayrollPage'
 import ReportingPage, { reportItems } from './pages/ReportingPage'
+import { billingOnlySettings, canOpenReport, hasReportWorkspace } from './utils/workspaceAccess'
 import type { ReportDefinition, ReportingMenu } from './pages/ReportingPage'
 import RecruitmentPage, { recruitmentViews, type RecruitmentPageView, type RecruitmentRequestNavigation } from './pages/RecruitmentPage'
 import { getJsonResult } from './services/apiClient'
@@ -56,7 +58,7 @@ type PayrollTab = 'Regular Run' | 'Off-cycle Run' | 'Adjustments' | 'Employee Ta
 type EmployeeTab = 'Employee Master' | 'Employee Communication' | 'Org Structure'
 type SettingsSection = 'General' | 'LeaveAttendance'
 const allPayrollSetupMenus: SettingsTab[] = ['Tax Engine', 'Statutory Setup', 'Salary Components', 'Salary Templates', 'Payslip Templates']
-const integrationMenus: SettingsTab[] = ['Notifications', 'AI Integration']
+const integrationMenus: SettingsTab[] = ['Notifications', 'AI Integration', 'Attendance API Integrator']
 const compactSidebarQuery = '(max-width: 640px)'
 const productLogo = '/assets/FrevoOneLogo.png'
 const productMark = '/favicon.svg'
@@ -152,6 +154,7 @@ const surfaceDescriptions: Record<string, string> = {
   'Payslip Templates': 'Configure the presentation and sections used in employee payslips.',
   Notifications: 'Manage delivery channels, templates, rules and message audit visibility.',
   'AI Integration': 'Configure encrypted, client-scoped AI providers and verify their connection health.',
+  'Attendance API Integrator': 'Configure client attendance APIs, field mappings and sync schedules.',
   'Scheduled Jobs': 'Review recurring background jobs, schedules and recent execution status.',
   'Attendance Policies': 'Define attendance rules, shifts and payability behavior by client.',
   'Leave Types': 'Maintain leave categories, eligibility and accrual rules.',
@@ -268,6 +271,7 @@ const generalSettingsIcons: Partial<Record<SettingsTab, IconName>> = {
   'Travel & Expense Policies': 'money',
   Notifications: 'notification',
   'AI Integration': 'api',
+  'Attendance API Integrator': 'api',
   'Scheduled Jobs': 'history',
 }
 const employeeMenuIcons: Record<EmployeeTab, IconName> = {
@@ -303,6 +307,10 @@ export default function SettingsApp() {
   const session = useAuthSession()
   const currentUser = session?.user
   const grantedPermissions = new Set(currentUser?.permissions ?? [])
+  const permissions = currentUser?.permissions ?? []
+  const permissionsKey = permissions.join(',')
+  const billingOnly = billingOnlySettings(permissions)
+  const permittedReportItems = (menu: ReportingMenu) => reportItems(menu).filter(report => canOpenReport(permissions, menu, report.code))
   const hasAnyPermission = (...codes: string[]) => codes.some(code => grantedPermissions.has(code))
   const clientScopedAdmin = Boolean(currentUser?.clientId && !grantedPermissions.has('security.manage'))
   const canManageApps = currentUser?.clientId == null && hasAnyPermission('settings.manage')
@@ -327,8 +335,8 @@ export default function SettingsApp() {
     if (code === 'TalentAcquisition') return hasAssignedInterviews || isSuperAdmin || hasAnyPermission('settings.manage') || Array.from(grantedPermissions).some(permission => permission.startsWith('recruitment.'))
     if (code === 'Security') return canManageSecurity || canManageApps
     if (code === 'Workflows') return hasAnyPermission('workflow.manage', 'settings.manage', 'client.settings.manage')
-    if (code === 'Settings') return hasAnyPermission('settings.manage', 'client.settings.manage')
-    if (code === 'Reports') return hasAnyPermission('reports.view')
+    if (code === 'Settings') return hasAnyPermission('settings.manage', 'client.settings.manage', 'billing.manage')
+    if (code === 'Reports') return hasReportWorkspace(permissions)
     return false
   }
   const visibleModules = modules.filter(module => canAccessModule(module.code))
@@ -350,7 +358,7 @@ export default function SettingsApp() {
   const initialReportingTab = routeParts[0] === 'reports' ? fromSlug(reportingMenus, routeParts.at(-1), 'Payroll Reports')
     : savedReportingTab && reportingMenus.includes(savedReportingTab) ? savedReportingTab : 'Payroll Reports'
   const dashboardView = routeParts[0] === 'dashboard' && dashboardViews.includes(routeParts[1] as DashboardView) ? routeParts[1] as DashboardView : 'overview'
-  const isExcelDashboard = routeParts[0] === 'dashboard' && routeParts[1] === 'excel-payslips' && hasAnyPermission('reports.view')
+  const isExcelDashboard = routeParts[0] === 'dashboard' && routeParts[1] === 'excel-payslips' && hasAnyPermission('reports.view', 'reports.payroll.view')
   const [requestNavigation, setRequestNavigation] = useState<RecruitmentRequestNavigation | null>(null)
   const recruitmentView = routeParts[0] === 'recruitment' ? fromSlug(recruitmentViews, routeParts[1], 'Dashboard') : 'Dashboard'
   const recruitmentQuery = new URLSearchParams(routeLocation.search)
@@ -409,8 +417,8 @@ export default function SettingsApp() {
   const [scopedClient, setScopedClient] = useState<Client | null>(null)
   const activeModule = visibleModules.find(module => module.code === mainModule) ?? modules[0]
   const dashboardAccess = [...(currentUser?.dashboardAccess?.length ? currentUser.dashboardAccess : fallbackDashboardAccess)]
-    .filter(item => item.code !== excelDashboardAccess.code || hasAnyPermission('reports.view'))
-  if (hasAnyPermission('reports.view') && !dashboardAccess.some(item => item.code === excelDashboardAccess.code)) dashboardAccess.push(excelDashboardAccess)
+    .filter(item => item.code !== excelDashboardAccess.code || hasAnyPermission('reports.view', 'reports.payroll.view'))
+  if (hasAnyPermission('reports.view', 'reports.payroll.view') && !dashboardAccess.some(item => item.code === excelDashboardAccess.code)) dashboardAccess.push(excelDashboardAccess)
   const talentAccess = recruitmentDashboardAccess(currentUser?.permissions || [])
   if ((talentAccess.positions || talentAccess.cases || talentAccess.requisitions || talentAccess.applications || talentAccess.interviews || talentAccess.offers) && !dashboardAccess.some(item => item.code === talentDashboardAccess.code)) dashboardAccess.push(talentDashboardAccess)
   if (!dashboardAccess.length) dashboardAccess.push(...fallbackDashboardAccess)
@@ -433,7 +441,7 @@ export default function SettingsApp() {
     : mainModule === 'Reports'
       ? [{ title: activeModule.label }, { title: reportingTab }, { title: pageTitle }]
       : mainModule === 'Security' && securityAppsTab
-      ? [{ title: activeModule.label }, { title: 'Apps' }, { title: pageTitle }]
+      ? [{ title: activeModule.label }, { title: 'Integrations' }, { title: pageTitle }]
       : mainModule === 'Security' && securityAppSettingsTab
       ? [{ title: activeModule.label }, { title: 'App Settings' }, { title: pageTitle }]
       : mainModule === 'Settings' && integrationMenus.includes(tab)
@@ -604,8 +612,10 @@ export default function SettingsApp() {
       return
     }
     if (parts[0] === 'reports') {
-      const nextTab = fromSlug(reportingMenus, tabSlug, 'Payroll Reports')
-      const reports = reportItems(nextTab)
+      const requestedTab = fromSlug(reportingMenus, tabSlug, 'Payroll Reports')
+      const nextTab = permittedReportItems(requestedTab).length ? requestedTab : reportingMenus.find(menu => permittedReportItems(menu).length)
+      if (!nextTab) { navigate('/dashboard', { replace: true }); return }
+      const reports = permittedReportItems(nextTab)
       const reportSlug = new URLSearchParams(routeLocation.search).get('report') || ''
       const nextReport = reports.find(report => slug(report.name) === reportSlug) ?? reports[0]
       setReportingTab(nextTab)
@@ -630,6 +640,7 @@ export default function SettingsApp() {
       return
     }
     if (parts[0] === 'settings') {
+      if (billingOnly && parts[1] !== 'client-billing-configuration') { navigate('/settings/client-billing-configuration', { replace: true }); return }
       if (integrationMenus.some(item => slug(item) === parts[1])) {
         navigate(canManageApps ? `/security/apps/${parts[1]}${routeLocation.search}` : '/dashboard', { replace: true })
         return
@@ -710,7 +721,7 @@ export default function SettingsApp() {
       return
     }
     setMainModule('Dashboard')
-  }, [canManageStatutory, canViewEmployeeCommunication, clientScopedAdmin, isSuperAdmin, navigate, routeLocation.pathname, routeLocation.search])
+  }, [canManageStatutory, canViewEmployeeCommunication, clientScopedAdmin, isSuperAdmin, permissionsKey, navigate, routeLocation.pathname, routeLocation.search])
 
   useEffect(() => {
     if (!navOpen) return
@@ -757,7 +768,7 @@ export default function SettingsApp() {
   const setSecurityModuleTab = (nextTab: SecurityTab) => { localStorage.setItem('payroll.securityTab', nextTab); setSecurityTab(nextTab); setShowMyTasks(false); setMainModule('Security'); navigate(`/security/${slug(nextTab)}`) }
   const setSecurityAppSettingsTab = (nextTab: AppSettingsTab) => { setSecurityAppSettingsOpen(true); setShowMyTasks(false); setMainModule('Security'); navigate(`/security/app-settings/${slug(nextTab)}`) }
   const setLeaveAttendanceSettingsTab = (nextTab: LeaveAttendanceMenu) => { setShowMyTasks(false); setSettingsSection('LeaveAttendance'); localStorage.setItem('payroll.module', 'Settings'); localStorage.setItem('payroll.leaveAttendanceTab', nextTab); setLeaveAttendanceTab(nextTab); setMainModule('Settings'); navigate(`/settings/leave-attendance/${slug(nextTab)}`) }
-  const setReportingModuleTab = (nextTab: ReportingMenu) => { localStorage.setItem('payroll.reportingTab', nextTab); setReportingTab(nextTab); setReportingReport(reportItems(nextTab)[0]); setShowMyTasks(false); setMainModule('Reports'); navigate(`/reports/${slug(nextTab)}`) }
+  const setReportingModuleTab = (nextTab: ReportingMenu) => { const first = permittedReportItems(nextTab)[0]; if (!first) return; localStorage.setItem('payroll.reportingTab', nextTab); setReportingTab(nextTab); setReportingReport(first); setShowMyTasks(false); setMainModule('Reports'); navigate(`/reports/${slug(nextTab)}`) }
   const setReportingReportTab = (nextTab: ReportingMenu, report: ReportDefinition) => { localStorage.setItem('payroll.reportingTab', nextTab); setReportingTab(nextTab); setReportingReport(report); setShowMyTasks(false); setMainModule('Reports'); navigate(`/reports/${slug(nextTab)}?report=${slug(report.name)}`) }
   const setWorkflowModuleTab = (nextTab: WorkflowMenu) => { localStorage.setItem('payroll.workflowTab', nextTab); setWorkflowTab(nextTab); setShowMyTasks(false); setMainModule('Workflows'); navigate(`/workflows/${slug(nextTab)}`) }
   const renderContextMenu = () => {
@@ -767,6 +778,7 @@ export default function SettingsApp() {
       {tasks}
     </>
     if (mainModule === 'Settings') {
+      if (billingOnly) return menuLink('/settings/client-billing-configuration', 'Client Billing Configuration', true, () => setTab('Client Billing Configuration'), 'Billing')
       if (clientScopedAdmin) return <>
         {tasks}
         {menuLink('/settings/client-config-check', 'Client Config Check', settingsSection === 'General' && tab === 'Client Config Check', () => setTab('Client Config Check'), 'Readiness', 'shield')}
@@ -797,7 +809,7 @@ export default function SettingsApp() {
       {tasks}
       {menuLink('/payroll/adjustments', 'Adjustments', !isPayHistory && payrollTab === 'Adjustments', () => setPayrollModuleTab('Adjustments'), 'Variable pay')}
       <div className={`settings-nav-group expanded ${collapsedFlyout === 'payroll-run' ? 'flyout-open' : ''}`}><button {...navAttrs('Pay Run')} className={!isPayHistory && ['Regular Run', 'Off-cycle Run'].includes(payrollTab) ? 'active' : ''} type="button" onClick={() => toggleNavGroup('payroll-run', () => undefined)}>{menuLabel('Pay Run', null)}</button><div className="settings-nav-submenu">{menuLink('/payroll/regular', 'Regular Run', !isPayHistory && payrollTab === 'Regular Run', () => setPayrollModuleTab('Regular Run'), undefined, 'run')}{menuLink('/payroll/off-cycle', 'Off-cycle Run', !isPayHistory && payrollTab === 'Off-cycle Run', () => setPayrollModuleTab('Off-cycle Run'), undefined, 'offcycle')}</div></div>
-      {menuLink('/payroll/tax-profile', 'Employee Tax Profile', !isPayHistory && payrollTab === 'Employee Tax Profile', () => setPayrollModuleTab('Employee Tax Profile'), 'TDS profile')}
+      {hasAnyPermission('employees.view', 'employees.manage') && menuLink('/payroll/tax-profile', 'Employee Tax Profile', !isPayHistory && payrollTab === 'Employee Tax Profile', () => setPayrollModuleTab('Employee Tax Profile'), 'TDS profile')}
       {menuLink('/payroll/travel-advances', 'Travel Advances', !isPayHistory && payrollTab === 'Travel Advances', () => setPayrollModuleTab('Travel Advances'), 'Pay & settle')}
       {menuLink('/pay-runs/history', 'Pay History', isPayHistory, setPayHistory)}
     </>
@@ -822,7 +834,7 @@ export default function SettingsApp() {
       {tasks}
       {canManageSecurity && securityMenus.filter(item => item !== 'Audit' || grantedPermissions.has('audit.view')).map(item => <Fragment key={item}>{menuLink(`/security/${slug(item)}`, item, !securityAppsTab && !securityAppSettingsTab && securityTab === item, () => setSecurityModuleTab(item), undefined, securityMenuIcons[item])}</Fragment>)}
       {canManageApps && <div className={`settings-nav-group flyout-align-end ${integrationsOpen ? 'expanded' : ''} ${collapsedFlyout === 'security-apps' ? 'flyout-open' : ''}`}>
-        <button {...navAttrs('Apps')} className={securityAppsTab ? 'active' : ''} type="button" aria-expanded={integrationsOpen} onClick={() => toggleNavGroup('security-apps', () => setIntegrationsOpen(open => navOpen ? !open : true))}>{menuLabel('Apps', 'api')}<small>{integrationsOpen ? '-' : '+'}</small></button>
+        <button {...navAttrs('Integrations')} className={securityAppsTab ? 'active' : ''} type="button" aria-expanded={integrationsOpen} onClick={() => toggleNavGroup('security-apps', () => setIntegrationsOpen(open => navOpen ? !open : true))}>{menuLabel('Integrations', 'api')}<small>{integrationsOpen ? '-' : '+'}</small></button>
         {integrationsOpen && <div className="settings-nav-submenu">{integrationMenus.map(item => <Fragment key={item}>{menuLink(`/security/apps/${slug(item)}`, item, securityAppsTab === item, () => { setShowMyTasks(false); navigate(`/security/apps/${slug(item)}`) }, undefined, generalSettingsIcons[item])}</Fragment>)}</div>}
       </div>}
       {canManageSecurity && !clientScopedAdmin && <div className={`settings-nav-group flyout-align-end ${securityAppSettingsOpen ? 'expanded' : ''} ${collapsedFlyout === 'security-app-settings' ? 'flyout-open' : ''}`}>
@@ -830,11 +842,11 @@ export default function SettingsApp() {
         {securityAppSettingsOpen && <div className="settings-nav-submenu">{visibleAppSettingsMenus.map(item => <Fragment key={item}>{menuLink(`/security/app-settings/${slug(item)}`, item, securityAppSettingsTab === item, () => setSecurityAppSettingsTab(item), undefined, appSettingsIcons[item])}</Fragment>)}</div>}
       </div>}
     </>
-    if (mainModule === 'Reports') return <>{tasks}{reportingMenus.map(item => {
+    if (mainModule === 'Reports') return <>{tasks}{reportingMenus.filter(item => permittedReportItems(item).length > 0).map(item => {
       const expanded = reportingTab === item
       return <div className={`report-nav-group ${['Leave Reports', 'Tax Reports'].includes(item) ? 'flyout-align-end' : ''} ${expanded ? 'expanded' : ''} ${collapsedFlyout === `reports-${slug(item)}` ? 'flyout-open' : ''}`} key={item}>
         <button {...navAttrs(item)} className={expanded ? 'active' : ''} type="button" aria-expanded={expanded} onClick={() => toggleNavGroup(`reports-${slug(item)}`, () => setReportingModuleTab(item))}>{menuLabel(item, null)}<small>{expanded ? '-' : '+'}</small></button>
-        {expanded && <div className="report-nav-submenu">{reportItems(item).map(report => <Fragment key={report.name}>{menuLink(`/reports/${slug(item)}?report=${slug(report.name)}`, report.name, reportingReport.name === report.name, () => setReportingReportTab(item, report), undefined, null)}</Fragment>)}</div>}
+        {expanded && <div className="report-nav-submenu">{permittedReportItems(item).map(report => <Fragment key={report.name}>{menuLink(`/reports/${slug(item)}?report=${slug(report.name)}`, report.name, reportingReport.name === report.name, () => setReportingReportTab(item, report), undefined, null)}</Fragment>)}</div>}
       </div>
     })}</>
     if (mainModule === 'Workflows') return workflowMenus.filter(item => hasAnyPermission('workflow.manage') || item === 'API Catalog').map(item => <Fragment key={item}>{menuLink(`/workflows/${slug(item)}`, item, workflowTab === item, () => setWorkflowModuleTab(item), undefined, workflowMenuIcons[item])}</Fragment>)
@@ -845,17 +857,18 @@ export default function SettingsApp() {
     if (showMyTasks) return <WorkflowTasks />
     if (!canAccessModule(mainModule)) return <DashboardPage view={dashboardView} />
     if (mainModule === 'Dashboard') return isExcelDashboard ? <ExcelPayslipDashboard /> : <DashboardPage view={dashboardView} />
-    if (mainModule === 'Security' && securityAppsTab) return canManageApps ? securityAppsTab === 'AI Integration' ? <AiIntegrationSettings /> : <NotificationSettings /> : <DashboardPage view={dashboardView} />
+    if (mainModule === 'Security' && securityAppsTab) return canManageApps ? securityAppsTab === 'AI Integration' ? <AiIntegrationSettings /> : securityAppsTab === 'Attendance API Integrator' ? <AttendanceApiIntegrator /> : <NotificationSettings /> : <DashboardPage view={dashboardView} />
     if (mainModule === 'Security' && !canManageSecurity) return <DashboardPage view={dashboardView} />
     if (mainModule === 'Security') return clientScopedAdmin
       ? <SecurityPanel initialTab={securityTab === 'Audit' ? 'Users' : securityTab} />
       : securityAppSettingsTab === 'ESS Settings' ? <EssSettings /> : securityAppSettingsTab === 'Storage Servers' ? <AttachmentSettings mode="storage" /> : securityAppSettingsTab === 'Engine Monitor' && isSuperAdmin ? <EngineMonitoring /> : <SecurityPanel initialTab={securityTab} />
     if (mainModule === 'LeaveAttendance') return <PayrollAttendancePage />
-    if (mainModule === 'Payroll') return isPayHistory ? <PayHistoryPage /> : payrollTab === 'Employee Tax Profile' ? <EmployeeTaxProfileManager /> : payrollTab === 'Travel Advances' ? <TravelAdvancesPage /> : <PayrollPage key={payrollTab} mode={payrollTab === 'Adjustments' ? 'adjustments' : 'payrun'} runType={payrollTab === 'Off-cycle Run' ? 'Off-cycle Run' : 'Regular Run'} />
+    if (mainModule === 'Payroll') return isPayHistory ? <PayHistoryPage /> : payrollTab === 'Employee Tax Profile' ? hasAnyPermission('employees.view', 'employees.manage') ? <EmployeeTaxProfileManager /> : <div className="card">Employee tax profile access is not assigned to this login.</div> : payrollTab === 'Travel Advances' ? <TravelAdvancesPage /> : <PayrollPage key={payrollTab} mode={payrollTab === 'Adjustments' ? 'adjustments' : 'payrun'} runType={payrollTab === 'Off-cycle Run' ? 'Off-cycle Run' : 'Regular Run'} />
     if (mainModule === 'Employees') return employeeTab === 'Employee Communication' ? <EmployeeCommunicationPage /> : <EmployeePage view={(employeeTab === 'Org Structure' ? 'org' : 'master') as EmployeePageView} />
     if (mainModule === 'TalentAcquisition') return <RecruitmentPage view={interviewOnly ? 'Interviews' : recruitmentView} onRequestNavigationChange={setRequestNavigation} />
     if (mainModule === 'Reports') return <ReportingPage activeMenu={reportingTab} activeReport={reportingReport} />
     if (mainModule === 'Workflows') return <WorkflowPage activeMenu={hasAnyPermission('workflow.manage') ? workflowTab : 'API Catalog'} />
+    if (billingOnly) return <SettingsPage tab="Client Billing Configuration" onMessage={() => undefined} />
     return settingsSection === 'LeaveAttendance'
       ? <LeaveAttendancePage activeMenu={leaveAttendanceTab} onSelectMenu={setLeaveAttendanceSettingsTab} />
       : tab === 'Client Config Check'
@@ -900,7 +913,7 @@ export default function SettingsApp() {
             </button>
           </Dropdown>
         </Space>
-        <AppPageHeader workspace={!showMyTasks && !isProfile ? mainModule === 'Workflows' && workflowTab === 'API Catalog' ? 'workflows' : mainModule === 'Settings' && settingsSection === 'LeaveAttendance' ? 'attendance-settings' : mainModule === 'Settings' && settingsSection === 'General' && tab === 'Statutory Setup' ? 'statutory-settings' : mainModule === 'Dashboard' ? 'dashboard' : mainModule === 'Employees' && employeeTab === 'Employee Master' ? 'employees' : mainModule === 'Reports' && reportingReport.code === 'payslip-register' ? 'payslips' : mainModule === 'Reports' && reportingReport.code === 'excel-payslips' ? 'excel-payslips' : undefined : undefined} recruitment={mainModule === 'TalentAcquisition' && !showMyTasks && !isProfile} title={pageTitle} description={pageDescription} icon={<AppIcon name={pageIconName} />} breadcrumbs={breadcrumbItems} actions={clientScopedAdmin && scopedClient ? <span className="scoped-client-chip" data-testid="scoped-client-chip">{scopedClient.logoDataUrl ? <img src={scopedClient.logoDataUrl} alt={`${scopedClient.name} logo`} /> : <BankOutlined />}{scopedClient.name}</span> : undefined} />
+        <AppPageHeader workspace={!showMyTasks && !isProfile ? mainModule === 'Security' && securityAppsTab === 'Attendance API Integrator' ? 'attendance-adapters' : mainModule === 'Workflows' && workflowTab === 'API Catalog' ? 'workflows' : mainModule === 'Settings' && settingsSection === 'LeaveAttendance' ? 'attendance-settings' : mainModule === 'Settings' && settingsSection === 'General' && tab === 'Statutory Setup' ? 'statutory-settings' : mainModule === 'Dashboard' ? 'dashboard' : mainModule === 'Employees' && employeeTab === 'Employee Master' ? 'employees' : mainModule === 'Reports' && reportingReport.code === 'payslip-register' ? 'payslips' : mainModule === 'Reports' && reportingReport.code === 'excel-payslips' ? 'excel-payslips' : undefined : undefined} recruitment={mainModule === 'TalentAcquisition' && !showMyTasks && !isProfile} title={pageTitle} description={pageDescription} icon={<AppIcon name={pageIconName} />} breadcrumbs={breadcrumbItems} actions={clientScopedAdmin && scopedClient ? <span className="scoped-client-chip" data-testid="scoped-client-chip">{scopedClient.logoDataUrl ? <img src={scopedClient.logoDataUrl} alt={`${scopedClient.name} logo`} /> : <BankOutlined />}{scopedClient.name}</span> : undefined} />
       </div>
       <div className="hrms-content">
         <div className="hrms-page-body">{renderPage()}</div>

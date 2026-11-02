@@ -1,17 +1,19 @@
 import type { Client, Employee, PayRun, PayRunDiagnostics, PayrollAdjustment, RunEmployee } from '../types/payroll'
 import { deleteJson, getJson, postEmpty, postJson, putJson } from './apiClient'
+import { payrollAdjustmentPayload } from '../utils/payrollAdjustmentIdentity'
 
 export const getClients = async (lookup = false) => (await getJson<Client[]>(`/api/clients${lookup ? '?lookup=true' : ''}`, []))
   .map(client => ({ ...client, id: Number(client.id) }))
   .filter(client => client.isActive && Number.isSafeInteger(client.id) && client.id > 0)
 export const getEmployees = () => getJson<Employee[]>('/api/employees', [])
+export const getPayrollEmployeeOptions = () => getJson<Employee[]>('/api/payroll/employee-options', [])
 export const getPayRuns = () => getJson<PayRun[]>('/api/pay-runs', [])
 export const getPayRun = (id: number) => getJson<PayRun | null>(`/api/pay-runs/${id}`, null)
 export const getPayRunDiagnostics = (id: number) => getJson<PayRunDiagnostics | null>(`/api/pay-runs/${id}/diagnostics`, null)
 export const createPayRun = (body: { clientId: number; payPeriod: string; payDate: string; totalWorkingDays: number; runType?: string; runName?: string; reason?: string; attendanceGroupId?: number; attendanceGroupIds?: number[]; attendancePolicyBatchId?: string; attendanceGroupName?: string; excludedEmployeeIds?: number[]; includedEmployeeIds?: number[]; adjustmentIds?: number[] }) => postJson<typeof body, PayRun | null>('/api/pay-runs', body, null, { timeoutMs: 180000 })
 export type CreatePayRunRequest = Parameters<typeof createPayRun>[0] & { adjustmentSourceReviewAcknowledgement?: { expectedFingerprint: string; confirmed: true } }
 export const createSelectedPayRunDraft = (body: CreatePayRunRequest) => postJson<CreatePayRunRequest, PayRun | null>('/api/pay-runs/selected-draft', body, null, { timeoutMs: 180000, toast: false })
-export const updatePayRunEmployee = (payRunId: number, employee: RunEmployee) => putJson(`/api/pay-runs/${payRunId}/employees/${employee.employeeId}`, { presentDays: employee.presentDays, oneTimeEarnings: employee.oneTimeEarnings, oneTimeDeductions: employee.oneTimeDeductions, manualTds: employee.manualTds, isSkipped: employee.isSkipped }, null)
+export const updatePayRunEmployee = (payRunId: number, employee: RunEmployee) => putJson(`/api/pay-runs/${payRunId}/employees/${employee.employeeId}`, { presentDays: employee.presentDays, oneTimeEarnings: employee.oneTimeEarnings, oneTimeDeductions: employee.oneTimeDeductions, manualTds: employee.manualTds, isSkipped: employee.isSkipped }, null, { timeoutMs: 180000, timeoutMessage: 'Draft update could not be confirmed. Refresh this run before retrying.' })
 export const runPayRunAction = (id: number, path: string) => postEmpty<PayRun | null>(`/api/pay-runs/${id}/${path}`, null, { timeoutMs: 120000 })
 export const recordPayRunPayments = (id: number, body: { employeeIds: number[]; paymentDate: string }) => postJson<typeof body, PayRun | null>(`/api/pay-runs/${id}/payments`, body, null)
 export const deletePayRun = (id: number) => deleteJson(`/api/pay-runs/${id}`, null)
@@ -23,5 +25,5 @@ export const getPayrollAdjustments = (query: { clientId?: number; payPeriod?: st
   if (query.status) params.set('status', query.status)
   return getJson<PayrollAdjustment[]>(`/api/payroll-adjustments${params.size ? `?${params}` : ''}`, [])
 }
-export const savePayrollAdjustment = (body: PayrollAdjustment) => postJson<PayrollAdjustment, PayrollAdjustment | null>('/api/payroll-adjustments', body, null)
+export const savePayrollAdjustment = (body: PayrollAdjustment) => postJson<PayrollAdjustment, PayrollAdjustment | null>('/api/payroll-adjustments', payrollAdjustmentPayload(body), null)
 export const cancelPayrollAdjustment = (id: number) => deleteJson(`/api/payroll-adjustments/${id}`, null)

@@ -90,8 +90,16 @@ WHERE resume.Id=@ResumeId AND resume.CandidateId=@CandidateId", new { ResumeId =
         }
         if (application.ResumeId != request.ExpectedResumeId) return (null, "The application's resume changed. Refresh before recovery.");
 
-        // Preserve all prior versions and do not run pipeline automation.
-        var parse = await resumeParser.ParseAsync(recoveryFile, cancellationToken);
+        // Recovery uses the same job switches and memory scope as every other upload.
+        // Keep AI after attachment validation/acceptance, and preserve pipeline state.
+        var parsingContext = await ResumeUploadContextAsync(db, candidate, application.Id, user, cancellationToken);
+        if (!IsResumeApplicationContextAllowed(parsingContext, candidate.Id, application.Id, user.ClientId))
+            return (null, "The application's resume parsing context was not found.");
+        var features = await FeatureSettingsAsync(db, application.ClientId);
+        var policy = ResumeParsingJobPolicy.Resolve(features.EnableResumeParsing, parsingContext!.EnableResumeParsing, parsingContext.EnableAiParsing);
+        var local = policy.ParsingEnabled
+            ? await resumeParser.ParseLocalAsync(recoveryFile, application.ClientId, cancellationToken)
+            : ResumeParseResult.WithoutContent("Disabled", "Disabled", "", "Resume parsing is disabled for this job.");
         var (attachment, uploadError) = availableAttachment is not null ? (availableAttachment, (string?)null) : await attachments.UploadAsync(new AttachmentUploadMetadata
         {
             FieldConfigurationId = request.FieldConfigurationId,
@@ -99,6 +107,8 @@ WHERE resume.Id=@ResumeId AND resume.CandidateId=@CandidateId", new { ResumeId =
             DocumentNumber = "EMAIL-RECOVERY:" + application.ApplicationCode
         }, recoveryFile, user, ipAddress, userAgent, cancellationToken, restoreMissingContent: true);
         if (attachment is null) return (null, uploadError ?? "Resume upload failed.");
+        var parse = await resumeParser.ParseForJobAsync(recoveryFile, application.ClientId, policy.ParsingEnabled,
+            policy.AiEnabled, ResumeJobContextParts(await ResumeJobContextAsync(db, application.PositionId, application.ClientId)), cancellationToken, local);
         var resume = await RegisterResumeAsync(db, candidate, attachment, parse, user, suppressAutoScoring: true,
             recoveryApplicationId: application.Id, expectedResumeId: request.ExpectedResumeId);
         await WriteActivityAsync(db, application.ClientId, candidate.Id, candidate.EmployeeId, "RECRUITMENT",

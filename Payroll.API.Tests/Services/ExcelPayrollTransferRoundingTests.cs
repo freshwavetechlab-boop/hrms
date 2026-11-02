@@ -41,7 +41,7 @@ public sealed class ExcelPayrollTransferRoundingTests
     }
     private static void Recalculate(ExcelPayrollSetupRepository.Plan plan,ExcelPayrollSetupRequest request)
     {
-        var row=plan.Rows[0]; row.Preview=ExcelPayrollSetupRepository.CalculateRow(42,request,row.Components,plan.Source.Rows[0],plan.Batch.Rows[0]).Preview;
+        var row=plan.Rows[0]; row.Preview=ExcelPayrollSetupRepository.CalculateRow(42,request,row.Components,plan.Source.Rows[0],plan.Batch.Rows[0],plan.Source.Columns.Where(c=>c.BlankAsZero).Select(c=>c.ColumnIndex).ToHashSet(),plan.Source).Preview;
         plan.Preview.Rows=[row.Preview];
     }
     private static ExcelPayrollTransferAmountReview Classify(ExcelPayrollSetupRepository.Plan p,ExcelPayrollSetupRequest q)
@@ -117,4 +117,37 @@ public sealed class ExcelPayrollTransferRoundingTests
     [Theory] [InlineData(115.605,115.61)] [InlineData(450.85949999999997,450.86)] [InlineData(13872.599999999999,13872.60)]
     public void SourceDisplayUsesExistingFormatterBoundaryNotAComparisonTolerance(decimal raw,decimal display)
         =>Assert.Equal(display,ExcelPayrollSetupRepository.SourceCurrencyDisplay(raw));
+
+    [Theory] [InlineData("504.92615384615385")][InlineData("12707.17480769231")][InlineData("1.0049999999999997")]
+    public void RoundingProofUsesTheSameDecimalSignificantDigitsAsThePayslipFormatter(string text)
+    {
+        var raw=decimal.Parse(text,CultureInfo.InvariantCulture);
+        Assert.Equal(decimal.Parse(raw.ToString("G15",CultureInfo.InvariantCulture),CultureInfo.InvariantCulture),ExcelPayrollSetupRepository.SourceDisplayPrecision(raw));
+    }
+
+    [Fact] public void ReviewedLiteralDeductionsAndPeriodTransactionsKeepExactCoverageInRoundingProof()
+    {
+        var(p,q)=Fixture();q.ReviewedFixedInputs=true;
+        var additions=new[] {
+            new ExcelPayrollSetupComponent {Key="tax",Code="PT",Category="Deduction",CalculationType="Formula",Formula="200",ExpectedColumnIndex=8,ProRata=false},
+            new ExcelPayrollSetupComponent {Key="penalty",Code="PENALTY",Category="Deduction",CalculationType="Manual / Variable",SourceColumnIndex=9,ExpectedColumnIndex=9,IsPeriodAdjustment=true,ProRata=false},
+            new ExcelPayrollSetupComponent {Key="recovery",Code="RECOVERY",Category="Deduction",CalculationType="Manual / Variable",SourceColumnIndex=10,ExpectedColumnIndex=10,IsPeriodAdjustment=true,ProRata=false}
+        };
+        q.Components.AddRange(additions);
+        p.Components.AddRange(additions.Select((c,i)=>new ExcelPayrollSetupRepository.ResolvedComponent(c,(i+6).ToString(),true)));
+        p.Source.ColumnCount=11;
+        for(var i=8;i<11;i++)p.Source.Columns.Add(new(){ColumnIndex=i,Kind="deduction",BlankAsZero=i==10});
+        p.Source.Rows[0].Cells.AddRange([new(){Value="200"},new(){Value="500"},null]);
+        p.Batch.Rows[0].Deductions.AddRange([new(){Label="PT",Amount=200},new(){Label="Penalty",Amount=500},new(){Label="Recovery",Amount=0}]);
+        p.Batch.Rows[0].NetPay-=700;
+        Recalculate(p,q);
+        Assert.Equal("Explained rounding",Classify(p,q).Status);
+        Assert.Equal(8,Classify(p,q).Lines.Count);
+        Assert.Equal(0,p.Rows[0].Preview.Lines.Single(l=>l.Code=="RECOVERY").UnroundedEarned);
+        q.ReviewedFixedInputs=false; Assert.Equal("Unverified",Classify(p,q).Status);
+        q.ReviewedFixedInputs=true;additions[0].Formula="BASIC_EARNED";
+        Assert.Equal("Unverified",Classify(p,q).Status);
+        additions[0].Formula="200";p.Source.Rows[0].Cells[9]!.FormulaText="C6*0.05";
+        Assert.Equal("Unverified",Classify(p,q).Status);
+    }
 }

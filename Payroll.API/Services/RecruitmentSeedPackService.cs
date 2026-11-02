@@ -238,7 +238,7 @@ public sealed class RecruitmentSeedPackService(
             if (!resumes.TryGetValue(fileName, out var matchingFiles) || matchingFiles.Count != 1)
                 throw new ImportValidationException(matchingFiles is null ? $"Resume '{fileName}' was not included with the workbook." : $"Resume filename '{fileName}' was included more than once.");
             var file = matchingFiles[0];
-            var parsed = await resumeParser.ParseAsync(file, cancellationToken);
+            var parsed = await resumeParser.ParseLocalAsync(file, client.Id, cancellationToken);
             if (!parsed.Status.Equals("Parsed", StringComparison.OrdinalIgnoreCase))
                 throw new ImportValidationException(string.IsNullOrWhiteSpace(parsed.Error) ? "Resume needs manual review before candidate import." : parsed.Error);
             var expectedEmail = NormalizeEmail(row.Value("Expected Email"));

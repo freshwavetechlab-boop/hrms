@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent
 import { DownloadOutlined, UploadOutlined } from '@ant-design/icons'
 import { Button, Card, Input, Space, Typography } from 'antd'
 import type { AttendanceBatchJobStatus, AttendanceGroup, AttendanceReviewContext, Drop, EmployeeDailyAttendance, EmployeeMonthlyAttendance, LeaveAttendancePreferences, LeaveType } from '../types/payroll'
-import { getAttendanceReviewContextResult, getDailyAttendanceBatchJob, getDailyAttendanceGridResult, getLeaveTypesResult, getMonthlyAttendanceResult, startDailyAttendanceBatchJob } from '../services/leaveAttendanceService'
+import { getAttendanceReviewContextResult, getDailyAttendanceBatchJob, getDailyAttendanceGridResult, getLeaveTypesResult, getMonthlyAttendanceResult, saveMonthlyAttendance, startDailyAttendanceBatchJob } from '../services/leaveAttendanceService'
+import { prepareMonthlyAttendanceImport } from '../utils/monthlyAttendanceImport'
 import { getDropdownsResult } from '../services/settingsService'
 import BulkUploadProgressModal, { type BulkUploadState } from './BulkUploadProgressModal'
 import SearchSelect from './SearchSelect'
@@ -527,6 +528,23 @@ export default function ManualAttendanceManager({ clientId, group = null, review
     const link = document.createElement('a')
     link.href = URL.createObjectURL(blob); link.download = `attendance-${month}.csv`; link.click(); URL.revokeObjectURL(link.href)
   }
+  const importMonthlyTotals = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file || saving || loadingMonthly || group?.attendanceMode !== 'Monthly') return
+    if (dirtyCellKeys.size) { onMessage('Save or refresh pending calendar edits before importing monthly totals.', 'warning'); return }
+    const scope = { clientId, month, groupId: group.id }
+    setSaving(true)
+    try {
+      const rows = prepareMonthlyAttendanceImport(parseCsv(await file.text()), monthlyRows, month)
+      const response = await saveMonthlyAttendance(clientId, month, rows)
+      if (!response.ok) throw Error(response.error || 'Monthly attendance import could not be confirmed. Refresh before retrying.')
+      if (JSON.stringify(activeScope.current) !== JSON.stringify(scope)) return
+      await loadMonthly()
+      onMessage(`${rows.length} monthly attendance totals saved. No daily dates were generated.`, 'success')
+    } catch (error) { onMessage(error instanceof Error ? error.message : 'Monthly attendance import failed.', 'error') }
+    finally { setSaving(false) }
+  }
   const parseAttendanceCell = (value: string) => {
     const text = value.trim()
     if (!text) return null
@@ -672,6 +690,7 @@ export default function ManualAttendanceManager({ clientId, group = null, review
         <div><strong>Attendance Calendar</strong><span>{filteredRows.length} employees shown / {cycleRangeDisplay}</span></div>
         <Space className="attendance-table-actions" size={8}>
           <Button icon={<DownloadOutlined />} onClick={exportAttendanceCsv} disabled={!filteredRows.length}>Export</Button>
+          {group?.attendanceMode === 'Monthly' && <label title="CSV: EmployeeCode,WorkingDays,PresentDays,PayableDays,LopDays,Remarks" className={`attendance-file-action ant-btn ant-btn-default${saving || loadingMonthly ? ' ant-btn-disabled' : ''}`}><input aria-label="Import reviewed monthly attendance totals" disabled={saving || loadingMonthly} type="file" accept=".csv,text/csv" onChange={importMonthlyTotals} /><UploadOutlined /><span>Import monthly totals</span></label>}
           <label className={`attendance-file-action ant-btn ant-btn-default${saving ? ' ant-btn-disabled' : ''}`}><input disabled={saving} type="file" accept=".csv,text/csv" onChange={importAttendanceCsv} /><UploadOutlined /><span>Import</span></label>
         </Space>
       </div>

@@ -6,6 +6,21 @@ namespace Payroll.API.Tests.Services;
 public class LocalRecruitmentEvidenceTests
 {
     [Fact]
+    public void ResumePacketRetainsLateCurrentEmploymentEducationAndSkillsWithinCpuGatewayBudget()
+    {
+        var source = "Asha Kumar\nasha@example.test\n" + string.Join('\n', Enumerable.Range(0, 200).Select(i => $"Earlier project {i} involved coordinating delivery schedules and administrative procedures."))
+            + "\nPROFESSIONAL EXPERIENCE\nApril 2021 - Present\nChief Architect | Example Research Labs\nEDUCATION\nMBA in Management | Example University\nSKILLS\nOpenShift, Python, SQL\n";
+        var packet = LocalRecruitmentEvidence.ResumeDocument(source);
+        Assert.Contains("Asha Kumar", packet);
+        Assert.Contains("Chief Architect | Example Research Labs", packet);
+        Assert.Contains("MBA in Management | Example University", packet);
+        Assert.Contains("OpenShift, Python, SQL", packet);
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(LocalLlmProtocol.ResumePrompt(packet)) < 12_000);
+        Assert.Contains("EXCERPTS", packet);
+        foreach (var line in packet.Split('\n').Skip(1)) Assert.Contains(line, source);
+    }
+
+    [Fact]
     public void InventedDegreeAndEmployerClaimsCannotBecomeAcceptedAiEvidence()
     {
         var job = new RecruitmentAiAnalysisRequest { Qualification = "LLB Regular", ResumeText = "LL.B. 2024 60%. Legal drafting experience.", RequiredSkills = ["Legal drafting"] };

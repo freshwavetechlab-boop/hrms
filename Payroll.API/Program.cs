@@ -46,6 +46,10 @@ builder.Services.AddHttpClient(nameof(AttachmentContentResult), client => client
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false }).RemoveAllLoggers();
 builder.Services.AddHttpClient("LocalLlm").ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddHttpClient("LocalLlmControl").ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHttpClient("LocalLlmLearning").ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false }).RemoveAllLoggers();
+builder.Services.AddSingleton<ResumeTrainingOutbox>();
+if (builder.Configuration.GetValue("LocalLlmLearning:Enabled", false))
+    builder.Services.AddHostedService<ResumeTrainingOutboxWorker>();
 builder.Services.AddSingleton<LocalLlmRecoveryService>();
 builder.Services.AddSingleton<ILocalLlmRecoverySettingsStore, LocalLlmRecoverySettingsStore>();
 builder.Services.AddHttpClient("InternalInterview").ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
@@ -126,6 +130,7 @@ builder.Services.AddSingleton<ExcelPayslipPdfService>();
 builder.Services.AddSingleton<AuthRepository>();
 builder.Services.AddSingleton<LeaveAttendanceRepository>();
 builder.Services.AddSingleton<AttendanceIntegrationRepository>();
+builder.Services.AddAttendanceApiAdapters(builder.Configuration);
 builder.Services.AddSingleton<LeaveBalanceImportRepository>();
 builder.Services.AddSingleton<ReportingRepository>();
 builder.Services.AddSingleton<EssMssRepository>();
@@ -141,11 +146,13 @@ builder.Services.AddSingleton<TravelExpenseRepository>();
 builder.Services.AddSingleton<RecruitmentAdminRepository>();
 builder.Services.AddSingleton<RecruitmentRepository>();
 builder.Services.AddSingleton<ResumeParsingService>();
+builder.Services.AddSingleton<ResumeLearningMemory>();
 builder.Services.AddSingleton<RecruitmentRequestDocumentParsingService>();
 builder.Services.AddSingleton<LocalEmbedder>();
 builder.Services.AddSingleton<RecruitmentSemanticScoringService>();
 builder.Services.AddSingleton<RecruitmentDocumentRagService>();
 builder.Services.AddSingleton<RecruitmentAiScoringService>();
+builder.Services.AddSingleton<IResumeDocumentSuggestionService>(services => services.GetRequiredService<RecruitmentAiScoringService>());
 builder.Services.AddSingleton<PayrollAdvisorService>();
 builder.Services.AddSingleton<PayrollAdvisorRepository>();
 if (builder.Configuration.GetValue("BackgroundWorkers:Enabled", true))
@@ -1920,6 +1927,21 @@ app.MapPost("/api/recruitment/resume-intake/preview", async (RecruitmentTalentRe
     var (preview, error) = await talent.PreviewResumeAsync(request, CurrentUser(context), context.RequestAborted);
     return preview is null ? Results.BadRequest(new { error }) : Results.Ok(preview);
 }).DisableAntiforgery().WithMetadata(new RequestSizeLimitAttribute(30L * 1024 * 1024));
+app.MapGet("/api/recruitment/resume-learning", (ResumeLearningMemory memory, int? clientId, HttpContext context) =>
+{
+    if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var scope = CurrentUser(context).ClientId;
+    if (scope.HasValue && clientId.HasValue && scope != clientId || clientId < 0) return Results.StatusCode(403);
+    return Results.Ok(memory.Stats(scope ?? clientId ?? 0));
+});
+app.MapDelete("/api/recruitment/resume-learning", (ResumeLearningMemory memory, int? clientId, HttpContext context) =>
+{
+    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    var scope = CurrentUser(context).ClientId;
+    if (scope.HasValue && clientId.HasValue && scope != clientId || clientId < 0) return Results.StatusCode(403);
+    memory.Clear(scope ?? clientId ?? 0);
+    return Results.NoContent();
+});
 app.MapGet("/api/recruitment/applications", async (RecruitmentTalentRepository repository, long? positionId, long? candidateId, string? stage, bool? negotiationOnly, int? clientId, HttpContext context) =>
     RecruitmentPermissions.Has(CurrentUser(context), "recruitment.interview.schedule", "recruitment.offer.manage", "recruitment.proposal.manage", "recruitment.candidate.view")
         ? Results.Ok(await repository.GetApplicationsAsync(CurrentUser(context), positionId, candidateId, stage ?? "", negotiationOnly == true, clientId))
@@ -3358,7 +3380,7 @@ app.MapPost("/api/scheduled-jobs/{id:int}/run-now", async (ScheduledJobRepositor
 
 app.MapGet("/api/reports/{code}", async (ReportingRepository repository, string code, int clientId, string? employmentType, string? employeeCategory, bool? activeOnly, string? department, int? workLocationId, string? fromDate, string? toDate, string? month, int? payRunId, int? employeeId, string? componentCode, HttpContext context) =>
 {
-    if (!HasPermission(context, "reports.view")) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (!WorkspacePermissions.CanReadReport(CurrentUser(context), code)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (clientId <= 0) return Results.BadRequest(new { error = "Select a client." });
     if (!CanAccessClient(context, clientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     try { return Results.Ok(await repository.RunAsync(code, new ReportFilter { ClientId = clientId, EmploymentType = string.IsNullOrWhiteSpace(employmentType) ? null : employmentType.Trim(), EmployeeCategory = string.IsNullOrWhiteSpace(employeeCategory) ? null : employeeCategory.Trim(), ActiveOnly = activeOnly == true, Department = department, WorkLocationId = workLocationId, FromDate = fromDate, ToDate = toDate, Month = month, PayRunId = payRunId, EmployeeId = employeeId, ComponentCode = componentCode })); }
@@ -3478,13 +3500,13 @@ app.MapPost("/api/clients/{clientId:int}/pf-policy-versions/{id}/publish", async
 }).WithName("PublishPfPolicyVersion").WithOpenApi();
 
 app.MapGet("/api/client-billing/module", async (ClientBillingRepository repository, HttpContext context) =>
-    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetModuleAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden))
+    WorkspacePermissions.CanManageBilling(CurrentUser(context)) ? Results.Ok(await repository.GetModuleAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden))
 .WithName("GetClientBillingModule")
 .WithOpenApi();
 
 app.MapPost("/api/client-billing/module", async (ClientBillingRepository repository, ClientBillingModule module, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!WorkspacePermissions.CanManageBilling(CurrentUser(context))) return Results.StatusCode(403);
     await repository.SaveModuleAsync(module);
     return Results.NoContent();
 })
@@ -3492,13 +3514,13 @@ app.MapPost("/api/client-billing/module", async (ClientBillingRepository reposit
 .WithOpenApi();
 
 app.MapGet("/api/client-billing/configurations", async (ClientBillingRepository repository, HttpContext context) =>
-    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden))
+    WorkspacePermissions.CanManageBilling(CurrentUser(context)) ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden))
 .WithName("GetClientBillingConfigurations")
 .WithOpenApi();
 
 app.MapPost("/api/client-billing/configurations", async (ClientBillingRepository repository, ClientBillingConfiguration row, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!WorkspacePermissions.CanManageBilling(CurrentUser(context))) return Results.StatusCode(403);
     var (id, error) = await repository.SaveAsync(row);
     return string.IsNullOrWhiteSpace(error) ? Results.Ok(new { id }) : Results.BadRequest(new { error });
 })
@@ -3506,13 +3528,13 @@ app.MapPost("/api/client-billing/configurations", async (ClientBillingRepository
 .WithOpenApi();
 
 app.MapGet("/api/client-billing/advanced", async (ClientBillingRepository repository, HttpContext context) =>
-    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetAdvancedAsync()) : Results.StatusCode(403))
+    WorkspacePermissions.CanManageBilling(CurrentUser(context)) ? Results.Ok(await repository.GetAdvancedAsync()) : Results.StatusCode(403))
 .WithName("GetClientBillingAdvanced")
 .WithOpenApi();
 
 app.MapPost("/api/client-billing/advanced/headers", async (ClientBillingRepository repository, ClientBillingCostRuleHeader row, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!WorkspacePermissions.CanManageBilling(CurrentUser(context))) return Results.StatusCode(403);
     var (id, error) = await repository.SaveAdvancedHeaderAsync(row);
     return string.IsNullOrWhiteSpace(error) ? Results.Ok(new { id }) : Results.BadRequest(new { error });
 })
@@ -3521,7 +3543,7 @@ app.MapPost("/api/client-billing/advanced/headers", async (ClientBillingReposito
 
 app.MapPost("/api/client-billing/advanced/lines", async (ClientBillingRepository repository, ClientBillingCostRuleLine row, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!WorkspacePermissions.CanManageBilling(CurrentUser(context))) return Results.StatusCode(403);
     var (id, error) = await repository.SaveAdvancedLineAsync(row);
     return string.IsNullOrWhiteSpace(error) ? Results.Ok(new { id }) : Results.BadRequest(new { error });
 })
@@ -3530,7 +3552,7 @@ app.MapPost("/api/client-billing/advanced/lines", async (ClientBillingRepository
 
 app.MapPost("/api/client-billing/advanced/templates/standard", async (ClientBillingRepository repository, JsonElement body, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!WorkspacePermissions.CanManageBilling(CurrentUser(context))) return Results.StatusCode(403);
     var clientId = body.TryGetProperty("clientId", out var clientValue) ? clientValue.GetInt32() : 0;
     int? locationId = body.TryGetProperty("workLocationId", out var locationValue) && locationValue.ValueKind != JsonValueKind.Null ? locationValue.GetInt32() : null;
     var commission = body.TryGetProperty("commissionPercent", out var commissionValue) ? commissionValue.GetDecimal() : 5m;
@@ -3542,7 +3564,7 @@ app.MapPost("/api/client-billing/advanced/templates/standard", async (ClientBill
 .WithOpenApi();
 
 app.MapGet("/api/client-billing/configurations/import-template", async (ClientBillingRepository repository, HttpContext context) =>
-    HasPermission(context, "settings.manage")
+    WorkspacePermissions.CanManageBilling(CurrentUser(context))
         ? Results.File(await repository.BuildImportTemplateAsync(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "client-billing-import-template.xlsx")
         : Results.StatusCode(403))
 .WithName("GetClientBillingImportTemplate")
@@ -3550,7 +3572,7 @@ app.MapGet("/api/client-billing/configurations/import-template", async (ClientBi
 
 app.MapPost("/api/client-billing/configurations/import-jobs", async (ClientBillingRepository repository, [FromForm] IFormFile file, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!WorkspacePermissions.CanManageBilling(CurrentUser(context))) return Results.StatusCode(403);
     if (file is null || file.Length == 0) return Results.BadRequest(new { error = "Select a client billing import file." });
     return Results.Accepted("/api/client-billing/configurations/import-jobs", await repository.StartImportJobAsync(file));
 })
@@ -3559,7 +3581,7 @@ app.MapPost("/api/client-billing/configurations/import-jobs", async (ClientBilli
 .WithOpenApi();
 
 app.MapGet("/api/client-billing/configurations/import-jobs/{jobId:guid}", (ClientBillingRepository repository, Guid jobId, HttpContext context) =>
-    HasPermission(context, "settings.manage")
+    WorkspacePermissions.CanManageBilling(CurrentUser(context))
         ? repository.GetImportJob(jobId) is { } job ? Results.Ok(job) : Results.NotFound(new { error = "Import job not found." })
         : Results.StatusCode(403))
 .WithName("GetClientBillingImportJob")
@@ -3713,6 +3735,7 @@ app.MapDelete("/api/recruitment-admin/ai-scoring/{clientId:int}", async (Recruit
 });
 
 app.MapLocalLlmRecovery();
+app.MapAttendanceApiAdapters();
 app.MapPayrollAdvisor();
 app.MapPayrollCalculation();
 app.MapGet("/api/integrations/ai", async (RecruitmentAiScoringService service, HttpContext context) =>
@@ -3948,7 +3971,7 @@ app.MapDelete("/api/leave-attendance/geo-fences/{id:int}", async (LeaveAttendanc
 .WithOpenApi();
 
 app.MapGet("/api/leave-attendance/groups", async (LeaveAttendanceRepository repository, int? clientId, HttpContext context) =>
-    !HasAttendanceManagement(context) || !CanAccessClient(context, Math.Max(0, clientId.GetValueOrDefault()))
+    !(HasAttendanceManagement(context) || WorkspacePermissions.CanReadPayrollAttendance(CurrentUser(context))) || !CanAccessClient(context, Math.Max(0, clientId.GetValueOrDefault()))
         ? Results.StatusCode(StatusCodes.Status403Forbidden)
         : Results.Ok(await repository.GetAttendanceGroupsAsync(Math.Max(0, clientId.GetValueOrDefault()))))
 .WithName("GetAttendanceGroups")
@@ -3984,7 +4007,7 @@ app.MapDelete("/api/leave-attendance/groups/{id:int}", async (LeaveAttendanceRep
 .WithOpenApi();
 
 app.MapGet("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRepository repository, int clientId, string month, int? workLocationId, HttpContext context) =>
-    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : !HasAttendanceManagement(context) || !CanAccessClient(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetMonthlyAttendanceAsync(clientId, month, workLocationId)))
+    clientId <= 0 ? Results.BadRequest(new { error = "Select a client." }) : !(HasAttendanceManagement(context) || WorkspacePermissions.CanReadPayrollAttendance(CurrentUser(context))) || !CanAccessClient(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetMonthlyAttendanceAsync(clientId, month, workLocationId)))
 .WithName("GetMonthlyAttendance")
 .WithOpenApi();
 
@@ -4386,6 +4409,13 @@ app.MapGet("/api/salary-templates/import-jobs/{jobId:guid}", (OrganizationReposi
 .WithName("GetSalaryTemplateImportJob")
 .WithOpenApi();
 
+app.MapGet("/api/payroll/employee-options", async (EmployeeRepository repository, HttpContext context) =>
+    WorkspacePermissions.CanReadPayrollContext(CurrentUser(context))
+        ? Results.Ok(await repository.GetPayrollOptionsAsync(CurrentUser(context).ClientId))
+        : Results.StatusCode(StatusCodes.Status403Forbidden))
+.WithName("GetPayrollEmployeeOptions")
+.WithOpenApi();
+
 app.MapGet("/api/employees", async (EmployeeRepository repository, HttpContext context) =>
     HasPermission(context, "employees.view") || HasPermission(context, "employees.manage") || HasClientUserManagement(context)
         ? Results.Ok(await repository.GetAsync(CurrentUser(context).ClientId))
@@ -4584,7 +4614,7 @@ ExcelPayslipEndpoints.Map(app, CanViewPayslipRegister, CanSendPayslips, CanAcces
 app.MapExcelPayrollSetup();
 
 app.MapGet("/api/pay-runs", async (PayRunRepository repository, HttpContext context) =>
-    HasPermission(context, "payroll.run") || HasPermission(context, "payroll.approve") || HasPermission(context, "payroll.payments")
+    WorkspacePermissions.CanReadPayrollContext(CurrentUser(context))
         ? Results.Ok(await repository.GetAllAsync(CurrentUser(context).ClientId))
         : Results.StatusCode(StatusCodes.Status403Forbidden))
 .WithName("GetPayRuns")
@@ -4592,6 +4622,7 @@ app.MapGet("/api/pay-runs", async (PayRunRepository repository, HttpContext cont
 
 app.MapGet("/api/pay-runs/{id:int}", async (PayRunRepository repository, int id, HttpContext context) =>
 {
+    if (!WorkspacePermissions.CanReadPayrollContext(CurrentUser(context))) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var payRun = await repository.GetAsync(id);
     return payRun is null ? Results.NotFound() : !CanAccessClient(context, payRun.ClientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(payRun);
 })
@@ -4813,6 +4844,13 @@ app.MapDelete("/api/payroll-adjustments/{id:int}", async (PayRunRepository repos
 .WithName("CancelPayrollAdjustment")
 .WithOpenApi();
 
+app.MapPost("/api/pay-runs/{id:int}/employer-costs", async (PayRunRepository repository,int id,DraftEmployerCostRequest request,HttpContext context) =>
+{
+    if(!HasPermission(context,"payroll.run")||!CanAccessClient(context,request.ClientId))return Results.StatusCode(StatusCodes.Status403Forbidden);
+    try{return Results.Ok(await repository.AddDraftEmployerCostsAsync(id,request,CurrentUser(context).Email));}
+    catch(InvalidOperationException error){return Results.BadRequest(new{error=error.Message});}
+}).WithName("AddDraftEmployerCosts").WithOpenApi();
+
 app.MapPut("/api/pay-runs/{payRunId:int}/employees/{employeeId:int}", async (PayRunRepository repository, int payRunId, int employeeId, UpdatePayRunEmployeeRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "payroll.run"))
@@ -5021,7 +5059,7 @@ static bool HasPermission(HttpContext context, string permission) =>
 static bool CanSendPayslips(HttpContext context) =>
     HasPermission(context, "payroll.run") || HasPermission(context, "payroll.approve") || HasPermission(context, "payroll.payments");
 
-static bool CanViewPayslipRegister(HttpContext context) => CanSendPayslips(context) || HasPermission(context, "reports.view");
+static bool CanViewPayslipRegister(HttpContext context) => WorkspacePermissions.CanReadPayslips(CurrentUser(context));
 
 static bool CanViewApiCatalog(HttpContext context) => HasPermission(context, "workflow.manage") || HasPermission(context, "settings.manage") || HasPermission(context, "client.settings.manage");
 

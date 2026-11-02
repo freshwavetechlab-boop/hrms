@@ -31,6 +31,15 @@ public class PayrollCalculationSafetyTests
         return doc.RootElement.EnumerateArray().Where(line => line.GetProperty("Id").GetString() == code).Sum(line => line.GetProperty("amount").GetDecimal());
     }
 
+    [Fact]
+    public void PeriodEmployerBenefitsStayOutsideCashEarningsNetAndTaxablePay()
+    {
+        var row=Calculate([Component("1","WAGE","1000"),Component("2","PF","100","Deduction"),Component("3","ER","50","Benefit")],tds:0,
+            adjustments:[new(){ComponentCode="EXTRA",AdjustmentType="Earning",Amount=100,Taxable=true},new(){ComponentCode="REIMB",AdjustmentType="Reimbursement",Amount=40,Taxable=true},new(){ComponentCode="REC",AdjustmentType="Deduction",Amount=30},new(){ComponentCode="ER",AdjustmentType="Benefit",Amount=20,Taxable=true}]);
+        Assert.Equal(1000,row.GrossPay);Assert.Equal(140,row.OneTimeEarnings);Assert.Equal(30,row.OneTimeDeductions);Assert.Equal(1010,row.NetPay);
+        Assert.Equal(70,Amount(row,"ER"));Assert.Equal(1140,Amount(row,"TAXABLE_PAY"));
+    }
+
     [Theory]
     [InlineData("UNKNOWN + 1")]
     [InlineData("10 / 0")]

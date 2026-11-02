@@ -1,4 +1,6 @@
-# Local LLM manual recovery (opt-in)
+# Local LLM recovery
+
+**2026-11-02 update:** the authorized Server100 LLM supervisor now has persistent failure history, transient-health confirmation, guarded automatic model recovery and an independent scheduled supervisor recovery task. The older manual-control implementation described below remains available. The new verified-learning deployment, runtime limits, adapter evaluation and rollback are documented in [local-llm-verified-learning.md](local-llm-verified-learning.md). Historical statements below about “no automatic restart” describe the September change, not the current server supervisor.
 
 Status (2026-09-20): **server bridge installed and control activated** after explicit
 approval. The user subsequently reported configuring Coolify and redeploying,

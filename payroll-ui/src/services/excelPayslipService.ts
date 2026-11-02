@@ -9,6 +9,8 @@ export type ExcelPayslipAmount = { label: string; amount: number }
 export type ExcelPayslipRow = {
   id: string; sourceRow: number; employeeCode: string; employeeName: string; email: string
   employment?: { employeeId: number | null; employeeCode: string; status: string; lastWorkingDate: string | null; blockedForMonth: boolean; identityReviewRequired: boolean } | null
+  masterDetails?: { employeeId: number; designation: string; linked?: boolean; employeeCode?: string; employeeName?: string; email?: string; annualCtc?: number; salaryStructureId?: string; fields?: Record<string,string>; salaryInputs?: Record<string,number>;
+    salary?: {status:string;message:string;earnings:ExcelPayslipAmount[];deductions:ExcelPayslipAmount[];employerContributions:ExcelPayslipAmount[];gross:number|null;totalDeductions:number|null;netPay:number|null}|null } | null
   information: ExcelPayslipText[]; earnings: ExcelPayslipAmount[]; deductions: ExcelPayslipAmount[]; employerContributions: ExcelPayslipAmount[]
   netPay: number; declaredGross: number | null; declaredDeductions: number | null; warnings: string[]
   negativeAmountReview?: { amountsHash: string; reviewedBy: string; reviewedAtUtc: string } | null
@@ -20,7 +22,7 @@ export type PayslipIdentityMatch = {sourceRow:number;status:'Existing'|'Review'|
 export type PayslipIdentityPreview = {clientId:number;checkedRows:number;rows:PayslipIdentityMatch[]}
 export const previewPayslipEmployeeIdentities = (clientId:number,rows:PayslipIdentityInput[],signal:AbortSignal) => postJson<{rows:PayslipIdentityInput[]},PayslipIdentityPreview|null>(`/api/excel-payslips/employee-identity-preview?clientId=${clientId}`,{rows},null,{signal,loader:false,toast:false,timeoutMs:60000})
 export const validPayslipCodeOptions = (value: PayslipEmployeeCodeOptions | null | undefined) => !!value && typeof value.clientCode === 'string' && Number.isInteger(value.digits) && value.digits >= 1 && value.digits <= 12 && typeof value.nextSequence === 'string' && /^[1-9]\d*$/.test(value.nextSequence)
-export type ExcelPayslipBatchInput = { employeeCodeGeneration?: PayslipEmployeeCodeGeneration; parentBatchId?: string; originalWorkbooks?: { id: string; fileName: string }[]; month: string; sourceFileName: string; sheetName: string; headerRow: number; simpleLayout?: boolean; salaryTemplateId?: string; salaryTemplateName?: string; rows: ExcelPayslipRow[]; calculationSource?: ExcelPayslipCalculationSource | null }
+export type ExcelPayslipBatchInput = { id?: string; employeeCodeGeneration?: PayslipEmployeeCodeGeneration; parentBatchId?: string; originalWorkbooks?: { id: string; fileName: string }[]; month: string; sourceFileName: string; sheetName: string; headerRow: number; simpleLayout?: boolean; salaryTemplateId?: string; salaryTemplateName?: string; rows: ExcelPayslipRow[]; calculationSource?: ExcelPayslipCalculationSource | null }
 export type ExcelPayslipBatch = ExcelPayslipBatchInput & { id: string; clientId: number; clientName?: string; createdAtUtc: string; createdBy: string }
 export type ExcelPayslipSummary = Omit<ExcelPayslipBatch, 'rows'> & { rowCount: number; isConsolidatedSource?: boolean; canonicalBatchId?: string; consolidationGroupId?: string; consolidatedSourceBatchIds?: string[]; consolidationStale?: boolean }
 export type ExcelPayslipProfile = { headerSignature: string; columns: PayslipColumn[]; salaryTemplateId?: string }
@@ -62,7 +64,7 @@ export const getPayslipMasterComparison = (clientId: number, employeeCode: strin
 export const getExcelPayslipDashboard = (clientId: number, batchId = '') => getJsonResult<ExcelPayslipDashboard | null>(`${root}/dashboard?clientId=${clientId}${batchId ? `&batchId=${encodeURIComponent(batchId)}` : ''}`, null)
 export const getExcelPayslipTemplates = (clientId: number) => getJsonResult<ExcelPayslipTemplate[]>(`${root}/templates?clientId=${clientId}`, [])
 export const getExcelPayslipHistory = (clientId: number, includeConsolidated = false) => getJsonResult<ExcelPayslipSummary[]>(`${root}/batches?clientId=${clientId}${includeConsolidated ? '&includeConsolidated=true' : ''}`, [])
-export const getExcelPayslipBatch = (clientId: number, id: string) => getJsonResult<ExcelPayslipBatch | null>(`${batchPath(id)}?clientId=${clientId}`, null)
+export const getExcelPayslipBatch = (clientId: number, id: string, quiet = false) => getJsonResult<ExcelPayslipBatch | null>(`${batchPath(id)}?clientId=${clientId}`, null, quiet ? {loader:false,toast:false} : {})
 export const reviewExcelPayslipNegativeAmount = (clientId: number, id: string, rowId: string) => postJson<{ rowId: string }, ExcelPayslipBatch | null>(`${batchPath(id)}/negative-amount-review?clientId=${clientId}`, { rowId }, null, { toast: false })
 export const getExcelPayslipDeliveryStatus = (clientId: number, id: string) => getJsonResult<{ items: ExcelPayslipEmailStatus[] }>(`${batchPath(id)}/delivery-status?clientId=${clientId}`, { items: [] })
 export const getExcelPayslipMailJobs = () => getJsonResult<{ items: ExcelPayslipMailJob[] }>(`${root}/mail-jobs`, { items: [] }, { loader: false, toast: false })

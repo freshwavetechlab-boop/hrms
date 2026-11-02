@@ -32,7 +32,8 @@ public sealed partial class ExcelPayslipPdfService
 
     internal static IReadOnlyList<SimpleField> SimpleInformation(ExcelPayslipBatch batch, ExcelPayslipRow row)
     {
-        string Value(params string[] aliases) => row.Information.FirstOrDefault(item => aliases.Contains(FieldKey(item.Label)))?.Value ?? "";
+        var displayInformation=ExcelPayslipPresentation.Information(row);
+        string Value(params string[] aliases) => displayInformation.FirstOrDefault(item => aliases.Contains(FieldKey(item.Label)))?.Value ?? "";
         var selectedUan = row.Information.FirstOrDefault(item => FieldKey(item.Label) == "uan");
         var uans = row.Information.Where(item => FieldKey(item.Label).StartsWith("uan", StringComparison.Ordinal))
             .Select(item => item.Value.Trim().TrimStart('\'')).Where(value => Regex.IsMatch(value, "^[0-9]{12}$")).Distinct().ToArray();

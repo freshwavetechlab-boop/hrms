@@ -159,6 +159,10 @@ UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { U
         "tax.statutory.manage",
         "workflow.manage",
         "reports.view",
+        "reports.payroll.view",
+        "reports.compliance.view",
+        "reports.billing.view",
+        "billing.manage",
         "audit.view",
         "client.users.manage",
         "client.roles.assign",
@@ -330,7 +334,7 @@ ORDER BY r.Name;", new { ClientId = clientId, AssignableRoleCodes = ClientAssign
         new("payroll", "Payroll Dashboard", "Pay run status, payroll cost and recent run activity.", "/dashboard/payroll", 30, ["dashboard.payroll.view", "payroll.run", "payroll.approve", "payroll.payments", "security.manage"]),
         new("attendance", "Attendance Dashboard", "Attendance readiness, exceptions and leave blockers.", "/dashboard/attendance", 40, ["dashboard.attendance.view", "leave.manage", "attendance.manage", "settings.manage", "security.manage"]),
         new("approvals", "Approvals Dashboard", "Pending workflow tasks and approval workload.", "/dashboard/approvals", 50, ["dashboard.approvals.view", "workflow.manage", "payroll.approve", "security.manage"]),
-        new("excel-payslips", "Excel Dashboard", "Excel Payslips batches, salary totals and monthly trends.", "/dashboard/excel-payslips", 60, ["reports.view"])
+        new("excel-payslips", "Excel Dashboard", "Excel Payslips batches, salary totals and monthly trends.", "/dashboard/excel-payslips", 60, ["reports.view", "reports.payroll.view"])
     ];
 
     private static List<DashboardAccessItem> BuildDashboardAccess(IEnumerable<string> permissions)
@@ -1053,6 +1057,10 @@ WHERE Code IN ('mss.attendance.manage', 'ess.attendance.mark');")).ToHashSet(Str
             new { Code = "recruitment.offer.issue", Name = "Issue offers", Module = "Talent Acquisition", Description = "Release an approved offer to the candidate." },
             new { Code = "recruitment.configuration.manage", Name = "Configure recruitment", Module = "Talent Acquisition", Description = "Configure client pipelines, forms, templates, panels, recipients and SLA rules." },
             new { Code = "reports.view", Name = "View reports", Module = "Reports", Description = "Open reports and exports." },
+            new { Code = "reports.payroll.view", Name = "View payroll reports and payslips", Module = "Reports", Description = "Open payroll reports, salary slips and Excel Payslips without unrelated HR reports." },
+            new { Code = "reports.compliance.view", Name = "View payroll compliance reports", Module = "Reports", Description = "Open PF, ESIC, PT and tax preparation reports." },
+            new { Code = "reports.billing.view", Name = "View billing reports", Module = "Reports", Description = "Review client billing basis and payroll cost reports." },
+            new { Code = "billing.manage", Name = "Manage client billing", Module = "Billing", Description = "Configure client billing and costing rules without access to other settings." },
             new { Code = "security.manage", Name = "Manage security", Module = "Security", Description = "Manage users, roles and permissions." },
             new { Code = "audit.view", Name = "View audit logs", Module = "Security", Description = "View identity and operational audit logs." },
             new { Code = "ess.self", Name = "Employee self service", Module = "ESS", Description = "Access employee self-service profile, pay, leave, tax and attendance." }

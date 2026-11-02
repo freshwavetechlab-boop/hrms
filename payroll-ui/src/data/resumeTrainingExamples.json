@@ -1,0 +1,42 @@
+[
+  {
+    "id": "current-employment",
+    "title": "Current company and designation",
+    "explanation": "April 2021–Current identifies the current employer and role. The skills sidebar and the previous employer do not identify the current company.",
+    "example": {
+      "schemaVersion": 1,
+      "clientId": 0,
+      "subjectRef": "6cb93e1b763c1042ea7221a2f90147b1a9e7d1480ef3cee7cd7105570eb884b6",
+      "sourceText": "SKILLS\nArtificial intelligence design\nCloud architecture\nSQL\nDocker\nPROFESSIONAL EXPERIENCE\nApril 2021 - Current\nChief Technology Officer\nExample Research Labs\nApril 2017 - March 2021\nSoftware Engineer\nPrevious Example Systems\nEDUCATION\nMBA\nExample University, completed 2010",
+      "reviewedFields": {
+        "currentCompany": "Example Research Labs",
+        "currentTitle": "Chief Technology Officer",
+        "highestQualification": "MBA",
+        "skills": ["Cloud architecture", "SQL", "Docker"]
+      },
+      "verified": true,
+      "verificationKind": "verified_regression",
+      "verificationRef": "FrevoUITrainingExample-v1:current-employment"
+    }
+  },
+  {
+    "id": "completed-qualification",
+    "title": "Completed degree and skills",
+    "explanation": "MBA is the highest completed academic degree in this source. The Ph.D is ongoing and the cloud certificate is a certification. Skills are copied from the skills section.",
+    "example": {
+      "schemaVersion": 1,
+      "clientId": 0,
+      "subjectRef": "413cd841f4ab0a50d7e057abab28a0bb98528617f2bf83e9548b812d22002ca2",
+      "sourceText": "PROFESSIONAL EXPERIENCE\nCurrent company: Sample Digital Services\nCurrent designation: Engineering Manager\nJune 2022 - Present\nEDUCATION\nPh.D in Computer Science - ongoing, not completed\nMBA - completed 2015\nB.Tech - completed 2010\nCERTIFICATIONS\nCloud Architecture Certificate - 2024\nTECHNICAL SKILLS\nJava\nKubernetes\nPostgreSQL",
+      "reviewedFields": {
+        "currentCompany": "Sample Digital Services",
+        "currentTitle": "Engineering Manager",
+        "highestQualification": "MBA",
+        "skills": ["Java", "Kubernetes", "PostgreSQL"]
+      },
+      "verified": true,
+      "verificationKind": "verified_regression",
+      "verificationRef": "FrevoUITrainingExample-v1:completed-qualification"
+    }
+  }
+]

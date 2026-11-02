@@ -143,7 +143,8 @@ WHERE NOT EXISTS (SELECT 1 FROM salarycomponents) ORDER BY Id LIMIT 1;", new { C
     {
         await using var db = Db(); await db.OpenAsync();
         if (!await SupportedAsync(db, clientId)) return [];
-        return await FilterConsolidatedSummariesAsync(db,clientId,await ReadBatchSummariesAsync(db, clientId),includeConsolidated);
+        var rows = await FilterConsolidatedSummariesAsync(db,clientId,await ReadBatchSummariesAsync(db, clientId),includeConsolidated);
+        return includeConsolidated ? rows : CurrentMonths(rows);
     }
 
     private static async Task<IReadOnlyList<ExcelPayslipBatchSummary>> ReadBatchSummariesAsync(MySqlConnection db, int clientId)
@@ -157,7 +158,7 @@ JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.month')) AS Month,
 JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.sourceFileName')) AS SourceFileName,
 JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.sheetName')) AS SheetName,
 JSON_LENGTH(JSON_EXTRACT(batch_json,'$.rows')) AS RowCount,
-JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.createdAtUtc')) AS CreatedAtUtc,
+created_at AS CreatedAtUtc,
 JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.createdBy')) AS CreatedBy
 FROM excel_payslip_batches WHERE client_id=@ClientId
 ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
@@ -171,12 +172,12 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
         return await ReadBatchAsync(db, clientId, id);
     }
 
-    private static async Task<ExcelPayslipBatch?> ReadBatchAsync(MySqlConnection db, int clientId, string id, MySqlTransaction? tx = null)
+    private async Task<ExcelPayslipBatch?> ReadBatchAsync(MySqlConnection db, int clientId, string id, MySqlTransaction? tx = null)
     {
         var json = await db.ExecuteScalarAsync<string?>("SELECT CAST(batch_json AS CHAR) FROM excel_payslip_batches WHERE client_id=@ClientId AND id=@Id", new { ClientId = clientId, Id = id }, tx);
         var batch = string.IsNullOrWhiteSpace(json) ? null : JsonSerializer.Deserialize<ExcelPayslipBatch>(json, JsonOptions);
         if (batch?.ClientId != clientId || batch.Id != id) return null;
-        await AnnotateEmploymentAsync(db, batch, tx);
+        await AnnotateEmploymentAsync(db, batch, tx, configuration);
         return batch;
     }
 
@@ -189,6 +190,7 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
         foreach (var row in batch.Rows)
         {
             row.Employment = null;
+            row.MasterDetails = null;
             // A review belongs to one saved snapshot. Imports/corrections cannot supply or inherit it.
             row.NegativeAmountReview = null;
         }
@@ -196,7 +198,7 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
         batch.CalculationSource = null;
         if (calculationSource is not null)
         {
-            var sourceError = ExcelPayslipCalculationService.ValidateSource(calculationSource, batch);
+            var sourceError = ExcelPayslipCalculationService.ValidateSource(calculationSource, batch, pendingSavedDecimalRestore: !string.IsNullOrWhiteSpace(request.Id));
             if (sourceError is not null) return (null, sourceError);
             if (Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(calculationSource, JsonOptions)) > 16 * 1024 * 1024)
                 return (null, "Calculation source exceeds 16 MiB. Save a smaller worksheet.");
@@ -211,6 +213,15 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
         // All saves take the lock so a supplied code cannot race an auto-assigned code.
         var client = await db.QueryFirstOrDefaultAsync<Client>("SELECT Id,Name,Code,IsActive FROM clients WHERE Id=@ClientId FOR UPDATE", new { ClientId = clientId }, tx);
         if (client is null || !IsSupportedClient(client)) return (null, "Select an active client.");
+        var existing = await CurrentSaveTargetAsync(db, tx, clientId, request);
+        if (existing is not null)
+        {
+            await RequireCurrentConsolidationSourceAsync(db,tx,clientId,existing.Id);
+            await RequireIdlePayslipUpdateAsync(db,tx,clientId,existing.Id);
+            ReusePayslipIdentity(batch,existing);
+            if(calculationSource is not null && await ReadCalculationSourceAsync(db,clientId,existing.Id,tx) is { } previousSource)
+                RetainCalculationDecimalCaches(calculationSource,previousSource);
+        }
         foreach(var retainedId in new[]{batch.ParentBatchId,calculationSource?.SourceBatchId}.Where(id=>!string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal))
             await RequireCurrentConsolidationSourceAsync(db,tx,clientId,retainedId!);
         var historicalCodes = batch.Rows.Any(row => string.IsNullOrWhiteSpace(row.EmployeeCode))
@@ -226,21 +237,24 @@ WHERE batches.client_id=@ClientId AND codes.employee_code IS NOT NULL AND TRIM(c
         catch (InvalidOperationException codeError) { return (null, codeError.Message); }
         if (calculationSource is not null)
         {
-            var sourceError = ExcelPayslipCalculationService.ValidateSource(calculationSource, batch);
+            // MySQL JSON numeric storage can also choose the adjacent decimal
+            // representation of an already-saved amount. The update has restored
+            // owned values above; real financial differences still fail validation.
+            var sourceError = ExcelPayslipCalculationService.ValidateSource(calculationSource, batch, pendingSavedDecimalRestore: existing is not null);
             if (sourceError is not null) return (null, sourceError);
             if (Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(calculationSource, JsonOptions)) > 16 * 1024 * 1024)
                 return (null, "Calculation source exceeds 16 MiB. Save a smaller worksheet.");
         }
         var requestedOriginals = batch.OriginalWorkbooks ?? [];
         if(requestedOriginals.Any(o=>o is null))return(null,"An original workbook reference is missing.");
-        var parentId = string.IsNullOrWhiteSpace(batch.ParentBatchId) ? calculationSource?.SourceBatchId : batch.ParentBatchId;
+        var parentId = existing?.Id ?? (string.IsNullOrWhiteSpace(batch.ParentBatchId) ? calculationSource?.SourceBatchId : batch.ParentBatchId);
         if (!string.IsNullOrWhiteSpace(parentId))
         {
             var parent = await ReadBatchAsync(db, clientId, parentId, tx);
             if (parent is null) return (null, "The parent batch does not belong to this client.");
-            batch.ParentBatchId = parentId;
+            batch.ParentBatchId = existing is null ? parentId : existing.ParentBatchId;
             var inherited=(await db.QueryAsync<ExcelPayslipOriginalReference>("SELECT original_id AS Id,original_file_name AS FileName FROM excel_payslip_batch_originals WHERE client_id=@ClientId AND batch_id=@Id",new {ClientId=clientId,Id=parentId},tx)).ToList();
-            batch.OriginalWorkbooks=inherited.Concat(requestedOriginals).DistinctBy(o=>o.Id).ToList();
+            batch.OriginalWorkbooks=(requestedOriginals.Count > 0 ? requestedOriginals : inherited).DistinctBy(o=>o.Id).ToList();
         }
         else { batch.ParentBatchId=null;batch.OriginalWorkbooks=requestedOriginals.DistinctBy(o=>o.Id).ToList(); }
         if(batch.OriginalWorkbooks.Count>50||batch.ParentBatchId is null&&batch.OriginalWorkbooks.Count==0)return(null,"Retain the original workbook through attachment storage before saving this import.");
@@ -253,6 +267,22 @@ FROM excel_payslip_originals o JOIN entity_attachments a ON a.id=o.attachment_id
 WHERE o.client_id=@ClientId AND o.id IN @Ids AND a.is_deleted=FALSE FOR UPDATE",new {ClientId=clientId,Ids=batch.OriginalWorkbooks.Select(o=>o.Id).ToArray()},tx)).ToList();
         if(availableOriginals.Count!=batch.OriginalWorkbooks.Count)return(null,"An original workbook is unavailable in this client's attachment storage. No batch was saved.");
         if(ValidateCapturedWorkbookBindings(calculationSource,availableOriginals) is string bindingError)return(null,bindingError);
+        if(existing is not null)
+        {
+            var previousOriginals=(await db.QueryAsync<ExcelPayslipOriginal>(@"SELECT o.id Id,l.original_file_name FileName,a.file_size_bytes SizeBytes,a.sha256_hash Sha256,a.uploaded_at_utc UploadedAtUtc
+FROM excel_payslip_batch_originals l JOIN excel_payslip_originals o ON o.client_id=l.client_id AND o.id=l.original_id
+JOIN entity_attachments a ON a.id=o.attachment_id AND a.is_deleted=FALSE
+WHERE l.client_id=@ClientId AND l.batch_id=@Id",new{ClientId=clientId,existing.Id},tx)).ToArray();
+            var aliases=new Dictionary<string,string>(StringComparer.Ordinal);
+            batch.OriginalWorkbooks=batch.OriginalWorkbooks.Select(reference=>{
+                var supplied=availableOriginals.Single(original=>original.Id==reference.Id);
+                var match=previousOriginals.FirstOrDefault(original=>original.Sha256.Equals(supplied.Sha256,StringComparison.OrdinalIgnoreCase) && original.FileName==reference.FileName);
+                if(match is null)return reference;
+                aliases[reference.Id]=match.Id; return reference with{Id=match.Id};
+            }).DistinctBy(reference=>reference.Id).ToList();
+            if(calculationSource is not null)foreach(var binding in calculationSource.WorkbookFiles)
+                if(aliases.TryGetValue(binding.OriginalId,out var retainedId))binding.OriginalId=retainedId;
+        }
         ExcelPayslipBatch? calculationParent = null;
         if (!string.IsNullOrEmpty(calculationSource?.SourceBatchId))
         {
@@ -272,14 +302,22 @@ WHERE o.client_id=@ClientId AND o.id IN @Ids AND a.is_deleted=FALSE FOR UPDATE",
         catch (InvalidOperationException layoutError) { return (null, layoutError.Message); }
         var json = JsonSerializer.Serialize(batch, JsonOptions);
         if (Encoding.UTF8.GetByteCount(json) > MaximumBatchBytes) return (null, "The batch is too large. Save a smaller selection of source rows (maximum 8 MiB).");
-        await db.ExecuteAsync("INSERT INTO excel_payslip_batches(client_id,id,batch_json,send_state_json,created_at) VALUES(@ClientId,@Id,CAST(@Json AS JSON),JSON_OBJECT(),@CreatedAtUtc)", new { ClientId = clientId, batch.Id, Json = json, batch.CreatedAtUtc }, tx);
+        await db.ExecuteAsync(existing is null
+            ? "INSERT INTO excel_payslip_batches(client_id,id,batch_json,send_state_json,created_at) VALUES(@ClientId,@Id,CAST(@Json AS JSON),JSON_OBJECT(),@CreatedAtUtc)"
+            : SameSavedContent(batch,existing)
+                ? "UPDATE excel_payslip_batches SET created_at=UTC_TIMESTAMP() WHERE client_id=@ClientId AND id=@Id"
+                : "UPDATE excel_payslip_batches SET batch_json=CAST(@Json AS JSON),created_at=UTC_TIMESTAMP() WHERE client_id=@ClientId AND id=@Id",
+            new { ClientId = clientId, batch.Id, Json = json, batch.CreatedAtUtc }, tx);
         if (calculationSource is not null)
-            await db.ExecuteAsync("INSERT INTO excel_payslip_calculation_sources(client_id,batch_id,source_json,created_at) VALUES(@ClientId,@Id,CAST(@Json AS JSON),@CreatedAtUtc)",
+            await db.ExecuteAsync("INSERT INTO excel_payslip_calculation_sources(client_id,batch_id,source_json,created_at) VALUES(@ClientId,@Id,CAST(@Json AS JSON),@CreatedAtUtc) ON DUPLICATE KEY UPDATE source_json=VALUES(source_json)",
                 new { ClientId = clientId, batch.Id, Json = JsonSerializer.Serialize(calculationSource, JsonOptions), batch.CreatedAtUtc }, tx);
+        else if(existing is not null) await db.ExecuteAsync("DELETE FROM excel_payslip_calculation_sources WHERE client_id=@ClientId AND batch_id=@Id",new {ClientId=clientId,batch.Id},tx);
         foreach (var original in batch.OriginalWorkbooks ?? [])
-            await db.ExecuteAsync("INSERT INTO excel_payslip_batch_originals(client_id,batch_id,original_id,original_file_name) VALUES(@ClientId,@BatchId,@Id,@FileName)",
+            await db.ExecuteAsync("INSERT INTO excel_payslip_batch_originals(client_id,batch_id,original_id,original_file_name) VALUES(@ClientId,@BatchId,@Id,@FileName) ON DUPLICATE KEY UPDATE original_file_name=VALUES(original_file_name)",
                 new { ClientId = clientId, BatchId = batch.Id, original.Id, original.FileName }, tx);
-        await AnnotateEmploymentAsync(db, batch, tx);
+        if(existing is not null)await db.ExecuteAsync("DELETE FROM excel_payslip_batch_originals WHERE client_id=@ClientId AND batch_id=@Id AND original_id NOT IN @Ids",
+            new{ClientId=clientId,batch.Id,Ids=batch.OriginalWorkbooks!.Select(reference=>reference.Id).ToArray()},tx);
+        await AnnotateEmploymentAsync(db, batch, tx, configuration);
         await tx.CommitAsync();
         return (batch, null);
     }
@@ -404,8 +442,10 @@ WHERE o.client_id=@ClientId AND o.id IN @Ids AND a.is_deleted=FALSE FOR UPDATE",
         var selected = batch.Rows.Where(r => selectedIds.Contains(r.Id)).ToArray();
         if (selected.Length != selectedIds.Count) return ([], "A selected row does not belong to this saved batch.");
         if (selected.Any(row => row.Employment?.BlockedForMonth == true)) return ([], "A selected employee left before this salary month. Future payslip generation and delivery are unavailable; earlier saved payslips remain available.");
+        try { ExcelPayslipPresentation.RequireCurrentSalary(selected); }
+        catch(InvalidOperationException error) { return ([],error.Message); }
         if (!request.AcknowledgeWarnings && selected.Any(r => RowWarnings(r).Count > 0)) return ([], "Review and acknowledge the selected source-row warnings before export or sending.");
-        return (selected, null);
+        return (selected.Select(ExcelPayslipPresentation.Current).ToArray(), null);
     }
 
     internal static bool TryEmail(string? input, out string email)

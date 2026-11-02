@@ -5,12 +5,20 @@ import type { Client, Component, Structure } from '../types/payroll'
 import { calculateSalaryDetails, calculateSalaryTotals } from '../utils/salary'
 import { simulateSalary, type SimulationResult, type SourceSalaryScenario } from '../services/payrollCalculationService'
 import SalaryFieldHelp from './SalaryFieldHelp'
+import EmployeePayrollSimulation from './EmployeePayrollSimulation'
 import './PayrollSimulation.css'
 import './SalaryFormControls.css'
 
 const amount = (n: number | null) => n === null || !Number.isFinite(n) ? '-' : n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const numeric = (s: string) => s.trim() === '' ? null : Number(s)
-export default function PayrollSimulation({ template, components, clients, fixedClientId, sourceScenario, onClose }: { template: Structure; components: Component[]; clients: Client[]; fixedClientId?: number; sourceScenario?: SourceSalaryScenario; onClose: () => void }) {
+export type PayrollSimulationProps = { template: Structure; components: Component[]; clients: Client[]; fixedClientId?: number; sourceScenario?: SourceSalaryScenario; preferEmployeeSalary?: boolean; onClose: () => void }
+export default function PayrollSimulation(props: PayrollSimulationProps) {
+  const [employeeMode, setEmployeeMode] = useState(!!props.preferEmployeeSalary && !props.sourceScenario && !Number(props.template.annualCtc || 0))
+  return employeeMode && !props.sourceScenario
+    ? <EmployeePayrollSimulation {...props} onTemplateMode={() => setEmployeeMode(false)} />
+    : <TemplatePayrollSimulation {...props} onEmployeeMode={props.sourceScenario ? undefined : () => setEmployeeMode(true)} />
+}
+function TemplatePayrollSimulation({ template, components, clients, fixedClientId, sourceScenario, onClose, onEmployeeMode }: PayrollSimulationProps & { onEmployeeMode?: () => void }) {
   const ids = String(template.clientId || '').split(/[;,|]/).map(s => Number(s.split(':')[0])).filter(n => n > 0)
   const [clientId, setClientId] = useState<number | undefined>(fixedClientId || (ids.length === 1 ? ids[0] : undefined))
   const [days, setDays] = useState(String(sourceScenario?.payrollDays ?? 30)), [present, setPresent] = useState(sourceScenario ? String(sourceScenario.presentDays) : ''), [payable, setPayable] = useState(String(sourceScenario?.payableDays ?? 30)), [ctc, setCtc] = useState(String(sourceScenario?.annualCtc ?? template.annualCtc ?? ''))
@@ -34,11 +42,12 @@ export default function PayrollSimulation({ template, components, clients, fixed
   const run = async () => {
     if (!clientId || invalid || !days.trim() || !payable.trim()) return
     const id = ++requestId.current, snapshotKey = key; setBusy(true); setError(''); setResult(null)
-    const response = await simulateSalary({ mode: 'Template', clientId, template, components, ...(sourceScenario ? { snapshot: sourceScenario.snapshot } : {}), payPeriod: '', payrollDays: numeric(days), presentDays: numeric(effectivePresent), payableDays: numeric(payable), annualCtc: numeric(ctc), amountOverrides: Object.fromEntries(Object.entries(overrides).map(([id, v]) => [id, Number(v)])) })
+    const response = await simulateSalary({ mode: 'Template', clientId, template, components, ...(sourceScenario ? { snapshot: sourceScenario.snapshot, reviewedExtraDutyUnits: sourceScenario.reviewedExtraDutyUnits } : {}), payPeriod: '', payrollDays: numeric(days), presentDays: numeric(effectivePresent), payableDays: numeric(payable), annualCtc: numeric(ctc), amountOverrides: Object.fromEntries(Object.entries(overrides).map(([id, v]) => [id, Number(v)])) })
     if (id !== requestId.current) return
     setBusy(false); if (response.ok && response.data) { setResult(response.data); setResultKey(snapshotKey) } else setError(response.error || 'Simulation returned no result.')
   }
   return <Modal open title={`Salary simulation: ${template.name}`} width={1200} zIndex={1600} className="payroll-simulation salary-form-controls" onCancel={onClose} footer={<Button onClick={onClose}>Close</Button>}>
+    {onEmployeeMode && <div className="simulation-run"><Tag>Template inputs</Tag><Button onClick={event => { event.currentTarget.blur(); onEmployeeMode() }}>Use Employee Master salary</Button><span>Employee-specific amounts and saved attendance are available in Employee Master mode.</span></div>}
     {sourceScenario && <Alert type="info" showIcon message="Try CTC and attendance with these source rules" description="Change CTC, days and monthly inputs, then verify with payroll engine. Fixed Basic/HRA do not scale automatically with CTC. Source-period amounts such as TA/DA apply once to this test. These temporary inputs leave saved data unchanged; actual Employee policies and a saved Regular Draft are checked separately." />}
     <div className="payroll-simulation-controls">
       {([['Payroll days', days, setDays], ['Payable days', payable, setPayable]] as const).map(([label, value, set]) => <label className="simulation-field" key={label}><span>{label}<SalaryFieldHelp label={`Simulation ${label}`} text="Template values recalculate when you change days. Zero payable days means no payable attendance." example="Wages 15,414 x 14 payable days / 30 payroll days = 7,193.20." /></span><Input aria-label={`Simulation ${label}`} inputMode="decimal" value={value} placeholder="Required input" onChange={e => set(e.target.value)} /></label>)}

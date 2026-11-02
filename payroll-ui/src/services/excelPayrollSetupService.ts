@@ -21,6 +21,7 @@ export type AttendanceInputReview = { boundSourceInputs?: string; mode: 'SourceS
 export type AttendanceInputProof = { rowId: string; sourceRow: number; mode: string; status: string; reason: string; sourceHash: string; inputHash: string; payrollDays: number; presentDays: number | null; payableDays: number; sourceLwp: number | null; nativeHash: string | null; nativeInput?: { payrollDays: number | null; presentDays: number | null; actualPresenceKnown?: boolean; payableDays: number; month: string; cycleStart: string | null; cycleEnd: string | null; snapshotHash: string; error: string } | null }
 export type TemplateApplicability = {reviewed:boolean;effectiveTo:string;openEnded:boolean;locationMode:''|'AllClientLocations'|'Listed';workLocationIds:number[];newLocationNames:string[];categoryKind:''|'AllClientCategories'|'SkillCategory'|'EmploymentType';categories:string[];divisorMeaning:''|'CalendarDays'|'ContractFixedDays'|'WorkingDays';payableMeaning:''|'AlreadyPayable';policyBasis:''|'SavedSourceRules'|'DatedPolicy';policyVersion:string}
 export type PayrollSetupRequest = {
+  updateExistingConfiguration?: boolean
   correctionOfImportId?: string
   overrideSourcePayableAttendance?: boolean
   identityColumnReview?: { version: 1; role: 'UAN'; columnIndex: number; sourceHash: string; selectionFingerprint: string; reason: string; reviewed: boolean }
@@ -30,6 +31,7 @@ export type PayrollSetupRequest = {
   roundingReviews?: Record<string, string>
   transferReviewVersion?: number; reviewedFixedInputs?: boolean; reviewedPolicyScope?: boolean; templateDecisions?: TransferTemplateDecision[]
   payrollDaysCell?: string
+  monthlyCtcColumnIndex?: number; reviewedExtraDutyUnits?: boolean
   batchId: string; rowIds: string[]; templateName: string; effectiveFrom: string; payrollDaysColumnIndex: number; payableDaysColumnIndex: number
   fixedPayrollDays?: number; sourceColumnRoles?: Record<number, string>
   presentDaysColumnIndex?: number; workWeek: string; attendanceCycleStartDay: number; attendanceCycleEndDay: number; payrollReportGenerationDay: number
@@ -38,7 +40,11 @@ export type PayrollSetupRequest = {
   employeeDecisions: { rowId: string; matchedEmployeeId?: number; allowCreate: boolean }[]; editableDefaults: Record<string, unknown>
 }
 export type PayrollSetupContext = {
+  clientConfiguration?: { clientId: number; month: string; sourceColumns: ExcelPayslipCalculationSource['columns']; savedRequest: PayrollSetupRequest } | null
   salaryCorrectionSupported?: boolean
+  sourceCtcAndExtraDutySupported?: boolean
+  payableOnlyAttendanceSchemaReady?: boolean
+  payableOnlyAttendanceUnavailableReason?: string | null
   sourcePayableOverrideSupported?: boolean
   identityColumnReviewSupported?: boolean
   identityColumnCandidates?: { columnIndex: number; columnLetter: string; sourceHeader: string; selectedRows: number; canonicalLiteralRows: number; invalidOrMissingRows: number; sourceHash: string; selectionFingerprint: string }[]
@@ -57,7 +63,7 @@ export type PayrollSetupContext = {
   components: PayrollSetupMasterComponent[]
   workWeeks: { value: string; label: string }[]; workLocations: { id: number; name: string }[]
   employees: { id: number; employeeCode: string; employeeName: string; workLocationId?: number; workLocation?: string; designation?: string }[]
-  lastImport?: { importId: string; requestId: string; status: string; savedRequest: PayrollSetupRequest; result?: PayrollSetupResult; editableDefaultsDraft?: Record<string, unknown> | null; defaultsRevision?: number } | null
+  lastImport?: { importId: string; requestId: string; status: string; sourceChanged?: boolean; savedRequest: PayrollSetupRequest; result?: PayrollSetupResult; editableDefaultsDraft?: Record<string, unknown> | null; defaultsRevision?: number } | null
 }
 export type PresentDaysEvidence = { sourceColumnIndex: number | null; sourceCell: string | null; sourceValue: number | null; calculationValue: number; actualWorkedReviewed: boolean; status: string; message: string }
 export type PayrollSetupPreview = {
@@ -97,7 +103,7 @@ export const savePayrollDefaultsDraft = (clientId: number, batchId: string, impo
 // Keep this longer wait scoped to Apply; an uncertain timeout still requires a receipt check, never an automatic retry.
 export const applyPayrollSetup = (clientId: number, request: PayrollSetupRequest, planHash: string, requestId: string) => postJson<{ request: PayrollSetupRequest; planHash: string; requestId: string }, PayrollSetupResult | null>(`${path}/apply?clientId=${clientId}`, { request, planHash, requestId }, null, { toast: false, timeoutMs: 240000 })
 
-export type TransferTemplateDecision = { variantKey: string; existingTemplateId: string; createVariant: boolean; keepExisting?: boolean;scopeAction?:string;scopeReason?:string }
+export type TransferTemplateDecision = { variantKey: string; existingTemplateId: string; createVariant: boolean; updateExisting?: boolean; keepExisting?: boolean;scopeAction?:string;scopeReason?:string }
 export type TransferAmountReview = { version: string; rowId: string; sourceRow: number; status: string; reason: string; proofHash: string; acknowledged: boolean; sourceNetRaw: number; sourceNetDisplay: number; coreNet: number | null; rawNetDelta: number | null; displayNetDelta: number | null; lines: { code: string; category: string; sourceRaw: number; sourceDisplay: number; coreUnrounded: number; calculated: number; rawDelta: number; displayDelta: number }[] }
 export type TransferReview = {
   amountComparisons?: TransferAmountReview[]

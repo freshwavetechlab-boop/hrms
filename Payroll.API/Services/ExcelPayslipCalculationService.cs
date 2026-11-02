@@ -16,7 +16,7 @@ public static partial class ExcelPayslipCalculationService
     private static readonly Regex AddressPattern = new(@"^\$?([A-Z]{1,3})\$?([1-9][0-9]{0,5})$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex NumberPattern = new(@"^[+-]?(?:\d+(?:,\d{2,3})*(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$", RegexOptions.CultureInvariant);
 
-    public static string? ValidateSource(ExcelPayslipCalculationSource source, ExcelPayslipBatch batch)
+    public static string? ValidateSource(ExcelPayslipCalculationSource source, ExcelPayslipBatch batch, bool pendingSavedDecimalRestore = false)
     {
         if (source is null || source.Rows is null || source.Columns is null || source.ExcludedSourceRows is null)
             return "The saved calculation source is incomplete.";
@@ -64,8 +64,12 @@ public static partial class ExcelPayslipCalculationService
                 if (column.Kind == "info" && (position >= row.Information.Count || row.Information[position].Label != column.Label || row.Information[position].Value != value))
                     return $"Source row {row.SourceRow}, {column.Label} does not match its saved information.";
                 var amount = 0m;
-                if (AmountKinds.Contains(column.Kind) && ((!reviewedBlank && !TryNumber(value, out amount)) || !MatchesAmount(row, column, amount, position)))
-                    return $"Source row {row.SourceRow}, {column.Label} does not match its saved amount.";
+                if (AmountKinds.Contains(column.Kind) && ((!reviewedBlank && !TryNumber(value, out amount)) || !MatchesAmount(row, column, amount, position, pendingSavedDecimalRestore)))
+                {
+                    var mapped=column.Kind switch { "netPay"=>row.NetPay,"grossTotal"=>row.DeclaredGross,"deductionTotal"=>row.DeclaredDeductions,
+                        _=>(column.Kind=="earning"?row.Earnings:column.Kind=="deduction"?row.Deductions:row.EmployerContributions).ElementAtOrDefault(position)?.Amount };
+                    return $"Source row {row.SourceRow}, {column.Label} does not match its saved amount (source {amount.ToString(CultureInfo.InvariantCulture)}; mapped {mapped?.ToString(CultureInfo.InvariantCulture) ?? "missing"}).";
+                }
             }
             foreach (var kind in new[] { "earning", "deduction", "employer" })
             {
@@ -79,19 +83,20 @@ public static partial class ExcelPayslipCalculationService
     // Excel caches and browser JSON can differ in their final IEEE digits. Parse
     // decimal text to double directly: decimal-to-double casts can round twice
     // at a binary midpoint. Keep the 15-digit fallback and preserve stored values.
-    private static bool SameNumber(decimal? saved, decimal amount) => saved.HasValue && (saved.Value == amount
+    private static bool SameNumber(decimal? saved, decimal amount, bool pendingSavedDecimalRestore = false) => saved.HasValue && (saved.Value == amount
+        || pendingSavedDecimalRestore && Math.Abs(saved.Value-amount)<=0.00000001m
         || double.Parse(saved.Value.ToString(CultureInfo.InvariantCulture), CultureInfo.InvariantCulture)
             == double.Parse(amount.ToString(CultureInfo.InvariantCulture), CultureInfo.InvariantCulture)
         || saved.Value.ToString("G15", CultureInfo.InvariantCulture) == amount.ToString("G15", CultureInfo.InvariantCulture));
-    private static bool MatchesAmount(ExcelPayslipRow row, ExcelPayslipCalculationColumn column, decimal amount, int position) => column.Kind switch
+    private static bool MatchesAmount(ExcelPayslipRow row, ExcelPayslipCalculationColumn column, decimal amount, int position, bool pendingSavedDecimalRestore = false) => column.Kind switch
     {
-        "netPay" => SameNumber(row.NetPay, amount),
-        "grossTotal" => SameNumber(row.DeclaredGross, amount),
-        "deductionTotal" => SameNumber(row.DeclaredDeductions, amount),
-        _ => MatchesComponent(column.Kind == "earning" ? row.Earnings : column.Kind == "deduction" ? row.Deductions : row.EmployerContributions, column.Label, amount, position)
+        "netPay" => SameNumber(row.NetPay, amount, pendingSavedDecimalRestore),
+        "grossTotal" => SameNumber(row.DeclaredGross, amount, pendingSavedDecimalRestore),
+        "deductionTotal" => SameNumber(row.DeclaredDeductions, amount, pendingSavedDecimalRestore),
+        _ => MatchesComponent(column.Kind == "earning" ? row.Earnings : column.Kind == "deduction" ? row.Deductions : row.EmployerContributions, column.Label, amount, position, pendingSavedDecimalRestore)
     };
-    private static bool MatchesComponent(List<ExcelPayslipAmount> components, string label, decimal amount, int position)
-        => position < components.Count && components[position].Label == label && SameNumber(components[position].Amount, amount);
+    private static bool MatchesComponent(List<ExcelPayslipAmount> components, string label, decimal amount, int position, bool pendingSavedDecimalRestore = false)
+        => position < components.Count && components[position].Label == label && SameNumber(components[position].Amount, amount, pendingSavedDecimalRestore);
     private static bool IsIdentityInformation(ExcelPayslipCalculationColumn column)
         => column.Kind == "info" && Regex.IsMatch(column.SourceHeader + " " + column.Label, @"account|bank|uan|aadh?aar|aadhar|adhaar|ifsc|mobile|phone|esic|\bpan\b|employee\s*(?:code|id)|identifier", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static bool PlainBlank(ExcelPayslipCalculationCell? cell) => cell is null || string.IsNullOrWhiteSpace(cell.Value)

@@ -4,6 +4,7 @@ namespace Payroll.API.Models;
 
 public sealed class ExcelPayrollSetupRequest
 {
+    public bool UpdateExistingConfiguration { get; set; }
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? CorrectionOfImportId { get; set; }
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
@@ -24,6 +25,10 @@ public sealed class ExcelPayrollSetupRequest
     public int PayrollDaysColumnIndex { get; set; } = -1;
     public int? FixedPayrollDays { get; set; }
     public string PayrollDaysCell { get; set; } = "";
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? MonthlyCtcColumnIndex { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ReviewedExtraDutyUnits { get; set; }
     public Dictionary<int, string> SourceColumnRoles { get; set; } = [];
     public int PayableDaysColumnIndex { get; set; } = -1;
     public int? PresentDaysColumnIndex { get; set; }
@@ -171,6 +176,7 @@ public sealed class ExcelPayrollSetupPreview
 
 public sealed class ExcelPayrollSetupResult
 {
+    public List<ExcelPayslipMasterLink> MasterLinks { get; set; } = [];
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? CorrectionOfImportId { get; set; }
     public List<ExcelPayrollReusedAdjustment> ReusedAdjustments { get; set; } = [];

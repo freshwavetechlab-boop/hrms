@@ -37,7 +37,7 @@ public sealed partial class ExcelPayslipRepository
             await db.ExecuteAsync("UPDATE excel_payslip_batches SET batch_json=CAST(@Json AS JSON) WHERE client_id=@ClientId AND id=@Id",
                 new { ClientId = clientId, Id = id, Json = patched }, tx);
         var batch = JsonSerializer.Deserialize<ExcelPayslipBatch>(patched, JsonOptions)!;
-        await AnnotateEmploymentAsync(db, batch, tx);
+        await AnnotateEmploymentAsync(db, batch, tx, configuration);
         await tx.CommitAsync();
         return (batch, null);
     }

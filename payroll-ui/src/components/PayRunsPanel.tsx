@@ -3,7 +3,7 @@ import { RocketOutlined, WarningOutlined } from '@ant-design/icons'
 import { Button, Checkbox, Select } from 'antd'
 import { Link } from 'react-router-dom'
 import { getAttendanceGroups, getMonthlyAttendance } from '../services/leaveAttendanceService'
-import { cancelPayrollAdjustment, createPayRun, createSelectedPayRunDraft, deletePayRun, exportPayRunUrl, getClients, getEmployees, getPayRun, getPayRunDiagnostics, getPayrollAdjustments, getPayRuns, runPayRunAction, savePayrollAdjustment } from '../services/payrollService'
+import { cancelPayrollAdjustment, createPayRun, createSelectedPayRunDraft, deletePayRun, exportPayRunUrl, getClients, getPayrollEmployeeOptions, getPayRun, getPayRunDiagnostics, getPayrollAdjustments, getPayRuns, runPayRunAction, savePayrollAdjustment } from '../services/payrollService'
 import { getSetup } from '../services/settingsService'
 import type { AttendanceGroup, Client, Component, Employee, EmployeeMonthlyAttendance, PayRun, PayRunDiagnostics, PayrollAdjustment, PayRunSalaryLine, RunEmployee, Setup } from '../types/payroll'
 import { setup0 } from '../data/payrollDefaults'
@@ -19,7 +19,12 @@ import { useAuthSession } from './AuthGate'
 import SelectedPayRunProcessing from './SelectedPayRunProcessing'
 import RegularEmployeeCodeSelection from './RegularEmployeeCodeSelection'
 import SelectedDraftAdjustmentSelection from './SelectedDraftAdjustmentSelection'
+import DraftPayrollAdjustments from './DraftPayrollAdjustments'
+import DraftEmployerCosts from './DraftEmployerCosts'
 import type { EmployeeCodeScope } from '../utils/regularEmployeeCodeSelection'
+import { getPayrollFormulaWorkbook } from '../services/payrollCalculationService'
+import { buildPayrollFormulaWorkbook, preparePayrollFormulaWorkbookRequest } from '../utils/payrollFormulaWorkbook'
+import { downloadXlsx } from '../utils/xlsx'
 
 const currentPeriod = (() => {
   const date = new Date()
@@ -82,6 +87,8 @@ const buildPolicyBatches = (groups: AttendanceGroup[]): AttendancePolicyBatch[] 
 const adjustment0: PayrollAdjustment = { id: 0, clientId: 0, employeeId: 0, employeeName: '', employeeCode: '', componentId: 0, componentCode: '', componentName: '', adjustmentType: 'Earning', amount: 0, payPeriod: currentPeriod, payRunType: 'Regular', reasonCode: 'Overtime', notes: '', taxable: true, status: 'Approved', payRunId: null }
 
 export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regular Run' }: { mode?: 'payrun' | 'adjustments'; initialRunType?: Exclude<PayrollTab, 'Adjustments'> }) {
+  const [formulaBusy, setFormulaBusy] = useState(false)
+  const formulaScope = useRef('')
   const session = useAuthSession()
   const scopedClientId = Number(session?.user.clientId || 0)
   const clientScoped = scopedClientId > 0 && !session?.user.permissions.includes('security.manage')
@@ -155,7 +162,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   }
 
   const load = async () => {
-    const [clientRows, employeeRows, runRows, setupRow, adjustmentRows, groupRows] = await Promise.all([getClients(), getEmployees(), getPayRuns(), getSetup(setup0), getPayrollAdjustments(), getAttendanceGroups()])
+    const [clientRows, employeeRows, runRows, setupRow, adjustmentRows, groupRows] = await Promise.all([getClients(), getPayrollEmployeeOptions(), getPayRuns(), getSetup(setup0), getPayrollAdjustments(), getAttendanceGroups()])
     const nextClientId = clientScoped ? scopedClientId : clientId || clientRows[0]?.id || 0
     const activeGroups = groupRows.filter(group => group.isActive)
     const nextBatches = buildPolicyBatches(activeGroups.filter(group => group.clientId === nextClientId))
@@ -360,11 +367,30 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     {selectedReviewRun && <SelectedPayRunProcessing run={selectedReviewRun}
       permitted={!!session?.user.isActive && session.user.clientId == null && !!session.user.roles.includes('super_admin') && !!session?.user.permissions.includes('payroll.run')}
       onChanged={async () => { await load(); await open(selectedReviewRun.id) }} />}
-    {selectedReviewRun ? <PayRunReview selected={selectedReviewRun} diagnostics={diagnostics} busy={busy} action={action} materialVarianceCount={materialVarianceCount} /> : <section className="card report-empty"><p>Select a draft payroll run to review.</p></section>}
+    {selectedReviewRun ? <PayRunReview selected={selectedReviewRun} diagnostics={diagnostics} busy={busy} action={action} onChanged={session?.user.permissions.includes('payroll.run') ? async () => { await open(selectedReviewRun.id); await load() } : undefined} materialVarianceCount={materialVarianceCount} /> : <section className="card report-empty"><p>Select a draft payroll run to review.</p></section>}
   </>
   const attendancePolicyOptions = attendancePolicyBatches.length
     ? attendancePolicyBatches.map(batch => ({ value: batch.id, label: `${batch.name} (${batch.employeeCount} employees / ${batch.comboCount} combos)` }))
     : [{ value: '', label: 'No policy configured', disabled: true }]
+  formulaScope.current = JSON.stringify([clientId, period, attendancePolicyBatchId, selectedAttendanceGroupIds, includedIds])
+  const formulaSelection=(()=>{try{return {request:preparePayrollFormulaWorkbookRequest(clientId,period,selectedPolicyBatch,includedIds),error:''}}catch(error){return {request:null,error:error instanceof Error?error.message:'Select an attendance policy and its employees.'}}})()
+  const downloadFormulaWorkbook = async () => {
+    if (busy || formulaBusy) return
+    if(!formulaSelection.request)return setMessage(formulaSelection.error)
+    const requestedScope = formulaScope.current
+    const clientName = clients.find(client => client.id === clientId)?.name.trim() || `Client-${clientId}`
+    const filenameClient = clientName.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/g, '').slice(0, 160) || `Client-${clientId}`
+    setFormulaBusy(true); setMessage('Preparing Excel formulas from saved employee salary and attendance...')
+    try {
+      const response = await getPayrollFormulaWorkbook(formulaSelection.request)
+      if (formulaScope.current !== requestedScope) return
+      if (!response.ok || !response.data.length) throw Error(response.error || 'Formula workbook could not be prepared.')
+      const sheets = buildPayrollFormulaWorkbook(clientName, period, response.data)
+      downloadXlsx(`${filenameClient}-payroll-formulas-${period}.xlsx`, sheets)
+      setMessage(`${response.data.length} employees exported with editable attendance and salary formulas. This download does not create a payroll run.`)
+    } catch (error) { if (formulaScope.current === requestedScope) setMessage(error instanceof Error ? error.message : 'Formula workbook download failed.') }
+    finally { setFormulaBusy(false) }
+  }
   const contextPanel = <div className="card payroll-control-panel">
     <header><i className="blue">R</i><div><h3>Run context</h3><p>Client, attendance policy and pay period are selected before draft processing. Working days come from Attendance Review.</p></div></header>
     <div className={`pay-run-form enterprise${tab === 'Off-cycle Run' ? ' offcycle-context' : ''}`}>
@@ -372,6 +398,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
       {tab === 'Regular Run' && mode !== 'adjustments' && <label>Attendance Policy<Select disabled={busy} className="app-search-select payroll-policy-select" popupClassName="app-search-select-dropdown" showSearch optionFilterProp="label" value={attendancePolicyBatchId} onChange={value => changeAttendancePolicyBatch(String(value))} options={attendancePolicyOptions} /></label>}
       <label>Pay period<input disabled={busy} type="month" value={period} onChange={event => changePeriod(event.target.value)} /></label>
       <label>Working days<input value={derivedWorkingDays} readOnly /></label>
+      {tab === 'Regular Run' && mode !== 'adjustments' && <Button type="primary" aria-label="Download payroll Excel with formulas" title={formulaSelection.error||'Download the selected policy employees with editable attendance and Excel cell formulas.'} loading={formulaBusy} disabled={busy || !formulaSelection.request} onClick={() => void downloadFormulaWorkbook()}>Excel with formulas</Button>}
       {tab === 'Regular Run' && mode !== 'adjustments' && <Button className="payroll-queue-action" type="primary" icon={<RocketOutlined />} loading={busy} onClick={() => void createRegular()} disabled={!clientId || !selectedAttendanceGroups.length || includedCount === 0}>Queue regular draft</Button>}
       {tab === 'Regular Run' && mode !== 'adjustments' && canCreateSelectedDraft && <Button aria-label="Create selected draft for review" loading={busy} disabled={busy || selectedDraftUncertain || !attendanceReady || !selectedDraft.request} onClick={() => void createSelectedDraft()}>Create selected draft for review</Button>}
       {tab === 'Regular Run' && mode !== 'adjustments' && canCreateSelectedDraft && selectedDraft.error && includedCount > 0 && <p role="status">{selectedDraft.error}</p>}
@@ -455,7 +482,7 @@ function ReviewRunPicker(p: { runs: PayRun[]; selectedId?: number; openRun: (run
   return <section className="card payroll-review-runs"><header><i className="blue">D</i><div><h3>Payroll runs</h3><p>Select a run to load its saved review and approval data.</p></div></header><DataTable rows={p.runs} title="Payroll runs" getRowId={row => row.id} emptyText="No payroll run found for this client." exportFileName="payroll-runs" columns={columns} pageSizeOptions={[5, 10, 25]} actions={run => <span className="adjustment-actions"><button type="button" className={p.selectedId === run.id ? 'secondary' : ''} onClick={() => void p.openRun(run)}>{p.selectedId === run.id ? 'Opened' : 'Open'}</button><button type="button" className="danger" onClick={() => void p.deleteRun(run)}>Hard delete</button></span>} /></section>
 }
 
-export function PayRunReview(p: { selected: PayRun; diagnostics: PayRunDiagnostics | null; busy: boolean; materialVarianceCount: number; action?: (path: string, success: string) => Promise<void>; actions?: ReactNode }) {
+export function PayRunReview(p: { selected: PayRun; diagnostics: PayRunDiagnostics | null; busy: boolean; materialVarianceCount: number; action?: (path: string, success: string) => Promise<void>; onChanged?: () => Promise<void>; actions?: ReactNode }) {
   const selected = p.selected
   const includedEmployees = selected.employees.filter(employee => !employee.isSkipped)
   const presentDays = presentDayTotal(includedEmployees.map(employee => employee.presentDays))
@@ -466,10 +493,11 @@ export function PayRunReview(p: { selected: PayRun; diagnostics: PayRunDiagnosti
   const isProcessing = processingStatuses.has(selected.status)
   const failureReason = selected.processingError || p.diagnostics?.exceptions[0]?.message || p.diagnostics?.validationIssues.find(issue => issue.isBlocking)?.message || p.diagnostics?.validationIssues[0]?.message || ''
   const defaultActions = p.action ? <div className="pay-run-actions"><button type="button" className="lock-action" disabled={p.busy || selected.status !== 'Draft'} onClick={() => void p.action?.('submit', 'Payroll locked and sent for approval.')} data-mail-event="PAYRUN.SUBMIT" data-mail-resource-type="PayRun" data-mail-resource-id={selected.id} data-mail-client-id={selected.clientId} data-mail-action-label="Lock payroll for approval">Lock payroll</button><button type="button" className="approve-action" disabled={p.busy || selected.status !== 'Pending Approval'} onClick={() => void p.action?.('approve', 'Payroll approved.')} data-mail-event="PAYRUN.APPROVED" data-mail-resource-type="PayRun" data-mail-resource-id={selected.id} data-mail-client-id={selected.clientId} data-mail-action-label="Approve payroll">Approve payroll</button><button type="button" className="secondary recall-action" disabled={p.busy || !['Approved', 'Pending Approval'].includes(selected.status)} onClick={() => void p.action?.('recall', 'Payroll recalled to draft.')} data-mail-event="PAYRUN.RECALL" data-mail-resource-type="PayRun" data-mail-resource-id={selected.id} data-mail-client-id={selected.clientId} data-mail-action-label="Recall payroll">Recall</button><a className="secondary export-action" href={exportPayRunUrl(selected.id)}>Export</a></div> : null
-  const actions = p.actions === undefined ? defaultActions : p.actions
+  const actions = p.actions === undefined ? <>{defaultActions}{selected.status === 'Draft' && p.onChanged && <DraftEmployerCosts key={selected.id} run={selected} onChanged={p.onChanged} />}</> : p.actions
   const salaryRegisterColumns = useMemo(() => buildSalaryRegisterColumns(selected.employees), [selected.employees])
   const componentDetailRows = useMemo(() => buildPayrollComponentDetailRows(selected.employees), [selected.employees])
   const columns: Column<RunEmployee>[] = [
+    ...(selected.status === 'Draft' && p.onChanged ? [{ key: 'draftAdjustments', label: 'Draft', width: '120px', sortable: false, filterable: false, render: (row: RunEmployee) => <DraftPayrollAdjustments run={selected} employee={row} disabled={p.busy} onChanged={p.onChanged!} /> }] : []),
     { key: 'employeeCode', label: 'Code', width: '110px' },
     { key: 'employeeName', label: 'Employee', width: '190px', render: employee => <>{employee.employeeName}<small>{employee.department || employee.employeeCode}</small></>, exportValue: row => `${row.employeeName} ${row.employeeCode}`.trim() },
     { key: 'presentDays', label: 'Present', width: '110px', value: row => row.presentDays, render: row => presentDayText(row.presentDays), exportValue: row => row.presentDays ?? 'Not supplied' },

@@ -19,7 +19,7 @@ public sealed partial class ExcelPayslipRepository
         if (!await SupportedAsync(db, clientId, tx)) throw new InvalidOperationException("Select an active client.");
         var stateJson = await db.ExecuteScalarAsync<string?>("SELECT CAST(send_state_json AS CHAR) FROM excel_payslip_batches WHERE client_id=@ClientId AND id=@Id FOR UPDATE", new { ClientId = clientId, Id = batchId }, tx);
         var batch = await ReadBatchAsync(db, clientId, batchId, tx) ?? throw new InvalidOperationException("The saved batch was not found for this client.");
-        await AnnotateEmploymentAsync(db, batch, tx);
+        await AnnotateEmploymentAsync(db, batch, tx, configuration);
         var selected = SelectEmailRequestRows(batch, request.RowIds, request);
         var prefix = batchId + ":" + requestId.ToString("N") + ":";
         var fingerprint = EmailRequestFingerprint(email, selected, request, request.AttachPayslips ? NotificationRepository.ExcelPayslipBatchHash(batch) : null);

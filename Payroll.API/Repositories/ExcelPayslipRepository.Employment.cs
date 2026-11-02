@@ -9,11 +9,18 @@ namespace Payroll.API.Repositories;
 
 public sealed partial class ExcelPayslipRepository
 {
-    internal static async Task AnnotateEmploymentAsync(MySqlConnection db, ExcelPayslipBatch batch, MySqlTransaction? tx = null)
+    internal static async Task AnnotateEmploymentAsync(MySqlConnection db, ExcelPayslipBatch batch, MySqlTransaction? tx = null, IConfiguration? configuration = null)
     {
+        if(tx is null)
+        {
+            await using var snapshot=await db.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead,isReadOnly:true);
+            await AnnotateEmploymentAsync(db,batch,snapshot,configuration);
+            await snapshot.RollbackAsync();
+            return;
+        }
         var masters = (await db.QueryAsync<EmploymentMaster>(@"SELECT e.Id,e.ClientId,e.EmployeeCode,e.FirstName,e.LastName,e.IsActive,e.WorkLocationId,
 COALESCE(p.PanNumber,'') Pan,COALESCE(p.AadhaarNumber,'') Aadhaar,COALESCE(p.UanNumber,'') Uan,
-COALESCE(w.Name,'') WorkLocation,COALESCE(w.City,'') LocationCity," + EmployeeEmploymentRules.EligibleInMonth("e", "@Month") + @" Eligible
+COALESCE(w.Name,'') WorkLocation,COALESCE(w.City,'') LocationCity,COALESCE(e.Designation,'') Designation," + EmployeeEmploymentRules.EligibleInMonth("e", "@Month") + @" Eligible
 FROM employees e LEFT JOIN employeepersonaldetails p ON p.EmployeeId=e.Id
 LEFT JOIN worklocations w ON w.Id=e.WorkLocationId AND w.ClientId=e.ClientId WHERE e.ClientId=@ClientId",
             new { batch.ClientId, batch.Month }, tx)).ToList();
@@ -36,13 +43,14 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@Id AND 
             }
         }
         AnnotateEmployment(batch, source, masters, reviews);
+        await AnnotateCurrentMasterAsync(db,tx,batch,source,configuration);
     }
 
     // Response-only annotation. The source codes, captured identifiers, masters and receipts stay immutable.
     internal static void AnnotateEmployment(ExcelPayslipBatch batch, ExcelPayslipCalculationSource? source,
         IReadOnlyList<EmploymentMaster> allMasters, IReadOnlyList<AppliedEmploymentReview> reviews)
     {
-        foreach (var row in batch.Rows) row.Employment = null;
+        foreach (var row in batch.Rows) { row.Employment = null; row.MasterDetails = null; }
         var sourceHash = EmploymentSourceHash(batch, source);
         var masters = allMasters.Where(m => m.ClientId == batch.ClientId).ToList();
         var identities = masters.Select(m => new ExcelPayrollSetupRepository.Identity {
@@ -87,6 +95,11 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@Id AND 
         }
         foreach (var group in batch.Rows.Where(r => r.Employment?.EmployeeId is not null).GroupBy(r => r.Employment!.EmployeeId).Where(g => g.Count() > 1))
             foreach (var row in group) row.Employment = row.Employment! with { EmployeeId=null, IdentityReviewRequired=true };
+        foreach(var row in batch.Rows.Where(row=>row.Employment is { EmployeeId: >0, IdentityReviewRequired:false }))
+        {
+            var master=masters.Single(item=>item.Id==row.Employment!.EmployeeId);
+            row.MasterDetails=new(master.Id,master.Designation);
+        }
     }
 
     internal static string EmploymentSourceHash(ExcelPayslipBatch batch, ExcelPayslipCalculationSource? source) =>

@@ -56,6 +56,6 @@ FROM excel_payslip_batches batches WHERE batches.client_id=@ClientId AND batches
         var trend = history.GroupBy(batch => batch.Month).Select(month => month.First())
             .OrderByDescending(batch => batch.Month, StringComparer.Ordinal).Take(12)
             .OrderBy(batch => batch.Month, StringComparer.Ordinal).ToArray();
-        return new(history, selected, trend);
+        return new(CurrentMonths(history), selected, trend);
     }
 }

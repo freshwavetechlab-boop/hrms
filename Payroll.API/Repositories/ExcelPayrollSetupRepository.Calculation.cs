@@ -71,6 +71,11 @@ public sealed partial class ExcelPayrollSetupRepository
             throw new InvalidOperationException("Employee decisions must refer to unique selected source rows.");
         if (request.PayrollDaysCell is null || request.PayrollDaysCell.Length > 12 || request.PayrollDaysCell.Length > 0 && !Regex.IsMatch(request.PayrollDaysCell, @"^\$?[A-Za-z]{1,3}\$?[1-9]\d{0,6}$")) throw new InvalidOperationException("Review one bounded captured header-divisor cell.");
         ValidateTemplateScopeFields(request);
+        if (request.MonthlyCtcColumnIndex is < 0 or > 1499
+            || (request.MonthlyCtcColumnIndex.HasValue || request.ReviewedExtraDutyUnits) && request.LocationAllocations is not null)
+            throw new InvalidOperationException("Review a valid monthly CTC column; source CTC and extra-duty units are not supported by location-part transfer.");
+        if (request.ReviewedExtraDutyUnits && request.ImportAttendance && !request.ImportPayableOnlyAttendance)
+            throw new InvalidOperationException("Extra-duty payable units are salary units, not actual presence. Use reviewed payable-only attendance, or retain native attendance while preparing salary settings.");
         ValidateLocationAllocationFields(request);
         ValidateTransferRequest(request);
         if (request.IdentityColumnReview is { } identityReview && (identityReview.Version != 1 || identityReview.Role != "UAN"
@@ -106,7 +111,8 @@ public sealed partial class ExcelPayrollSetupRepository
         List<(ResolvedComponent Component, decimal Amount)> Adjustments, List<ExcelPayrollSetupIssue> Issues);
 
     internal static RowArithmetic CalculateRow(int clientId, ExcelPayrollSetupRequest request, IReadOnlyList<ResolvedComponent> components,
-        ExcelPayslipCalculationSourceRow source, ExcelPayslipRow row, IReadOnlySet<int>? blankAsZeroColumns = null)
+        ExcelPayslipCalculationSourceRow source, ExcelPayslipRow row, IReadOnlySet<int>? blankAsZeroColumns = null,
+        ExcelPayslipCalculationSource? calculationSource = null, decimal? retainedAnnualCtc = null)
     {
         components = ComponentsForRow(components, row.Id);
         foreach (var component in components) ValidateSourceProration(component.Definition);
@@ -114,8 +120,9 @@ public sealed partial class ExcelPayrollSetupRepository
         if (payrollNumber is < 1 or > 31 || decimal.Truncate(payrollNumber) != payrollNumber) throw new InvalidOperationException("Payroll denominator must be a whole number between 1 and 31; it is read separately for each employee.");
         var days = (int)payrollNumber;
         var payable = ReadNumber(source, request.PayableDaysColumnIndex);
-        var present = request.PresentDaysColumnIndex is int p ? ReadNumber(source, p) : payable;
-        if (payable < 0 || present < 0 || payable > days || present > days) throw new InvalidOperationException("Present/payable days must lie between zero and this employee's source payroll denominator.");
+        var present = request.PresentDaysColumnIndex is int p ? ReadNumber(source, p) : Math.Min(payable, days);
+        if (payable < 0 || present < 0 || payable > (request.ReviewedExtraDutyUnits ? 999.99m : days) || present > days)
+            throw new InvalidOperationException("Present/payable days must lie between zero and this employee's source payroll denominator. Explicitly reviewed source payable units may exceed the divisor within the attendance quantity storage range; actual presence is separate.");
         var inputs = new Dictionary<string, decimal>();
         var adjustments = new List<(ResolvedComponent Component, decimal Amount)>();
         var issues = new List<ExcelPayrollSetupIssue>();
@@ -139,13 +146,16 @@ public sealed partial class ExcelPayrollSetupRepository
         var lines = components.Select(c => new PayrollReviewLine(c.Id, c.Definition.Value, c.Definition.Formula,
             c.Definition.IsPeriodAdjustment ? "Manual / Variable" : c.Definition.CalculationType, c.Definition.BaseComponent,
             c.Definition.IsPeriodAdjustment ? "false" : c.Definition.ProRata.ToString().ToLowerInvariant())).ToList();
-        annual = DeriveReviewedFormulaAnnualBasis(clientId, request, components, snapshotComponents, lines, inputs, days, annual);
+        annual = request.MonthlyCtcColumnIndex.HasValue
+            ? ReviewedSourceAnnualCtc(request, calculationSource, source, row)
+            : retainedAnnualCtc ?? DeriveReviewedFormulaAnnualBasis(clientId, request, components, snapshotComponents, lines, inputs, days, annual);
         if (annual <= 0 && !components.Any(c => c.Definition.CalculationType == "Daily Rate"))
             throw new InvalidOperationException("A positive full-month salary input is required; attendance zero is valid and does not make the monthly salary zero. In Salary components and formulas, review Source input column for a recurring monthly amount or daily rate. An earned output/cache is not a monthly salary input. Review captured rate/day references and preserve the source formula and rounding before repreviewing; no salary amount is inferred.");
         var simulationRequest = new PayrollSimulationRequest
         {
             Mode = "Template", ClientId = clientId, TemplateId = "excel-draft", PayrollDays = days, PresentDays = present, PayableDays = payable,
-            AnnualCtc = annual, AmountOverrides = new(inputs), Snapshot = new("Template", clientId, "", annual, snapshotComponents, lines)
+            AnnualCtc = annual, AmountOverrides = new(inputs), Snapshot = new("Template", clientId, "", annual, snapshotComponents, lines),
+            ReviewedExtraDutyUnits = request.ReviewedExtraDutyUnits
         };
         var calculated = PayRunRepository.SimulateTemplate(simulationRequest);
         var exemptionChanged = false;
@@ -173,7 +183,9 @@ public sealed partial class ExcelPayrollSetupRepository
                 decimal? expected = c.Definition.ExpectedColumnIndex is int index ? ReadNumber(source, index, blankAsZeroColumns?.Contains(index) == true) : null;
                 preview.Lines.Add(new(c.Definition.Code, expected, actual, expected is decimal e ? actual - e : null)
                 {
-                    UnroundedEarned = c.Definition.IsPeriodAdjustment ? null : calculated.Lines.Single(l => l.Code.Equals(c.Definition.Code, StringComparison.OrdinalIgnoreCase)).UnroundedEarned,
+                    UnroundedEarned = c.Definition.IsPeriodAdjustment
+                        ? ReadNumber(source, c.Definition.SourceColumnIndex!.Value, c.Definition.BlankInputAsZero || blankAsZeroColumns?.Contains(c.Definition.SourceColumnIndex!.Value) == true)
+                        : calculated.Lines.Single(l => l.Code.Equals(c.Definition.Code, StringComparison.OrdinalIgnoreCase)).UnroundedEarned,
                     Category = c.Definition.Category
                 });
                 if (expected is decimal expectedAmount && Math.Abs(actual - expectedAmount) > 0.01m)
@@ -213,6 +225,7 @@ public sealed partial class ExcelPayrollSetupRepository
             Mode = "Template", ClientId = source.ClientId, TemplateId = "excel-what-if",
             PayrollDays = source.PayrollDays, PresentDays = source.PresentDays, PayableDays = source.PayableDays,
             AnnualCtc = source.AnnualCtc, AmountOverrides = overrides,
+            ReviewedExtraDutyUnits = source.ReviewedExtraDutyUnits,
             Snapshot = snapshot with { Components = components, Lines = lines }
         };
     }

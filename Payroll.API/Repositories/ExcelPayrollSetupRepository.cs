@@ -54,7 +54,7 @@ ORDER BY updated_at DESC,id DESC LIMIT 1",new { ClientId=clientId,BatchId=batchI
         var saved = savedId is not null ? await db.QueryFirstOrDefaultAsync<SavedSetup>(@"SELECT id ImportId,request_id RequestId,status Status,CAST(request_json AS CHAR) RequestJson,CAST(result_json AS CHAR) ResultJson
 FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@BatchId AND id=@ImportId",new { ClientId=clientId,BatchId=batchId,ImportId=savedId }) : null;
         var savedMetadata = saved is null ? null : JsonNode.Parse(saved.ResultJson)?.AsObject();
-        var lastImport = saved is null ? null : new { saved.ImportId, saved.RequestId, saved.Status, savedRequest = JsonSerializer.Deserialize<ExcelPayrollSetupRequest>(saved.RequestJson, Json), result = JsonSerializer.Deserialize<ExcelPayrollSetupResult>(saved.ResultJson, Json), editableDefaultsDraft = savedMetadata?["editableDefaultsDraft"]?.DeepClone(), defaultsRevision = savedMetadata?["editableDefaultsRevision"]?.GetValue<int>() ?? 0 };
+        var lastImport = saved is null ? null : new { saved.ImportId, saved.RequestId, saved.Status, sourceChanged = savedMetadata?["transfer"]?["sourceHash"]?.GetValue<string>() is string savedHash && savedHash != Hash(JsonSerializer.Serialize(new { Batch=batch, Source=source },Json)), savedRequest = JsonSerializer.Deserialize<ExcelPayrollSetupRequest>(saved.RequestJson, Json), result = JsonSerializer.Deserialize<ExcelPayrollSetupResult>(saved.ResultJson, Json), editableDefaultsDraft = savedMetadata?["editableDefaultsDraft"]?.DeepClone(), defaultsRevision = savedMetadata?["editableDefaultsRevision"]?.GetValue<int>() ?? 0 };
         var defaults = await ReadClientDefaultsAsync(db, clientId, batch.Month);
         var allocationSettings = JsonNode.Parse(await PayrollDataTableStore.GetSetupJsonAsync(db))!.AsObject();
         var salaryTemplates = (allocationSettings["salaryStructures"] as JsonArray ?? []).OfType<JsonObject>()
@@ -66,7 +66,9 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@BatchId
         var appliedJson = appliedIds.Length>0 ? await db.QueryAsync<AppliedSetupRowSet>("SELECT id ImportId,CAST(JSON_EXTRACT(request_json,'$.rowIds') AS CHAR) RowsJson,CAST(result_json AS CHAR) ResultJson FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@BatchId AND status='Applied' AND id IN @Ids",new { ClientId=clientId,BatchId=batchId,Ids=appliedIds }) : [];
         var appliedOrder=appliedIds.Select((id,index)=>new {id,index}).ToDictionary(value=>value.id,value=>value.index,StringComparer.Ordinal);
         var appliedSetups=appliedJson.OrderBy(value=>appliedOrder[value.ImportId]).Select(value=>AppliedReceiptRows(value.RowsJson,value.ResultJson).ToList()).ToList();
-        return new { batchId = batch.Id, month = batch.Month, source, components = componentRows, workWeeks, workLocations, employees = employeeRows, defaults, migrationRequired = !ready, salaryCorrectionSupported = true, sourcePayableOverrideSupported = true, sharedHeaderDivisorSupported = true, templateApplicabilitySupported = true, calculationOnlySimulationSupported = true, identityColumnReviewSupported = true, identityColumnCandidates = IdentityColumnCandidates(batch,source,rowIds is { Count: > 0 } ? rowIds : batch.Rows.Select(r=>r.Id).ToArray()), payableOnlyAttendanceSupported = PayableOnlyRolloutAvailable(configuration, await HasNullablePresenceSchemaAsync(db, null)), locationAllocationSupported = true, locationAllocationImportDate = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), salaryTemplates, lastImport, roster, appliedSetups };
+        var nullablePresenceReady = await HasNullablePresenceSchemaAsync(db, null);
+        var clientConfiguration = ready ? await ReadClientConfigurationAsync(db,clientId,source) : null;
+        return new { batchId = batch.Id, month = batch.Month, source, components = componentRows, workWeeks, workLocations, employees = employeeRows, defaults, migrationRequired = !ready, salaryCorrectionSupported = true, sourcePayableOverrideSupported = true, sharedHeaderDivisorSupported = true, templateApplicabilitySupported = true, calculationOnlySimulationSupported = true, identityColumnReviewSupported = true, identityColumnCandidates = IdentityColumnCandidates(batch,source,rowIds is { Count: > 0 } ? rowIds : batch.Rows.Select(r=>r.Id).ToArray()), payableOnlyAttendanceSupported = PayableOnlyRolloutAvailable(configuration, nullablePresenceReady), payableOnlyAttendanceSchemaReady = nullablePresenceReady, payableOnlyAttendanceUnavailableReason = PayableOnlyRolloutError(configuration, nullablePresenceReady), sourceCtcAndExtraDutySupported = true, locationAllocationSupported = true, locationAllocationImportDate = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), salaryTemplates, lastImport, clientConfiguration, roster, appliedSetups };
     }
 
     public async Task<object> SaveDraftAsync(int clientId, ExcelPayrollSetupDraftRequest draft, string actor)
@@ -130,9 +132,15 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND (request_id=@Requ
         { var keptResult=JsonSerializer.Deserialize<ExcelPayrollSetupResult>(receipt.ResultJson,Json)!; keptResult.Replayed=true; await tx.CommitAsync(); return keptResult; }
         if (receipt is { Status: "Applied" })
         {
-            if (receipt.RequestHash != requestHash && !SameReviewedRequest(receipt.RequestJson,apply.Request)) throw new InvalidOperationException("This import request or selected source rows were already applied with different settings. Open the existing result; use a new source batch for a revised import.");
-            var previous = JsonSerializer.Deserialize<ExcelPayrollSetupResult>(receipt.ResultJson, Json)!; previous.Replayed = true;
-            await tx.CommitAsync(); return previous;
+            var currentSource = await ReadSourceAsync(db,tx,clientId,apply.Request.BatchId);
+            var oldSourceHash = JsonNode.Parse(receipt.ResultJson)?["transfer"]?["sourceHash"]?.GetValue<string>();
+            var sourceMatches = oldSourceHash is null || oldSourceHash == Hash(JsonSerializer.Serialize(new { currentSource.Batch, currentSource.Source },Json));
+            if (sourceMatches && (receipt.RequestHash == requestHash || SameReviewedRequest(receipt.RequestJson,apply.Request)))
+            {
+                var previous = JsonSerializer.Deserialize<ExcelPayrollSetupResult>(receipt.ResultJson, Json)!; previous.Replayed = true;
+                await tx.CommitAsync(); return previous;
+            }
+            if (!apply.Request.UpdateExistingConfiguration) throw new InvalidOperationException("Open Edit configuration, review the current source and apply the update to this same setup.");
         }
         if (receipt is not null && receipt.RequestId != apply.RequestId) throw new InvalidOperationException("Open the existing setup draft for this source selection before applying it.");
         // Current reads take all target locks before the first consistent source read establishes
@@ -145,6 +153,8 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND (request_id=@Requ
         SeparateKeptTransferRows(plan,result);
         if (plan.Rows.Count > 0) {
         await InsertMastersAsync(db, tx, clientId, apply.Request, plan);
+        var masterSyncSetupJson = await PayrollDataTableStore.GetSetupJsonAsync(db,tx);
+        var masterSyncSetupDocument=JsonNode.Parse(masterSyncSetupJson) as JsonObject??new();
         await InsertReviewedDropdownsAsync(db, tx, clientId, apply.Request, plan);
         foreach (var name in plan.Rows.Where(r => r.NewWorkLocationName.Length > 0).Select(r => r.NewWorkLocationName).Distinct(StringComparer.OrdinalIgnoreCase))
         {
@@ -166,13 +176,19 @@ SELECT Id,Name,@LocationName,'','',@State,'','',FALSE,TRUE FROM clients WHERE Id
                 throw new InvalidOperationException("Employee identity changed after review: "+string.Join(" ",lockedIssues.Where(issue=>issue.Severity=="Error").Select(issue=>issue.Message)));
             result.DataQualityReviews.AddRange(lockedIssues.Where(issue=>issue.Code==BankDataReviewCode));
             var isNew = row.Employee.Id == 0;
-            var id = await EmployeeRepository.SaveExcelPayrollSetupEmployeeAsync(db, tx, row.Employee, plan.EffectiveFrom, actor,
+            var unchanged = !isNew && row.ExistingTemplateId == row.Employee.SalaryStructureId && row.ExistingAnnualCtc == row.Employee.AnnualCtc
+                && row.ExistingSalaryInputs.Count == row.Employee.SalaryComponents.Count && row.ExistingSalaryInputs.All(pair => row.Employee.SalaryComponents.TryGetValue(pair.Key,out var value) && value == pair.Value);
+            var id = unchanged ? row.Employee.Id : await EmployeeRepository.SaveExcelPayrollSetupEmployeeAsync(db, tx, row.Employee, plan.EffectiveFrom, actor,
                 $"Reviewed salary Excel {apply.Request.BatchId}, row {row.SourceRow}, import {result.ImportId}",
                 apply.Request.CorrectionOfImportId is null ? null
                     : $"Reviewed salary Excel {apply.Request.BatchId}, row {row.SourceRow}, import {apply.Request.CorrectionOfImportId}");
             row.Employee.Id = id; result.EmployeeIds.Add(id);
+            var sourceIdentity=plan.Batch.Rows.Single(item=>item.Id==row.RowId);
+            result.MasterLinks.Add(new(row.RowId,id,sourceIdentity.SourceRow,ExcelPayslipMasterSynchronization.IdentityHash(sourceIdentity),
+                ExcelPayslipMasterSynchronization.SalaryHash(row.Employee,masterSyncSetupJson,masterSyncSetupDocument),row.Preview.PayrollDays,
+                apply.Request.PresentDaysColumnIndex.HasValue ? row.Preview.PresentDays : null,row.Preview.PayableDays,apply.Request.ReviewedExtraDutyUnits));
             if (apply.Request.TransferReviewVersion == 1) result.TransferRows.Add(new(row.RowId,id,row.Preview.PayrollDays,apply.Request.ImportPayableOnlyAttendance?null:row.Preview.PresentDays,row.Preview.PayableDays,plan.Batch.Rows.Single(r => r.Id == row.RowId).NetPay,row.Preview.Lines.ToList()));
-            if (isNew) result.CreatedCount++; else result.UpdatedCount++;
+            if (isNew) result.CreatedCount++; else if(!unchanged) result.UpdatedCount++;
         }
         if (apply.Request.ImportAttendance) result.AttendanceGroupId = await InsertAttendanceAsync(db, tx, clientId, apply.Request, plan, result.ImportId, result);
         if (apply.Request.OverrideSourcePayableAttendance) await WritePayableOverrideAsync(db, tx, clientId, apply.Request, plan, result);
@@ -184,7 +200,7 @@ SELECT Id,Name,@LocationName,'','',@State,'','',FALSE,TRUE FROM clients WHERE Id
             Status = receiptStatus, RequestJson = JsonSerializer.Serialize(apply.Request, Json), ResultJson = JsonSerializer.Serialize(result, Json), Actor = actor.Length > 190 ? actor[..190] : actor };
         if (receipt is null) await db.ExecuteAsync(@"INSERT INTO excel_payroll_setup_imports(id,client_id,batch_id,request_id,selection_hash,request_hash,plan_hash,status,request_json,result_json,created_by)
 VALUES(@Id,@ClientId,@BatchId,@RequestId,@SelectionHash,@RequestHash,@PlanHash,@Status,CAST(@RequestJson AS JSON),CAST(@ResultJson AS JSON),@Actor)", receiptValues, tx);
-        else await db.ExecuteAsync(@"UPDATE excel_payroll_setup_imports SET status=@Status,batch_id=@BatchId,selection_hash=@SelectionHash,request_hash=@RequestHash,plan_hash=@PlanHash,request_json=CAST(@RequestJson AS JSON),result_json=CAST(@ResultJson AS JSON) WHERE id=@Id AND status IN ('Draft','Kept')", receiptValues, tx);
+        else await db.ExecuteAsync(@"UPDATE excel_payroll_setup_imports SET status=@Status,batch_id=@BatchId,selection_hash=@SelectionHash,request_hash=@RequestHash,plan_hash=@PlanHash,request_json=CAST(@RequestJson AS JSON),result_json=CAST(@ResultJson AS JSON) WHERE id=@Id AND status IN ('Draft','Kept','Applied')", receiptValues, tx);
         await tx.CommitAsync(); return result;
     }
 
@@ -242,7 +258,7 @@ VALUES(@Id,@ClientId,@BatchId,@RequestId,@SelectionHash,@RequestHash,@PlanHash,@
         ValidateSharedPayrollDaysBinding(request, source, selected, batch.Rows);
         var appliedRows = await AppliedSourceRowsAsync(db,tx,clientId,request.BatchId);
         if(request.CorrectionOfImportId is not null)await ReviewSalaryCorrectionAsync(db,tx,clientId,request,plan,appliedRows);
-        else foreach (var row in selected.Where(row=>appliedRows.Contains(row.Id))) Error("Master setup was already applied for this source row. Use the explicit salary-only correction review to revise a verified existing assignment; native attendance and previous receipts are retained.",row.Id);
+        else if (!request.UpdateExistingConfiguration) foreach (var row in selected.Where(row=>appliedRows.Contains(row.Id))) Error("Master setup is already configured. Use Edit configuration to update the same setup.",row.Id);
         var setupJson = await PayrollDataTableStore.GetSetupJsonAsync(db, tx);
         var setup = JsonNode.Parse(setupJson)!.AsObject();
         var masters = (setup["salaryComponents"] as JsonArray ?? []).OfType<JsonObject>().ToList();
@@ -316,7 +332,8 @@ FROM employees e LEFT JOIN employeepersonaldetails p ON p.EmployeeId=e.Id LEFT J
             plan.Rows.Add(planned);
             try
             {
-                var arithmetic = CalculateRow(clientId, request, plan.Components, sourceRow, row, source.Columns.Where(c => c.BlankAsZero).Select(c => c.ColumnIndex).ToHashSet());
+                var retainedCtc = request.UpdateExistingConfiguration && !request.MonthlyCtcColumnIndex.HasValue && employee.Id>0 && employee.AnnualCtc>0 ? employee.AnnualCtc : (decimal?)null;
+                var arithmetic = CalculateRow(clientId, request, plan.Components, sourceRow, row, source.Columns.Where(c => c.BlankAsZero).Select(c => c.ColumnIndex).ToHashSet(), source,retainedCtc);
                 planned.Preview = arithmetic.Preview;
                 planned.SalaryInputs = arithmetic.Inputs;
                 planned.Adjustments = arithmetic.Adjustments;
@@ -340,7 +357,7 @@ FROM employees e LEFT JOIN employeepersonaldetails p ON p.EmployeeId=e.Id LEFT J
 WHERE pe.EmployeeId=@Id AND pr.ClientId=@ClientId AND pr.PayPeriod=@Month AND pe.IsSkipped=FALSE AND pr.Status IN ('Draft','Queued','Processing','Pending Approval','Approved','Partially Paid','Paid')", new { employee.Id, ClientId = clientId, Month = batch.Month }, tx);
                     if (conflicts > 0) Error("The selected employee already has payroll for this period. Review that run before changing its salary setup.", row.Id);
                     var approvedAdjustments = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM payrolladjustments WHERE ClientId=@ClientId AND EmployeeId=@Id AND PayPeriod=@Month AND Status='Approved'",new { ClientId=clientId,employee.Id,Month=batch.Month },tx);
-                    if (approvedAdjustments > 0 && request.CorrectionOfImportId is null) Error("Approved payroll adjustments already exist for this employee and period. Review them before importing amounts that could be counted twice.",row.Id);
+                    if (approvedAdjustments > 0 && request.CorrectionOfImportId is null && !request.UpdateExistingConfiguration) Error("Approved payroll adjustments already exist for this employee and period. Review them before importing amounts that could be counted twice.",row.Id);
                     var groups = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM attendance_group_employees m JOIN attendance_groups g ON g.id=m.attendance_group_id WHERE m.employee_id=@Id AND g.client_id=@ClientId AND g.is_active=TRUE", new { employee.Id, ClientId = clientId }, tx);
                     if (groups > 1) Error("The selected employee belongs to multiple active attendance policies. Resolve the ambiguous membership before applying.", row.Id);
                     else if (groups == 1 && !request.PreserveExistingAttendancePolicies) Error("This employee already has an attendance policy. Enable Preserve existing attendance policies to reuse it unchanged.", row.Id);
@@ -408,6 +425,12 @@ FROM payruns pr JOIN payrunemployees pe ON pe.PayRunId=pr.Id WHERE pr.ClientId=@
         if(request.TransferReviewVersion==1 && request.TemplateScopeReviewVersion!=1 && !request.TemplateDecisions.All(d=>d.KeepExisting)) Error("Refresh the saved-batch setup and complete explicit template applicability review before source transfer.");
         if(request.TemplateScopeReviewVersion==1)plan.TemplateScopes=await ReadTemplateScopesAsync(db,tx,clientId);
         FinalizeTransferReview(plan, request, clientId, templates, masters);
+        foreach (var templateId in plan.UpdatedTemplateIds)
+        {
+            var affected = plan.Rows.Where(row => row.TemplateId == templateId).Select(row => row.Employee.Id).Where(id => id > 0).ToArray();
+            var outside = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employees WHERE SalaryStructureId=@TemplateId AND (ClientId<>@ClientId OR Id NOT IN @Ids)",new {TemplateId=templateId,ClientId=clientId,Ids=affected.Length>0?affected:[-1]},tx);
+            if (outside > 0) Error("This template is also assigned outside the selected employees. Include its full employee scope before updating shared rules; no duplicate template will be created.");
+        }
         await ValidatePayableOnlyAttendanceStateAsync(db, tx, clientId, request, plan);
         await ValidatePayableOverrideAsync(db, tx, clientId, request, plan);
         FinalizePresentDaysEvidence(plan, request, clientId);
@@ -457,6 +480,7 @@ FROM payruns pr JOIN payrunemployees pe ON pe.PayRunId=pr.Id WHERE pr.ClientId=@
         public Dictionary<int,NativePayrollAttendanceInput> NativeAttendanceInputs { get; set; } = [];
         public DateTime EffectiveFrom { get; set; }
         public HashSet<string> ReusedTemplateIds { get; } = new();
+        public HashSet<string> UpdatedTemplateIds { get; } = new();
         public HashSet<string> SalaryOnlyBankReviewRows { get; set; } = new();
         public IReadOnlyDictionary<string, IReadOnlyList<ExcelPayrollSetupIssue>>? ExistingSalaryOnlyIdentityIssues { get; set; }
         public List<ExcelPayrollRecordedTemplateScope> TemplateScopes { get; set; } = [];

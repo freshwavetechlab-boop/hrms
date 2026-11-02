@@ -22,7 +22,7 @@ const backofficePermissionCodes = new Set([
   'security.manage', 'client.users.manage', 'client.roles.assign', 'client.settings.manage', 'settings.manage', 'employees.view', 'employees.manage',
   'employee.communication.view', 'employee.communication.send', 'payroll.run',
   'payroll.approve', 'payroll.payments', 'leave.manage', 'attendance.manage',
-  'tax.statutory.manage', 'workflow.manage', 'reports.view', 'audit.view',
+  'tax.statutory.manage', 'workflow.manage', 'reports.view', 'reports.payroll.view', 'reports.compliance.view', 'reports.billing.view', 'billing.manage', 'audit.view',
   'recruitment.manage', 'recruitment.position.view', 'recruitment.position.manage',
   'recruitment.assign.recruiter', 'recruitment.assign.partner', 'recruitment.publish',
   'recruitment.referral.manage', 'recruitment.work-order.view',

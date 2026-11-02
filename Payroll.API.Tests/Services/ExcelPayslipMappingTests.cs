@@ -7,6 +7,64 @@ namespace Payroll.API.Tests.Services;
 
 public sealed class ExcelPayslipMappingTests
 {
+    [Fact]
+    public void EmployeeInputsAndEmployerCostLessonIsRetrievedFromAnonymousSalaryDayHeaders()
+    {
+        var columns = new List<ExcelPayslipMappingColumn> {
+            new() { ColumnIndex=0, SourceHeader="Basic", Kind="info", HasNumbers=true },
+            new() { ColumnIndex=1, SourceHeader="DA", Kind="info", HasNumbers=true },
+            new() { ColumnIndex=2, SourceHeader="Payable Days", Kind="info", HasNumbers=true },
+            new() { ColumnIndex=3, SourceHeader="Earned Basic", Kind="earning", HasFormula=true, FormulaDependencies=[0,2] } };
+        var path=Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md");
+        var lesson=Assert.Single(ExcelPayslipMappingService.Retrieve(columns,File.ReadAllText(path),[]), item=>item.Title.StartsWith("Basic DA Payable Days:"));
+        Assert.True(lesson.Content.Length<2600); Assert.Contains("explicit employee zero is still valid",lesson.Content);
+        Assert.Contains("outside cash earnings",lesson.Content); Assert.Contains("no universal fixed divisor",lesson.Content);
+    }
+    [Fact]
+    public void FormulaCellsAndAttendancePolicyLessonIsRetrievedFromPfEsicDayHeaders()
+    {
+        var columns=new List<ExcelPayslipMappingColumn>{new(){ColumnIndex=0,SourceHeader="PF",Kind="deduction",HasFormula=true,FormulaDependencies=[2]},new(){ColumnIndex=1,SourceHeader="ESIC",Kind="deduction",HasFormula=true,FormulaDependencies=[2]},new(){ColumnIndex=2,SourceHeader="Payable Days",Kind="info",HasNumbers=true}};
+        var path=Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md");
+        var lesson=Assert.Single(ExcelPayslipMappingService.Retrieve(columns,File.ReadAllText(path),[]),r=>r.Title.StartsWith("PF ESIC Payable Days:"));
+        Assert.Contains("real Excel formulas",lesson.Content);Assert.Contains("not a fallback",lesson.Content);
+        Assert.Contains("Employer PF/ESIC contributions stay outside",lesson.Content);Assert.True(lesson.Content.Length<2600);
+        Assert.Contains("global PT switch alone does not prove",lesson.Content);
+    }
+    [Fact]
+    public void CurrentMasterContactAndCtcLessonIsRetrievedWithoutEmployeeValues()
+    {
+        var columns=new List<ExcelPayslipMappingColumn>{new(){ColumnIndex=0,SourceHeader="Email",Kind="email"},new(){ColumnIndex=1,SourceHeader="Phone",Kind="info"},new(){ColumnIndex=2,SourceHeader="CTC",Kind="info"},new(){ColumnIndex=3,SourceHeader="Bank",Kind="info"}};
+        var path=Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md");
+        var lesson=Assert.Single(ExcelPayslipMappingService.Retrieve(columns,File.ReadAllText(path),[]),r=>r.Title.StartsWith("Email Phone CTC Bank:"));
+        Assert.Contains("immutable Employee ID",lesson.Content);Assert.Contains("unknown actual presence unknown",lesson.Content);
+        Assert.Contains("regular payroll calculator",lesson.Content);Assert.True(lesson.Content.Length<2600);
+    }
+    [Fact]
+    public void DesignationMasterSyncBoundaryIsRetrievedFromStructuralHeaders()
+    {
+        var columns=new List<ExcelPayslipMappingColumn>{new(){ColumnIndex=0,SourceHeader="Employee code",Kind="employeeCode"},
+            new(){ColumnIndex=1,SourceHeader="Designation_Manpower Category",Kind="info"},new(){ColumnIndex=2,SourceHeader="Basic",Kind="earning"}};
+        var path=Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md");
+        var lesson=Assert.Single(ExcelPayslipMappingService.Retrieve(columns,File.ReadAllText(path),[]),reference=>reference.Title.StartsWith("Designation Manpower Category:"));
+        Assert.True(lesson.Content.Length<2600);Assert.Contains("preserving the captured source field",lesson.Content);
+        Assert.Contains("Regenerate current-row literals and formulas",lesson.Content);
+    }
+    [Fact]
+    public void LiteralDeductionConfigurationLessonIsRetrievedWithoutClientOrFileNames()
+    {
+        var columns=new List<ExcelPayslipMappingColumn>{
+            new(){ColumnIndex=0,SourceHeader="Employee name",Kind="employeeName"},
+            new(){ColumnIndex=1,SourceHeader="PT",Kind="deduction",HasNumbers=true},
+            new(){ColumnIndex=2,SourceHeader="MLWF",Kind="deduction",HasNumbers=true},
+            new(){ColumnIndex=3,SourceHeader="Penalty",Kind="deduction",HasNumbers=true},
+            new(){ColumnIndex=4,SourceHeader="Net paid",Kind="netPay",HasFormula=true,FormulaDependencies=[1,2,3]}};
+        var path=Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md");
+        var lesson=Assert.Single(ExcelPayslipMappingService.Retrieve(columns,File.ReadAllText(path),[]),reference=>reference.Title.StartsWith("PT MLWF Penalty:"));
+        Assert.True(lesson.Content.Length<2600);
+        Assert.Contains("differing literal alone does not establish a new salary rule",lesson.Content);
+        Assert.Contains("never freeze formula caches",lesson.Content);
+        Assert.Equal("excel-payroll-mapping-v11",ExcelPayslipMappingService.KnowledgeVersion);
+    }
     private static ExcelPayslipMappingRequest Request() => new() { Columns = [
         new() { ColumnIndex = 0, SourceHeader = "Employee name", Label = "Employee name", Kind = "employeeName" },
         new() { ColumnIndex = 1, SourceHeader = "Performance reward", Label = "Performance reward" },
@@ -191,5 +249,96 @@ public sealed class ExcelPayslipMappingTests
         var references = ExcelPayslipMappingService.Retrieve(request.Columns, File.ReadAllText(path), []);
         Assert.Contains(references, r => r.Title.StartsWith("Cross-sheet formula inputs"));
         Assert.Contains(1, Apply("""{"columns":[]} """, request).ReviewColumnIndexes);
+    }
+
+    private static ExcelPayslipMappingRequest TransportBonusRequest()
+    {
+        var request = new ExcelPayslipMappingRequest { Columns = Enumerable.Range(0, 54)
+            .Select(index => new ExcelPayslipMappingColumn { ColumnIndex = index, SourceHeader = "", Label = "", Kind = "ignore" }).ToList() };
+        void Column(int index, string header, string kind, params int[] dependencies)
+        {
+            request.Columns[index] = new() { ColumnIndex = index, SourceHeader = header, Label = header, Kind = kind,
+                HasNumbers = kind != "employeeName", HasText = kind == "employeeName", HasFormula = dependencies.Length > 0,
+                FormulaDependencies = dependencies };
+        }
+        Column(0, "SR NO", "ignore"); Column(1, "ID NO", "ignore"); Column(2, "CONDUCTOR NAME", "employeeName");
+        Column(3, "uan", "info"); Column(4, "Basic", "info"); Column(5, "DA", "info");
+        Column(6, "HRA @ 5%", "info", 4, 5); Column(7, "Bonus @ 8.33%", "info", 4, 5);
+        Column(8, "Leave", "info"); Column(9, "Uniform Allowance", "info"); Column(10, "Total", "ignore", 4, 5, 6, 7, 8, 9);
+        Column(11, "Month days", "info"); Column(12, "Payble Days", "info");
+        Column(14, "Basic", "earning", 4, 11, 12); Column(15, "DA", "earning", 5, 11, 12);
+        Column(16, "HRA @ 5%", "earning", 6, 11, 12); Column(17, "Bonus @ 8.33%", "earning", 7, 11, 12);
+        Column(18, "Leave", "earning", 8, 11, 12); Column(19, "Uniform Allowance", "earning", 9, 11, 12);
+        Column(20, "Total", "ignore", 10, 11, 12);
+        Column(21, "EPF 13%", "employer"); Column(22, "ESIC @ 3.25%", "employer");
+        Column(23, "Total", "ignore", 20, 21, 22); Column(24, "Service Charge", "ignore");
+        Column(25, "Total", "ignore", 23, 24); Column(26, "IGST", "ignore"); Column(27, "Invoice", "ignore", 25, 26);
+        Column(29, "EPF 12%", "deduction"); Column(30, "ESIC @ .75%", "deduction");
+        Column(31, "Pt", "deduction"); Column(32, "MLWF", "deduction");
+        Column(33, "After statutory deductions", "ignore", 20, 29, 30, 31, 17, 32);
+        Column(34, "recovery", "deduction"); Column(35, "Penalty", "deduction"); Column(36, "net paid", "netPay", 33, 34, 35);
+        Column(52, "Recovery", "deduction"); Column(53, "Invoice total", "ignore");
+        return request;
+    }
+
+    [Fact]
+    public void TransportBonusCaseIsRetrievedFromHeadersAndDependenciesWithoutClientOrWorkbookNames()
+    {
+        var request = TransportBonusRequest(); ExcelPayslipMappingService.ValidateRequest(request);
+        var path = Path.Combine(AppContext.BaseDirectory, "FrevoPilot", "docs", "excel-payroll-mapping.md");
+        var references = ExcelPayslipMappingService.Retrieve(request.Columns, File.ReadAllText(path), []);
+        var pattern = Assert.Single(references, item => item.Title.StartsWith("TMT pattern:"));
+        using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, references));
+        Assert.Equal("excel-payroll-mapping-v11", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        var supplied = prompt.RootElement.GetProperty("references").EnumerateArray()
+            .Single(item => item.GetProperty("title").GetString() == pattern.Title).GetProperty("content").GetString()!;
+        Assert.Equal(pattern.Content, supplied); // The critical case must fit without prompt truncation.
+        Assert.Contains("BA Recovery", supplied);
+        Assert.Contains("V EPF 13% and W ESIC 3.25%", supplied);
+        Assert.Contains("AB is Invoice and AC is blank", supplied);
+        Assert.DoesNotContain("formulaText", prompt.RootElement.GetRawText());
+        Assert.DoesNotContain("sourceFileName", prompt.RootElement.GetRawText());
+    }
+
+    [Fact]
+    public void TransportBonusSuggestionsCanCorrectOnlyTheOffsetBonusAndSideRecoveryWithoutChangingSource()
+    {
+        var request = TransportBonusRequest(); var before = JsonSerializer.Serialize(request);
+        var result = Apply("""{"columns":[{"columnIndex":17,"kind":"info","confidence":0.99},{"columnIndex":52,"kind":"ignore","confidence":0.99},{"columnIndex":7,"kind":"earning","confidence":1}]}""", request);
+        Assert.Equal("info", result.Columns[17].Kind); Assert.Equal("ignore", result.Columns[52].Kind);
+        Assert.Equal("info", result.Columns[7].Kind); Assert.Equal("deduction", result.Columns[34].Kind);
+        Assert.Equal("netPay", result.Columns[36].Kind); Assert.Equal("employer", result.Columns[21].Kind);
+        Assert.Equal("employer", result.Columns[22].Kind); Assert.Equal("ignore", result.Columns[27].Kind);
+        Assert.Equal(new[] { 17, 52 }, result.Columns.Where(column => column.Kind != request.Columns[column.ColumnIndex].Kind).Select(column => column.ColumnIndex));
+        Assert.Contains(17, result.ReviewColumnIndexes); Assert.Contains(52, result.ReviewColumnIndexes);
+        Assert.Equal(before, JsonSerializer.Serialize(request));
+    }
+
+    [Fact]
+    public void MonthlyTotalDutyUnitAndLiteralDeductionBoundaryIsRetrievedFromStructuralHeadings()
+    {
+        var request=TransportBonusRequest();request.Columns[11].SourceHeader="Total Days";
+        var path=Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md");
+        var references=ExcelPayslipMappingService.Retrieve(request.Columns,File.ReadAllText(path),[]);
+        var rule=Assert.Single(references,r=>r.Title.StartsWith("Native setup: monthly Total"));
+        using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,references));
+        var supplied=prompt.RootElement.GetProperty("references").EnumerateArray().Single(r=>r.GetProperty("title").GetString()==rule.Title).GetProperty("content").GetString();
+        Assert.Equal(rule.Content,supplied);Assert.Contains("never annualize attendance-prorated Basic",supplied);
+        Assert.Contains("Unknown actual presence stays unknown",supplied);Assert.Contains("small unexplained mismatch remains blocked",supplied);
+    }
+
+    [Fact]
+    public void OrdinaryCashBonusAndEmployeeRecoveryRemainValidRolesForOtherLayouts()
+    {
+        var request = new ExcelPayslipMappingRequest { Columns = [
+            new() { ColumnIndex = 0, SourceHeader = "Employee Name", Label = "Employee Name", Kind = "employeeName" },
+            new() { ColumnIndex = 1, SourceHeader = "Basic", Label = "Basic", Kind = "earning" },
+            new() { ColumnIndex = 2, SourceHeader = "Cash Bonus", Label = "Cash Bonus", Kind = "ignore" },
+            new() { ColumnIndex = 3, SourceHeader = "Employee Recovery", Label = "Employee Recovery", Kind = "ignore" },
+            new() { ColumnIndex = 4, SourceHeader = "Net Pay", Label = "Net Pay", Kind = "netPay", HasFormula = true, FormulaDependencies = [1, 2, 3] }
+        ] };
+        var result = Apply("""{"columns":[{"columnIndex":2,"kind":"earning","confidence":0.99},{"columnIndex":3,"kind":"deduction","confidence":0.99}]}""", request);
+        Assert.Equal("earning", result.Columns[2].Kind); Assert.Equal("deduction", result.Columns[3].Kind);
+        Assert.Equal("netPay", result.Columns[4].Kind);
     }
 }

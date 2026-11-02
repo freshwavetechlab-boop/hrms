@@ -8,6 +8,7 @@ import { rankKnowledgeChunks, retrievalVersion } from './retrieval.mjs'
 const sources = [
   ['Payroll.API/FrevoPilot/docs/excel-payroll-mapping.md', 'Verified Excel payroll mapping patterns and master setup boundaries'],
   ['Payroll.API/FrevoPilot/docs/recruitment-evidence-policy.md', 'ATS evidence, Qwen and recruitment RAG verification rules'],
+  ['Payroll.API/FrevoPilot/docs/resume-parsing-patterns.md', 'Resume parser identity, qualifications, skills, Qwen verified feedback API memory and bulk review lessons'],
   ['docs/analytics-business-rules.md', 'Verified HRMS analytics definitions and safeguards'],
   ['docs/api-catalog.md', 'HRMS API catalogue'],
   ['docs/enterprise-payroll-engine-audit.md', 'Payroll engine audit'],
