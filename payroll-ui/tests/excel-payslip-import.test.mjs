@@ -5,8 +5,47 @@ import { pathToFileURL } from 'node:url'
 import ts from 'typescript'
 
 const compiled = ts.transpileModule(readFileSync(new URL('../src/utils/excelPayslipImport.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
-const { parsePayslipCsv, defaultPayslipMapping, buildExcelPayslipRows, buildPayslipCalculationSource, translatePayslipSharedFormula, resolvePayslipSharedFormulas, payslipHeaders, payslipHeaderSignature, parsePayslipAmount, inferPayslipMonth, formatExcelPayslipAmount, payslipPhoneValue } = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'))
+const { parsePayslipCsv, defaultPayslipMapping, buildExcelPayslipRows, buildPayslipCalculationSource, translatePayslipSharedFormula, resolvePayslipSharedFormulas, payslipHeaders, payslipHeaderSignature, parsePayslipAmount, inferPayslipMonth, formatExcelPayslipAmount, formatPayslipSourceCell, payslipPhoneValue } = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'))
 const parse = text => { const sheet = parsePayslipCsv(text); const columns = defaultPayslipMapping(payslipHeaders(sheet, 1)); return { sheet, columns, result: buildExcelPayslipRows(sheet, 1, columns) } }
+
+test('numeric Aadhaar and contact source previews show whole digits without changing captured data or salary', () => {
+  const { sheet, columns } = parse('Employee Name,Basic,Net Pay,AADHAR NUMBER,CONTACT NUMBER\nExample,123.456,1.23456E2,9.12345678901E11,9.123456789E9')
+  const cells = sheet.rows[1].cells
+  for (const index of [3, 4]) cells[index].dataType = 'Number'
+  const before = JSON.stringify(sheet), rowsBefore = buildExcelPayslipRows(sheet, 1, columns)
+  assert.equal(formatPayslipSourceCell(cells[3], columns[3].sourceHeader), '912345678901')
+  assert.equal(formatPayslipSourceCell(cells[4], columns[4].sourceHeader), '9123456789')
+  assert.equal(formatPayslipSourceCell({ value: '9123456789.0', dataType: 'Number' }, 'Mobile No.'), '9123456789')
+  for (const header of ['UAN NUMBER', 'UAN', 'UAN No.', 'ESI NUMBER', 'ESIC No', 'Employee Code', 'Emp ID', 'PF Account Number', 'Bank Account Number', 'ACCOUNT NUMBER', 'Bank A/C No.', 'Aadhaar Number']) {
+    assert.equal(formatPayslipSourceCell({ value: '9.12345678901E11', dataType: 'Number' }, header), '912345678901', header)
+  }
+  assert.equal(formatPayslipSourceCell({ value: '1.23456789012345E14', dataType: 'Number' }, 'Account Number'), '123456789012345')
+  assert.equal(JSON.stringify(sheet), before)
+  assert.deepEqual(buildExcelPayslipRows(sheet, 1, columns), rowsBefore)
+  const captured = buildPayslipCalculationSource(sheet, 1, columns)
+  assert.equal(captured.rows[1].cells[3].value, '9.12345678901E11')
+  assert.equal(captured.rows[1].cells[4].value, '9.123456789E9')
+  assert.equal(rowsBefore.rows[0].netPay, 123.456)
+})
+
+test('source preview preserves text identifiers, leading zeroes, review evidence and monetary precision', () => {
+  for (const cell of [
+    { value: '9.123456789E9', dataType: 'Text' },
+    { value: '9.123456789E9' },
+    { value: '009123456789', dataType: 'Text' },
+    { value: '9.123456789012345E15', dataType: 'Number' },
+    { value: '9.123E-3', dataType: 'Number' },
+    { value: '9123456789.5', dataType: 'Number' },
+    { value: '9.123E9', dataType: 'Number', formulaText: 'A2' },
+    { value: '9.123E9', dataType: 'Number', formula: true },
+    { value: '9.123E9', dataType: 'Number', error: '#VALUE!' },
+    { value: '9.123E9', dataType: 'Number', calculationError: 'Review required' },
+    { value: '9.123E9', dataType: 'Number', missingCachedValue: true },
+  ]) assert.equal(formatPayslipSourceCell(cell, 'Aadhaar Number'), cell.value)
+  for (const header of ['EPF 12%', 'ESIC @ 0.75%', 'PT', 'Basic', 'Net Pay', 'Payable Days'])
+    assert.equal(formatPayslipSourceCell({ value: '9.123E9', dataType: 'Number' }, header), '9.123E9')
+  assert.equal(formatPayslipSourceCell(undefined, 'Contact Number'), '')
+})
 
 test('transport salary headings identify employees and net paid without treating a bare ID number as an employee code', () => {
   for (const name of ['CONDUCTOR NAME', 'Driver Name']) {

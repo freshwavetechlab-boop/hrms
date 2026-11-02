@@ -19,7 +19,7 @@ import { CloseOutlined, DownOutlined, DownloadOutlined, EditOutlined, FilePdfOut
 import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
 import { useExcelPayslipEmailStatus } from '../hooks/useExcelPayslipEmailStatus'
 import { useExcelPayslipMailJobs } from '../hooks/useExcelPayslipMailJobs'
-import { applySuggestedPayslipBlankAmounts, buildExcelPayslipRows, buildPayslipCalculationSource, defaultPayslipMapping, excelColumnLetter, formatExcelPayslipAmount, inferPayslipMonth, isPayslipAmountKind, payslipColumnKinds, payslipHeaders, payslipHeaderSignature, payslipPhoneValue, type PayslipColumn, type PayslipColumnKind, type PayslipSheet } from '../utils/excelPayslipImport'
+import { applySuggestedPayslipBlankAmounts, buildExcelPayslipRows, buildPayslipCalculationSource, defaultPayslipMapping, excelColumnLetter, formatExcelPayslipAmount, formatPayslipSourceCell, inferPayslipMonth, isPayslipAmountKind, payslipColumnKinds, payslipHeaders, payslipHeaderSignature, payslipPhoneValue, type PayslipColumn, type PayslipColumnKind, type PayslipSheet } from '../utils/excelPayslipImport'
 import ExcelPayslipMonthTools from './ExcelPayslipMonthTools'
 import ExcelPayslipMailProgress from './ExcelPayslipMailProgress'
 import ExcelPayslipBulkAmountEditor from './ExcelPayslipBulkAmountEditor'
@@ -96,7 +96,7 @@ export default function ExcelPayslips() {
     return latest
   }, [history])
   const [batch, setBatch] = useState<ExcelPayslipBatch | null>(null)
-  const [employeeRowsView, setEmployeeRowsView] = useSessionPreference<'Employees' | 'Source rows'>(`excel-payslips:${session?.user.id}:${clientId}:${batch?.id}:employee-rows`, 'Employees')
+  const [employeeRowsView, setEmployeeRowsView] = useSessionPreference<'Payslips' | 'Source reconciliation'>(`excel-payslips:${session?.user.id}:${clientId}:${batch?.id}:employee-rows`, 'Payslips')
   const originalFiles = useRef<File[]>([])
   const retainedOriginals = useRef<RetainedWorkbookCache>(new Map())
   const emailStatus = useExcelPayslipEmailStatus(clientId, batch)
@@ -219,7 +219,9 @@ export default function ExcelPayslips() {
   const rows = batch?.clientId === clientId ? batch.rows.map(currentPayslip) : []
   const employeeGrouping = useMemo(() => batch?.clientId === clientId ? buildPayslipEmployeeGroups(batch) : null, [batch, clientId])
   const hasReviewedSourceParts = (employeeGrouping?.reviewedLocationSplitCount || 0) > 0
-  const showingEmployeeSummary = hasReviewedSourceParts && employeeRowsView === 'Employees'
+  // Legacy "Employees" preferences selected the source inspector. Keep normal
+  // payslip actions available unless reconciliation is explicitly requested.
+  const showingEmployeeSummary = hasReviewedSourceParts && employeeRowsView === 'Source reconciliation'
   const attendanceDays = new Map(rows.map(row => [row.id, savedPayslipAttendance(row)]))
   const monthDays = calendarMonthDays(batch?.month || '')
   const rowAttendance = (row: ExcelPayslipRow) => attendanceDays.get(row.id) || savedPayslipAttendance(row)
@@ -508,7 +510,7 @@ export default function ExcelPayslips() {
     if (busy && !fromLink) return
     const requestedClient = clientId
     const token = ++batchSequence.current
-    setBusy(true); setError('')
+    setBusy(true); setLoading(true); setError('')
     const result = await getExcelPayslipBatch(requestedClient, id)
     if (currentClient.current !== requestedClient || token !== batchSequence.current) return
     setBusy(false); setLoading(false)
@@ -708,6 +710,7 @@ export default function ExcelPayslips() {
       {batch?.clientId === clientId && <Dropdown menu={{ items: [
         ...(canManage ? [{ key: 'email-updates', label: 'Import email updates', icon: <UploadOutlined />, disabled: busy || loading, onClick: () => { setEmailUpdatesDraft(undefined); setEmailUpdatesBatch(batch.id) } }] : []),
         { key: 'export-template', label: 'Export salary template', icon: <DownloadOutlined />, disabled: busy || loading, onClick: () => void exportTemplate() },
+        ...(hasReviewedSourceParts ? [{ key: 'source-reconciliation', label: showingEmployeeSummary ? 'Back to payslips' : 'Source reconciliation', disabled: busy || loading, onClick: () => { setEmployeeRowsView(showingEmployeeSummary ? 'Payslips' : 'Source reconciliation'); setSelectedIds([]) } }] : []),
         ...(canManage ? [{ key: 'edit-mapping', label: 'Edit mapping', icon: <EditOutlined />, disabled: busy || loading, onClick: () => void editMapping() },
           { key: 'create-month', label: 'Create another month', disabled: busy || loading, onClick: () => setMonthTools('calculate') }] : []),
         { key: 'variance', label: 'Previous-month variance', disabled: busy || loading, onClick: () => setMonthTools('variance') }
@@ -727,7 +730,7 @@ export default function ExcelPayslips() {
     {batch?.clientId === clientId && <div className="excel-payslip-attendance-caption"><Tooltip title="Calendar days in this saved salary month. This does not set the payroll divisor or infer an employee's payable or joined/exited days."><Tag>Month days (calendar): {monthDays ?? 'Unavailable'}</Tag></Tooltip><span>Attendance below comes from this saved Excel batch. Other source days keep their original heading; present and payable days are shown separately.</span></div>}
     {rows.some(row=>row.masterDetails?.linked)&&<div className="excel-payslip-attendance-caption"><Tag color="blue">Master linked: {rows.filter(row=>row.masterDetails?.linked).length}</Tag><span>Profile, contact, bank and CTC use Employee Master. Salary changes use the configured payroll rules and reviewed source days. Updates refresh automatically.</span></div>}
     {batch?.clientId === clientId && <ExcelPayslipConsolidationHistory key={`history:${clientId}:${batch.id}:${consolidationRevision}`} clientId={clientId} batchId={batch.id} rows={batch.rows} canManage={canManage && session?.user.permissions.includes('settings.manage') === true} onChanged={(id, restored) => { void consolidationChanged(id, restored) }} onRetainedSource={setRetainedSourceId} />}
-    {hasReviewedSourceParts && <Space wrap className="excel-payslip-table-tools"><Segmented aria-label="Saved payslip row grouping" value={employeeRowsView} options={['Employees', 'Source rows']} disabled={busy} onChange={value => { setEmployeeRowsView(value as 'Employees' | 'Source rows'); setSelectedIds([]) }} /><Tooltip title="One employee/month source summary. Original rows and formulas are retained; PDF and email actions still use the individual source slips."><Tag>Location-wise source parts retained</Tag></Tooltip></Space>}
+    {showingEmployeeSummary && <Space wrap className="excel-payslip-table-tools"><Button size="small" disabled={busy} onClick={() => { setEmployeeRowsView('Payslips'); setSelectedIds([]) }}>Back to payslips</Button><span>Source reconciliation</span></Space>}
     {!!rows.length && !showingEmployeeSummary && view === 'Cards' && <div className="excel-payslip-email-tabs">
       <Segmented aria-label="Payslip email status" value={mailTab} disabled={busy} options={(['All', 'Pending', 'Missing', 'Queued', 'Sent', 'Attention'] as MailTab[]).map(value => ({ value, label: `${mailLabels[value]} (${tabCounts[value]})` }))} onChange={value => { setMailTab(value as MailTab); setSelectedIds([]) }} />
     </div>}
@@ -773,11 +776,12 @@ export default function ExcelPayslips() {
         status ? `${mailLabels[status.status]} ${status.email}`.trim() : 'Checking', (status?.recipientDeliveries || []).filter(item => item.mode === 'Combined').map(item => `${item.email}: ${item.status}`).join('; '),
         status?.message || '', row.warnings.join('; ') || 'No warnings', payslipDesignation(row),row.masterDetails?.linked?String(row.masterDetails.annualCtc??''):'',row.masterDetails?.linked?(row.masterDetails.salary?.status||'Current Master; source salary unchanged'):'Not configured') })
       downloadXlsx(`excel-payslips-${batch.month}.xlsx`, [{ name: 'Records', rows: report }])
-    }} actionsWidth={compactActions ? 88 : 240} actions={row => compactActions ? <Dropdown menu={{ items: [
+    }} actionsWidth={compactActions ? 88 : 320} actions={row => compactActions ? <Dropdown menu={{ items: [
       { key: 'details', label: 'Details', disabled: busy, onClick: () => setReview(row) },
       { key: 'preview', label: 'Preview', disabled: busy || row.employment?.blockedForMonth, onClick: () => beginAction('preview', [row.id]) },
+      { key: 'download', label: 'Download PDF', disabled: busy || row.employment?.blockedForMonth, onClick: () => beginAction('download', [row.id]) },
       ...(canManage ? [{ key: 'email', label: 'Email', disabled: busy || !canEmailRow(row.id), onClick: () => beginAction('send', [row.id]) }] : [])
-    ] }}><Button size="small" aria-label={`Actions for ${row.employeeName}`}>Actions <DownOutlined /></Button></Dropdown> : <Space wrap size={4}><Button size="small" disabled={busy} onClick={() => setReview(row)}>Details</Button><Button size="small" disabled={busy || row.employment?.blockedForMonth} onClick={() => beginAction('preview', [row.id])}>Preview</Button>{canManage && <Button size="small" disabled={busy || !canEmailRow(row.id)} onClick={() => beginAction('send', [row.id])}>Email</Button>}</Space>} />}
+    ] }}><Button size="small" aria-label={`Actions for ${row.employeeName}`}>Actions <DownOutlined /></Button></Dropdown> : <Space wrap size={4}><Button size="small" disabled={busy} onClick={() => setReview(row)}>Details</Button><Button size="small" disabled={busy || row.employment?.blockedForMonth} onClick={() => beginAction('preview', [row.id])}>Preview</Button><Button size="small" disabled={busy || row.employment?.blockedForMonth} onClick={() => beginAction('download', [row.id])}>Download PDF</Button>{canManage && <Button size="small" disabled={busy || !canEmailRow(row.id)} onClick={() => beginAction('send', [row.id])}>Email</Button>}</Space>} />}
 
     <ExcelPayslipOverview open={overviewOpen} permittedClients={clients} canConfigure={canConfigurePayroll} onClose={() => setOverviewOpen(false)} onOpen={(targetClient, targetBatch, setup) => {
       setOverviewOpen(false)
@@ -807,7 +811,7 @@ export default function ExcelPayslips() {
           <ExcelPayslipMappingPreview sheet={sheet} headerRow={headerRow} columns={columns} fileName={fileName} excludedRows={imported.excludedRows} template={template} disabled={busy || mappingBusy || !canManage} onPatch={patchColumn} onSuggest={() => void suggestMapping()} onExclude={sourceRow => setExcludedRows(current => [...new Set([...current, sourceRow])])} onInclude={sourceRow => setExcludedRows(current => current.filter(row => row !== sourceRow))} />
           <div className="excel-payslip-mapping"><DataTable rows={columns} loading={mappingBusy} title="Column mapping" getRowId={column => column.columnIndex} hideSearch exportDisabled pageSizeOptions={[10, 25, 50]} columns={[
             { key: 'sourceHeader', label: 'Source column', width: 210, render: column => <><strong>{excelColumnLetter(column.columnIndex)}</strong> · {column.sourceHeader || '(blank heading)'} {mappingReview.includes(column.columnIndex) && <Tag color="orange">Review</Tag>}</> },
-            { key: 'sample', label: 'First employee value', width: 170, value: column => sheet.rows.find(row => row.sourceRow > headerRow && row.cells.some(cell => cell?.value))?.cells[column.columnIndex]?.value || '' },
+            { key: 'sample', label: 'First employee value', width: 170, value: column => formatPayslipSourceCell(sheet.rows.find(row => row.sourceRow > headerRow && row.cells.some(cell => cell?.value))?.cells[column.columnIndex], column.sourceHeader) },
             { key: 'componentId', label: 'Template component', width: 240, filterable: false, sortable: false, render: column => <Select aria-label={`Column ${excelColumnLetter(column.columnIndex)} template component`} value={column.componentId || ''} disabled={!template || mappingBusy} showSearch optionFilterProp="label" options={[{ value: '', label: 'Manual / not mapped' }, ...(template?.components || []).map(component => ({ value: String(component.id), label: `${component.code} · ${component.name} (${component.category})` }))]} onChange={value => { const component = template?.components.find(item => String(item.id) === value); patchColumn(column.columnIndex, component ? { componentId: value, label: component.name, kind: categoryKind(component.category) } : { componentId: undefined }) }} style={{ width: '100%' }} /> },
             { key: 'kind', label: 'Use as', width: 205, filterable: false, sortable: false, render: column => <Select aria-label={`Column ${excelColumnLetter(column.columnIndex)} use as`} value={column.kind} disabled={mappingBusy} options={payslipColumnKinds} onChange={kind => patchColumn(column.columnIndex, { kind, componentId: undefined, blankAsZero: isPayslipAmountKind(kind) ? column.blankAsZero : undefined })} style={{ width: '100%' }} /> },
             { key: 'label', label: 'Payslip label', width: 205, filterable: false, sortable: false, render: column => <Input aria-label={`Column ${excelColumnLetter(column.columnIndex)} label`} value={column.label} maxLength={80} disabled={mappingBusy} onChange={event => patchColumn(column.columnIndex, { label: event.target.value })} /> },

@@ -8,6 +8,36 @@ namespace Payroll.API.Tests.Services;
 public sealed class ExcelPayslipMappingTests
 {
     [Fact]
+    public void ConsolidatedPayslipActionBoundaryIsRetrievedFromSourceTraceHeaders()
+    {
+        var headers = new[] { "Source workbook", "Source worksheet", "Source Excel row", "Payroll unit", "Employee code", "Attendance" };
+        var columns = headers.Select((header, index) => new ExcelPayslipMappingColumn { ColumnIndex=index, SourceHeader=header, Kind="info" }).ToList();
+        var path=Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md");
+        var lesson=Assert.Single(ExcelPayslipMappingService.Retrieve(columns,File.ReadAllText(path),[]), r=>r.Title.StartsWith("Source workbook Source worksheet Payroll unit"));
+        Assert.True(lesson.Content.Length<2600);
+        Assert.Contains("normal payslip list",lesson.Content);
+        Assert.Contains("Legacy view preferences",lesson.Content);
+        Assert.Contains("not a new salary mapping rule",lesson.Content);
+        Assert.Contains("does not authorize merging two slips",lesson.Content);
+    }
+    [Fact]
+    public void NumericIdentityDisplayBoundaryIsRetrievedFromAnonymousHeaders()
+    {
+        var columns = new List<ExcelPayslipMappingColumn> {
+            new() { ColumnIndex=0, SourceHeader="AADHAR NUMBER", Kind="ignore", HasNumbers=true },
+            new() { ColumnIndex=1, SourceHeader="CONTACT NUMBER", Kind="info", HasNumbers=true },
+            new() { ColumnIndex=2, SourceHeader="UAN NUMBER", Kind="info", HasNumbers=true },
+            new() { ColumnIndex=3, SourceHeader="ESI NUMBER", Kind="info", HasNumbers=true },
+            new() { ColumnIndex=4, SourceHeader="ACCOUNT NUMBER", Kind="info", HasNumbers=true } };
+        var path=Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md");
+        var lesson=Assert.Single(ExcelPayslipMappingService.Retrieve(columns,File.ReadAllText(path),[]), r=>r.Title.StartsWith("Aadhaar Aadhar"));
+        Assert.True(lesson.Content.Length<2600);
+        Assert.Contains("display formatting only",lesson.Content);
+        Assert.Contains("Literal scientific text",lesson.Content);
+        Assert.Contains("identity-review evidence",lesson.Content);
+        Assert.Equal("excel-payroll-mapping-v13",ExcelPayslipMappingService.KnowledgeVersion);
+    }
+    [Fact]
     public void EmployeeInputsAndEmployerCostLessonIsRetrievedFromAnonymousSalaryDayHeaders()
     {
         var columns = new List<ExcelPayslipMappingColumn> {
@@ -63,7 +93,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.True(lesson.Content.Length<2600);
         Assert.Contains("differing literal alone does not establish a new salary rule",lesson.Content);
         Assert.Contains("never freeze formula caches",lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v11",ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Equal("excel-payroll-mapping-v13",ExcelPayslipMappingService.KnowledgeVersion);
     }
     private static ExcelPayslipMappingRequest Request() => new() { Columns = [
         new() { ColumnIndex = 0, SourceHeader = "Employee name", Label = "Employee name", Kind = "employeeName" },
@@ -289,7 +319,7 @@ public sealed class ExcelPayslipMappingTests
         var references = ExcelPayslipMappingService.Retrieve(request.Columns, File.ReadAllText(path), []);
         var pattern = Assert.Single(references, item => item.Title.StartsWith("TMT pattern:"));
         using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, references));
-        Assert.Equal("excel-payroll-mapping-v11", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v13", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         var supplied = prompt.RootElement.GetProperty("references").EnumerateArray()
             .Single(item => item.GetProperty("title").GetString() == pattern.Title).GetProperty("content").GetString()!;
         Assert.Equal(pattern.Content, supplied); // The critical case must fit without prompt truncation.

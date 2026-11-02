@@ -94,6 +94,23 @@ export function isPayslipPhoneLabel(label: string) {
   const key = label.normalize('NFKC').replace(/\s+\([A-Z]{1,3}\)$/, '').toLowerCase().replace(/[^a-z0-9]/g, '')
   return /^(?:(?:employee|emp|personal|work|official|primary)?(?:(?:mobile|phone|telephone)(?:no|number)?|contact(?:no|number)))$/.test(key)
 }
+export function isPayslipIdentifierLabel(label: string) {
+  const key = label.normalize('NFKC').replace(/\s*\([a-z]{1,3}\)\s*$/i, '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  return isPayslipPhoneLabel(label) || /^(?:(?:employee|emp|staff|worker|personnel)(?:id|code|no|number)|(?:uan|pan|aadhaar|aadhar|adhaar|esi|esic|epf|pf|passport)(?:no|number|id|code)?|(?:bank|pf|epf|esi|esic)?(?:account|ac)(?:no|number)|ifsc(?:code)?|(?:id|code|identifier)(?:no|number)?)$/.test(key)
+}
+// Display only: keep the captured value and identity-review evidence unchanged.
+// Expand numeric Excel cells with string arithmetic; scientific text is not proof
+// of an exact identifier, and Excel cannot preserve identifiers beyond 15 digits.
+export function formatPayslipSourceCell(cell: PayslipCell | undefined, header: string) {
+  const value = cell?.value ?? ''
+  if (!cell || cell.dataType !== 'Number' || cell.formula || cell.formulaText || cell.error || cell.calculationError || cell.missingCachedValue
+    || !isPayslipIdentifierLabel(header)) return value
+  const match = /^(\d+)(?:\.(\d*))?(?:[eE]([+-]?\d{1,3}))?$/.exec(value)
+  if (!match || (!value.includes('.') && !/[eE]/.test(value)) || /^0\d/.test(value)) return value
+  const digits = match[1] + (match[2] || ''), point = match[1].length + Number(match[3] || 0)
+  if (point < 1 || point > 15 || /[1-9]/.test(digits.slice(point))) return value
+  return digits.slice(0, point).padEnd(point, '0').replace(/^0+(?=\d)/, '')
+}
 export function payslipPhoneValue(row: Pick<ExcelPayslipRow, 'information'>) {
   return row.information.find(item => isPayslipPhoneLabel(item.label) && item.value.trim())?.value.trim() || ''
 }

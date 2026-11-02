@@ -64,7 +64,10 @@ export const getPayslipMasterComparison = (clientId: number, employeeCode: strin
 export const getExcelPayslipDashboard = (clientId: number, batchId = '') => getJsonResult<ExcelPayslipDashboard | null>(`${root}/dashboard?clientId=${clientId}${batchId ? `&batchId=${encodeURIComponent(batchId)}` : ''}`, null)
 export const getExcelPayslipTemplates = (clientId: number) => getJsonResult<ExcelPayslipTemplate[]>(`${root}/templates?clientId=${clientId}`, [])
 export const getExcelPayslipHistory = (clientId: number, includeConsolidated = false) => getJsonResult<ExcelPayslipSummary[]>(`${root}/batches?clientId=${clientId}${includeConsolidated ? '&includeConsolidated=true' : ''}`, [])
-export const getExcelPayslipBatch = (clientId: number, id: string, quiet = false) => getJsonResult<ExcelPayslipBatch | null>(`${batchPath(id)}?clientId=${clientId}`, null, quiet ? {loader:false,toast:false} : {})
+export const getExcelPayslipBatch = (clientId: number, id: string, quiet = false) => getJsonResult<ExcelPayslipBatch | null>(`${batchPath(id)}?clientId=${clientId}`, null, {
+  timeoutMs: 120000, timeoutMessage: 'Saved payslips took too long to load. Try opening the batch again.',
+  ...(quiet ? {loader:false,toast:false} : {}),
+})
 export const reviewExcelPayslipNegativeAmount = (clientId: number, id: string, rowId: string) => postJson<{ rowId: string }, ExcelPayslipBatch | null>(`${batchPath(id)}/negative-amount-review?clientId=${clientId}`, { rowId }, null, { toast: false })
 export const getExcelPayslipDeliveryStatus = (clientId: number, id: string) => getJsonResult<{ items: ExcelPayslipEmailStatus[] }>(`${batchPath(id)}/delivery-status?clientId=${clientId}`, { items: [] })
 export const getExcelPayslipMailJobs = () => getJsonResult<{ items: ExcelPayslipMailJob[] }>(`${root}/mail-jobs`, { items: [] }, { loader: false, toast: false })

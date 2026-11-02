@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Button, Checkbox, Input, Select, Space, Tag } from 'antd'
 import SmartBulkSourcePreview from './SmartBulkSourcePreview'
 import { bulkImportMappingColor, type BulkImportDefinition } from '../utils/smartBulkImport'
-import { excelColumnLetter, isLiteralBlankPayslipCell, isPayslipAmountKind, payslipColumnKinds, type PayslipColumn, type PayslipColumnKind, type PayslipSheet } from '../utils/excelPayslipImport'
+import { excelColumnLetter, formatPayslipSourceCell, isLiteralBlankPayslipCell, isPayslipAmountKind, payslipColumnKinds, type PayslipColumn, type PayslipColumnKind, type PayslipSheet } from '../utils/excelPayslipImport'
 import type { ExcelPayslipTemplate } from '../services/excelPayslipService'
 import './ExcelPayslipMappingPreview.css'
 import { usePayslipCodePreview } from '../hooks/usePayslipCodePreview'
@@ -20,7 +20,7 @@ export default function ExcelPayslipMappingPreview(p: Props) {
   const sourceRows = useMemo(() => p.sheet.rows.filter(row => row.sourceRow > p.headerRow && row.cells.some(cell => cell?.value || cell?.formula || cell?.formulaText || cell?.error)), [p.sheet, p.headerRow])
   const codeFor = (row: typeof sourceRows[number]) => codeColumn ? row.cells[codeColumn.columnIndex]?.value || '' : ''
   const rows = orderPayslipPreviewRows(sourceRows,row=>row.sourceRow,codeFor,codePreview,row => p.excludedRows.includes(row.sourceRow))
-  const previewSheet = useMemo(() => ({ name: p.sheet.name, headers: p.columns.map(column => `${excelColumnLetter(column.columnIndex)} — ${column.sourceHeader || '(blank heading)'}`), rows: rows.map(row => p.columns.map(column => row.cells[column.columnIndex]?.value || '')) }), [p.sheet.name, p.columns, rows])
+  const previewSheet = useMemo(() => ({ name: p.sheet.name, headers: p.columns.map(column => `${excelColumnLetter(column.columnIndex)} — ${column.sourceHeader || '(blank heading)'}`), rows: rows.map(row => p.columns.map(column => formatPayslipSourceCell(row.cells[column.columnIndex], column.sourceHeader))) }), [p.sheet.name, p.columns, rows])
   const column = p.columns[selection.columnIndex] || p.columns[0]
   const row = rows.find(row => row.sourceRow === selection.sourceRow) || rows[0]
   const cell = row?.cells[column?.columnIndex || 0]
@@ -47,7 +47,7 @@ export default function ExcelPayslipMappingPreview(p: Props) {
         return <span className={p.excludedRows.includes(rows[rowIndex].sourceRow) ? 'excel-payslip-grid-excluded' : ''}>{content}{p.columns[index].kind === 'employeeCode' && <PayslipCodeMatchLabel code={value} sourceRow={rows[rowIndex].sourceRow} />}</span>
       },
       beforeTable: <div className="excel-payslip-grid-tools">
-        <div className="excel-payslip-formula-bar"><Tag>{address || 'Select a cell'}</Tag><Input aria-label="Payslip source formula" readOnly value={formula} /><Input aria-label="Payslip saved cell result" readOnly value={cell?.error || (cell?.value ?? '')} placeholder="Blank in source" /></div>
+        <div className="excel-payslip-formula-bar"><Tag>{address || 'Select a cell'}</Tag><Input aria-label="Payslip source formula" readOnly value={formula} /><Input aria-label="Payslip saved cell result" readOnly value={cell?.error || formatPayslipSourceCell(cell, column?.sourceHeader || '')} placeholder="Blank in source" /></div>
         <PayslipCodePreviewTools compact />
         <Space wrap><Button size="small" disabled={p.disabled} onClick={p.onSuggest}>Use suggested mapping</Button>{row && p.excludedRows.includes(row.sourceRow) && <Tag>Excluded source row</Tag>}{cell?.calculationError && <Tag color="orange">Formula needs review</Tag>}
           {row && (p.excludedRows.includes(row.sourceRow) ? p.onInclude && <Button size="small" disabled={p.disabled} onClick={() => p.onInclude?.(row.sourceRow)}>Include source row {row.sourceRow}</Button> : p.onExclude && <Button size="small" danger disabled={p.disabled} onClick={() => p.onExclude?.(row.sourceRow)}>Exclude source row {row.sourceRow}</Button>)}
