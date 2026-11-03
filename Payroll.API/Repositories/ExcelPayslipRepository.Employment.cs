@@ -9,12 +9,12 @@ namespace Payroll.API.Repositories;
 
 public sealed partial class ExcelPayslipRepository
 {
-    internal static async Task AnnotateEmploymentAsync(MySqlConnection db, ExcelPayslipBatch batch, MySqlTransaction? tx = null, IConfiguration? configuration = null)
+    internal static async Task AnnotateEmploymentAsync(MySqlConnection db, ExcelPayslipBatch batch, MySqlTransaction? tx = null, IConfiguration? configuration = null, bool annotateMasterDetails = true)
     {
         if(tx is null)
         {
             await using var snapshot=await db.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead,isReadOnly:true);
-            await AnnotateEmploymentAsync(db,batch,snapshot,configuration);
+            await AnnotateEmploymentAsync(db,batch,snapshot,configuration,annotateMasterDetails);
             await snapshot.RollbackAsync();
             return;
         }
@@ -43,7 +43,9 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@Id AND 
             }
         }
         AnnotateEmployment(batch, source, masters, reviews);
+        if (!annotateMasterDetails) return;
         await AnnotateCurrentMasterAsync(db,tx,batch,source,configuration);
+        AnnotateWarningReviews(batch);
     }
 
     // Response-only annotation. The source codes, captured identifiers, masters and receipts stay immutable.

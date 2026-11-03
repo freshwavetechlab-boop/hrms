@@ -159,6 +159,7 @@ const uploadRecruitmentResumeBatch = (request: { clientId?: number; positionId?:
   body.append('sourceType', request.sourceType)
   if (request.draft) {
     body.append('draftReviewed', 'true')
+    if (request.draft.previewToken) body.append('previewToken', request.draft.previewToken)
     if (request.draft.existingCandidateId) body.append('draftExistingCandidateId', String(request.draft.existingCandidateId))
     body.append('draftFirstName', request.draft.firstName)
     body.append('draftLastName', request.draft.lastName)

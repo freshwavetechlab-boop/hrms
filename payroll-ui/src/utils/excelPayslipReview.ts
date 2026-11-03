@@ -13,6 +13,34 @@ export function payslipReconciliation(row: ExcelPayslipRow) {
     deductionDifference: row.declaredDeductions == null ? null : deductions - row.declaredDeductions }
 }
 
+// Normalize only the displayed difference. Source amounts and comparisons retain full precision.
+export function formatPayslipDifference(value: number) {
+  const text = formatExcelPayslipAmount(value, 2)
+  return text === '-0.00' ? '0.00' : text
+}
+
+export function payslipWarningDetails(row: ExcelPayslipRow) {
+  const values = payslipReconciliation(row), amount = (value: number) => formatExcelPayslipAmount(value, 2)
+  return row.warnings.map(warning => {
+    if (warning.startsWith('Mapped earnings do not match the source gross total.') && row.declaredGross != null) {
+      const matching = row.earnings.filter(item => Math.abs(item.amount - values.grossDifference!) <= .01)
+      const hint = Math.abs(values.difference) <= .01 && matching.length === 1
+        ? ` Gross difference equals ${matching[0].label} (${amount(matching[0].amount)}). Check whether source gross excludes this component.`
+        : ' Check earning mappings and the source gross formula.'
+      return `Gross: mapped earnings ${amount(values.earnings)} − source gross ${amount(row.declaredGross)} = ${formatPayslipDifference(values.grossDifference!)}.${hint}`
+    }
+    if (warning.startsWith('Mapped deductions do not match the source deduction total.') && row.declaredDeductions != null)
+      return `Deductions: mapped ${amount(values.deductions)} − source total ${amount(row.declaredDeductions)} = ${formatPayslipDifference(values.deductionDifference!)}. Check deduction mappings and the source total formula.`
+    if (warning.startsWith('Mapped earnings less deductions do not match source net pay.'))
+      return `Net: earnings ${amount(values.earnings)} − deductions ${amount(values.deductions)} = ${amount(values.calculatedNet)}; source net ${amount(row.netPay)}; difference ${formatPayslipDifference(values.difference)}. Check missing or repeated components and the source net formula.`
+    if (warning === negativePayslipAmountWarning) {
+      const negatives = [...row.earnings, ...row.deductions, ...row.employerContributions, { label: 'Source net', amount: row.netPay }].filter(item => item.amount < 0)
+      return `Negative source amounts: ${negatives.map(item => `${item.label} ${amount(item.amount)}`).join('; ')}. Review whether these are intentional adjustments.`
+    }
+    return warning
+  })
+}
+
 // The previous source stays immutable. A corrected formula cache applies to this
 // snapshot; retain its formula and block reuse until the formula is reviewed.
 export function correctPayslipAmounts(sheet: PayslipSheet, sourceRow: number, columns: PayslipColumn[], edits: Record<number, string | null>) {

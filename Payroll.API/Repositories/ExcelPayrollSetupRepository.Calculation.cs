@@ -10,6 +10,10 @@ public sealed partial class ExcelPayrollSetupRepository
 {
     internal static void ValidateRequest(ExcelPayrollSetupRequest request)
     {
+        if (request?.QuickPreparation is { } quick && (quick.Version!=1
+            || !Regex.IsMatch(quick.SourceHash ?? "",@"\A[0-9a-fA-F]{64}\z")
+            || !Regex.IsMatch(quick.AttendanceSnapshotHash ?? "",@"\A[0-9a-fA-F]{64}\z")))
+            throw new InvalidOperationException("Refresh the quick preparation source and attendance preview.");
         if (request is null || !Guid.TryParseExact(request.BatchId, "N", out _) || request.RowIds is null || request.RowIds.Count is < 1 or > 100
             || request.RowIds.Any(string.IsNullOrWhiteSpace) || request.RowIds.Distinct().Count() != request.RowIds.Count)
             throw new InvalidOperationException("Select 1–100 unique employee rows from a saved salary batch.");

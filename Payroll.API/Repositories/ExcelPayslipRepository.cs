@@ -193,6 +193,8 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
             row.MasterDetails = null;
             // A review belongs to one saved snapshot. Imports/corrections cannot supply or inherit it.
             row.NegativeAmountReview = null;
+            row.WarningReview = null;
+            row.WarningReviewToken = null;
         }
         var calculationSource = batch.CalculationSource;
         batch.CalculationSource = null;
@@ -424,6 +426,12 @@ WHERE l.client_id=@ClientId AND l.batch_id=@Id",new{ClientId=clientId,existing.I
     private static string Limit(string? text, int limit) => string.IsNullOrEmpty(text) ? "" : text.Length <= limit ? text : text[..limit];
 
     internal static List<string> RowWarnings(ExcelPayslipRow row)
+    {
+        var warnings = SourceRowWarnings(row);
+        return HasCurrentWarningReview(row) ? warnings.Where(w => !row.WarningReview!.Warnings.Contains(w, StringComparer.Ordinal)).ToList() : warnings;
+    }
+
+    internal static List<string> SourceRowWarnings(ExcelPayslipRow row)
     {
         var warnings = new List<string>();
         var gross = row.Earnings.Sum(a => a.Amount); var deductions = row.Deductions.Sum(a => a.Amount);

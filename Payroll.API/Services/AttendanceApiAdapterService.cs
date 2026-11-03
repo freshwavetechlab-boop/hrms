@@ -23,7 +23,7 @@ public sealed class AttendanceApiAdapterService(AttendanceIntegrationRepository 
     public async Task<AttendanceApiAdapter> SaveAsync(SaveAttendanceApiAdapter request)
     {
         var c = request.Configuration ?? throw new InvalidOperationException("Adapter configuration is required.");
-        AttendanceApiProtocol.Validate(c);
+        AttendanceApiProtocol.Validate(c, allowIncompleteDraft: true);
         if ((request.Secret?.Length ?? 0) > 16000 || (request.DeviceToken?.Length ?? 0) > 100) throw new InvalidOperationException("Credential exceeds the supported length.");
         if (request.Secret?.IndexOfAny(['\r', '\n']) >= 0) throw new InvalidOperationException("API credential cannot contain a newline.");
         if (!string.IsNullOrWhiteSpace(request.DeviceToken))

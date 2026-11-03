@@ -781,6 +781,7 @@ public class RecruitmentResumeIntakeRequest
     public bool DeferAtsScoring { get; set; }
     public string SourceType { get; set; } = "Direct Sourcing";
     public bool DraftReviewed { get; set; }
+    public string PreviewToken { get; set; } = "";
     public long? DraftExistingCandidateId { get; set; }
     public string DraftFirstName { get; set; } = "";
     public string DraftLastName { get; set; } = "";
@@ -811,6 +812,7 @@ public class RecruitmentResumePreviewRequest
 
 public class RecruitmentResumePreview
 {
+    public string PreviewToken { get; set; } = "";
     public string AiReviewStatus { get; set; } = "";
     public int LearnedFieldCount { get; set; }
     public IReadOnlyList<ResumeFieldReviewIssue> ReviewIssues { get; set; } = [];

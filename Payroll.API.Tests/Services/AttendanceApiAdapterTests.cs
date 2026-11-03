@@ -22,6 +22,27 @@ public sealed class AttendanceApiAdapterTests
     private static readonly DateTime To = new(2026, 11, 2);
 
     [Fact]
+    public void PausedDraftCanBeSavedWithoutInventingMachineOrDirectionValues()
+    {
+        var c = Config(); c.DeviceId = ""; c.SourceDeviceId = ""; c.InValues = []; c.OutValues = [];
+        AttendanceApiProtocol.Validate(c, allowIncompleteDraft: true);
+        Assert.Throws<InvalidOperationException>(() => AttendanceApiProtocol.Validate(c));
+        c.DeviceId = "gate-01"; c.SourceDeviceId = "TW123";
+        Assert.Throws<InvalidOperationException>(() => AttendanceApiProtocol.Validate(c));
+        c.IsActive = true;
+        Assert.Throws<InvalidOperationException>(() => AttendanceApiProtocol.Validate(c, allowIncompleteDraft: true));
+    }
+
+    [Fact]
+    public void DraftStillRejectsConflictingDirectionsAndUnsafeTemplates()
+    {
+        var c = Config(); c.InValues = ["0"]; c.OutValues = ["0"];
+        Assert.Throws<InvalidOperationException>(() => AttendanceApiProtocol.Validate(c, allowIncompleteDraft: true));
+        c.InValues = []; c.OutValues = []; c.BodyTemplate = """{"value":"{{eval(code)}}"}""";
+        Assert.Throws<InvalidOperationException>(() => AttendanceApiProtocol.Validate(c, allowIncompleteDraft: true));
+    }
+
+    [Fact]
     public void IdmsMapsLeadingZeroUserIdTimezoneAndVerifiedDirections()
     {
         var config = Config(); config.EmployeeMap["0012"] = "EMP001";

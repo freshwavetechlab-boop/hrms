@@ -3,7 +3,7 @@ import { Alert, Button, Checkbox, Collapse, Descriptions, Drawer, Form, InputNum
 import { usePayslipCorrectionPreview } from '../hooks/usePayslipCorrectionPreview'
 import DataTable from './DataTable'
 import { buildExcelPayslipRows, excelColumnLetter, formatExcelPayslipAmount, isPayslipAmountKind, parsePayslipAmount, type PayslipColumn, type PayslipSheet } from '../utils/excelPayslipImport'
-import { correctPayslipAmounts, negativePayslipAmountWarning, payslipReconciliation, savedPayslipCorrectionInputs } from '../utils/excelPayslipReview'
+import { correctPayslipAmounts, formatPayslipDifference, negativePayslipAmountWarning, payslipReconciliation, payslipWarningDetails, savedPayslipCorrectionInputs } from '../utils/excelPayslipReview'
 import type { ExcelPayslipRow } from '../services/excelPayslipService'
 
 const preciseAmount = (value: number) => formatExcelPayslipAmount(value, 2)
@@ -17,30 +17,45 @@ export function PayslipReconciliation({ row }: { row: ExcelPayslipRow }) {
       <Descriptions.Item label="Mapped deductions">{preciseAmount(values.deductions)}</Descriptions.Item>
       <Descriptions.Item label="Earnings less deductions">{preciseAmount(values.calculatedNet)}</Descriptions.Item>
       <Descriptions.Item label="Source In Hand Salary">{preciseAmount(row.netPay)}</Descriptions.Item>
-      <Descriptions.Item label="Difference">{preciseAmount(values.difference)}</Descriptions.Item>
-      {row.declaredGross != null && <Descriptions.Item label="Source gross / difference">{preciseAmount(row.declaredGross)} / {preciseAmount(values.grossDifference!)}</Descriptions.Item>}
-      {row.declaredDeductions != null && <Descriptions.Item label="Source deductions / difference">{preciseAmount(row.declaredDeductions)} / {preciseAmount(values.deductionDifference!)}</Descriptions.Item>}
+      <Descriptions.Item label="Net difference">{formatPayslipDifference(values.difference)}</Descriptions.Item>
+      {row.declaredGross != null && <Descriptions.Item label="Source gross / difference">{preciseAmount(row.declaredGross)} / {formatPayslipDifference(values.grossDifference!)}</Descriptions.Item>}
+      {row.declaredDeductions != null && <Descriptions.Item label="Source deductions / difference">{preciseAmount(row.declaredDeductions)} / {formatPayslipDifference(values.deductionDifference!)}</Descriptions.Item>}
     </Descriptions>
     {values.wholeRupeeMatch && Math.abs(values.difference) > .01 && <Alert type="info" showIcon message="Whole-rupee net pay matches" description="The calculated and source net pay display the same in whole rupees. Check the original amounts before changing them." />}
   </div>
 }
 
-export function ExcelPayslipWarnings({ rows, open, busy, canManage, error, onClose, onReview, onCorrect, onMapping, onBulkCorrect, onReviewNegative }: {
+export function ExcelPayslipWarnings({ rows, open, busy, canManage, error, onClose, onReview, onCorrect, onMapping, onBulkCorrect, onReviewNegative, onClearWarnings }: {
   rows: ExcelPayslipRow[]; open: boolean; busy: boolean; canManage: boolean; error: string
   onClose: () => void; onReview: (row: ExcelPayslipRow) => void; onCorrect: (row: ExcelPayslipRow) => void; onMapping: () => void
   onBulkCorrect?: () => void
   onReviewNegative?: (row: ExcelPayslipRow) => void
+  onClearWarnings?: (rows: ExcelPayslipRow[], action: 'review' | 'restore') => void
 }) {
   const warnings = rows.filter(row => row.warnings.length)
-  return <Drawer title={`Payslip warnings (${warnings.length})`} open={open} onClose={onClose} width="min(1080px, 98vw)" className="excel-payslip-warning-review" footer={<Space wrap className="excel-payslip-footer"><Button onClick={onClose} disabled={busy}>Close</Button>{canManage && <><Button onClick={onMapping} disabled={busy}>Edit column mapping</Button>{onBulkCorrect && <Button type="primary" onClick={onBulkCorrect} disabled={busy || !warnings.length}>Fix all warning rows</Button>}</>}</Space>}>
-    <Alert type="info" showIcon message="Review the reason before correcting salary" description="Details show the source amounts and differences. Marking a negative amount reviewed keeps all salary amounts unchanged and records who reviewed it. Corrections save the complete batch as a new version; the previous batch and its email history remain available." />
+  const reviewed = rows.filter(row => row.warningReview)
+  const reviewReady = !!onClearWarnings && warnings.every(row => !!row.warningReviewToken)
+  const differences = (row: ExcelPayslipRow) => {
+    const values = payslipReconciliation(row)
+    return [values.grossDifference == null ? '' : `Gross: ${formatPayslipDifference(values.grossDifference)}`,
+      values.deductionDifference == null ? '' : `Deductions: ${formatPayslipDifference(values.deductionDifference)}`,
+      `Net: ${formatPayslipDifference(values.difference)}`].filter(Boolean)
+  }
+  return <Drawer title={`Payslip warnings (${warnings.length})`} open={open} onClose={onClose} width="min(1080px, 98vw)" className="excel-payslip-warning-review" footer={<Space wrap className="excel-payslip-footer"><Button onClick={onClose} disabled={busy}>Close</Button>{canManage && <><Button type="primary" loading={busy} disabled={busy || !warnings.length || !reviewReady} onClick={() => onClearWarnings?.(warnings, 'review')}>Clear all warnings ({warnings.length})</Button><Button onClick={onMapping} disabled={busy}>Edit column mapping</Button>{onBulkCorrect && <Button onClick={onBulkCorrect} disabled={busy || !warnings.length}>Fix all warning rows</Button>}</>}</Space>}>
+    <Alert type="info" showIcon message="Clear warnings after reviewing the source" description="Clear warning accepts the saved amounts as-is and records who reviewed them. Salary amounts and formulas stay unchanged. You can restore warnings below; changing source amounts requires a fresh review." />
     {error && <Alert type="error" showIcon message={error} />}
+    {canManage && warnings.length > 0 && !reviewReady && <Alert type="warning" message="Refresh the saved batch to load warning review controls." />}
     <DataTable title="Employees with warnings" rows={warnings} getRowId={row => row.id} exportFileName="payslip-warnings" emptyText="No warnings in this batch." columns={[
-      { key: 'employeeName', label: 'Employee', width: 190, render: row => <><strong>{row.employeeName}</strong><div className="excel-payslip-muted">{row.employeeCode}</div></> },
-      { key: 'source', label: 'Source', width: 210, value: row => `${sourceValue(row, 'source workbook') || ''} · Row ${sourceValue(row, 'source excel row') || row.sourceRow}`, wrap: true },
-      { key: 'warnings', label: 'Issue', width: 320, value: row => row.warnings.join('; '), wrap: true },
-      { key: 'difference', label: 'Net difference', width: 135, value: row => payslipReconciliation(row).difference, render: row => preciseAmount(payslipReconciliation(row).difference) }
-    ]} actionsWidth={240} actions={row => <Space wrap size={4}><Button size="small" onClick={() => onReview(row)} disabled={busy}>Details</Button>{canManage && <><Button size="small" onClick={() => onCorrect(row)} disabled={busy}>Correct amounts</Button>{onReviewNegative && row.warnings.includes(negativePayslipAmountWarning) && <Button size="small" onClick={() => onReviewNegative(row)} disabled={busy}>Mark negative amount reviewed</Button>}</>}</Space>} />
+      { key: 'employeeName', label: 'Employee', width: 175, render: row => <><strong>{row.employeeName}</strong><div className="excel-payslip-muted">{row.employeeCode}</div></> },
+      { key: 'source', label: 'Source', width: 125, value: row => `${sourceValue(row, 'source workbook') || ''} · Row ${sourceValue(row, 'source excel row') || row.sourceRow}`, wrap: true },
+      { key: 'warnings', label: 'Reason / what to check', width: 340, value: row => payslipWarningDetails(row).join('\n'), render: row => payslipWarningDetails(row).map((detail, index) => <div key={index}>{detail}</div>), wrap: true },
+      { key: 'difference', label: 'Differences', width: 160, value: row => differences(row).join('; '), render: row => differences(row).map(detail => <div key={detail}>{detail}</div>) }
+    ]} actionsWidth={225} actions={row => <Space wrap size={4}><Button size="small" onClick={() => onReview(row)} disabled={busy}>Details</Button>{canManage && <><Button size="small" type="primary" onClick={() => onClearWarnings?.([row], 'review')} disabled={busy || !onClearWarnings || !row.warningReviewToken}>Clear warning</Button><Button size="small" onClick={() => onCorrect(row)} disabled={busy}>Correct amounts</Button>{onReviewNegative && row.warnings.includes(negativePayslipAmountWarning) && <Button size="small" onClick={() => onReviewNegative(row)} disabled={busy}>Mark negative amount reviewed</Button>}</>}</Space>} />
+    {!!reviewed.length && <Collapse style={{ marginTop: 16 }}><Collapse.Panel key="reviewed" header={`Reviewed as-is (${reviewed.length})`}><DataTable title="Reviewed warnings" rows={reviewed} getRowId={row => row.id} exportFileName="payslip-warning-reviews" columns={[
+      { key: 'employeeName', label: 'Employee', width: 190, value: row => `${row.employeeName} · ${row.employeeCode}` },
+      { key: 'review', label: 'Reviewed by / time', width: 240, value: row => `${row.warningReview!.reviewedBy} · ${new Date(row.warningReview!.reviewedAtUtc).toLocaleString()}`, wrap: true },
+      { key: 'warnings', label: 'Accepted source warnings', width: 320, value: row => row.warningReview!.warnings.join('; '), wrap: true }
+    ]} actions={canManage ? row => <Button size="small" disabled={busy || !onClearWarnings || !row.warningReviewToken} onClick={() => onClearWarnings?.([row], 'restore')}>Restore warning</Button> : undefined} /></Collapse.Panel></Collapse>}
   </Drawer>
 }
 

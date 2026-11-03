@@ -9,7 +9,7 @@ namespace Payroll.API.Services;
 public sealed class ExcelPayslipMappingService(RecruitmentAiScoringService ai,
     IWebHostEnvironment environment, ILogger<ExcelPayslipMappingService> logger)
 {
-    internal const string KnowledgeVersion = "excel-payroll-mapping-v13";
+    internal const string KnowledgeVersion = "excel-payroll-mapping-v15";
     internal static readonly HashSet<string> Kinds = ["employeeName", "employeeCode", "email", "info", "earning", "deduction", "employer", "netPay", "grossTotal", "deductionTotal", "ignore"];
     private static readonly HashSet<string> Functions = ["SUM", "ROUND", "ROUNDUP", "ROUNDDOWN", "IF", "IFERROR", "MIN", "MAX", "SUMIF", "SUMIFS", "COUNT", "COUNTA", "COUNTIF", "COUNTIFS", "AND", "OR", "ABS", "CEILING", "FLOOR", "VLOOKUP", "HLOOKUP", "XLOOKUP", "INDEX", "MATCH"];
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);

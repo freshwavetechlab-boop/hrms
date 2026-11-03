@@ -10,7 +10,7 @@ function load(name) {
   new Function('exports', 'require', code)(exports, path => load(path.replace('./', '')))
   return exports
 }
-const { correctPayslipAmounts, correctPayslipBatchAmounts, payslipReconciliation } = load('excelPayslipReview')
+const { correctPayslipAmounts, correctPayslipBatchAmounts, payslipReconciliation, formatPayslipDifference, payslipWarningDetails } = load('excelPayslipReview')
 const { buildExcelPayslipRows, buildPayslipCalculationSource } = load('excelPayslipImport')
 function fixture() {
   const headers = ['Employee Name', 'Account No', 'Basic', 'PF', 'Net Pay', 'Ignored raw']
@@ -22,6 +22,33 @@ function fixture() {
   ], template: { version: 1, clientId: 42, sourceBatchId: 'previous', month: '2026-09', headerRow: 1, columns, excludedSourceRows: [3], warnings: [] } }
   return { sheet, columns }
 }
+
+test('difference display removes negative zero without concealing cent differences or changing raw data', () => {
+  assert.equal(formatPayslipDifference(-0.000000000019), '0.00')
+  assert.equal(formatPayslipDifference(0.000000000019), '0.00')
+  assert.equal(formatPayslipDifference(-.01), '-0.01')
+  assert.equal(formatPayslipDifference(.01), '0.01')
+})
+
+test('gross subtotal warning explains the real difference and possible cash addition while net matches', () => {
+  const row = { earnings: [{label:'Basic', amount:1200}, {label:'Additional allowance (C)', amount:60}], deductions:[{label:'Deduction (B)',amount:100}], employerContributions:[], declaredGross:1200, declaredDeductions:100, netPay:1160.000000000019,
+    warnings:['Mapped earnings do not match the source gross total. Source amounts are preserved.'] }
+  const before = structuredClone(row), details = payslipWarningDetails(row).join(' ')
+  assert.match(details, /Gross: mapped earnings 1,260.00.*source gross 1,200.00 = 60.00/)
+  assert.match(details, /Gross difference equals Additional allowance \(C\).*Check whether source gross excludes/)
+  assert.equal(formatPayslipDifference(payslipReconciliation(row).difference), '0.00')
+  assert.deepEqual(row, before)
+  row.netPay = 1100
+  assert.doesNotMatch(payslipWarningDetails(row).join(' '), /Gross difference equals/)
+  row.warnings = ['Mapped earnings less deductions do not match source net pay. Source net pay is preserved.']
+  assert.match(payslipWarningDetails(row).join(' '), /Net: earnings.*source net 1,100.00; difference 60.00/)
+  row.warnings = ['Mapped deductions do not match the source deduction total. Source amounts are preserved.']
+  row.declaredDeductions = 80
+  assert.match(payslipWarningDetails(row).join(' '), /Deductions: mapped 100.00.*source total 80.00 = 20.00/)
+  row.warnings = ['This source row contains a negative amount; review it before export or sending.']
+  row.employerContributions = [{label:'Employer adjustment',amount:-15}]
+  assert.match(payslipWarningDetails(row).join(' '), /Employer adjustment -15.00/)
+})
 test('bulk review corrects only explicit cells across included rows and preserves the original snapshot', () => {
   const { sheet, columns } = fixture()
   sheet.template.excludedSourceRows = []

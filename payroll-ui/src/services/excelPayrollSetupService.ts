@@ -21,6 +21,7 @@ export type AttendanceInputReview = { boundSourceInputs?: string; mode: 'SourceS
 export type AttendanceInputProof = { rowId: string; sourceRow: number; mode: string; status: string; reason: string; sourceHash: string; inputHash: string; payrollDays: number; presentDays: number | null; payableDays: number; sourceLwp: number | null; nativeHash: string | null; nativeInput?: { payrollDays: number | null; presentDays: number | null; actualPresenceKnown?: boolean; payableDays: number; month: string; cycleStart: string | null; cycleEnd: string | null; snapshotHash: string; error: string } | null }
 export type TemplateApplicability = {reviewed:boolean;effectiveTo:string;openEnded:boolean;locationMode:''|'AllClientLocations'|'Listed';workLocationIds:number[];newLocationNames:string[];categoryKind:''|'AllClientCategories'|'SkillCategory'|'EmploymentType';categories:string[];divisorMeaning:''|'CalendarDays'|'ContractFixedDays'|'WorkingDays';payableMeaning:''|'AlreadyPayable';policyBasis:''|'SavedSourceRules'|'DatedPolicy';policyVersion:string}
 export type PayrollSetupRequest = {
+  quickPreparation?: { version: 1; sourceHash: string; attendanceSnapshotHash: string }
   updateExistingConfiguration?: boolean
   correctionOfImportId?: string
   overrideSourcePayableAttendance?: boolean
@@ -40,6 +41,8 @@ export type PayrollSetupRequest = {
   employeeDecisions: { rowId: string; matchedEmployeeId?: number; allowCreate: boolean }[]; editableDefaults: Record<string, unknown>
 }
 export type PayrollSetupContext = {
+  quickPreparation?: { version: 1; month: string; sourceHash: string; attendanceSnapshotHash: string; cycleStart: string; cycleEnd: string;
+    monthlyAttendance: { employeeId: number; workingDays: number; presentDays: number | null; payableDays: number; sourceType: string }[]; dailyEmployeeIds: number[] } | null
   clientConfiguration?: { clientId: number; month: string; sourceColumns: ExcelPayslipCalculationSource['columns']; savedRequest: PayrollSetupRequest } | null
   salaryCorrectionSupported?: boolean
   sourceCtcAndExtraDutySupported?: boolean

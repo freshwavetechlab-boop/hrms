@@ -9,7 +9,7 @@ import DataTable, { type Column } from './DataTable'
 import { RecruitmentViewContext, useSessionPreference, type RecruitmentView } from '../hooks/useRecruitmentPreferences'
 import { getJsonResult } from '../services/apiClient'
 import { getAttendanceDevices, type AttendanceDevice } from '../services/attendanceIntegrationService'
-import { deleteAttendanceAdapter, emptyAttendanceAdapter, getAttendanceAdapters, idmsAttendanceAdapter, runAttendanceAdapter, saveAttendanceAdapter, type AdapterPunch, type AdapterRun, type AttendanceApiAdapter } from '../services/attendanceApiAdapterService'
+import { attendanceAdapterSetupIssues, attendanceAdapterStatus, deleteAttendanceAdapter, emptyAttendanceAdapter, getAttendanceAdapters, idmsAttendanceAdapter, runAttendanceAdapter, saveAttendanceAdapter, type AdapterPunch, type AdapterRun, type AttendanceApiAdapter } from '../services/attendanceApiAdapterService'
 import type { Client } from '../types/payroll'
 import '../RecruitmentViewport.css'
 import './AttendanceApiIntegrator.css'
@@ -120,14 +120,14 @@ export default function AttendanceApiIntegrator() {
   }
   const actions = (row: AttendanceApiAdapter) => <Space wrap size={4}>
     <Button size="small" aria-label="Edit" icon={<EditOutlined />} disabled={busy} onClick={() => edit(row)}>Edit</Button>
-    <Button size="small" aria-label="Test" icon={<ThunderboltOutlined />} disabled={busy} onClick={() => openRun(row, true)}>Test</Button>
+    <Button size="small" aria-label="Test" title={attendanceAdapterSetupIssues(row).length ? `Complete setup: ${attendanceAdapterSetupIssues(row).join(", ")}` : "Fetch and preview punches"} icon={<ThunderboltOutlined />} disabled={busy || attendanceAdapterSetupIssues(row).length > 0} onClick={() => openRun(row, true)}>Test</Button>
     <Button size="small" aria-label="Sync" icon={<SyncOutlined />} disabled={busy || !row.isActive} onClick={() => openRun(row, false)}>Sync</Button>
     <Popconfirm title={`Delete ${row.name}?`} description="Saved attendance will be retained." onConfirm={() => remove(row)}><Button size="small" danger disabled={busy} icon={<DeleteOutlined />} aria-label={`Delete ${row.name}`} /></Popconfirm>
   </Space>
   const columns: Column<AttendanceApiAdapter>[] = [
     { key: 'name', label: 'Adapter', value: r => r.name },
     { key: 'deviceId', label: 'Machine', value: r => devices.find(d => d.deviceId === r.deviceId)?.name || r.deviceId, render: r => <span>{devices.find(d => d.deviceId === r.deviceId)?.name || r.deviceId}<small className="adapter-secondary">{r.sourceDeviceId}</small></span> },
-    { key: 'isActive', label: 'Status', value: r => r.isActive ? 'Enabled' : 'Paused', render: r => <Tag color={r.isActive ? 'green' : 'default'}>{r.isActive ? 'Enabled' : 'Paused'}</Tag> },
+    { key: 'isActive', label: 'Status', value: attendanceAdapterStatus, render: r => <Tag color={r.isActive ? 'green' : attendanceAdapterStatus(r) === 'Draft' ? 'orange' : 'default'}>{attendanceAdapterStatus(r)}</Tag> },
     { key: 'url', label: 'API endpoint', value: r => `${r.method} ${r.url}` },
     { key: 'syncIntervalMinutes', label: 'Schedule', value: r => r.syncIntervalMinutes ? `Every ${r.syncIntervalMinutes} min / ${r.lookbackDays} days` : 'Manual' },
     { key: 'lastSuccessAt', label: 'Last successful sync', value: r => dateLabel(r.lastSuccessAt) },
@@ -146,11 +146,12 @@ export default function AttendanceApiIntegrator() {
       <PageHeaderPortal slot="attendance-adapters-page-controls"><Space wrap><Button aria-label="Refresh" icon={<ReloadOutlined />} disabled={!clientId || busy} onClick={() => { setLoading(true); void load().finally(() => setLoading(false)) }}>Refresh</Button><Button aria-label="Add adapter" type="primary" icon={<PlusOutlined />} disabled={!clientId || busy} onClick={() => edit(emptyAttendanceAdapter(clientId))}>Add adapter</Button><Button disabled={!clientId || busy} onClick={() => edit(idmsAttendanceAdapter(clientId))}>Use iDMS preset</Button></Space></PageHeaderPortal>
       {message && <Alert type="info" showIcon message={message} closable onClose={() => setMessage('')} />}
       {!loading && feed.clientId === clientId && clientId > 0 && devices.length === 0 && <Alert type="info" showIcon message={<>Register a punch machine for this client in <Link to={`/settings/leave-attendance/attendance?clientId=${clientId}`}>Attendance settings</Link>, then generate its key in <Link to="/workflows/api-catalog">API Catalog</Link>.</>} />}
-      <RecruitmentRecordList rows={rows} columns={columns} view={view} title={r => r.name} subtitle={r => `${r.method} · ${r.sourceDeviceId}`} filters={[{ key: 'state', label: 'Status', value: r => r.isActive ? 'Enabled' : 'Paused' }]} quickFilters={[{ key: 'enabled', label: 'Enabled', tone: 'green', matches: r => r.isActive }, { key: 'paused', label: 'Paused', tone: 'gray', matches: r => !r.isActive }]} actions={actions} hiddenCardColumns={['name']} cardSummaryColumns={['deviceId', 'isActive', 'syncIntervalMinutes', 'lastSuccessAt']} exportFileName="attendance-api-adapters" emptyText={clientId ? 'No attendance adapters. Add a generic API or use the iDMS preset.' : 'Select a client to configure attendance APIs.'} searchPlaceholder="Search adapters or machines" loading={loading || (clientId > 0 && feed.clientId !== clientId)} actionsWidth={300} />
+      <RecruitmentRecordList rows={rows} columns={columns} view={view} title={r => r.name} subtitle={r => `${r.method} · ${r.sourceDeviceId}`} filters={[{ key: 'state', label: 'Status', value: attendanceAdapterStatus }]} quickFilters={[{ key: 'enabled', label: 'Enabled', tone: 'green', matches: r => r.isActive }, { key: 'paused', label: 'Paused / Draft', tone: 'gray', matches: r => !r.isActive }]} actions={actions} hiddenCardColumns={['name']} cardSummaryColumns={['deviceId', 'isActive', 'syncIntervalMinutes', 'lastSuccessAt']} exportFileName="attendance-api-adapters" emptyText={clientId ? 'No attendance adapters. Add a generic API or use the iDMS preset.' : 'Select a client to configure attendance APIs.'} searchPlaceholder="Search adapters or machines" loading={loading || (clientId > 0 && feed.clientId !== clientId)} actionsWidth={300} />
     </section>
     <Drawer aria-label={editor?.id ? 'Edit attendance API adapter' : 'Add attendance API adapter'} title={editor?.id ? 'Edit attendance API adapter' : 'Add attendance API adapter'} width="min(1000px, 96vw)" open={!!editor} destroyOnClose maskClosable={!busy} closable={!busy} onClose={() => { if (!busy) { setEditor(null); setSecret(''); setToken('') } }} footer={<Space><Button disabled={busy} onClick={() => { setEditor(null); setSecret(''); setToken('') }}>Cancel</Button><Button type="primary" loading={busy} onClick={() => void save()}>Save adapter</Button></Space>}>
       {editor && <Form layout="vertical" className="attendance-adapter-editor">
         {editorError && <Alert type="error" showIcon message={editorError} />}
+        {!editor.isActive && <Alert type="info" showIcon message="Save a paused draft while machine details or verified IN/OUT values are pending. Complete setup before testing or enabling sync." />}
         <Tabs activeKey={editorTab} onChange={setEditorTab} items={[
           { key: 'connection', label: 'Connection', children: <div className="adapter-form-grid">
             {textField('name', 'Adapter name')}

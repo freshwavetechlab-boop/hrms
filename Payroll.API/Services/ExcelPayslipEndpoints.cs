@@ -233,6 +233,14 @@ public static class ExcelPayslipEndpoints
             var batch = await repository.GetAsync(clientId, id);
             return batch is null ? Results.NotFound(new { error = "Payslip batch not found." }) : Results.Ok(batch);
         }).WithName("GetExcelPayslipBatch").WithOpenApi();
+        routes.MapPost("/batches/{id}/warning-review", async (ExcelPayslipRepository repository, int clientId,
+            string id, ExcelPayslipWarningReviewRequest request, HttpContext context) =>
+        {
+            if (!canManage(context)) return Results.StatusCode(403);
+            var (item, error) = await repository.ReviewWarningsAsync(clientId, id, request, currentUser(context).Email);
+            return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+        }).WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(524288)).WithName("ReviewExcelPayslipWarnings");
+
         routes.MapPost("/batches/{id}/negative-amount-review", async (ExcelPayslipRepository repository, int clientId,
             string id, ExcelPayslipNegativeAmountReviewRequest request, HttpContext context) =>
         {

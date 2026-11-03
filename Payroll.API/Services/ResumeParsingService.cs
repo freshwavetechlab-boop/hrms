@@ -18,7 +18,7 @@ public sealed partial class ResumeParsingService(
     private const int MaxExtractedBytes = 20 * 1024 * 1024;
     private const int MaxExtractedCharacters = 2_000_000;
     private const int MaxBuiltInPdfBytes = 2 * 1024 * 1024;
-    private const string ParserVersion = "3.0";
+    internal const string ParserVersion = "3.0";
     private static readonly SemaphoreSlim OcrGate = new(2, 2);
     private static readonly Regex EmailPattern = new(@"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     // Horizontal separators only: dates/IDs on the following line are not part of a phone.
@@ -55,6 +55,22 @@ public sealed partial class ResumeParsingService(
 
     public ResumeParseResult ApplyLearning(int clientId, ResumeParseResult parse) =>
         parse.ParserName.Contains("HumanReviewed", StringComparison.OrdinalIgnoreCase) ? parse : learning?.Apply(clientId, parse) ?? parse;
+
+    internal string LearningFingerprint(int clientId) => ResumePreviewCache.Fingerprint(learning?.Stats(clientId));
+
+    internal Task<string> ReviewDataFingerprintAsync(int clientId, CancellationToken ct) =>
+        documentRag.ConfigurationFingerprintAsync(clientId, ct);
+
+    internal Task<ResumeParseResult> ParseForUploadAsync(IFormFile file, int clientId, ResumeParsingJobPolicy policy,
+        IEnumerable<string>? jobContext, CancellationToken ct, ResumeParseResult? parsedResume, bool reuseReviewedPreview)
+    {
+        // This flag is set only by the repository after validating a server receipt.
+        // A draft's HumanReviewed string alone never bypasses the job's AI setting.
+        if (reuseReviewedPreview && policy.ParsingEnabled && parsedResume is not null
+            && parsedResume.ParserName.Contains("HumanReviewed", StringComparison.OrdinalIgnoreCase)
+            && (!policy.AiEnabled || parsedResume.AiReviewStatus == "Completed")) return Task.FromResult(parsedResume);
+        return ParseForJobAsync(file, clientId, policy.ParsingEnabled, policy.AiEnabled, jobContext, ct, parsedResume);
+    }
 
     public int LearnReviewed(int clientId, long candidateId, string source, ResumeParsedFacts before, ResumeParsedFacts reviewed, int reviewedBy)
     {
@@ -252,6 +268,7 @@ public sealed partial class ResumeParsingService(
         byte[]? sourceDocument,
         CancellationToken cancellationToken)
     {
+        var preparationStarted = Stopwatch.GetTimestamp();
         try
         {
             RecruitmentDocumentRagContext retrieval;
@@ -270,8 +287,12 @@ public sealed partial class ResumeParsingService(
                 retrieval = await documentRag.RetrieveAsync(clientId, RecruitmentDocumentRagService.ResumeDocumentKind,
                     queryParts, cancellationToken);
             }
+            var preparationMs = Stopwatch.GetElapsedTime(preparationStarted).TotalMilliseconds;
+            var inferenceStarted = Stopwatch.GetTimestamp();
             var ai = await aiScoring.SuggestResumeDocumentAsync(clientId, local.Text, sourceDocument,
                 sourceDocument is { Length: > 0 } ? "application/pdf" : "", retrieval, cancellationToken);
+            logger.LogInformation("Resume AI review: preparation {PreparationMs:0} ms; provider {ProviderMs:0} ms; status {AiStatus}.",
+                preparationMs, Stopwatch.GetElapsedTime(inferenceStarted).TotalMilliseconds, ai.Status);
             return ApplyLearning(clientId, MergeAiSuggestion(local, ai, retrieval.HasContext, sourceDocument is { Length: > 0 }))
                 with { AiReviewStatus = ai.Status };
         }

@@ -146,6 +146,7 @@ builder.Services.AddSingleton<TravelExpenseRepository>();
 builder.Services.AddSingleton<RecruitmentAdminRepository>();
 builder.Services.AddSingleton<RecruitmentRepository>();
 builder.Services.AddSingleton<ResumeParsingService>();
+builder.Services.AddSingleton<ResumePreviewCache>();
 builder.Services.AddSingleton<ResumeLearningMemory>();
 builder.Services.AddSingleton<RecruitmentRequestDocumentParsingService>();
 builder.Services.AddSingleton<LocalEmbedder>();

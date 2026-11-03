@@ -17,13 +17,14 @@ public static class AttendanceApiProtocol
     private static readonly string[] Tokens = ["fromDate", "toDate", "toDateExclusive", "deviceId", "page", "offset", "pageSize", "secret"];
     private static bool ForbiddenHeader(string key) => new[] { "Host", "Content-Length", "Transfer-Encoding", "Connection", "Proxy-Authorization", "Proxy-Connection" }.Contains(key, StringComparer.OrdinalIgnoreCase);
 
-    public static void Validate(AttendanceApiAdapter c)
+    public static void Validate(AttendanceApiAdapter c, bool allowIncompleteDraft = false)
     {
         if (typeof(AttendanceApiAdapter).GetProperties().Any(p => p.PropertyType == typeof(string) && p.GetValue(c) is null))
             throw new InvalidOperationException("Configuration text fields cannot be null; use an empty string for optional fields.");
-        if (c.ClientId <= 0 || string.IsNullOrWhiteSpace(c.Name) || c.Name.Length > 120 || string.IsNullOrWhiteSpace(c.DeviceId) || c.DeviceId.Length > 100)
+        var draft = allowIncompleteDraft && !c.IsActive;
+        if (c.ClientId <= 0 || string.IsNullOrWhiteSpace(c.Name) || c.Name.Length > 120 || (!draft && string.IsNullOrWhiteSpace(c.DeviceId)) || c.DeviceId.Length > 100)
             throw new InvalidOperationException("Client, adapter name and registered machine are required.");
-        if (c.SourceDeviceId.Length is < 1 or > 100) throw new InvalidOperationException("Enter the vendor's device identifier.");
+        if ((!draft && string.IsNullOrWhiteSpace(c.SourceDeviceId)) || c.SourceDeviceId.Length > 100) throw new InvalidOperationException("Enter the vendor's device identifier.");
         if (!Uri.TryCreate(c.Url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || uri.UserInfo.Length > 0 || uri.Fragment.Length > 0 || c.Url.Length > 4096 || c.Url.Contains("{{"))
             throw new InvalidOperationException("Enter a complete HTTP/HTTPS endpoint without credentials or placeholders in the URL. Configure query parameters below.");
         if (c.Method is not ("GET" or "POST")) throw new InvalidOperationException("Select GET or POST.");
@@ -39,7 +40,7 @@ public static class AttendanceApiProtocol
         if (c.Query.Any(q => q.Value is null) || c.Headers.Any(h => h.Value is null)) throw new InvalidOperationException("Query/header values must be strings.");
         foreach (var h in c.Headers)
             if (!Regex.IsMatch(h.Key, @"^[A-Za-z0-9-]{1,80}$") || ForbiddenHeader(h.Key) || h.Value.Contains('\r') || h.Value.Contains('\n')) throw new InvalidOperationException("A custom header is invalid or reserved.");
-        if (c.InValues.Length == 0 || c.OutValues.Length == 0 || c.InValues.Concat(c.OutValues).Any(string.IsNullOrWhiteSpace) || c.InValues.Intersect(c.OutValues, StringComparer.OrdinalIgnoreCase).Any())
+        if ((!draft && (c.InValues.Length == 0 || c.OutValues.Length == 0)) || c.InValues.Concat(c.OutValues).Any(string.IsNullOrWhiteSpace) || c.InValues.Intersect(c.OutValues, StringComparer.OrdinalIgnoreCase).Any())
             throw new InvalidOperationException("Configure distinct, non-empty vendor values for IN and OUT. Confirm numeric meanings with the vendor.");
         if (new[] { c.EmployeePath, c.TimePath, c.ActionPath }.Any(string.IsNullOrWhiteSpace)) throw new InvalidOperationException("Employee, punch time and action paths are required.");
         if (c.EmployeeMap.Any(kv => string.IsNullOrWhiteSpace(kv.Key) || string.IsNullOrWhiteSpace(kv.Value) || kv.Key.Length > 100 || kv.Value.Length > 100)) throw new InvalidOperationException("Employee mappings require vendor IDs and employee codes, each up to 100 characters.");

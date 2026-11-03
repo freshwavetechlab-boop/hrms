@@ -14,6 +14,8 @@ export type ExcelPayslipRow = {
   information: ExcelPayslipText[]; earnings: ExcelPayslipAmount[]; deductions: ExcelPayslipAmount[]; employerContributions: ExcelPayslipAmount[]
   netPay: number; declaredGross: number | null; declaredDeductions: number | null; warnings: string[]
   negativeAmountReview?: { amountsHash: string; reviewedBy: string; reviewedAtUtc: string } | null
+  warningReview?: { amountsHash: string; reviewedBy: string; reviewedAtUtc: string; warnings: string[] } | null
+  warningReviewToken?: string | null
 }
 export type PayslipEmployeeCodeGeneration = { enabled: boolean; digits: number }
 export type PayslipEmployeeCodeOptions = { clientCode: string; digits: number; nextSequence: string }
@@ -69,6 +71,7 @@ export const getExcelPayslipBatch = (clientId: number, id: string, quiet = false
   ...(quiet ? {loader:false,toast:false} : {}),
 })
 export const reviewExcelPayslipNegativeAmount = (clientId: number, id: string, rowId: string) => postJson<{ rowId: string }, ExcelPayslipBatch | null>(`${batchPath(id)}/negative-amount-review?clientId=${clientId}`, { rowId }, null, { toast: false })
+export const reviewExcelPayslipWarnings = (clientId: number, id: string, rows: { rowId: string; token: string }[], action: 'review' | 'restore') => postJson<{ rows: typeof rows; action: typeof action }, ExcelPayslipBatch | null>(`${batchPath(id)}/warning-review?clientId=${clientId}`, { rows, action }, null, { toast: false, timeoutMs: 120000 })
 export const getExcelPayslipDeliveryStatus = (clientId: number, id: string) => getJsonResult<{ items: ExcelPayslipEmailStatus[] }>(`${batchPath(id)}/delivery-status?clientId=${clientId}`, { items: [] })
 export const getExcelPayslipMailJobs = () => getJsonResult<{ items: ExcelPayslipMailJob[] }>(`${root}/mail-jobs`, { items: [] }, { loader: false, toast: false })
 export const getExcelPayslipBatchMailJobs = (clientId: number, id: string) => getJsonResult<{ items: ExcelPayslipMailJob[] }>(`${batchPath(id)}/mail-jobs?clientId=${clientId}`, { items: [] }, { loader: false, toast: false })

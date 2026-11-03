@@ -22,7 +22,8 @@ public sealed partial class RecruitmentTalentRepository(
     EngineRuntimeMonitor engineMonitor,
     EmployeeRepository employees,
     WorkflowRepository workflows,
-    ILogger<RecruitmentTalentRepository> logger)
+    ILogger<RecruitmentTalentRepository> logger,
+    ResumePreviewCache? previewCache = null)
 {
     private const int GlobalTalentPoolClientId = 0;
     private const string StandardApplicationType = "Application";
@@ -501,7 +502,8 @@ VALUES (@Code,@CandidateId,@PositionId,@JobPostingId,@ClientId,@SourceType,@Sour
         bool? enableResumeParsingOverride = null,
         bool? enableAiParsingOverride = null,
         bool queueApplicationScoring = true,
-        int? parsingClientIdOverride = null)
+        int? parsingClientIdOverride = null,
+        bool reuseReviewedPreview = false)
     {
         if (request.File is null) return (null, null, "Select a resume file.");
         if (request.ApplicationId is <= 0) return (null, null, "Select a valid candidate application.");
@@ -536,8 +538,10 @@ VALUES (@Code,@CandidateId,@PositionId,@JobPostingId,@ClientId,@SourceType,@Sour
             ExpiryDate = request.ExpiryDate
         }, request.File, user, ipAddress, userAgent, cancellationToken);
         if (attachment is null) return (null, null, error ?? "Resume upload failed.");
-        var parse = await resumeParser.ParseForJobAsync(request.File, parsingClientId, policy.ParsingEnabled,
-            policy.AiEnabled, jobContext, cancellationToken, parsedResume);
+        // Only intake can supply this server-validated receipt after checking the
+        // exact file, actor, job and current settings. Ordinary upload routes still run AI.
+        var parse = await resumeParser.ParseForUploadAsync(request.File, parsingClientId, policy,
+            jobContext, cancellationToken, parsedResume, reuseReviewedPreview);
         var resume = await RegisterResumeAsync(db, candidate, attachment, parse, user, suppressAutoScoring || !queueApplicationScoring);
         await PurgeSupersededResumeFilesAsync(candidate.Id, attachment.PublicId, user, ipAddress, userAgent, cancellationToken);
         return (attachment, resume, "");
@@ -624,13 +628,17 @@ ORDER BY (field.client_id=@ClientId) DESC,(field.form_code='CANDIDATE_APPLICATIO
             result.Items.Add(item);
             try
             {
-                // Candidate identity is established with the deterministic parser.
-                // External AI runs only after AttachmentRepository has validated and
-                // accepted the file for the candidate below.
-                var parse = parsingEnabled
+                // Reuse only a server-issued review of these exact bytes and job
+                // settings. Otherwise establish identity locally, then run any
+                // outstanding AI review after attachment validation below.
+                var previewKey = request.DraftReviewed && files.Count == 1 && !string.IsNullOrEmpty(request.PreviewToken)
+                    ? await ResumePreviewKeyAsync(file, user, clientId, request.PositionId, request.JobPostingId,
+                        talentPoolOnly, intakeContext, cancellationToken) : "";
+                var receipt = previewCache?.Get(previewKey, request.PreviewToken);
+                var parse = receipt?.Reviewed ?? (parsingEnabled
                     ? await resumeParser.ParseLocalAsync(file, clientId, cancellationToken)
-                    : ResumeParseResult.WithoutContent("Disabled", "Disabled", "", "Resume parsing is disabled for this job.");
-                var unreviewedFacts = parse.Facts;
+                    : ResumeParseResult.WithoutContent("Disabled", "Disabled", "", "Resume parsing is disabled for this job."));
+                var unreviewedFacts = receipt?.Local.Facts ?? parse.Facts;
                 if (request.DraftReviewed)
                     parse = ApplyReviewedDraft(parse, request);
                 var reviewNotes = new List<string>();
@@ -818,7 +826,8 @@ ORDER BY (field.client_id=@ClientId) DESC,(field.form_code='CANDIDATE_APPLICATIO
                     enableResumeParsingOverride: intakePolicy.ParsingEnabled,
                     enableAiParsingOverride: intakePolicy.AiEnabled,
                     queueApplicationScoring: false,
-                    parsingClientIdOverride: clientId);
+                    parsingClientIdOverride: clientId,
+                    reuseReviewedPreview: receipt is not null);
                 if (resume is null)
                 {
                     item.Error = uploadError;
@@ -909,6 +918,7 @@ ORDER BY (field.client_id=@ClientId) DESC,(field.form_code='CANDIDATE_APPLICATIO
         AuthUser user,
         CancellationToken cancellationToken)
     {
+        var previewStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         if (request.File is null || request.File.Length <= 0) return (null, "Select a resume file.");
         var clientId = request.TalentPoolOnly ? GlobalTalentPoolClientId : request.ClientId;
         if (request.TalentPoolOnly && user.ClientId is not null)
@@ -926,9 +936,29 @@ ORDER BY (field.client_id=@ClientId) DESC,(field.form_code='CANDIDATE_APPLICATIO
         // out of parsing, but cannot enable parsing/AI against the job's settings.
         // Provider usage may be recorded; candidate/application/attachment records
         // are still created only by Final upload.
-        var parse = await resumeParser.ParseForJobAsync(request.File, clientId,
+        var effectiveContext = previewContext with { Policy = ResumeParsingJobPolicy.Resolve(
             previewContext.Policy.ParsingEnabled && request.EnableParsing,
-            previewContext.Policy.AiEnabled, previewContext.JobContext, cancellationToken);
+            previewContext.Policy.ParsingEnabled && request.EnableParsing, previewContext.Policy.AiEnabled) };
+        var previewKey = await ResumePreviewKeyAsync(request.File, user, clientId, request.PositionId,
+            request.JobPostingId, request.TalentPoolOnly, effectiveContext, cancellationToken);
+        var learningRevision = resumeParser.LearningFingerprint(clientId);
+        var receipt = previewCache?.Get(previewKey, expectedLearningRevision: learningRevision);
+        var reusedPreview = receipt is not null;
+        ResumeParseResult parse;
+        if (receipt is not null) parse = receipt.Reviewed;
+        else
+        {
+            var extractionStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+            var local = effectiveContext.Policy.ParsingEnabled
+                ? await resumeParser.ParseLocalAsync(request.File, clientId, cancellationToken)
+                : ResumeParseResult.WithoutContent("Disabled", "Disabled", "", "Resume parsing is disabled for this job.");
+            logger.LogInformation("Resume initial text extraction and parsing completed in {ExtractionMs:0} ms.",
+                System.Diagnostics.Stopwatch.GetElapsedTime(extractionStarted).TotalMilliseconds);
+            parse = await resumeParser.ParseForJobAsync(request.File, clientId,
+                effectiveContext.Policy.ParsingEnabled, effectiveContext.Policy.AiEnabled,
+                effectiveContext.JobContext, cancellationToken, local);
+            receipt = previewCache?.Store(previewKey, local, parse, effectiveContext.Policy.AiEnabled, learningRevision);
+        }
         var normalizedEmail = NormalizeEmail(parse.Facts.Email);
         var normalizedPhone = NormalizePhone(parse.Facts.Phone);
         List<RecruitmentCandidate> matches = string.IsNullOrWhiteSpace(normalizedEmail) && string.IsNullOrWhiteSpace(normalizedPhone)
@@ -949,8 +979,11 @@ ORDER BY (ClientId=@ClientId) DESC,(ClientId=0) DESC,Id",
         var names = SplitName(string.IsNullOrWhiteSpace(parse.Facts.FullName)
             ? candidate is null ? ResumeParsingService.FilenameNameHint(request.File.FileName) : candidate.CandidateName
             : parse.Facts.FullName);
+        logger.LogInformation("Resume preview completed in {ElapsedMs:0} ms; reused review: {Reused}; AI status: {AiStatus}.",
+            System.Diagnostics.Stopwatch.GetElapsedTime(previewStarted).TotalMilliseconds, reusedPreview, parse.AiReviewStatus);
         return (new RecruitmentResumePreview
         {
+            PreviewToken = receipt?.Token ?? "",
             AiReviewStatus = parse.AiReviewStatus,
             LearnedFieldCount = parse.LearnedFieldCount,
             ReviewIssues = parse.ReviewIssues,

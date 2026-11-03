@@ -227,15 +227,17 @@ CAST(send_state_json AS CHAR) AS SendStateJson FROM excel_payslip_batches WHERE 
             if (info.Type != typeof(ExcelPayslipRow)) return;
             foreach (var property in info.Properties)
             {
-                if (property.Name is "employment" or "negativeAmountReview") property.ShouldSerialize = (_, _) => false;
+                if (property.Name is "employment" or "negativeAmountReview" or "warningReview" or "warningReviewToken") property.ShouldSerialize = (_, _) => false;
                 // Review metadata does not change the queued salary snapshot. Restore its original
-                // negative notice for hashing so an approval cannot invalidate an existing email.
+                // notices for hashing so a review cannot invalidate an existing email.
                 if (property.Name == "warnings") property.Get = instance =>
                 {
                     var row = (ExcelPayslipRow)instance;
+                    var warnings = ExcelPayslipRepository.HasCurrentWarningReview(row)
+                        ? row.WarningReview!.Warnings.Concat(row.Warnings).Distinct(StringComparer.Ordinal).ToList() : row.Warnings;
                     return ExcelPayslipRepository.HasNegativeAmounts(row) && ExcelPayslipRepository.HasCurrentNegativeAmountReview(row)
-                        && !row.Warnings.Contains(ExcelPayslipRepository.NegativeAmountWarning)
-                        ? row.Warnings.Append(ExcelPayslipRepository.NegativeAmountWarning).ToList() : row.Warnings;
+                        && !warnings.Contains(ExcelPayslipRepository.NegativeAmountWarning)
+                        ? warnings.Append(ExcelPayslipRepository.NegativeAmountWarning).ToList() : warnings;
                 };
             }
         });

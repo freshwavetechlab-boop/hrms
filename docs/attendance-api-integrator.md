@@ -4,6 +4,8 @@ Open **Security > Integrations > Attendance API Integrator** (`/security/apps/at
 
 ## Configure a client
 
+A paused draft may be saved before a machine is registered or numeric IN/OUT values are confirmed. Missing machine identifiers and directions remain blank. Test and enabled sync require complete setup; no sample serial number or numeric direction is assumed. The iDMS preset therefore starts with empty IN/OUT value lists.
+
 1. Register its machine in **Settings > Leave & Attendance > Attendance** and assign the work location.
 2. Generate that machine's HRMS API key in **Workflows > API Catalog**.
 3. Choose **Add adapter**, or **Use iDMS preset**. Set the vendor endpoint, source device ID, HTTP method and authentication.
@@ -47,7 +49,7 @@ Manual/scheduled runs are serialized with a MySQL advisory lock across API insta
 
 ## Storage and deployment
 
-Configuration uses `modulesettings.SettingsJson.attendanceApiAdapters` in the existing `leave_attendance` client row. It does not replace attendance rules, registered devices or other module settings, and needs no schema migration. Credentials use the existing portable integration protector with a separate authenticated purpose.
+Configuration uses `modulesettings.SettingsJson.attendanceApiAdapters` in a dedicated row with `ModuleCode=attendance_api_adapters:<clientId>`. Including the client in the module code supports older databases that retain a global unique module-code index. Existing configurations in a client's `leave_attendance` row remain readable and are copied into the dedicated row on the first write. Attendance rules, registered devices and other module settings are preserved; no schema migration is required. A write that does not update exactly one client row fails instead of reporting a false save. Credentials use the existing portable integration protector with a separate authenticated purpose.
 
 Requests originate from the **HRMS API server**. A LAN endpoint therefore needs a reachable network/VPN from that server and the explicit private-network option. Redirects, loopback, link-local/metadata addresses and unsafe request headers are blocked. DNS results are checked for each request and connections are pinned to validated addresses. Provider response bodies and credentials are not included in HTTP request logs or connectivity errors.
 

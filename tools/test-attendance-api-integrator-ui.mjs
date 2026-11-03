@@ -102,6 +102,13 @@ try {
   const saved = requests.find(r => r.method === 'POST' && r.path.endsWith('/adapters')).body
   assert.equal(saved.configuration.clientId, 11); assert.equal(saved.configuration.employeeMap['369839'], 'EMP001')
   assert.equal(saved.configuration.isActive, false, 'Preset does not start importing automatically')
+  assert.deepEqual(saved.configuration.inValues, [], 'Unverified numeric IN values are left pending')
+  assert.deepEqual(saved.configuration.outValues, [], 'Unverified numeric OUT values are left pending')
+  await workspace().getByRole('textbox', { name: 'Search records', exact: true }).fill('iDMS')
+  await expect(workspace().getByText('Draft', { exact: true })).toBeVisible()
+  await expect(workspace().getByRole('button', { name: 'Test', exact: true })).toBeDisabled()
+  await expect(workspace().getByRole('button', { name: 'Sync', exact: true })).toBeDisabled()
+  await workspace().getByRole('textbox', { name: 'Search records', exact: true }).fill('')
 
   await page.locator('.ant-segmented-item').filter({ hasText: /^Cards$/ }).click()
   await workspace().getByRole('button', { name: 'Test', exact: true }).first().click()

@@ -62,13 +62,22 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@BatchId
         var reviewedIdentityColumns = await AppliedIdentityColumnsAsync(db,batch,source);
         var roster = ClassifyRoster(batch,source,await ReadIdentitiesAsync(db,null,clientId,batch.Month),await AppliedSourceRowsAsync(db,null,clientId,batchId),reviewedIdentityColumns);
         roster = await ReviewRosterIdentitiesAsync(db,clientId,batch,source,roster);
+        // Reuse the same current, source-verified identity binding as normal payslips.
+        // Keep annotations separate from the immutable source/hash and skip salary projection.
+        var identityBatch=JsonSerializer.Deserialize<ExcelPayslipBatch>(JsonSerializer.Serialize(batch,Json),Json)!;
+        await ExcelPayslipRepository.AnnotateEmploymentAsync(db,identityBatch,configuration:configuration,annotateMasterDetails:false);
+        roster=ReuseVerifiedMasterLinks(roster,identityBatch);
         var appliedIds = ready ? (await db.QueryAsync<string>("SELECT id FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@BatchId AND status='Applied' ORDER BY updated_at DESC,id DESC",new { ClientId=clientId,BatchId=batchId })).ToArray() : [];
         var appliedJson = appliedIds.Length>0 ? await db.QueryAsync<AppliedSetupRowSet>("SELECT id ImportId,CAST(JSON_EXTRACT(request_json,'$.rowIds') AS CHAR) RowsJson,CAST(result_json AS CHAR) ResultJson FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@BatchId AND status='Applied' AND id IN @Ids",new { ClientId=clientId,BatchId=batchId,Ids=appliedIds }) : [];
         var appliedOrder=appliedIds.Select((id,index)=>new {id,index}).ToDictionary(value=>value.id,value=>value.index,StringComparer.Ordinal);
         var appliedSetups=appliedJson.OrderBy(value=>appliedOrder[value.ImportId]).Select(value=>AppliedReceiptRows(value.RowsJson,value.ResultJson).ToList()).ToList();
         var nullablePresenceReady = await HasNullablePresenceSchemaAsync(db, null);
         var clientConfiguration = ready ? await ReadClientConfigurationAsync(db,clientId,source) : null;
-        return new { batchId = batch.Id, month = batch.Month, source, components = componentRows, workWeeks, workLocations, employees = employeeRows, defaults, migrationRequired = !ready, salaryCorrectionSupported = true, sourcePayableOverrideSupported = true, sharedHeaderDivisorSupported = true, templateApplicabilitySupported = true, calculationOnlySimulationSupported = true, identityColumnReviewSupported = true, identityColumnCandidates = IdentityColumnCandidates(batch,source,rowIds is { Count: > 0 } ? rowIds : batch.Rows.Select(r=>r.Id).ToArray()), payableOnlyAttendanceSupported = PayableOnlyRolloutAvailable(configuration, nullablePresenceReady), payableOnlyAttendanceSchemaReady = nullablePresenceReady, payableOnlyAttendanceUnavailableReason = PayableOnlyRolloutError(configuration, nullablePresenceReady), sourceCtcAndExtraDutySupported = true, locationAllocationSupported = true, locationAllocationImportDate = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), salaryTemplates, lastImport, clientConfiguration, roster, appliedSetups };
+        var quickRows = rowIds is { Count: > 0 } ? rowIds : batch.Rows.Select(row=>row.Id).ToArray();
+        var quickPreparation = clientConfiguration is null ? null : await ReadQuickPreparationAsync(db,null,clientId,batch,source,quickRows,
+            roster.Rows.Where(row=>quickRows.Contains(row.RowId) && row.EmployeeId.HasValue).Select(row=>row.EmployeeId!.Value).ToArray(),
+            clientConfiguration.SavedRequest.AttendanceCycleStartDay,clientConfiguration.SavedRequest.AttendanceCycleEndDay);
+        return new { batchId = batch.Id, month = batch.Month, quickPreparation, source, components = componentRows, workWeeks, workLocations, employees = employeeRows, defaults, migrationRequired = !ready, salaryCorrectionSupported = true, sourcePayableOverrideSupported = true, sharedHeaderDivisorSupported = true, templateApplicabilitySupported = true, calculationOnlySimulationSupported = true, identityColumnReviewSupported = true, identityColumnCandidates = IdentityColumnCandidates(batch,source,rowIds is { Count: > 0 } ? rowIds : batch.Rows.Select(r=>r.Id).ToArray()), payableOnlyAttendanceSupported = PayableOnlyRolloutAvailable(configuration, nullablePresenceReady), payableOnlyAttendanceSchemaReady = nullablePresenceReady, payableOnlyAttendanceUnavailableReason = PayableOnlyRolloutError(configuration, nullablePresenceReady), sourceCtcAndExtraDutySupported = true, locationAllocationSupported = true, locationAllocationImportDate = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), salaryTemplates, lastImport, clientConfiguration, roster, appliedSetups };
     }
 
     public async Task<object> SaveDraftAsync(int clientId, ExcelPayrollSetupDraftRequest draft, string actor)
@@ -435,6 +444,14 @@ FROM payruns pr JOIN payrunemployees pe ON pe.PayRunId=pr.Id WHERE pr.ClientId=@
         await ValidatePayableOverrideAsync(db, tx, clientId, request, plan);
         FinalizePresentDaysEvidence(plan, request, clientId);
         await ReviewSourceAdjustmentReusesAsync(db, tx, clientId, plan,request.CorrectionOfImportId is not null);
+        if(request.QuickPreparation is { } quick)
+        {
+            var snapshot=await ReadQuickPreparationAsync(db,tx,clientId,batch,source,request.RowIds,
+                plan.Rows.Select(row=>row.Employee.Id).ToArray(),request.AttendanceCycleStartDay,request.AttendanceCycleEndDay);
+            var conflict=QuickPreparationConflict(quick,snapshot,request.ImportAttendance,
+                plan.Rows.Select(row=>(row.Employee.Id,(decimal)row.Preview.PayrollDays,row.Preview.PresentDays,row.Preview.PayableDays)).ToArray());
+            if(conflict is not null)Error(conflict);
+        }
         plan.Preview.PlanHash = Hash(JsonSerializer.Serialize(new { clientId, request, batch, source, setupJson, identities, locations, existingState, salaryHistory, attendanceState, membershipState,
             templateScopes=plan.TemplateScopes, linkedOriginals=plan.LinkedOriginals, nativeAttendanceInputs=plan.NativeAttendanceInputs, policyJson, attendanceJson, taxSettings, taxVersions, selectedRegimes, payrollHistory,adjustmentsState, adjustmentReuses=plan.AdjustmentReuses,correctionReceiptFingerprint=plan.CorrectionReceiptFingerprint }, Json));
         return plan;

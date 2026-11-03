@@ -4,6 +4,8 @@ namespace Payroll.API.Models;
 
 public sealed class ExcelPayrollSetupRequest
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ExcelPayrollQuickPreparation? QuickPreparation { get; set; }
     public bool UpdateExistingConfiguration { get; set; }
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? CorrectionOfImportId { get; set; }
@@ -57,6 +59,8 @@ public sealed class ExcelPayrollSetupRequest
     public List<ExcelPayrollSetupEmployeeDecision> EmployeeDecisions { get; set; } = [];
     public JsonObject EditableDefaults { get; set; } = new();
 }
+
+public sealed record ExcelPayrollQuickPreparation(int Version, string SourceHash, string AttendanceSnapshotHash);
 
 public sealed class ExcelPayrollIdentityColumnReview
 {

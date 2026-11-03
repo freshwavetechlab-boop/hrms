@@ -3,6 +3,7 @@ import { Alert, Button, Drawer, Space, Tag } from 'antd'
 import type { ExcelPayslipBatch } from '../services/excelPayslipService'
 import { getPayrollSetupContext, type PayrollSetupContext, type PayrollSetupResult } from '../services/excelPayrollSetupService'
 import ExcelPayrollSetup from './ExcelPayrollSetup'
+import ExcelPayrollQuickPrepare from './ExcelPayrollQuickPrepare'
 import EmployeeResignationAction from './EmployeeResignationAction'
 import DataTable from './DataTable'
 import './ExcelPayrollSetup.css'
@@ -12,6 +13,7 @@ export default function ExcelPayrollSetupWorkspace({ clientId, batch, rowIds, on
   const [context, setContext] = useState<PayrollSetupContext | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState('')
   const [group, setGroup] = useState('Existing'), [selected, setSelected] = useState<string[]>([]), [cohort, setCohort] = useState<string[] | null>(null)
   const [missingSelection, setMissingSelection] = useState<string[]>([])
+  const [advanced, setAdvanced] = useState(false)
   const load = useCallback(async () => {
     setLoading(true); setError('')
     try {
@@ -29,9 +31,11 @@ export default function ExcelPayrollSetupWorkspace({ clientId, batch, rowIds, on
   const missing = context?.roster?.missingEmployees || []
   const exited = missing.filter(row => missingSelection.includes(String(row.employeeId))).map(row => ({ id: row.employeeId, employeeCode: row.employeeCode, name: row.employeeName }))
   const configure = (ids: string[]) => { setSelected([]); setCohort(ids.slice(0, 100)) }
+  if (context && !advanced) return <ExcelPayrollQuickPrepare key={`${clientId}:${batch.id}:${rowIds.join('|')}`} clientId={clientId} batch={batch} rowIds={rowIds} context={context} onClose={onClose} onApplied={result=>{onApplied(result);void load()}} onAdvanced={ids=>{setAdvanced(true);setGroup('All');setSelected(ids);if(ids.length<=100)configure(ids)}} />
   return <>
     <Drawer open title={`Master setup · ${batch.month}`} width="min(1160px, 98vw)" className="excel-payroll-setup" onClose={onClose} footer={<Space wrap className="excel-payroll-setup-footer">
       <Button disabled={loading || !!cohort} onClick={onClose}>Close</Button>
+      <Button disabled={loading || !!cohort} onClick={()=>setAdvanced(false)}>Simple preparation</Button>
       <Button disabled={loading || !pending.length || !!cohort} onClick={() => configure(pending.map(row => row.rowId))}>Configure next {Math.min(100, pending.length)}{group === 'All' ? '' : ` ${group.toLowerCase()}`}</Button>
       <Button type="primary" disabled={loading || !selection.length || !!cohort} onClick={() => configure(selection)}>Configure selected ({selection.length})</Button>
     </Space>}>

@@ -61,7 +61,7 @@ export default function ExcelPayrollSetup({ clientId, batch, rowIds, previousBas
       const data = result.data
       setDivisorMode(null)
       setContext(data)
-      const saved = data.lastImport
+      const saved = data.lastImport ? { ...data.lastImport, savedRequest: { ...data.lastImport.savedRequest, quickPreparation: undefined } } : null
       if (saved && [...saved.savedRequest.rowIds].sort().join('|') === [...rowIds].sort().join('|')) {
         setRequest(saved.status === 'Applied' ? saved.savedRequest : { ...restoreExcelPayrollMasterMetadata(saved.savedRequest, data), transferReviewVersion: 1, templateScopeReviewVersion: 1 }); requestId.current = saved.requestId; setTransferRequestId(saved.requestId); setTransferReceiptId(saved.importId)
         setDefaultsDraft(saved.editableDefaultsDraft || saved.savedRequest.editableDefaults); setDefaultsRevision(saved.defaultsRevision || 0)

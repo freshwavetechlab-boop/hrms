@@ -27,9 +27,18 @@ export const emptyAttendanceAdapter = (clientId: number): AttendanceApiAdapter =
 })
 export const idmsAttendanceAdapter = (clientId: number): AttendanceApiAdapter => ({
   ...emptyAttendanceAdapter(clientId), name: 'iDMS / TimeWatch', allowPrivateNetwork: true,
+  inValues: [], outValues: [],
   url: 'http://192.168.1.66:8001/TimeWatchAPI/GetPunchData',
   bodyTemplate: JSON.stringify({ FromDate: '{{fromDate}}', ToDate: '{{toDate}}', DeviceID: '{{deviceId}}', UserID: '' }, null, 2),
 })
+export const attendanceAdapterSetupIssues = (row: AttendanceApiAdapter): string[] => [
+  ...(!row.deviceId ? ['registered HRMS machine'] : []),
+  ...(!row.sourceDeviceId ? ['vendor device identifier'] : []),
+  ...(!row.inValues.length || !row.outValues.length ? ['verified IN/OUT values'] : []),
+  ...(row.authType !== 'None' && !row.hasSecret ? ['vendor credential'] : []),
+  ...(!row.hasDeviceToken ? ['HRMS machine API key'] : []),
+]
+export const attendanceAdapterStatus = (row: AttendanceApiAdapter) => row.isActive ? 'Enabled' : attendanceAdapterSetupIssues(row).length ? 'Draft' : 'Paused'
 const root = '/api/integrations/attendance/adapters'
 export const getAttendanceAdapters = (clientId: number) => getJsonResult<AttendanceApiAdapter[]>(`${root}?clientId=${clientId}`, [], { loader: false })
 export const saveAttendanceAdapter = (configuration: AttendanceApiAdapter, secret: string, deviceToken: string, clearSecret: boolean, clearDeviceToken: boolean) =>

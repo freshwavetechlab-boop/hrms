@@ -54,6 +54,10 @@ public sealed class ExcelPayslipRow
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ExcelPayslipNegativeAmountReview? NegativeAmountReview { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ExcelPayslipWarningsReview? WarningReview { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WarningReviewToken { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ExcelPayslipEmployment? Employment { get; set; }
     public string Id { get; set; } = "";
     public int SourceRow { get; set; }
@@ -94,6 +98,13 @@ public sealed record ExcelPayslipMasterLink(string RowId,int EmployeeId,int Sour
 
 public sealed record ExcelPayslipNegativeAmountReview(string AmountsHash, string ReviewedBy, DateTime ReviewedAtUtc);
 public sealed record ExcelPayslipNegativeAmountReviewRequest(string RowId);
+public sealed record ExcelPayslipWarningsReview(string AmountsHash, string ReviewedBy, DateTime ReviewedAtUtc, List<string> Warnings);
+public sealed record ExcelPayslipWarningReviewSelection(string RowId, string Token);
+public sealed class ExcelPayslipWarningReviewRequest
+{
+    public string Action { get; set; } = "review";
+    public List<ExcelPayslipWarningReviewSelection> Rows { get; set; } = [];
+}
 
 public sealed record ExcelPayslipEmployment(int? EmployeeId, string EmployeeCode, string Status, string? LastWorkingDate, bool BlockedForMonth, bool IdentityReviewRequired);
 

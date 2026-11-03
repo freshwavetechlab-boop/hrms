@@ -1,6 +1,8 @@
 using System.Text.RegularExpressions;
 using Dapper;
 using MySqlConnector;
+using Microsoft.Extensions.Caching.Memory;
+using System.Text.Json;
 using Payroll.API.Models;
 
 namespace Payroll.API.Services;
@@ -13,8 +15,41 @@ namespace Payroll.API.Services;
 public sealed class RecruitmentDocumentRagService(
     IConfiguration configuration,
     RecruitmentSemanticScoringService semanticScoring,
-    ILogger<RecruitmentDocumentRagService> logger)
+    ILogger<RecruitmentDocumentRagService> logger) : IDisposable
 {
+    private readonly MemoryCache computations = new(new MemoryCacheOptions { SizeLimit = 8 * 1024 * 1024 });
+
+    internal T Cached<T>(object scopeAndInputs, Func<T> compute)
+    {
+        var key = ResumePreviewCache.Fingerprint(scopeAndInputs);
+        if (computations.TryGetValue<byte[]>(key, out var json) && json is not null)
+            return JsonSerializer.Deserialize<T>(json)!;
+        var value = compute();
+        json = JsonSerializer.SerializeToUtf8Bytes(value);
+        if (json.Length <= 256 * 1024)
+            computations.Set(key, json, new MemoryCacheEntryOptions { Size = json.Length + 256,
+                AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(15) });
+        return value;
+    }
+
+    public void Dispose() => computations.Dispose();
+
+    internal async Task<string> ConfigurationFingerprintAsync(int clientId, CancellationToken ct)
+    {
+        if (clientId <= 0) return "";
+        // Read current inputs; cache only the expensive ranking, never stale database configuration.
+        await using var db = Db();
+        await db.OpenAsync(ct);
+        var jd = (await db.QueryAsync<RecruitmentRagCandidate>(new CommandDefinition(ApprovedJdSql,
+            new { ClientId = clientId, Limit = MaximumCandidates }, cancellationToken: ct))).ToArray();
+        var requisitions = (await db.QueryAsync<RecruitmentRagCandidate>(new CommandDefinition(ApprovedRequisitionSql,
+            new { ClientId = clientId, Limit = MaximumCandidates }, cancellationToken: ct))).ToArray();
+        var vocabulary = (await db.QueryAsync<RecruitmentRagVocabularyRow>(new CommandDefinition(@"
+SELECT Type,Value,ClientId FROM dropdownmasters
+WHERE IsActive=TRUE AND (ClientId=0 OR ClientId=@ClientId OR ClientId IS NULL) AND Type IN @Types
+ORDER BY (ClientId=@ClientId) DESC,Type,Value", new { ClientId = clientId, Types = VocabularyTypes }, cancellationToken: ct))).ToArray();
+        return ResumePreviewCache.Fingerprint(new { clientId, jd, requisitions, vocabulary });
+    }
     public const string EngineName = "bge-micro-v2";
     public const string HiringDocumentKind = "HiringDocument";
     public const string ResumeDocumentKind = "Resume";
@@ -53,7 +88,7 @@ public sealed class RecruitmentDocumentRagService(
             }
 
             var sourceDocument = semanticScoring.CreateDocument(query);
-            var references = candidates
+            var references = Cached(new { Kind = "references", clientId, documentKind, query, candidates }, () => candidates
                 .Where(candidate => RecruitmentDocumentTextQuality.IsReadable(candidate.Summary)
                     && RecruitmentDocumentTextQuality.IsReadable(candidate.RolePurpose)
                     && !candidate.Certifications.Contains("Experience Requirements", StringComparison.OrdinalIgnoreCase))
@@ -62,14 +97,14 @@ public sealed class RecruitmentDocumentRagService(
                 .OrderByDescending(reference => reference.Similarity)
                 .ThenByDescending(reference => reference.UpdatedAtUtc)
                 .Take(MaximumReferences)
-                .ToList();
+                .ToList());
 
             var vocabularyRows = await db.QueryAsync<RecruitmentRagVocabularyRow>(new CommandDefinition(@"
 SELECT Type,Value,ClientId
 FROM dropdownmasters
 WHERE IsActive=TRUE AND (ClientId=0 OR ClientId=@ClientId OR ClientId IS NULL) AND Type IN @Types
 ORDER BY (ClientId=@ClientId) DESC,Type,Value", new { ClientId = clientId, Types = VocabularyTypes }, cancellationToken: cancellationToken));
-            var vocabulary = vocabularyRows
+            var vocabulary = Cached(new { Kind = "vocabulary", clientId, documentKind, query, Rows = vocabularyRows.ToArray() }, () => vocabularyRows
                 .Where(row => !string.IsNullOrWhiteSpace(row.Value))
                 .GroupBy(row => row.Type, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(group => group.Key, group => (IReadOnlyList<string>)group
@@ -80,7 +115,8 @@ ORDER BY (ClientId=@ClientId) DESC,Type,Value", new { ClientId = clientId, Types
                     .ThenBy(row => row.Value)
                     .Take(group.Key.Equals("Department", StringComparison.OrdinalIgnoreCase) ? 12 : 24)
                     .Select(row => row.Value)
-                    .ToList(), StringComparer.OrdinalIgnoreCase);
+                    .ToList(), StringComparer.OrdinalIgnoreCase))
+                .ToDictionary(row => row.Key, row => row.Value, StringComparer.OrdinalIgnoreCase);
 
             var clientContext = (await db.QueryAsync<RecruitmentClientContextRow>(new CommandDefinition(@"
 SELECT JobLocation,WorkMode

@@ -94,7 +94,8 @@ public class LocalRecruitmentEvidenceTests
         var context = new RecruitmentDocumentRagContext("local", 20, "Resume", [],
             new Dictionary<string, IReadOnlyList<string>> { ["Skill"] = ["InventedSkill", "Five years", "CISSP2026"], ["Work Location"] = ["InventedCity"] }, new Dictionary<string, string>());
         var prompt = LocalLlmProtocol.ResumePrompt("Synthetic Candidate\nActualSkill", context);
-        Assert.Contains("TERMINOLOGY ONLY", prompt);
+        Assert.DoesNotContain("TERMINOLOGY ONLY", prompt);
+        Assert.DoesNotContain("InventedSkill", prompt);
         Assert.DoesNotContain("InventedCity", prompt);
         var result = new RecruitmentAiResumeDocumentSuggestion { Confidence = .9m, FullName = "Synthetic Candidate", Sections = [new() { SectionCode = "SKILLS", Content = "InventedSkill", Confidence = .9m }] };
         LocalLlmProtocol.GroundResume(result, "Synthetic Candidate\nActualSkill");

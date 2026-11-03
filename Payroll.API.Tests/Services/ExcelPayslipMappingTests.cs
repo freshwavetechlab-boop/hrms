@@ -8,6 +8,30 @@ namespace Payroll.API.Tests.Services;
 public sealed class ExcelPayslipMappingTests
 {
     [Fact]
+    public void CombinedPreparationBoundaryIsRetrievedFromAttendanceAndTemplateHeaders()
+    {
+        var columns=new[] {"Present Days","Payable Days","Work Location","Salary Template","Effective Date","Policy"}
+            .Select((header,index)=>new ExcelPayslipMappingColumn {ColumnIndex=index,SourceHeader=header,Kind="info"}).ToList();
+        var path=Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md");
+        var lesson=Assert.Single(ExcelPayslipMappingService.Retrieve(columns,File.ReadAllText(path),[]),r=>r.Title.StartsWith("Reviewed native payroll setup boundaries"));
+        Assert.True(lesson.Content.Length<2600);Assert.Contains("Reuse only exact existing templates",lesson.Content);
+        Assert.Contains("verified source-to-Master links",lesson.Content);
+        Assert.Contains("Monthly totals do not create daily marks",lesson.Content);Assert.Contains("do not resubmit completed cohorts",lesson.Content);
+    }
+    [Fact]
+    public void GrossSubtotalCashAdditionAndWarningReviewBoundaryIsRetrievedFromStructuralHeaders()
+    {
+        var headers = new[] { "Gross Salary (A)", "Total Deduction (B)", "Additional Allowance (C)", "Net Take Home (A-B+C)" };
+        var columns = headers.Select((header,index) => new ExcelPayslipMappingColumn { ColumnIndex=index,SourceHeader=header,Kind="info" }).ToList();
+        var path=Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md");
+        var lesson=Assert.Single(ExcelPayslipMappingService.Retrieve(columns,File.ReadAllText(path),[]),r=>r.Title.StartsWith("Gross Salary (A) Total Deduction (B)"));
+        Assert.True(lesson.Content.Length<2600);
+        Assert.Contains("Keep C as an earning",lesson.Content);
+        Assert.Contains("already included in A must not be added twice",lesson.Content);
+        Assert.Contains("does not repair formulas, change salary",lesson.Content);
+        Assert.Contains("not promote an individual approval into a global auto-ignore",lesson.Content);
+    }
+    [Fact]
     public void ConsolidatedPayslipActionBoundaryIsRetrievedFromSourceTraceHeaders()
     {
         var headers = new[] { "Source workbook", "Source worksheet", "Source Excel row", "Payroll unit", "Employee code", "Attendance" };
@@ -35,7 +59,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("display formatting only",lesson.Content);
         Assert.Contains("Literal scientific text",lesson.Content);
         Assert.Contains("identity-review evidence",lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v13",ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Equal("excel-payroll-mapping-v15",ExcelPayslipMappingService.KnowledgeVersion);
     }
     [Fact]
     public void EmployeeInputsAndEmployerCostLessonIsRetrievedFromAnonymousSalaryDayHeaders()
@@ -93,7 +117,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.True(lesson.Content.Length<2600);
         Assert.Contains("differing literal alone does not establish a new salary rule",lesson.Content);
         Assert.Contains("never freeze formula caches",lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v13",ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Equal("excel-payroll-mapping-v15",ExcelPayslipMappingService.KnowledgeVersion);
     }
     private static ExcelPayslipMappingRequest Request() => new() { Columns = [
         new() { ColumnIndex = 0, SourceHeader = "Employee name", Label = "Employee name", Kind = "employeeName" },
@@ -319,7 +343,7 @@ public sealed class ExcelPayslipMappingTests
         var references = ExcelPayslipMappingService.Retrieve(request.Columns, File.ReadAllText(path), []);
         var pattern = Assert.Single(references, item => item.Title.StartsWith("TMT pattern:"));
         using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, references));
-        Assert.Equal("excel-payroll-mapping-v13", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v15", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         var supplied = prompt.RootElement.GetProperty("references").EnumerateArray()
             .Single(item => item.GetProperty("title").GetString() == pattern.Title).GetProperty("content").GetString()!;
         Assert.Equal(pattern.Content, supplied); // The critical case must fit without prompt truncation.
