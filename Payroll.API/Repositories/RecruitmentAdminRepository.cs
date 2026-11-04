@@ -91,7 +91,16 @@ SELECT LAST_INSERT_ID();", row);
     public Task<RecruitmentSlaRule> SaveSlaRuleAsync(RecruitmentSlaRule row, int userId) => SaveAsync<RecruitmentSlaRule>("recruitment_sla_rules", row, userId, "RecruitmentSlaRule");
     public Task<RecruitmentDocumentChecklist> SaveDocumentChecklistAsync(RecruitmentDocumentChecklist row, int userId) => SaveAsync<RecruitmentDocumentChecklist>("recruitment_document_checklist", row, userId, "RecruitmentDocumentChecklist");
     public Task<RecruitmentApprovalMapping> SaveApprovalMappingAsync(RecruitmentApprovalMapping row, int userId) => SaveAsync<RecruitmentApprovalMapping>("recruitment_approval_mappings", row, userId, "RecruitmentApprovalMapping");
-    public Task<RecruitmentTemplate> SaveTemplateAsync(RecruitmentTemplate row, int userId) => SaveAsync<RecruitmentTemplate>("recruitment_templates", row, userId, "RecruitmentTemplate");
+    public Task<RecruitmentTemplate> SaveTemplateAsync(RecruitmentTemplate row, int userId)
+    {
+        if (Payroll.API.Services.LayoutDocumentPdfService.IsLayout(row.BodyTemplate))
+        {
+            if (row.TemplateType != "Offer Letter") throw new InvalidOperationException("Document layouts currently require the Offer Letter template type.");
+            Payroll.API.Services.LayoutDocumentPdfService.Parse(row.BodyTemplate);
+            row.IsHtml = false;
+        }
+        return SaveAsync<RecruitmentTemplate>("recruitment_templates", row, userId, "RecruitmentTemplate");
+    }
 
     public async Task<(bool Ok, string Error)> DeleteAsync(string kind, int id, AuthUser user)
     {
@@ -122,6 +131,7 @@ SELECT LAST_INSERT_ID();", row);
 (SELECT COUNT(*) FROM recruitment_stage_offer_configurations WHERE OfferTemplateId=@Id)+
 (SELECT COUNT(*) FROM recruitment_offers WHERE OfferTemplateId=@Id)+
 (SELECT COUNT(*) FROM recruitment_process_documents WHERE TemplateId=@Id)", new { Id = id });
+            references += await RecruitmentDocumentRepository.ReferenceCountAsync(db, "TemplateId", id);
             if (references > 0) return (false, $"This template is used by {references} recruitment configuration or transaction record(s). Remove those references before deleting it.");
         }
         if (kind.Equals("settings", StringComparison.OrdinalIgnoreCase))

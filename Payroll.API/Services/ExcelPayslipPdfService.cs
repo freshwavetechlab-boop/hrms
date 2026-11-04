@@ -84,8 +84,8 @@ public sealed partial class ExcelPayslipPdfService
     // Whichever renderer initializes first leaves the other's font output unchanged.
     private sealed class ExcelFontResolver : IFontResolver
     {
-        public FontResolverInfo ResolveTypeface(string familyName, bool bold, bool italic) => new(bold ? "NotoSerif-Bold" : "NotoSerif-Regular");
-        public byte[] GetFont(string faceName) => Resource("Assets.OfferLetters." + faceName + ".ttf");
+        public FontResolverInfo ResolveTypeface(string familyName, bool bold, bool italic) => DocumentFontResolver.Shared.ResolveTypeface(familyName, bold, italic);
+        public byte[] GetFont(string faceName) => DocumentFontResolver.Shared.GetFont(faceName);
     }
 
     private static byte[] Resource(string name)

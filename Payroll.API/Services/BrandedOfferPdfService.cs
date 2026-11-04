@@ -17,7 +17,6 @@ public sealed class BrandedOfferPdfService
         string.IsNullOrWhiteSpace(configuredPath)
             ? Path.Combine(runtimeDirectory ?? AppContext.BaseDirectory, "PrivateAssets", "OfferSigning", "GadAuthrizedSignAndSeal.png")
             : Path.IsPathRooted(configuredPath) ? configuredPath : Path.Combine(runtimeDirectory ?? AppContext.BaseDirectory, configuredPath);
-    private static readonly object FontLock = new();
     public static string DefaultTemplate => System.Text.Encoding.UTF8.GetString(Resource("uidai-offer.txt"));
     public static readonly string[] JoiningDocuments = [
         "Proof of Date of Birth (Birth Certificate / SSC)", "PAN Card", "Aadhaar Card",
@@ -29,7 +28,7 @@ public sealed class BrandedOfferPdfService
 
     public byte[] Create(string text, byte[] logoBytes, byte[]? approvedSignature)
     {
-        lock (FontLock) { GlobalFontSettings.FontResolver ??= new OfferFontResolver(); }
+        DocumentFontResolver.EnsureInitialized();
         using var document = new PdfDocument();
         document.Info.Title = "Offer Letter";
         using var logoStream = new MemoryStream(logoBytes);
@@ -195,7 +194,7 @@ public sealed class BrandedOfferPdfService
     }
     private sealed class OfferFontResolver : IFontResolver
     {
-        public FontResolverInfo ResolveTypeface(string familyName, bool bold, bool italic) => new(bold ? "NotoSerif-Bold" : "NotoSerif-Regular");
-        public byte[] GetFont(string faceName) => Resource(faceName + ".ttf");
+        public FontResolverInfo ResolveTypeface(string familyName, bool bold, bool italic) => DocumentFontResolver.Shared.ResolveTypeface(familyName, bold, italic);
+        public byte[] GetFont(string faceName) => DocumentFontResolver.Shared.GetFont(faceName);
     }
 }

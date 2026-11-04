@@ -2170,7 +2170,13 @@ AND NOT EXISTS (SELECT 1 FROM workflowstages later WHERE later.WorkflowId=instan
                 return (null, "The branded offer could not be rendered. Check the organization logo and private signing asset.");
             }
         }
-        else (bytes, renderError) = templatePdf.Create(context.SubjectTemplate, context.BodyTemplate, values);
+        else
+        {
+            byte[]? layoutLogo = null;
+            if (LayoutDocumentPdfService.IsLayout(context.BodyTemplate) && organization?.LogoDataUrl is { } logo && logo.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase) && logo.Contains(";base64,"))
+            { try { layoutLogo = Convert.FromBase64String(logo[(logo.IndexOf(',') + 1)..]); } catch (FormatException) { } }
+            (bytes, renderError) = templatePdf.Create(context.SubjectTemplate, context.BodyTemplate, values, layoutLogo);
+        }
         if (bytes is null) return (null, renderError);
 
         var fieldConfigurationId = await db.ExecuteScalarAsync<long?>(@"SELECT field.id
@@ -2959,6 +2965,8 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
             return (false, "Candidate was not found in your permitted scope.");
         if (candidate.EmployeeId.HasValue || candidate.ProfileStatus.Equals("Joined", StringComparison.OrdinalIgnoreCase))
             return (false, "An employee-converted candidate cannot be deleted. Retain the recruitment audit and use the employee lifecycle controls.");
+        if (await RecruitmentDocumentRepository.ReferenceCountAsync(db, "CandidateId", candidateId) > 0)
+            return (false, "This profile has employee-list source data and draft-letter inputs. Archive it to retain that audit instead of deleting it.");
 
         var applications = (await db.QueryAsync<RecruitmentCandidateApplication>(
             "SELECT * FROM recruitment_candidate_applications WHERE CandidateId=@CandidateId ORDER BY Id",

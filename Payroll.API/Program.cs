@@ -160,6 +160,8 @@ if (builder.Configuration.GetValue("BackgroundWorkers:Enabled", true))
     builder.Services.AddHostedService<PayrollAdvisorWorker>();
 builder.Services.AddSingleton<PortableIntegrationCredentialProtector>();
 builder.Services.AddSingleton<TemplatePdfService>();
+builder.Services.AddSingleton<LayoutDocumentPdfService>();
+builder.Services.AddScoped<RecruitmentDocumentRepository>();
 builder.Services.AddSingleton<BrandedOfferPdfService>();
 builder.Services.AddSingleton<RecruitmentTalentRepository>();
 builder.Services.AddSingleton<RecruitmentFormRepository>();
@@ -1850,6 +1852,7 @@ app.MapDelete("/api/recruitment/open-positions/{id:long}", async (RecruitmentRep
     var (ok, error) = await repository.DeleteOpenPositionAsync(id, CurrentUser(context));
     return ok ? Results.NoContent() : Results.BadRequest(new { error });
 });
+RecruitmentDocumentEndpoints.Map(app, CurrentUser);
 app.MapPost("/api/recruitment/candidates", async (RecruitmentTalentRepository repository, SaveRecruitmentCandidate request, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
@@ -3677,7 +3680,11 @@ app.MapPost("/api/recruitment-admin/document-checklist", async (RecruitmentAdmin
 app.MapPost("/api/recruitment-admin/approval-mappings", async (RecruitmentAdminRepository repository, RecruitmentApprovalMapping request, HttpContext context) =>
     await repository.CanManageConfigurationRecordAsync("approval-mappings", request.Id, request.ClientId, CurrentUser(context)) ? Results.Ok(await repository.SaveApprovalMappingAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
 app.MapPost("/api/recruitment-admin/templates", async (RecruitmentAdminRepository repository, RecruitmentTemplate request, HttpContext context) =>
-    await repository.CanManageConfigurationRecordAsync("templates", request.Id, request.ClientId, CurrentUser(context)) ? Results.Ok(await repository.SaveTemplateAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
+{
+    if (!await repository.CanManageConfigurationRecordAsync("templates", request.Id, request.ClientId, CurrentUser(context))) return Results.StatusCode(403);
+    try { return Results.Ok(await repository.SaveTemplateAsync(request, CurrentUser(context).Id)); }
+    catch (InvalidOperationException error) { return Results.BadRequest(new { error = error.Message }); }
+});
 app.MapDelete("/api/recruitment-admin/{kind}/{id:int}", async (RecruitmentAdminRepository repository, string kind, int id, HttpContext context) =>
 {
     if (!RecruitmentPermissions.CanConfigure(CurrentUser(context))) return Results.StatusCode(403);

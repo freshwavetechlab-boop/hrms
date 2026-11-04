@@ -4,6 +4,7 @@ import { recruitmentEligibility, isRecruitmentPipelineCandidate } from '../utils
 import RecruitmentPanelMomAction from './RecruitmentPanelMomAction'
 import { useRecruitmentPreference, useRecruitmentView } from '../hooks/useRecruitmentPreferences'
 import { PageHeaderPortal } from './layout/AppPageHeader'
+import RecruitmentDocumentRosterLauncher from './RecruitmentDocumentRoster'
 import { postJson } from '../services/apiClient'
 import RecruitmentNegotiationAction from './RecruitmentNegotiationAction'
 import CandidateEditorDrawer from './RecruitmentCandidateEditorDrawer'
@@ -473,6 +474,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0, 
   </div>
 
   return <div className="talent-workspace">
+    {(mode === 'offers' && !negotiationMode || mode === 'candidates' && new URLSearchParams(location.search).get('pool') === 'client') && <RecruitmentDocumentRosterLauncher clientId={initialClientId} onChanged={load} />}
     {mode === 'candidates' && (new URLSearchParams(location.search).get('pool') === 'client' ? <>
       <RecruitmentRecordList emptyText={initialClientId ? "No candidate profiles for this client." : "Select a client to view its candidate profiles."} hiddenCardColumns={["candidateCode"]} rows={candidates.filter(row => initialClientId > 0 && row.clientId === initialClientId)} title={row => row.candidateName} subtitle={row => row.candidateCode} filters={[{ key: 'status', label: 'Status', value: row => row.profileStatus }, { key: 'source', label: 'Source', value: row => row.sourceType || '' }]} exportFileName="client-candidate-profiles" actions={row => <Button size="small" onClick={() => void openCandidate(row.id)}>View profile</Button>} columns={[
         { key: 'candidateCode', label: 'Candidate code' }, { key: 'candidateName', label: 'Candidate' }, { key: 'email', label: 'Email' }, { key: 'phone', label: 'Phone' }, { key: 'profileStatus', label: 'Status' },

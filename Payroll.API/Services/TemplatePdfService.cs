@@ -22,8 +22,11 @@ public sealed class TemplatePdfService
     public (byte[]? Bytes, string Error) Create(
         string subjectTemplate,
         string bodyTemplate,
-        IReadOnlyDictionary<string, string> values)
+        IReadOnlyDictionary<string, string> values,
+        byte[]? organizationLogo = null)
     {
+        if (LayoutDocumentPdfService.IsLayout(bodyTemplate))
+            return new LayoutDocumentPdfService().Create(bodyTemplate, values, organizationLogo);
         var unresolved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var subject = Render(subjectTemplate, values, unresolved);
         var body = Render(bodyTemplate, values, unresolved);

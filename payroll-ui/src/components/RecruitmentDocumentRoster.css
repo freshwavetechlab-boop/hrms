@@ -1,0 +1,9 @@
+.recruitment-document-roster .ant-drawer-body { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: hidden; }
+.document-roster-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; flex: 0 0 auto; }
+.document-roster-table { flex: 1 1 auto; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.document-roster-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; margin-top: 16px; }
+.document-roster-fields .ant-form-item { min-width: 0; }
+.document-roster-mapping { margin-block: 12px; }
+.document-roster-mapping summary { cursor: pointer; font-weight: 600; padding-block: 8px; }
+.document-roster-import .ant-alert + .ant-alert { margin-top: 10px; }
+@media (max-width: 600px) { .document-roster-fields { grid-template-columns: minmax(0, 1fr); } .document-roster-toolbar > .ant-space { max-width: 100%; } }
