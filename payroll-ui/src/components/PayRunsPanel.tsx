@@ -25,6 +25,11 @@ import type { EmployeeCodeScope } from '../utils/regularEmployeeCodeSelection'
 import { getPayrollFormulaWorkbook } from '../services/payrollCalculationService'
 import { buildPayrollFormulaWorkbook, preparePayrollFormulaWorkbookRequest } from '../utils/payrollFormulaWorkbook'
 import { downloadXlsx } from '../utils/xlsx'
+import { getPayrollLocationAttendance, type LocationAttendanceContext } from '../services/payrollLocationService'
+import { payrollLocationOptions } from '../utils/payrollLocationAttendance'
+import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
+import PayrollLocationPayslips from './PayrollLocationPayslips'
+import './PayrollLocationFlow.css'
 
 const currentPeriod = (() => {
   const date = new Date()
@@ -116,8 +121,34 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   const selectedRegularRunCode = useMemo(() => regularRunCodeFor(selectedPolicyBatch?.id ?? '', selectedAttendanceGroupIds), [selectedAttendanceGroupIds, selectedPolicyBatch?.id])
   const selectedLegacyRegularRunCode = useMemo(() => regularRunCodeFor('', selectedAttendanceGroupIds), [selectedAttendanceGroupIds])
   const selectedPolicyLabel = selectedPolicyBatch?.name ?? ''
+  const [locationContext, setLocationContext] = useState<LocationAttendanceContext | null>(null)
+  const [locationLoading, setLocationLoading] = useState(false)
+  const [payrollLocationId, setPayrollLocationId] = useSessionPreference(`payroll.location:${session?.user.id}:${clientId}:${attendancePolicyBatchId}`, 0)
+  const locationScope = JSON.stringify([clientId, period, attendancePolicyBatchId, selectedAttendanceGroupIds])
+  useEffect(() => {
+    let active = true
+    setLocationContext(null); setLocationLoading(!!clientId && !!selectedPolicyBatch)
+    if (clientId && selectedPolicyBatch) void getPayrollLocationAttendance(clientId, period, selectedPolicyBatch.id, selectedPolicyBatch.groupIds).then(result => {
+      if (active) { setLocationLoading(false); if (result.ok) setLocationContext(result.data) }
+    })
+    return () => { active = false }
+  }, [locationScope]) // eslint-disable-line react-hooks/exhaustive-deps
+  const locationOptions = useMemo(() => payrollLocationOptions(locationContext), [locationContext])
+  const selectedPayrollLocationId = locationOptions.some(option => option.value === payrollLocationId) ? payrollLocationId : 0
+  const locationEmployeeIds = useMemo(() => new Set(locationContext?.rows.filter(row => !selectedPayrollLocationId || row.workLocationId === selectedPayrollLocationId).map(row => row.employeeId)), [locationContext, selectedPayrollLocationId])
+  const locationDefaultScope = useRef('')
   const groupEmployeeIds = useMemo(() => new Set(selectedAttendanceGroups.flatMap(group => group.employeeIds ?? [])), [selectedAttendanceGroups])
-  const regularEmployees = useMemo(() => selectedAttendanceGroups.length ? clientEmployees.filter(employee => groupEmployeeIds.has(employee.id)) : [], [clientEmployees, groupEmployeeIds, selectedAttendanceGroups.length])
+  const regularEmployees = useMemo(() => selectedAttendanceGroups.length ? clientEmployees.filter(employee => groupEmployeeIds.has(employee.id)
+    && (!selectedPayrollLocationId || locationEmployeeIds.has(employee.id))) : [], [clientEmployees, groupEmployeeIds, selectedAttendanceGroups.length, selectedPayrollLocationId, locationEmployeeIds])
+  useEffect(() => {
+    if (!locationContext) return
+    const key = JSON.stringify([locationScope, selectedPayrollLocationId])
+    if (locationDefaultScope.current === key) return
+    locationDefaultScope.current = key
+    const native = locationContext.rows.filter(row => row.nativePart)
+    const defaults = native.length ? new Set(native.map(row => row.employeeId)) : null
+    setIncludedIds(current => current.filter(id => (!selectedPayrollLocationId || locationEmployeeIds.has(id)) && (!defaults || defaults.has(id))))
+  }, [locationContext, selectedPayrollLocationId, locationEmployeeIds, locationScope])
   const variableComponents = useMemo(() => setup.salaryComponents.filter(isAdjustmentComponent), [setup.salaryComponents])
   const pendingAdjustments = adjustments.filter(item => item.status === 'Approved' && item.clientId === clientId && item.payPeriod === period)
   const regularAdjustments = pendingAdjustments.filter(item => item.payRunType !== 'Off Cycle' && (!selectedAttendanceGroups.length || groupEmployeeIds.has(item.employeeId)))
@@ -135,8 +166,11 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   const varianceEmployees = selected?.employees.filter(employee => !employee.isSkipped && Math.abs(employee.netPayVariance || 0) > 0) ?? []
   const materialVarianceCount = varianceEmployees.filter(employee => Math.abs(employee.variancePercent || 0) >= 10 || Math.abs(employee.netPayVariance || 0) >= 5000).length
   const missingAttendance = includedIds.filter(id => !attendanceByEmployee.has(id)).length
-  const attendanceIssues = missingAttendance + attendanceRows.filter(row => includedIds.includes(row.employeeId) && attendanceIssue(row)).length
-  const attendanceReady = includedCount > 0 && attendanceRows.length > 0 && attendanceIssues === 0
+  const locationAttendanceIssues = new Set(locationContext?.rows.filter(row => row.nativePart && includedIds.includes(row.employeeId)
+    && (!row.recorded || !!row.issue)).map(row => row.employeeId)).size
+  const rosterMismatch = includedIds.some(id => !regularEmployees.some(employee => employee.id === id))
+  const attendanceIssues = missingAttendance + attendanceRows.filter(row => includedIds.includes(row.employeeId) && attendanceIssue(row)).length + locationAttendanceIssues
+  const attendanceReady = !locationLoading && !rosterMismatch && includedCount > 0 && attendanceRows.length > 0 && attendanceIssues === 0
   const reviewRuns = useMemo(() => runs.filter(run => {
     if (run.clientId !== clientId || !reviewStatuses.has(run.status)) return false
     if (tab === 'Off-cycle Run') return run.runType === 'Off Cycle'
@@ -152,9 +186,10 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     if (selectedAttendanceGroupIds.length) params.set('groupIds', selectedAttendanceGroupIds.join(','))
     if (selectedPolicyBatch?.id) params.set('policyBatchId', selectedPolicyBatch.id)
     if (includedIds.length) params.set('employeeIds', includedIds.join(','))
+    if (selectedPayrollLocationId) params.set('workLocationId', String(selectedPayrollLocationId))
     const query = params.toString()
     return query ? `/attendance?${query}` : '/attendance'
-  }, [clientId, period, selectedAttendanceGroupIds, selectedPolicyBatch?.id, includedIds])
+  }, [clientId, period, selectedAttendanceGroupIds, selectedPolicyBatch?.id, includedIds, selectedPayrollLocationId])
 
   const employeeIdsForGroups = (groups: AttendanceGroup[], sourceEmployees = employees) => {
     const ids = new Set(groups.flatMap(group => group.employeeIds ?? []))
@@ -247,6 +282,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
 
   const createRegular = async () => {
     if (!selectedAttendanceGroups.length) return setMessage('Select at least one attendance policy before running regular payroll.')
+    if (locationLoading || rosterMismatch) return setMessage('Wait for the selected location roster, then review the employee selection.')
     if (!attendanceReady) return setMessage(`Attendance is not ready. Resolve ${attendanceIssues || includedCount} attendance issue${(attendanceIssues || includedCount) === 1 ? '' : 's'} first.`)
     setBusy(true)
     const excludedEmployeeIds = clientEmployees.filter(employee => !includedIds.includes(employee.id)).map(employee => employee.id)
@@ -372,7 +408,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   const attendancePolicyOptions = attendancePolicyBatches.length
     ? attendancePolicyBatches.map(batch => ({ value: batch.id, label: `${batch.name} (${batch.employeeCount} employees / ${batch.comboCount} combos)` }))
     : [{ value: '', label: 'No policy configured', disabled: true }]
-  formulaScope.current = JSON.stringify([clientId, period, attendancePolicyBatchId, selectedAttendanceGroupIds, includedIds])
+  formulaScope.current = JSON.stringify([clientId, period, attendancePolicyBatchId, selectedAttendanceGroupIds, includedIds, selectedPayrollLocationId, locationContext?.version])
   const formulaSelection=(()=>{try{return {request:preparePayrollFormulaWorkbookRequest(clientId,period,selectedPolicyBatch,includedIds),error:''}}catch(error){return {request:null,error:error instanceof Error?error.message:'Select an attendance policy and its employees.'}}})()
   const downloadFormulaWorkbook = async () => {
     if (busy || formulaBusy) return
@@ -380,14 +416,16 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     const requestedScope = formulaScope.current
     const clientName = clients.find(client => client.id === clientId)?.name.trim() || `Client-${clientId}`
     const filenameClient = clientName.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/g, '').slice(0, 160) || `Client-${clientId}`
+    const filenameLocation = selectedPayrollLocationId ? '-' + (locationContext?.rows.find(row => row.workLocationId === selectedPayrollLocationId)?.workLocationName || String(selectedPayrollLocationId)).replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').slice(0, 80) : ''
     setFormulaBusy(true); setMessage('Preparing Excel formulas from saved employee salary and attendance...')
     try {
-      const response = await getPayrollFormulaWorkbook(formulaSelection.request)
+      const response = await getPayrollFormulaWorkbook({ ...formulaSelection.request, includeLocationParts: !!locationContext,
+        attendanceContextVersion: locationContext?.version || '', workLocationId: selectedPayrollLocationId })
       if (formulaScope.current !== requestedScope) return
       if (!response.ok || !response.data.length) throw Error(response.error || 'Formula workbook could not be prepared.')
       const sheets = buildPayrollFormulaWorkbook(clientName, period, response.data)
-      downloadXlsx(`${filenameClient}-payroll-formulas-${period}.xlsx`, sheets)
-      setMessage(`${response.data.length} employees exported with editable attendance and salary formulas. This download does not create a payroll run.`)
+      downloadXlsx(`${filenameClient}${filenameLocation}-payroll-formulas-${period}.xlsx`, sheets)
+      setMessage(`${response.data.length} salary rows exported with editable attendance and salary formulas. This download does not create a payroll run.`)
     } catch (error) { if (formulaScope.current === requestedScope) setMessage(error instanceof Error ? error.message : 'Formula workbook download failed.') }
     finally { setFormulaBusy(false) }
   }
@@ -396,8 +434,14 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     <div className={`pay-run-form enterprise${tab === 'Off-cycle Run' ? ' offcycle-context' : ''}`}>
       {!clientScoped && <label>Client<SearchSelect disabled={busy} value={clientId} onChange={value => changeClient(Number(value))} options={clients.filter(client => client.isActive).map(client => ({ value: client.id, label: client.name }))} /></label>}
       {tab === 'Regular Run' && mode !== 'adjustments' && <label>Attendance Policy<Select disabled={busy} className="app-search-select payroll-policy-select" popupClassName="app-search-select-dropdown" showSearch optionFilterProp="label" value={attendancePolicyBatchId} onChange={value => changeAttendancePolicyBatch(String(value))} options={attendancePolicyOptions} /></label>}
+      {tab === 'Regular Run' && mode !== 'adjustments' && <label>Location<SearchSelect value={selectedPayrollLocationId} disabled={busy || !locationContext} options={locationOptions} onChange={value => {
+        const next = Number(value); setPayrollLocationId(next)
+        const ids = new Set(locationContext?.rows.filter(row => !next || row.workLocationId === next).map(row => row.employeeId))
+        setIncludedIds(clientEmployees.filter(employee => groupEmployeeIds.has(employee.id) && (!next || ids.has(employee.id))).map(employee => employee.id))
+      }} /></label>}
       <label>Pay period<input disabled={busy} type="month" value={period} onChange={event => changePeriod(event.target.value)} /></label>
       <label>Working days<input value={derivedWorkingDays} readOnly /></label>
+      {selected && <PayrollLocationPayslips key={selected.id} run={selected} />}
       {tab === 'Regular Run' && mode !== 'adjustments' && <Button type="primary" aria-label="Download payroll Excel with formulas" title={formulaSelection.error||'Download the selected policy employees with editable attendance and Excel cell formulas.'} loading={formulaBusy} disabled={busy || !formulaSelection.request} onClick={() => void downloadFormulaWorkbook()}>Excel with formulas</Button>}
       {tab === 'Regular Run' && mode !== 'adjustments' && <Button className="payroll-queue-action" type="primary" icon={<RocketOutlined />} loading={busy} onClick={() => void createRegular()} disabled={!clientId || !selectedAttendanceGroups.length || includedCount === 0}>Queue regular draft</Button>}
       {tab === 'Regular Run' && mode !== 'adjustments' && canCreateSelectedDraft && <Button aria-label="Create selected draft for review" loading={busy} disabled={busy || selectedDraftUncertain || !attendanceReady || !selectedDraft.request} onClick={() => void createSelectedDraft()}>Create selected draft for review</Button>}
@@ -407,10 +451,11 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     {tab === 'Off-cycle Run' && <div className="offcycle-fields"><label>Run name<input value={offcycleName} onChange={event => setOffcycleName(event.target.value)} /></label><label>Reason<input value={offcycleReason} onChange={event => setOffcycleReason(event.target.value)} /></label></div>}
     {!selectedAttendanceGroups.length && tab === 'Regular Run' && mode !== 'adjustments' && <div className="payroll-context-warning" role="status"><WarningOutlined /><span>Select at least one attendance policy before regular payroll can run.</span></div>}
     {selectedAttendanceGroups.length > 0 && !attendanceReady && tab === 'Regular Run' && mode !== 'adjustments' && <div className="payroll-context-warning" role="status"><WarningOutlined /><span>Attendance review must be clean for the selected policies before regular payroll can run.</span></div>}
+    {!!selectedPayrollLocationId && locationContext?.rows.some(row => row.nativePart) && <p className="payroll-location-hint">Payroll includes all recorded location parts of each selected employee once. Choose All locations for the complete monthly draft.</p>}
     <div className="payroll-kpis"><div><span>{tab === 'Off-cycle Run' ? 'Selected employees' : 'Policy employees'}</span><strong>{tab === 'Off-cycle Run' ? `${offcycleEmployeeIds.length}/${clientEmployees.length}` : `${includedCount}/${regularEmployees.length}`}</strong></div><div><span>{tab === 'Off-cycle Run' ? 'Selected adjustments' : 'Approved adjustments'}</span><strong>{tab === 'Off-cycle Run' ? `${offcycleAdjustmentIds.length}/${offcycleAdjustments.length}` : regularAdjustments.length}</strong></div><div><span>{estimateLabel}</span><strong>{money(selectedEstimate)}</strong></div><div><span>Current draft net</span><strong>{money(selected?.netPay)}</strong></div></div>
   </div>
 
-  return <section className="pay-runs payroll-cockpit">
+  return <section className={`pay-runs payroll-cockpit${tab === 'Regular Run' && mode !== 'adjustments' ? ' payroll-location-flow' : ''}`}>
     <div className="payroll-status-strip"><span>{message}</span>{attendanceReady ? <span className="status-chip paid">Attendance ready</span> : <Link className="status-chip pending-approval attendance-review-link" to={attendanceReviewLink} state={{ clientId, period, policyBatchId: selectedPolicyBatch?.id, groupIds: selectedAttendanceGroupIds, employeeIds: includedIds }} title="Open Attendance Review">{`${attendanceIssues || includedCount} attendance issue${(attendanceIssues || includedCount) === 1 ? '' : 's'}`}</Link>}</div>
     {contextPanel}
     {mode !== 'adjustments' && <PageTabs items={stageItems} value={stage} onChange={setStage} label="Payroll flow" className="payrun-flow-tabs" />}

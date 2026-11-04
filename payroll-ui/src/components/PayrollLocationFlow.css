@@ -1,0 +1,39 @@
+.pay-runs.payroll-location-flow {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.payroll-location-flow > .payroll-status-strip,
+.payroll-location-flow > .payroll-control-panel,
+.payroll-location-flow > .payrun-flow-tabs { flex: 0 0 auto; }
+.payroll-location-flow > .payroll-control-panel {
+  height: auto;
+  max-height: none;
+  padding: 12px;
+}
+.payroll-location-flow > .payroll-control-panel > header { display: none; }
+.payroll-location-flow .payroll-control-panel .pay-run-form.enterprise {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)) !important;
+}
+.payroll-location-flow .payroll-control-panel .pay-run-form.enterprise > label,
+.payroll-location-flow .payroll-control-panel .pay-run-form.enterprise > button {
+  min-width: 0 !important;
+  max-width: 100%;
+  width: 100% !important;
+}
+.payroll-location-flow > .payroll-command-grid {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.payroll-location-attendance small { display: block; }
+.payroll-location-hint { margin: 0; color: #64748b; font-size: 12px; }
+.payroll-location-attendance > .ant-space { flex: 0 0 auto; }
+.payroll-location-attendance .app-search-select { max-width: 100%; }
+@media (max-width: 700px) {
+  .payroll-location-flow .payroll-control-panel .pay-run-form.enterprise {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  .payroll-location-flow .roster-actions { flex-wrap: wrap; }
+}

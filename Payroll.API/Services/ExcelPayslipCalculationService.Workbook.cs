@@ -111,6 +111,11 @@ public static partial class ExcelPayslipCalculationService
                 if(cell.Error is not null)throw new WorkbookError(KnownError(cell.Error));
                 value=cell.DataType switch {
                     "Blank"=>new(ScalarKind.Blank),
+                    // Older saved/combined sources captured literal empty cells
+                    // before type metadata existed. An explicit, error-free empty
+                    // input has Excel blank-reference semantics, not empty TEXT.
+                    // Missing cells/caches and formulas returning "" stay distinct.
+                    "" when cell.Value.Length==0&&!cell.MissingCachedValue=>new(ScalarKind.Blank),
                     "Text"=>new(ScalarKind.Text,Text:cell.Value),
                     "Boolean"=>new(ScalarKind.Boolean,cell.Value is "1" or "TRUE" or "true"?1:0),
                     "Number"=>TryNumber(cell.Value,out var n)?Scalar.N(n):throw new WorkbookError("#VALUE!"),

@@ -6,6 +6,7 @@ import { deletePayRun, getPayRun, getPayRuns, recordPayRunPayments } from './ser
 import type { PayRun } from './types/payroll'
 import { money } from './utils/salary'
 import './PayHistory.css'
+import PayrollLocationPayslips from './components/PayrollLocationPayslips'
 
 export default function PayHistory() {
   const [runs, setRuns] = useState<PayRun[]>([])
@@ -65,6 +66,7 @@ export default function PayHistory() {
     <section className="pay-runs pay-history-detail-page">
       <div className="pay-history-detail-head">
         <button type="button" className="secondary" onClick={() => setSelected(null)}>Back to history</button>
+        <PayrollLocationPayslips key={selected.id} run={selected} />
         <div><span className="eyebrow purple">Payroll / Pay history</span><h3>{selected.clientName} - {selected.payPeriod}</h3><p>{selected.runName || selected.runType} / {selected.status} / {selected.employeeCount.toLocaleString('en-IN')} employees</p></div>
         <span className="adjustment-actions"><button type="button" className="danger" disabled={busy} onClick={() => void hardDelete()}>Hard delete</button></span>
       </div>

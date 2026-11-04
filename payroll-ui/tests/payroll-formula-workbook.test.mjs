@@ -13,6 +13,27 @@ const { buildPayrollFormulaWorkbook, translatePayrollExcelFormula, excelCurrency
 const { buildXlsxBlob } = load('xlsx')
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/payroll-formula-workbook.json', import.meta.url), 'utf8'))
 
+test('one employee keeps two formula rows and linked attendance identities for different location wages', () => {
+  const rows = [0, 1].map(index => {
+    const row = structuredClone(fixture.employees?.[0] || fixture[0])
+    row.employeeId = 1; row.employeeCode = '0001'
+    row.location = { key: `native:${index}`, assignmentId: `assignment-${index}`, workLocationId: index + 10,
+      workLocationName: `Location ${index}`, rulesHash: `rules-${index}`, contextVersion: 'scope-version', inputVersion: `input-${index}` }
+    return row
+  })
+  const sheets = buildPayrollFormulaWorkbook('Synthetic location client', '2026-10', rows)
+  const payroll = sheets.find(sheet => sheet.name === 'Payroll'), attendance = sheets.find(sheet => sheet.name === 'Attendance')
+  assert.equal(payroll.rows.length, 3); assert.equal(attendance.rows.length, 3)
+  assert.equal(payroll.rows[1][0].value, '0001'); assert.equal(payroll.rows[2][0].value, '0001')
+  for (const [index, row] of attendance.rows.slice(1).entries()) {
+    assert.equal(row[0], '0001'); assert.equal(row[8], `native:${index}`); assert.equal(row[10], index + 10)
+    assert.equal(row[12], `rules-${index}`); assert.equal(row[13], 'scope-version'); assert.equal(row[14], `input-${index}`)
+    assert.equal(row[3].formula, `'Payroll'!F${index + 2}`); assert.equal(row[4].formula, `'Payroll'!G${index + 2}`); assert.equal(row[5].formula, `'Payroll'!H${index + 2}`)
+  }
+  rows[1].location.key = rows[0].location.key
+  assert.throws(() => buildPayrollFormulaWorkbook('Synthetic', '2026-10', rows), /distinct employee\/location/)
+})
+
 test('formula download has no all-client fallback and requires an explicit policy employee selection',()=>{
   assert.throws(()=>preparePayrollFormulaWorkbookRequest(9,'2026-09',null,[11,12]),/attendance policy/)
   const policy={id:'policy-A',groupIds:[101,102],employeeIds:[11,12,13]}

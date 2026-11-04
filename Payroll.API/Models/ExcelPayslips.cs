@@ -7,6 +7,7 @@ public sealed class ExcelPayslipClient
     public int Id { get; set; }
     public string Name { get; set; } = "";
     public bool HasSavedBatch { get; set; }
+    public bool LocationBatchesSupported { get; set; }
 }
 
 public sealed record ExcelPayslipCodeGeneration(bool Enabled, int Digits);
@@ -111,6 +112,10 @@ public sealed record ExcelPayslipEmployment(int? EmployeeId, string EmployeeCode
 // Independent source snapshot: these identifiers never reference employee or pay-run records.
 public sealed class ExcelPayslipBatch
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public bool CreateLocationBatch { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public bool LocationBatch { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? LocationLabel { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? LocationImportHash { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ExcelPayslipCodeGeneration? EmployeeCodeGeneration { get; set; }
     // Accepted on save and stored separately; PDF/mail receive it separately to derive the displayed daily rate.
@@ -140,6 +145,8 @@ public sealed class ExcelPayslipBatch
 
 public sealed class ExcelPayslipBatchSummary
 {
+    public bool LocationBatch { get; set; }
+    public string? LocationLabel { get; set; }
     public bool IsConsolidatedSource { get; set; }
     public bool ConsolidationStale { get; set; }
     public string? CanonicalBatchId { get; set; }

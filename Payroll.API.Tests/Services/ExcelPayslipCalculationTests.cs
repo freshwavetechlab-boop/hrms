@@ -35,6 +35,70 @@ public sealed class ExcelPayslipCalculationTests
     private static ExcelPayslipCalculationColumn Column(int index, string label, string kind) => new() { ColumnIndex = index, Label = label, SourceHeader = label, Kind = kind };
 
     [Fact]
+    public void Calculated_location_month_has_an_explicit_new_batch_identity_without_replacing_its_source()
+    {
+        var (source, batch, request) = Example();
+        batch.LocationBatch = true; batch.LocationLabel = "Synthetic North"; batch.LocationImportHash = "old-receipt";
+        var before = JsonSerializer.Serialize(new { source, batch });
+        var result = ExcelPayslipCalculationService.Calculate(source, batch, request);
+        Assert.True(Guid.TryParseExact(result.Id, "N", out _));
+        Assert.NotEqual(batch.Id, result.Id); Assert.Equal(batch.Id, result.ParentBatchId);
+        Assert.True(result.CreateLocationBatch); Assert.True(result.LocationBatch);
+        Assert.Equal("Synthetic North", result.LocationLabel); Assert.Null(result.LocationImportHash);
+        Assert.Equal("2026-10", result.Month); Assert.Equal(7852.5m, result.Rows[0].NetPay);
+        Assert.Equal(before, JsonSerializer.Serialize(new { source, batch }));
+    }
+
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(15.5, 7852.5)]
+    [InlineData(31, 15705)]
+    public void OlderConsolidatedLiteralBlankReferenceRecalculatesAnotherMonthWithoutChangingTheSavedSalary(decimal days, decimal net)
+    {
+        var (source, batch, request) = Example();
+        source.Rows[1].Cells[9] = Cell(""); // Captured raw optional input, not a mapped blank amount.
+        source.Rows[1].Cells[6]!.FormulaText = "ROUND(SUM(D3)-E3-F3-J3,2)";
+        request.Attendance[0].Days = days;
+        var before = JsonSerializer.Serialize(new { source, batch });
+        Assert.Null(ExcelPayslipCalculationService.ValidateSource(source, batch));
+        var result = ExcelPayslipCalculationService.Calculate(source, batch, request);
+        Assert.Equal(net, result.Rows[0].NetPay);
+        Assert.Equal("", result.CalculationSource!.Rows[1].Cells[9]!.Value);
+        Assert.Equal("", result.CalculationSource.Rows[1].Cells[9]!.DataType);
+        Assert.Equal(source.Rows[1].Cells[6]!.FormulaText, result.CalculationSource.Rows[1].Cells[6]!.FormulaText);
+        Assert.Null(ExcelPayslipCalculationService.ValidateSource(result.CalculationSource, result));
+        Assert.Equal(before, JsonSerializer.Serialize(new { source, batch }));
+    }
+
+    [Theory]
+    [InlineData("Text", "", null, false, null)]
+    [InlineData("", " ", null, false, null)]
+    [InlineData("", "", null, true, null)]
+    [InlineData("", "", "IF(TRUE,\"\",0)", false, null)]
+    [InlineData("", "", null, false, "#VALUE!")]
+    public void LegacyBlankCompatibilityNeverConvertsTextFormulaResultsOrMissingCachesIntoZero(
+        string type, string value, string? formula, bool missing, string? error)
+    {
+        var (source, batch, request) = Example();
+        source.Rows[1].Cells[9] = new() { DataType=type,Value=value,FormulaText=formula,MissingCachedValue=missing,Error=error };
+        source.Rows[1].Cells[6]!.FormulaText = "D3-E3-F3-J3";
+        var before = JsonSerializer.Serialize(source);
+        var failure = Assert.Throws<InvalidOperationException>(() => ExcelPayslipCalculationService.Calculate(source, batch, request));
+        Assert.Contains("#VALUE!", failure.Message);
+        Assert.Equal(before, JsonSerializer.Serialize(source));
+    }
+
+    [Fact]
+    public void LegacyBlankCompatibilityStillRequiresTheReferencedCellToHaveBeenCaptured()
+    {
+        var (source, batch, request) = Example();
+        source.Rows[1].Cells[9] = null;
+        source.Rows[1].Cells[6]!.FormulaText = "D3-E3-F3-J3";
+        Assert.Contains("Required input J3 is missing", Assert.Throws<InvalidOperationException>(
+            () => ExcelPayslipCalculationService.Calculate(source, batch, request)).Message);
+    }
+
+    [Fact]
     public void BrowserRoundTripOfExcelCacheAtBinaryMidpointMatchesWithoutChangingSourceAmounts()
     {
         var (source, batch, _) = Example();

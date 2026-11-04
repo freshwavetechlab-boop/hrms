@@ -40,10 +40,18 @@ public sealed record PayrollSimulationLine(string Code, string Name, string Cate
 }
 public sealed record PayrollFormulaWorkbookRequest(int ClientId, string PayPeriod, List<int> EmployeeIds)
 {
+    public bool IncludeLocationParts { get; init; }
+    public int WorkLocationId { get; init; }
+    public string AttendanceContextVersion { get; init; } = "";
     public string AttendancePolicyBatchId {get;init;}="";
     public List<int> AttendanceGroupIds {get;init;}=[];
 }
-public sealed record PayrollFormulaWorkbookEmployee(int EmployeeId,string EmployeeCode,string EmployeeName,PayrollSimulationResult Calculation,bool ReviewedExtraDutyUnits=false);
+public sealed record PayrollFormulaWorkbookEmployee(int EmployeeId,string EmployeeCode,string EmployeeName,PayrollSimulationResult Calculation,bool ReviewedExtraDutyUnits=false)
+{
+    public PayrollFormulaWorkbookLocation? Location { get; init; }
+}
+public sealed record PayrollFormulaWorkbookLocation(string Key, string AssignmentId, int WorkLocationId, string WorkLocationName,
+    string RulesHash, string ContextVersion, string InputVersion);
 public sealed class PayrollSimulationResult
 {
     public int ClientId { get; set; }

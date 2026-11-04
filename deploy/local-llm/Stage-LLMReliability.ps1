@@ -14,7 +14,7 @@ $profileValues.Clear()
 $drive = 'LlmStage' + $PID
 New-PSDrive -Name $drive -PSProvider FileSystem -Root ('\\' + $server + '\E$') -Credential $credential | Out-Null
 $remote = '\\' + $server + '\E$\'
-$localRelease = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..\.codex-tmp\llm-server-review-20261102\release\reliability-v3'))
+$localRelease = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..\.codex-tmp\llm-resume-warmup-20261103\release\reliability-v4'))
 [void][IO.Directory]::CreateDirectory($localRelease)
 try {
     $base = $remote + 'LLM\'
@@ -42,13 +42,13 @@ try {
         Set-Content -LiteralPath $owner -Value '{"Owner":"FrevoLLMOperations-v1","Scope":"EESL LLM only"}' -Encoding UTF8
     }
     [void](New-Item -ItemType Directory -Path ($base + 'maintenance\package') -Force)
-    $files = foreach ($target in @('scripts\Host-LLM.ps1','scripts\RecoveryPolicy.ps1','scripts\Ensure-LLMRecovery.ps1','scripts\Invoke-LLMControl.ps1','api\control.php','scripts\Start-LLM.ps1','scripts\AdapterPolicy.ps1')) {
+    $files = foreach ($target in @('scripts\Host-LLM.ps1','scripts\RecoveryPolicy.ps1','scripts\Ensure-LLMRecovery.ps1','scripts\Invoke-LLMControl.ps1','api\control.php','scripts\Start-LLM.ps1','scripts\AdapterPolicy.ps1','scripts\ResumeWarmup.ps1','scripts\resume-warmup.json')) {
         $name = [IO.Path]::GetFileName($target)
         $source = Join-Path $PSScriptRoot $name
         Copy-Item -LiteralPath $source -Destination (Join-Path $localRelease $name)
         [ordered]@{ Source = $name; Target = $target; Sha256 = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash }
     }
-    $manifest = [ordered]@{ Version = 'reliability-v3'; Scope = 'EESL LLM API only'; Files = @($files) }
+    $manifest = [ordered]@{ Version = 'reliability-v4'; Scope = 'EESL LLM API only'; Files = @($files) }
     [IO.File]::WriteAllText((Join-Path $localRelease 'manifest.json'), ($manifest | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding($false)))
     $manifestHash = (Get-FileHash -LiteralPath (Join-Path $localRelease 'manifest.json') -Algorithm SHA256).Hash
     $installer = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Invoke-LLMDeployment.ps1') -Raw).Replace('__MANIFEST_SHA256__',$manifestHash)

@@ -878,6 +878,17 @@ ORDER BY e.FirstName, e.LastName, e.EmployeeCode;", new { ClientId = clientId, M
             return new { request.ClientId, request.Month, row.EmployeeId, WorkingDays = working, PresentDays = present, PayableDays = payable, LopDays = Math.Max(0, row.LopDays), Remarks = row.Remarks ?? string.Empty };
         }).ToList();
         await using var transaction = await connection.BeginTransactionAsync();
+        // Serialize with payroll and location uploads before touching the monthly
+        // roll-up. Native parts must be edited through their reviewed locations.
+        await connection.QueryAsync<int>("SELECT Id FROM clients WHERE Id=@ClientId FOR UPDATE", new { request.ClientId }, transaction);
+        var locationTables = await PayrollLocationTablesAsync(connection, transaction);
+        if (rows.Count > 0 && locationTables.Contains("employee_payroll_location_assignments") && locationTables.Contains("employee_payroll_location_allocations")
+            && await connection.ExecuteScalarAsync<int>(@"SELECT EXISTS(SELECT 1 FROM employee_payroll_location_allocations
+WHERE client_id=@ClientId AND employee_id IN @Ids AND pay_period=@Month)
+OR EXISTS(SELECT 1 FROM employee_payroll_location_assignments WHERE client_id=@ClientId AND employee_id IN @Ids
+AND status='Active' AND configuration_effective_from<=LAST_DAY(CONCAT(@Month,'-01')))",
+                new { request.ClientId, request.Month, Ids = rows.Select(row => row.EmployeeId).ToArray() }, transaction) != 0)
+            return (null, "Use Policy + Location attendance for these employees. Their location wages and monthly totals must stay together.");
         employmentError = await EmployeeAttendanceEligibility.ValidateMonthlyAsync(connection, transaction, request.ClientId, request.Month, rows.Select(row => (row.EmployeeId, row.PresentDays, row.PayableDays)));
         if (employmentError is not null) return (null, employmentError);
         var lockedError = await WeeklyOffAttendanceService.ValidateMonthlyChangesAsync(connection, transaction, request.ClientId, rows.Select(row => row.EmployeeId).Distinct().ToArray(), request.Month);

@@ -44,7 +44,7 @@ function slabFormula(source: string, base: string) {
 }
 
 export function buildPayrollFormulaWorkbook(clientName: string, period: string, employees: FormulaWorkbookEmployee[]): XlsxSheet[] {
-  if (!employees.length || new Set(employees.map(row => row.employeeId)).size !== employees.length) throw Error('Select a distinct employee roster.')
+  if (!employees.length || new Set(employees.map(row => `${row.employeeId}:${row.location?.key || ''}`)).size !== employees.length) throw Error('Select a distinct employee/location roster.')
   const keys = new Map<string, { code: string; name: string }>()
   const keyed = employees.map(employee => {
     const seen = new Map<string, number>()
@@ -80,6 +80,7 @@ export function buildPayrollFormulaWorkbook(clientName: string, period: string, 
     if (nativeAnnual == null) throw Error(`${employee.employeeCode}: annual salary input is unavailable.`)
     const row: XlsxCell[] = Array.from({ length: headers.length }, () => '')
     row[0] = { value: employee.employeeCode, style: 'text' }; row[1] = employee.employeeName; row[2] = calculation.templateId
+    if (employee.location) row[2] = `${calculation.templateId} · ${employee.location.workLocationName}`
     row[3] = input(nativeAnnual)
     const target = calculation.lines.find(line => line.monthlyTarget != null)?.monthlyTarget ?? nativeAnnual / 12
     row[4] = nativeAnnual > 0 ? formula(excelCurrencyRound(`D${rowNumber}/12`), target) : input(target)
@@ -121,8 +122,21 @@ export function buildPayrollFormulaWorkbook(clientName: string, period: string, 
     row[13] = { value: calculation.net, style: 'currency' }; row[14] = formula(guarded(excelCurrencyRound(`M${rowNumber}-N${rowNumber}`)), 0)
     rows.push(row)
   }
-  return [
+  const sheets: XlsxSheet[] = [
     { name: 'Payroll', rows, freezeRows: 1, freezeColumns: 2, columnWidths: headers.map((_, index) => index === 1 ? 32 : index === 0 ? 19 : index === 2 ? 23 : 19) },
     { name: 'Rules', rows: rules, columnWidths: [24, 24, 22, 18, 23, 90, 12, 55] },
   ]
+  if (employees.every(employee => employee.location?.contextVersion)) {
+    sheets.push({ name: 'Attendance', freezeRows: 1, freezeColumns: 3, columnWidths: [22, 30, 28, 17, 17, 17, 12, 14, 44, 14, 17, 24, 38, 38], rows: [
+      ['EmployeeCode','EmployeeName','Location','PayrollDays','PresentDays','PayableDays','ClientId','Month','PartKey','EmployeeId','WorkLocationId','TemplateId','RulesHash','ContextVersion','InputVersion'].map(value => ({value,style:'header'})),
+      ...employees.map((employee,index) => {
+        const get=(name:string)=>employee.calculation.inputs.find(input=>input.name===name)?.value
+        const location=employee.location!,row=index+2
+        const linked=(column:string,value:number|string):XlsxCell=>({formula:`'Payroll'!${column}${row}`,value,type:typeof value==='number'?'number':'text'})
+        return [employee.employeeCode,employee.employeeName,location.workLocationName,linked('F',get('PAYROLL_DAYS')!),linked('G',get('PRESENT_DAYS')??''),linked('H',get('PAYABLE_DAYS')!),employee.calculation.clientId!,period,location.key,employee.employeeId,location.workLocationId,employee.calculation.templateId,location.rulesHash,location.contextVersion,location.inputVersion]
+      }),
+    ] })
+    rules.push(['Location attendance: edit highlighted days on Payroll, recalculate/save in Excel, then upload Attendance in the same client/month/policy. Every location retains its own salary formula.'])
+  }
+  return sheets
 }

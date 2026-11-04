@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useLocation } from 'react-router-dom'
-import ManualAttendanceManager from '../components/ManualAttendanceManager'
+import PayrollLocationAttendance from '../components/PayrollLocationAttendance'
 import SearchSelect from '../components/SearchSelect'
 import { useToast, type ToastType } from '../components/ToastProvider'
 import { getClients } from '../services/payrollService'
@@ -8,7 +8,7 @@ import { getAttendanceGroups } from '../services/leaveAttendanceService'
 import type { AttendanceGroup, Client } from '../types/payroll'
 import { useAuthSession } from '../components/AuthGate'
 
-type AttendanceRouteState = { clientId?: number; period?: string; groupIds?: number[]; employeeIds?: number[] } | null
+type AttendanceRouteState = { clientId?: number; period?: string; groupIds?: number[]; employeeIds?: number[]; workLocationId?: number } | null
 
 const idsFrom = (value?: string | null) => Array.from(new Set((value || '').split(',').map(item => Number(item)).filter(id => Number.isFinite(id) && id > 0)))
 const idsFromState = (value: unknown) => Array.isArray(value) ? Array.from(new Set(value.map(item => Number(item)).filter(id => Number.isFinite(id) && id > 0))) : []
@@ -34,6 +34,7 @@ export default function PayrollAttendancePage() {
       period: validPeriod(routeState?.period || params.get('period')),
       groupIds: stateGroupIds.length ? stateGroupIds : idsFrom(params.get('groupIds')),
       employeeIds: stateEmployeeIds.length ? stateEmployeeIds : idsFrom(params.get('employeeIds'))
+      , workLocationId: Number(routeState?.workLocationId || params.get('workLocationId') || 0)
     }
   }, [location.search, routeState])
   const [clients, setClients] = useState<Client[]>([])
@@ -150,7 +151,7 @@ export default function PayrollAttendancePage() {
     </div>
   </section>
 
-  if (groupsLoaded && !selectedGroup) return <section className="pay-runs payroll-attendance-page">
+  if (!selectedGroup) return <section className="pay-runs payroll-attendance-page">
     <div className="card attendance-policy-empty">
       <div className="attendance-toolbar attendance-simple-toolbar attendance-empty-toolbar">{clientControl}</div>
       <div className="attendance-empty-copy"><span>Attendance Review</span><h3>No attendance policy configured</h3><p>Create an attendance policy in Settings for the selected client before reviewing attendance.</p></div>
@@ -158,6 +159,8 @@ export default function PayrollAttendancePage() {
   </section>
 
   return <section className="pay-runs payroll-attendance-page">
-    <ManualAttendanceManager clientId={clientId} group={selectedGroup} reviewMonth={routeContext.period} clientControl={clientControl} onMessage={(message, type: ToastType = 'success') => toast(message, type)} />
+    <PayrollLocationAttendance key={`${clientId}:${reviewScope}`} clientId={clientId} group={selectedGroup} groupIds={selectedGroups.map(group => group.id)}
+      policyBatchId={reviewScope.startsWith('batch:') ? reviewScope.slice(6) : selectedGroups.length === 1 ? policyBatchKey(selectedGroups[0]) : ''}
+      reviewMonth={routeContext.period} initialLocationId={routeContext.workLocationId} clientControl={clientControl} onMessage={(message, type: ToastType = 'success') => toast(message, type)} />
   </section>
 }

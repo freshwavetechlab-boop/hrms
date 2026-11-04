@@ -35,6 +35,9 @@ public sealed class PayrollFormulaWorkbookTests
         Assert.Contains("attendance policy",Assert.Throws<InvalidOperationException>(()=>PayRunRepository.ValidateFormulaWorkbookRequest(missing)).Message);
         Assert.Throws<InvalidOperationException>(()=>PayRunRepository.ValidateFormulaWorkbookRequest(PolicyRequest() with {AttendanceGroupIds=[]}));
         Assert.Throws<InvalidOperationException>(()=>PayRunRepository.ValidateFormulaWorkbookRequest(PolicyRequest() with {EmployeeIds=[11,11]}));
+        Assert.Throws<InvalidOperationException>(()=>PayRunRepository.ValidateFormulaWorkbookRequest(PolicyRequest() with {WorkLocationId=-1}));
+        Assert.Throws<InvalidOperationException>(()=>PayRunRepository.ValidateFormulaWorkbookRequest(PolicyRequest() with {WorkLocationId=10}));
+        PayRunRepository.ValidateFormulaWorkbookRequest(PolicyRequest() with {WorkLocationId=10,IncludeLocationParts=true});
     }
 
     [Fact]

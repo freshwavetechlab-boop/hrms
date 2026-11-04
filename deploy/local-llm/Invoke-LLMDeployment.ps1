@@ -11,13 +11,14 @@ $expectedManifestHash = '__MANIFEST_SHA256__'
 
 function Test-LLMDeploymentTarget([string]$Target) {
     return $Target -in @('scripts\Host-LLM.ps1','scripts\RecoveryPolicy.ps1','scripts\Ensure-LLMRecovery.ps1',
-        'scripts\Invoke-LLMControl.ps1','api\control.php','scripts\Start-LLM.ps1','scripts\AdapterPolicy.ps1')
+        'scripts\Invoke-LLMControl.ps1','api\control.php','scripts\Start-LLM.ps1','scripts\AdapterPolicy.ps1',
+        'scripts\ResumeWarmup.ps1','scripts\resume-warmup.json')
 }
 function Assert-LLMPackage([string]$Package, [string]$ExpectedHash) {
     $manifestFile = Join-Path $Package 'manifest.json'
     if ((Get-FileHash -LiteralPath $manifestFile -Algorithm SHA256).Hash -cne $ExpectedHash) { throw 'Package manifest hash mismatch.' }
     $manifest = Get-Content -LiteralPath $manifestFile -Raw | ConvertFrom-Json
-    if ($manifest.Version -ne 'reliability-v3' -or @($manifest.Files).Count -ne 7) { throw 'Unsupported package.' }
+    if ($manifest.Version -ne 'reliability-v4' -or @($manifest.Files).Count -ne 9) { throw 'Unsupported package.' }
     $seen = @{}
     foreach ($file in $manifest.Files) {
         if (-not (Test-LLMDeploymentTarget $file.Target) -or $file.Source -cne [IO.Path]::GetFileName($file.Target) -or
@@ -30,7 +31,7 @@ function Assert-LLMPackage([string]$Package, [string]$ExpectedHash) {
     return $manifest
 }
 function Set-DeploymentStatus([string]$State, [string]$Code, [hashtable]$Extra = @{}) {
-    $value = [ordered]@{ Utc = [DateTime]::UtcNow.ToString('o'); Version = 'reliability-v3'; State = $State; Code = $Code }
+    $value = [ordered]@{ Utc = [DateTime]::UtcNow.ToString('o'); Version = 'reliability-v4'; State = $State; Code = $Code }
     foreach ($key in $Extra.Keys) { $value[$key] = $Extra[$key] }
     [IO.File]::WriteAllText($statusPath, ($value | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
 }
@@ -106,7 +107,7 @@ try {
     $main = $folder.GetTask('EESL-LLM-LocalAI'); Assert-MainTask $main
     $oldRunId = (Get-Content -LiteralPath (Join-Path $root 'logs\host-status.json') -Raw | ConvertFrom-Json).RunId
     $protected = Get-ProtectedHashes
-    $backup = Join-Path $root ('logs\backups\reliability-v3-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))
+    $backup = Join-Path $root ('logs\backups\reliability-v4-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))
     [void][IO.Directory]::CreateDirectory($backup)
     [IO.File]::WriteAllText((Join-Path $backup 'task.xml'), $main.Xml)
     $taskSddl = $main.GetSecurityDescriptor(7)
@@ -145,7 +146,7 @@ try {
     }
         foreach ($file in $manifest.Files) {
             $target = Join-Path $root $file.Target
-            $candidate = $target + '.reliability-v3.tmp'
+            $candidate = $target + '.reliability-v4.tmp'
             Copy-Item -LiteralPath (Join-Path $packageRoot $file.Source) -Destination $candidate
             if (Test-Path -LiteralPath $target) {
                 Set-Acl -LiteralPath $candidate -AclObject (Get-Acl -LiteralPath $target)

@@ -8,6 +8,28 @@ const compiled = ts.transpileModule(readFileSync(new URL('../src/utils/excelPays
 const { parsePayslipCsv, defaultPayslipMapping, buildExcelPayslipRows, buildPayslipCalculationSource, translatePayslipSharedFormula, resolvePayslipSharedFormulas, payslipHeaders, payslipHeaderSignature, parsePayslipAmount, inferPayslipMonth, formatExcelPayslipAmount, formatPayslipSourceCell, payslipPhoneValue } = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'))
 const parse = text => { const sheet = parsePayslipCsv(text); const columns = defaultPayslipMapping(payslipHeaders(sheet, 1)); return { sheet, columns, result: buildExcelPayslipRows(sheet, 1, columns) } }
 
+test('reviewed old/new wage mapping keeps later sections, zero-pay identities and exact source amounts', () => {
+  const sheet = parsePayslipCsv('Employee ID,Employee Name,Old Basic,Old Days,Old Wages,Old Allowance,Old Subtotal,New Basic,New Days,New Wages,New Allowance,New Subtotal,Total Earning payment,PF,Arrears,Net Pay,Employer PF\nSRC-1,Example One,3000,5,500,50,550,3300,25,2750,250,3000,3550,330,0,3220,357.5\n,Department total,,,500,50,550,,,2750,250,3000,3550,330,0,3220,357.5\nEmployee ID,Employee Name,Old Basic,Old Days,Old Wages,Old Allowance,Old Subtotal,New Basic,New Days,New Wages,New Allowance,New Subtotal,Total Earning payment,PF,Arrears,Net Pay,Employer PF\nSRC-2,Example Two,3000,0,0,0,0,3300,0,0,0,0,0,0,0,0,0\nSRC-3,Example Three,3000,5,500,50,550,3300,25,2750,150,2900,3450,330,75,3195,357.5');
+  sheet.rows[1].cells[4].formulaText='C2/30*D2';
+  sheet.rows[5].cells[15].formulaText='M6-N6+O6';
+  const columns=defaultPayslipMapping(payslipHeaders(sheet,1));
+  const roles=['employeeCode','employeeName','ignore','info','earning','earning','ignore','ignore','info','earning','earning','ignore','grossTotal','deduction','earning','netPay','employer'];
+  columns.forEach((column,index)=>{column.kind=roles[index];column.label=sheet.rows[0].cells[index].value});
+  const original=JSON.stringify(sheet);
+  const result=buildExcelPayslipRows(sheet,1,columns,[3,4]);
+  assert.deepEqual(result.issues,[]);
+  assert.deepEqual(result.rows.map(r=>r.employeeCode),['SRC-1','SRC-2','SRC-3']);
+  assert.deepEqual(result.rows.map(r=>r.netPay),[3220,0,3195]);
+  assert.equal(result.rows[2].earnings.reduce((sum,e)=>sum+e.amount,0),3525);
+  assert.equal(result.rows[2].declaredGross,3450);
+  assert.equal(result.rows[2].deductions.reduce((sum,e)=>sum+e.amount,0),330);
+  assert.equal(result.rows[2].employerContributions[0].amount,357.5);
+  const capture=buildPayslipCalculationSource(sheet,1,columns,result.excludedRows);
+  assert.equal(capture.rows.find(r=>r.sourceRow===2).cells[4].formulaText,'C2/30*D2');
+  assert.equal(capture.rows.find(r=>r.sourceRow===6).cells[15].formulaText,'M6-N6+O6');
+  assert.equal(JSON.stringify(sheet),original);
+});
+
 test('numeric Aadhaar and contact source previews show whole digits without changing captured data or salary', () => {
   const { sheet, columns } = parse('Employee Name,Basic,Net Pay,AADHAR NUMBER,CONTACT NUMBER\nExample,123.456,1.23456E2,9.12345678901E11,9.123456789E9')
   const cells = sheet.rows[1].cells

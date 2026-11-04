@@ -4,7 +4,7 @@ import type { PayslipColumn, PayslipSourceRow } from '../utils/excelPayslipImpor
 import type { PayslipMappingEvidence } from '../utils/excelPayslipMapping'
 
 export type ExcelPayslipText = { label: string; value: string }
-export type ExcelPayslipClient = { id: number; name: string; hasSavedBatch?: boolean }
+export type ExcelPayslipClient = { id: number; name: string; hasSavedBatch?: boolean; locationBatchesSupported?: boolean }
 export type ExcelPayslipAmount = { label: string; amount: number }
 export type ExcelPayslipRow = {
   id: string; sourceRow: number; employeeCode: string; employeeName: string; email: string
@@ -24,7 +24,7 @@ export type PayslipIdentityMatch = {sourceRow:number;status:'Existing'|'Review'|
 export type PayslipIdentityPreview = {clientId:number;checkedRows:number;rows:PayslipIdentityMatch[]}
 export const previewPayslipEmployeeIdentities = (clientId:number,rows:PayslipIdentityInput[],signal:AbortSignal) => postJson<{rows:PayslipIdentityInput[]},PayslipIdentityPreview|null>(`/api/excel-payslips/employee-identity-preview?clientId=${clientId}`,{rows},null,{signal,loader:false,toast:false,timeoutMs:60000})
 export const validPayslipCodeOptions = (value: PayslipEmployeeCodeOptions | null | undefined) => !!value && typeof value.clientCode === 'string' && Number.isInteger(value.digits) && value.digits >= 1 && value.digits <= 12 && typeof value.nextSequence === 'string' && /^[1-9]\d*$/.test(value.nextSequence)
-export type ExcelPayslipBatchInput = { id?: string; employeeCodeGeneration?: PayslipEmployeeCodeGeneration; parentBatchId?: string; originalWorkbooks?: { id: string; fileName: string }[]; month: string; sourceFileName: string; sheetName: string; headerRow: number; simpleLayout?: boolean; salaryTemplateId?: string; salaryTemplateName?: string; rows: ExcelPayslipRow[]; calculationSource?: ExcelPayslipCalculationSource | null }
+export type ExcelPayslipBatchInput = { id?: string; createLocationBatch?: boolean; locationBatch?: boolean; locationLabel?: string; employeeCodeGeneration?: PayslipEmployeeCodeGeneration; parentBatchId?: string; originalWorkbooks?: { id: string; fileName: string }[]; month: string; sourceFileName: string; sheetName: string; headerRow: number; simpleLayout?: boolean; salaryTemplateId?: string; salaryTemplateName?: string; rows: ExcelPayslipRow[]; calculationSource?: ExcelPayslipCalculationSource | null }
 export type ExcelPayslipBatch = ExcelPayslipBatchInput & { id: string; clientId: number; clientName?: string; createdAtUtc: string; createdBy: string }
 export type ExcelPayslipSummary = Omit<ExcelPayslipBatch, 'rows'> & { rowCount: number; isConsolidatedSource?: boolean; canonicalBatchId?: string; consolidationGroupId?: string; consolidatedSourceBatchIds?: string[]; consolidationStale?: boolean }
 export type ExcelPayslipProfile = { headerSignature: string; columns: PayslipColumn[]; salaryTemplateId?: string }

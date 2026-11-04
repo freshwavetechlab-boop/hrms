@@ -7,6 +7,31 @@ namespace Payroll.API.Repositories;
 
 public sealed partial class PayRunRepository
 {
+    // Review a prior-period one-off before making its immutable assignment a new
+    // month's default. This never edits a template or suppresses a salary line.
+    internal static Func<PayrollLocationPart, string, string> PriorPeriodLocationPayReviewer(int clientId, string setupJson, string month)
+    {
+        PayrollSetupData? setup = null; HashSet<string>? oneOffs = null;
+        return (part, sourceMonth) =>
+        {
+            if (string.CompareOrdinal(sourceMonth, month) >= 0) return "";
+            setup ??= ReadPayrollSetup(setupJson);
+            oneOffs ??= setup.Components.Where(component => Regex.IsMatch(component.Code,
+                "ARREAR|REFUND|ONE[_ -]?TIME", RegexOptions.IgnoreCase)).Select(component => component.Id).ToHashSet();
+            var structure = setup.Structures.Single(item => item.Id == part.SalaryStructureId);
+            if (!structure.Lines.Any(line => oneOffs.Contains(line.ComponentId))) return "";
+            var trace = new List<PayrollSimulationLine>();
+            CalculateConfiguredSalary(LocationPartEmployee(new() { ClientId = clientId }, part), setup,
+                part.PayrollDays, part.PayrollDays, part.PayrollDays, trace);
+            // A zero at full attendance does not prove that a conditional
+            // arrear will stay zero after days are edited in a future month.
+            return trace.Any(line => oneOffs.Contains(line.ComponentId) && (line.Earned != 0
+                || !line.AmountOverride && line.CalculationType == "Formula" && Regex.IsMatch(line.Formula,
+                    "PAYABLE_DAYS|PRESENT_DAYS|PAYROLL_DAYS|WORKING_DAYS|TOTAL_DAYS", RegexOptions.IgnoreCase)))
+                ? "Review prior-month arrears/refunds before reusing this location assignment. Import the reviewed current-month salary; existing formulas were retained." : "";
+        };
+    }
+
     internal static PayrollSimulationResult SimulateLocationParts(PayrollLocationPartPeriod period, string setupJson,
         int payrollDays, decimal presentDays, decimal payableDays)
     {

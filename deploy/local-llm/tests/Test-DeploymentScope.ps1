@@ -9,12 +9,12 @@ foreach ($target in @('..\wordpress\wp-config.php','C:\Apache24\conf\httpd.conf'
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ('llm-package-test-' + [Guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($temporary)
 try {
-    $files = foreach ($target in @('scripts\Host-LLM.ps1','scripts\RecoveryPolicy.ps1','scripts\Ensure-LLMRecovery.ps1','scripts\Invoke-LLMControl.ps1','api\control.php','scripts\Start-LLM.ps1','scripts\AdapterPolicy.ps1')) {
+    $files = foreach ($target in @('scripts\Host-LLM.ps1','scripts\RecoveryPolicy.ps1','scripts\Ensure-LLMRecovery.ps1','scripts\Invoke-LLMControl.ps1','api\control.php','scripts\Start-LLM.ps1','scripts\AdapterPolicy.ps1','scripts\ResumeWarmup.ps1','scripts\resume-warmup.json')) {
         $name = [IO.Path]::GetFileName($target); [IO.File]::WriteAllText((Join-Path $temporary $name), 'synthetic')
         @{ Source = $name; Target = $target; Sha256 = (Get-FileHash (Join-Path $temporary $name)).Hash }
     }
     $manifest = Join-Path $temporary 'manifest.json'
-    [IO.File]::WriteAllText($manifest, (@{Version='reliability-v3';Files=@($files)} | ConvertTo-Json -Depth 5))
+    [IO.File]::WriteAllText($manifest, (@{Version='reliability-v4';Files=@($files)} | ConvertTo-Json -Depth 5))
     $expected = (Get-FileHash $manifest).Hash
     [void](Assert-LLMPackage $temporary $expected)
     [IO.File]::WriteAllText((Join-Path $temporary 'Host-LLM.ps1'), 'changed after review')

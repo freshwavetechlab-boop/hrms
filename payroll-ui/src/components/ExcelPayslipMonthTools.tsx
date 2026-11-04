@@ -65,7 +65,12 @@ export default function ExcelPayslipMonthTools({ clientId, batch, history, canMa
     try {
       const result = await calculateExcelPayslips(clientId, batch.id, { month, attendanceColumnIndex: attendanceColumn, monthDaysCell: monthDaysCell || undefined, monthDays: monthDaysCell ? periodDays! : undefined, attendance: batch.rows.map(row => ({ rowId: row.id, days: days[row.id]! })), overrides })
       if (!active.current) return
-      if (result.ok && result.data) { setDraft(result.data); setConfirmed(false) } else setError(result.error || 'Unable to calculate this month.')
+      if (result.ok && result.data) {
+        setDraft({ ...result.data, id: result.data.createLocationBatch ? result.data.id : crypto.randomUUID().replaceAll('-', ''),
+          createLocationBatch: true, locationBatch: true, parentBatchId: batch.id,
+          locationLabel: (batch.locationLabel || batch.sourceFileName).slice(0, 190) })
+        setConfirmed(false)
+      } else setError(result.error || 'Unable to calculate this month.')
     } finally { unlock() }
   }
   const save = async () => {

@@ -10,7 +10,7 @@ import BulkUploadProgressModal, { type BulkUploadState } from './BulkUploadProgr
 import SearchSelect from './SearchSelect'
 import type { ToastType } from './ToastProvider'
 
-type Props = { clientId: number; group?: AttendanceGroup | null; reviewMonth?: string; onMessage: (message: string, type?: ToastType) => void; clientControl?: ReactNode }
+type Props = { clientId: number; group?: AttendanceGroup | null; reviewMonth?: string; onReviewMonthChange?: (month: string) => void; onMessage: (message: string, type?: ToastType) => void; clientControl?: ReactNode }
 type DailyStatus = string
 type ReviewStatus = 'Ready' | 'Missing attendance' | 'Check values'
 type GridEdit = { employeeId: number; date: string } | null
@@ -173,8 +173,9 @@ const reviewStatus = (row: EmployeeMonthlyAttendance): ReviewStatus => {
   return 'Ready'
 }
 
-export default function ManualAttendanceManager({ clientId, group = null, reviewMonth = '', onMessage, clientControl }: Props) {
+export default function ManualAttendanceManager({ clientId, group = null, reviewMonth = '', onReviewMonthChange, onMessage, clientControl }: Props) {
   const [month, setMonth] = useState(reviewMonth || currentMonth())
+  useEffect(() => { onReviewMonthChange?.(month) }, [month, onReviewMonthChange])
   const [monthlyRows, setMonthlyRows] = useState<EmployeeMonthlyAttendance[]>([])
   const [allDailyRows, setAllDailyRows] = useState<EmployeeDailyAttendance[]>([])
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([])

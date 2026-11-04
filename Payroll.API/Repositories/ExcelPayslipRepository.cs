@@ -49,7 +49,7 @@ public sealed partial class ExcelPayslipRepository(IConfiguration configuration,
         var clients = await db.QueryAsync<PayslipClientPresence>(@"SELECT c.Id,c.Name,c.Code,c.IsActive,
 EXISTS(SELECT 1 FROM excel_payslip_batches b WHERE b.client_id=c.Id) AS HasSavedBatch
 FROM clients c WHERE c.IsActive=TRUE AND (@ClientId IS NULL OR c.Id=@ClientId) ORDER BY c.Name", new { ClientId = scopedClientId });
-        return clients.Where(IsSupportedClient).Select(c => new ExcelPayslipClient { Id = c.Id, Name = c.Name, HasSavedBatch = c.HasSavedBatch }).ToArray();
+        return clients.Where(IsSupportedClient).Select(c => new ExcelPayslipClient { Id = c.Id, Name = c.Name, HasSavedBatch = c.HasSavedBatch, LocationBatchesSupported = true }).ToArray();
     }
 
     public async Task<IReadOnlyList<ExcelPayslipTemplate>> GetTemplatesAsync(int clientId)
@@ -154,6 +154,8 @@ id AS Id,client_id AS ClientId,
 COALESCE(JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.clientName')),'') AS ClientName,
 COALESCE(JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.salaryTemplateId')),'') AS SalaryTemplateId,
 COALESCE(JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.salaryTemplateName')),'') AS SalaryTemplateName,
+CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.locationBatch'))='true' THEN TRUE ELSE FALSE END LocationBatch,
+COALESCE(JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.locationLabel')),'') LocationLabel,
 JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.month')) AS Month,
 JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.sourceFileName')) AS SourceFileName,
 JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.sheetName')) AS SheetName,
@@ -205,7 +207,9 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
             if (Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(calculationSource, JsonOptions)) > 16 * 1024 * 1024)
                 return (null, "Calculation source exceeds 16 MiB. Save a smaller worksheet.");
         }
-        batch.Id = Guid.NewGuid().ToString("N"); batch.ClientId = clientId; batch.LifecycleVersion = 1;
+        batch.Id = request.CreateLocationBatch ? request.Id : Guid.NewGuid().ToString("N"); batch.ClientId = clientId; batch.LifecycleVersion = 1;
+        batch.CreateLocationBatch = false;
+        if (request.CreateLocationBatch) { batch.LocationBatch = true; batch.LocationLabel = request.LocationLabel?.Trim(); batch.LocationImportHash = LocationBatchImportHash(request); }
         batch.ClientName = ""; batch.SalaryTemplateName = ""; batch.SalaryTemplateId = batch.SalaryTemplateId?.Trim() ?? "";
         batch.CreatedAtUtc = DateTime.UtcNow; batch.CreatedBy = Limit(actor, 190);
         foreach (var row in batch.Rows) row.Warnings = RowWarnings(row);
@@ -216,6 +220,7 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
         var client = await db.QueryFirstOrDefaultAsync<Client>("SELECT Id,Name,Code,IsActive FROM clients WHERE Id=@ClientId FOR UPDATE", new { ClientId = clientId }, tx);
         if (client is null || !IsSupportedClient(client)) return (null, "Select an active client.");
         var existing = await CurrentSaveTargetAsync(db, tx, clientId, request);
+        if (request.CreateLocationBatch && existing is not null) { await tx.RollbackAsync(); return (existing, null); }
         if (existing is not null)
         {
             await RequireCurrentConsolidationSourceAsync(db,tx,clientId,existing.Id);

@@ -123,6 +123,14 @@ public static partial class ExcelPayslipCalculationService
         copy.MonthDaysCell = request.MonthDaysCell;
         var result = JsonSerializer.Deserialize<ExcelPayslipBatch>(JsonSerializer.Serialize(batch, Json), Json)!;
         result.Id = ""; result.Month = request.Month; result.CreatedAtUtc = default; result.CreatedBy = "";
+        if (batch.LocationBatch)
+        {
+            // A calculated location is another explicit batch. Never find and
+            // replace a different location (or an earlier reviewed version) by month.
+            result.Id = Guid.NewGuid().ToString("N");
+            result.CreateLocationBatch = true; result.LocationImportHash = null;
+            result.ParentBatchId = batch.Id;
+        }
         result.SourceFileName = $"Calculated from {batch.Month} - {batch.SourceFileName}";
         if (result.SourceFileName.Length > 255) result.SourceFileName = result.SourceFileName[..255];
         var cells = copy.Rows.SelectMany(row => row.Cells.Select((cell, index) => (Address: Address(index, row.SourceRow), Cell: cell)))

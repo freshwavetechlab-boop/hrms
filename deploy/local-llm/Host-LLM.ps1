@@ -4,6 +4,7 @@ param()
 . (Join-Path $PSScriptRoot 'Start-LLM.ps1') -LibraryOnly
 . (Join-Path $PSScriptRoot 'RecoveryPolicy.ps1')
 if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'AdapterPolicy.ps1')) { . (Join-Path $PSScriptRoot 'AdapterPolicy.ps1') }
+. (Join-Path $PSScriptRoot 'ResumeWarmup.ps1')
 Assert-LLMTarget
 $logDirectory = 'E:\LLM\logs'
 $admission = 'E:\LLM\api\enabled'
@@ -15,7 +16,8 @@ $restarts = New-Object 'Collections.Generic.List[DateTime]'
 $report = [ordered]@{ SchemaVersion = 2; StartedUtc = [DateTime]::UtcNow.ToString('o'); RunId = $runId;
     Status = 'STARTING'; HostPid = $PID; HostStartUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o');
     LastResources = $null; LastLocalWebRouting = $null; ModelLoadSeconds = $null; ConsecutiveHealthFailures = 0;
-    Failure = $null; LastFailureCode = $null; NextRecoveryUtc = $null; RecoveryCount = 0; DiagnosticsDegraded = $false }
+    Failure = $null; LastFailureCode = $null; NextRecoveryUtc = $null; RecoveryCount = 0; DiagnosticsDegraded = $false;
+    ResumeWarmup = $null }
 
 function Save-HostReport {
     $report['HeartbeatUtc'] = [DateTime]::UtcNow.ToString('o')
@@ -74,6 +76,18 @@ try {
             $hostState = & (Join-Path $PSScriptRoot 'Start-LLM.ps1')
             $restarts.Add([DateTime]::UtcNow)
             $report.ModelLoadSeconds = Wait-LLMReady $hostState
+            $report.Status = 'WARMING'; $report.ResumeWarmup = $null; Save-HostReport
+            $warmupLastWebCheck = [DateTime]::MinValue
+            $report.ResumeWarmup = Invoke-LLMResumeWarmup (Join-Path $PSScriptRoot 'resume-warmup.json') {
+                $report.LastResources = Get-LLMResources $hostState
+                if (([DateTime]::UtcNow - $warmupLastWebCheck).TotalSeconds -ge 60) {
+                    $report.LastLocalWebRouting = @(Assert-LLMWebsiteHealth $baseline)
+                    $script:warmupLastWebCheck = [DateTime]::UtcNow
+                }
+                Save-HostReport
+            }
+            Record-HostEvent 'ResumeWarmup' $report.ResumeWarmup.Status
+            if (-not $report.ResumeWarmup.Settled) { throw 'Resume warm-up backend did not settle.' }
             $report.Status = 'READY'; $report.Failure = $null; $report.ConsecutiveHealthFailures = 0
             $report['ActiveAdapter'] = $(if ($selectedAdapter) { $selectedAdapter.JobId } else { $null })
             Set-Admission $true
@@ -126,9 +140,10 @@ try {
             } finally { $healthClient.Dispose() }
         } catch {
             $code = Get-LLMFailureCode $_.Exception.Message
+            if ($_.Exception.Message -ceq 'Resume warm-up backend did not settle.') { $code = 'WarmupUnavailable' }
             $report.LastFailureCode = $code; $report.Failure = $code; $report.Status = 'RECOVERING'
             Record-HostEvent 'Failure' $code @{ Attempt = $restarts.Count; ConsecutiveFailures = $report.ConsecutiveHealthFailures }
-            if ($selectedAdapter -and $code -notin @('MemorySafety','CpuSafety','WebsiteSafety','IdentityBlocked')) {
+            if ($selectedAdapter -and $code -notin @('MemorySafety','CpuSafety','WebsiteSafety','IdentityBlocked','WarmupUnavailable')) {
                 Set-LLMAdapterQuarantine $selectedAdapter.JobId
                 Record-HostEvent 'AdapterRollback' 'ReadinessFailedOriginalBaseRestored'
             }

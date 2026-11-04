@@ -30,6 +30,20 @@ public sealed class PayrollLocationPartCalculationTests
         PayRunRepository.SimulateLocationParts(period,Settings(components??Standard()),days,period.Parts.Sum(part=>part.PresentDays),period.Parts.Sum(part=>part.PayableDays));
     private static decimal Earned(PayrollSimulationResult result,string code)=>Assert.Single(result.Lines,line=>line.Code==code).Earned;
 
+    [Theory]
+    [InlineData("0", false)]
+    [InlineData("1200", true)]
+    [InlineData("1200/PAYROLL_DAYS*PAYABLE_DAYS", true)]
+    [InlineData("IF(PAYABLE_DAYS<30,1200,0)", true)]
+    public void Prior_month_nonzero_arrears_require_review_without_editing_saved_rules(string formula, bool review)
+    {
+        var settings = Settings([.. Standard(), Component("4", "PRIOR_ARREAR", "Formula", formula, priority: 400)]);
+        var part = Part("first", 17); var before = JsonSerializer.Serialize(part);
+        Assert.Equal(review, PayRunRepository.PriorPeriodLocationPayReviewer(11, settings, "2026-10")(part, "2026-09").Length > 0);
+        Assert.Equal("", PayRunRepository.PriorPeriodLocationPayReviewer(11, settings, "2026-09")(part, "2026-09"));
+        Assert.Equal(before, JsonSerializer.Serialize(part));
+    }
+
     [Fact] public void ActualSettingsFormulasCalculateBothLocationsAndAggregateOneEmployeeWithoutSecondProration()
     {
         var period=Period();var before=JsonSerializer.Serialize(period);var result=Simulate(period);

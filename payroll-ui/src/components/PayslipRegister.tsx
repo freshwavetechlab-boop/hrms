@@ -12,6 +12,7 @@ import { PageHeaderPortal } from './layout/AppPageHeader'
 import { useAuthSession } from './AuthGate'
 import { useToast } from './ToastProvider'
 import './PayslipRegister.css'
+import PayrollLocationPayslips from './PayrollLocationPayslips'
 
 export default function PayslipRegister() {
   const session = useAuthSession()
@@ -141,6 +142,7 @@ export default function PayslipRegister() {
       <label className="payslip-period-control"><span>Pay period</span><SearchSelect value={runId} disabled={sending} onChange={value => setRunId(Number(value))} options={selectOptions(clientRuns.map(item => ({ value: item.id, label: `${item.payPeriod} - ${item.status}` })), 'Select approved pay run', 0)} /></label>
       {canSend && <><Button disabled={!rows.length || sending} onClick={() => setSelectedIds(rows.map(row => row.employeeId))}>Select all ({rows.length})</Button><Button disabled={!validSelection.length || sending} onClick={() => setSelectedIds([])}>Clear selection</Button><Button type="primary" loading={sending} disabled={!validSelection.length} onClick={() => void send(validSelection)}>{sending ? `Queuing ${sendProgress}` : `Send selected (${validSelection.length})`}</Button></>}
       <Button href="/security/apps/notifications">Notification settings</Button>
+      {run && <PayrollLocationPayslips key={run.id} run={run} />}
     </Space></PageHeaderPortal>
     {run ? <section className="card payslip-list"><DataTable rows={rows} fillHeight getRowId={row => row.employeeId} exportFileName={`payslip-register-${run.payPeriod}`} rowSelection={canSend ? { selectedRowKeys: validSelection, onChange: keys => setSelectedIds(keys.map(Number)), getCheckboxProps: () => ({ disabled: sending }) } : undefined} columns={[
       { key: 'employee', label: 'Employee', value: row => row.employeeName, render: row => <>{row.employeeName}<small>{row.employeeCode}</small></> },

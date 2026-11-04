@@ -8,6 +8,47 @@ namespace Payroll.API.Tests.Services;
 public sealed class ExcelPayslipMappingTests
 {
     [Fact]
+    public void Same_month_location_batch_boundary_is_retrieved_without_client_names_or_employee_data()
+    {
+        var columns = new[] { "Employee Code", "Work Location", "Payroll Unit", "Attendance", "Payable Days", "Net Pay" }
+            .Select((header, index) => new ExcelPayslipMappingColumn { ColumnIndex = index, SourceHeader = header, Kind = "info" }).ToList();
+        var path = Path.Combine(AppContext.BaseDirectory, "FrevoPilot", "docs", "excel-payroll-mapping.md");
+        var lesson = Assert.Single(ExcelPayslipMappingService.Retrieve(columns, File.ReadAllText(path), []),
+            reference => reference.Title.StartsWith("Work Location Payroll Unit Attendance Payable Days Net Pay:"));
+        Assert.Contains("own explicit batch ID", lesson.Content); Assert.Contains("not a new salary role", lesson.Content);
+        Assert.Contains("identity review", lesson.Content); Assert.True(lesson.Content.Length < 2600);
+        Assert.Equal("excel-payroll-mapping-v18", ExcelPayslipMappingService.KnowledgeVersion);
+    }
+    [Fact]
+    public void SplitWagePeriodLessonIsRetrievedFromAnonymousStructuralHeadings()
+    {
+        var columns = new[] { "Old VDA", "Old Basic", "New VDA", "New Basic", "Net Working Days", "Wages", "Special Allowance", "Total Earning payment", "LWP", "Arrears" }
+            .Select((header,index)=>new ExcelPayslipMappingColumn {ColumnIndex=index,SourceHeader=header,Kind="ignore"}).ToList();
+        var path=Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md");
+        var lesson=Assert.Single(ExcelPayslipMappingService.Retrieve(columns,File.ReadAllText(path),[]),r=>r.Title.StartsWith("Old VDA Old Basic New VDA New Basic"));
+        Assert.True(lesson.Content.Length<2600);
+        Assert.Contains("combined subtotal is the sole gross control",lesson.Content);
+        Assert.Contains("must not be deducted twice",lesson.Content);
+        Assert.Contains("Keep both period day values visible",lesson.Content);
+        Assert.Contains("do not create Master records on payslip-only Save",lesson.Content);
+        Assert.Contains("not automatic exclusions",lesson.Content);
+    }
+    [Fact]
+    public void LegacyBlankCalculationBoundaryIsRetrievedWithoutAnyClientOrEmployeeData()
+    {
+        var columns = new[] { "Original Refund", "Original PF Deduction", "Attendance", "In Hand Salary", "Source workbook", "Source worksheet" }
+            .Select((header,index) => new ExcelPayslipMappingColumn { ColumnIndex=index,SourceHeader=header,Kind="info" }).ToList();
+        var path = Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md");
+        var lesson = Assert.Single(ExcelPayslipMappingService.Retrieve(columns,File.ReadAllText(path),[]),
+            item => item.Title.StartsWith("Create another month Attendance In Hand Salary"));
+        Assert.True(lesson.Content.Length < 2600);
+        Assert.Contains("explicitly captured, empty, untyped, formula-free",lesson.Content);
+        Assert.Contains("Typed empty TEXT",lesson.Content);
+        Assert.Contains("does not approve blank mapped monetary columns",lesson.Content);
+        Assert.Contains("not a new earning/deduction mapping",lesson.Content);
+    }
+
+    [Fact]
     public void CombinedPreparationBoundaryIsRetrievedFromAttendanceAndTemplateHeaders()
     {
         var columns=new[] {"Present Days","Payable Days","Work Location","Salary Template","Effective Date","Policy"}
@@ -59,7 +100,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("display formatting only",lesson.Content);
         Assert.Contains("Literal scientific text",lesson.Content);
         Assert.Contains("identity-review evidence",lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v15",ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Equal("excel-payroll-mapping-v18",ExcelPayslipMappingService.KnowledgeVersion);
     }
     [Fact]
     public void EmployeeInputsAndEmployerCostLessonIsRetrievedFromAnonymousSalaryDayHeaders()
@@ -117,7 +158,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.True(lesson.Content.Length<2600);
         Assert.Contains("differing literal alone does not establish a new salary rule",lesson.Content);
         Assert.Contains("never freeze formula caches",lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v15",ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Equal("excel-payroll-mapping-v18",ExcelPayslipMappingService.KnowledgeVersion);
     }
     private static ExcelPayslipMappingRequest Request() => new() { Columns = [
         new() { ColumnIndex = 0, SourceHeader = "Employee name", Label = "Employee name", Kind = "employeeName" },
@@ -343,7 +384,7 @@ public sealed class ExcelPayslipMappingTests
         var references = ExcelPayslipMappingService.Retrieve(request.Columns, File.ReadAllText(path), []);
         var pattern = Assert.Single(references, item => item.Title.StartsWith("TMT pattern:"));
         using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, references));
-        Assert.Equal("excel-payroll-mapping-v15", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v18", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         var supplied = prompt.RootElement.GetProperty("references").EnumerateArray()
             .Single(item => item.GetProperty("title").GetString() == pattern.Title).GetProperty("content").GetString()!;
         Assert.Equal(pattern.Content, supplied); // The critical case must fit without prompt truncation.

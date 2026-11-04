@@ -4027,6 +4027,27 @@ app.MapPost("/api/leave-attendance/attendance/monthly", async (LeaveAttendanceRe
 .WithName("SaveMonthlyAttendance")
 .WithOpenApi();
 
+app.MapGet("/api/leave-attendance/attendance/payroll-locations", async (LeaveAttendanceRepository repository,
+    int clientId, string month, string? policyBatchId, string groupIds, HttpContext context) =>
+{
+    if (!(HasAttendanceManagement(context) || WorkspacePermissions.CanReadPayrollAttendance(CurrentUser(context))) || !CanAccessClient(context, clientId))
+        return Results.StatusCode(403);
+    try
+    {
+        var ids = groupIds.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(value => int.TryParse(value, out var id) ? id : 0).ToList();
+        return Results.Ok(await repository.GetPayrollLocationAttendanceAsync(clientId, month, policyBatchId ?? "", ids));
+    }
+    catch (InvalidOperationException error) { return Results.BadRequest(new { error = error.Message }); }
+}).WithName("GetPayrollLocationAttendance").WithOpenApi();
+
+app.MapPost("/api/leave-attendance/attendance/payroll-locations", async (LeaveAttendanceRepository repository,
+    PayrollLocationAttendanceRequest request, HttpContext context) =>
+{
+    if (!HasAttendanceManagement(context) || !CanAccessClient(context, request.ClientId)) return Results.StatusCode(403);
+    try { return Results.Ok(await repository.SavePayrollLocationAttendanceAsync(request, CurrentUser(context).Email)); }
+    catch (InvalidOperationException error) { return Results.BadRequest(new { error = error.Message }); }
+}).WithName("SavePayrollLocationAttendance").WithOpenApi();
+
 app.MapGet("/api/leave-attendance/attendance/daily", async (LeaveAttendanceRepository repository, int clientId, int employeeId, string month, HttpContext context) =>
     clientId <= 0 || employeeId <= 0 ? Results.BadRequest(new { error = "Select a client and employee." }) : !HasAttendanceManagement(context) || !CanAccessClient(context, clientId) ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await repository.GetDailyAttendanceAsync(clientId, employeeId, month)))
 .WithName("GetDailyAttendance")
@@ -4639,6 +4660,35 @@ app.MapGet("/api/pay-runs/{id:int}/payslips/{employeeId:int}", async (PayRunRepo
     var document = await payslips.GetPayslipDocumentAsync(employeeId, run.ClientId, id);
     return document is null ? Results.NotFound() : Results.Ok(document);
 }).WithName("GetRegisterPayslip").WithOpenApi();
+
+app.MapGet("/api/pay-runs/{id:int}/location-payslips", async (PayRunRepository repository, EssMssRepository payslips,
+    int id, int? workLocationId, HttpContext context) =>
+{
+    if (!CanViewPayslipRegister(context)) return Results.StatusCode(403);
+    var run = await repository.GetAsync(id);
+    if (run is null) return Results.NotFound();
+    if (!CanAccessClient(context, run.ClientId)) return Results.StatusCode(403);
+    try { return Results.Ok(await payslips.GetLocationPayslipDocumentsAsync(run.ClientId, id, workLocationId ?? 0)); }
+    catch (InvalidOperationException error) { return Results.BadRequest(new { error = error.Message }); }
+}).WithName("GetLocationPayslips").WithOpenApi();
+
+app.MapGet("/api/pay-runs/{id:int}/location-payslips/pdf", async (PayRunRepository repository, EssMssRepository payslips,
+    ExcelPayslipPdfService pdf, int id, int? workLocationId, HttpContext context) =>
+{
+    if (!CanViewPayslipRegister(context)) return Results.StatusCode(403);
+    var run = await repository.GetAsync(id);
+    if (run is null) return Results.NotFound();
+    if (!CanAccessClient(context, run.ClientId)) return Results.StatusCode(403);
+    try
+    {
+        var documents = await payslips.GetLocationPayslipDocumentsAsync(run.ClientId, id, workLocationId ?? 0);
+        if (documents.Count == 0) return Results.BadRequest(new { error = "No saved slips belong to this payroll/location." });
+        var batch = new ExcelPayslipBatch { ClientId = run.ClientId, ClientName = run.ClientName + (run.Status is "Draft" or "Pending Approval" ? " — DRAFT" : ""),
+            Month = run.PayPeriod, Rows = documents.Select(d => d.PrintSnapshot).ToList() };
+        return Results.File(pdf.Create(batch, batch.Rows, includeSeal: false, amountDecimalPlaces: 2), "application/pdf", $"payroll-{id}-{run.PayPeriod}-locations.pdf");
+    }
+    catch (InvalidOperationException error) { return Results.BadRequest(new { error = error.Message }); }
+}).WithName("GetLocationPayslipsPdf").WithOpenApi();
 
 app.MapPost("/api/pay-runs/{id:int}/payslips/send", async (PayRunRepository repository, EssMssRepository payslips, NotificationRepository notifications, int id, SendPayslipsRequest request, HttpContext context) =>
 {

@@ -9,10 +9,23 @@ namespace Payroll.API.Repositories;
 
 public sealed partial class ExcelPayslipRepository
 {
-    // A saved payslip is the working record for a client/month, not a revision.
-    // Older records remain addressable by ID for delivery/source references.
+    // Legacy month records retain their current-record contract. Explicit location
+    // imports are independent working batches, including within the same month.
     internal static IReadOnlyList<ExcelPayslipBatchSummary> CurrentMonths(IEnumerable<ExcelPayslipBatchSummary> rows) =>
-        rows.GroupBy(row => (row.ClientId, row.Month)).Select(group => group.First()).OrderByDescending(row => row.Month).ToArray();
+        rows.GroupBy(row => (row.ClientId, row.Month, Scope: row.LocationBatch ? row.Id : ""))
+            .Select(group => group.First()).OrderByDescending(row => row.Month).ToArray();
+
+    internal static string LocationBatchImportHash(ExcelPayslipBatch request)
+    {
+        var source = request.CalculationSource is null ? null : JsonSerializer.SerializeToNode(request.CalculationSource, JsonOptions);
+        // A retry can retain the same workbook under an equivalent attachment ID.
+        if (source?["workbookFiles"] is JsonArray files) foreach (var file in files.OfType<JsonObject>()) file.Remove("originalId");
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+            JsonSerializer.Serialize(new { request.Month, request.SourceFileName, request.SheetName, request.HeaderRow, request.SimpleLayout,
+                request.SalaryTemplateId, locationLabel = request.LocationLabel?.Trim(), request.ParentBatchId,
+                rows = request.Rows.Select(r => new { r.SourceRow, r.EmployeeCode, r.EmployeeName, r.Email, r.Information, r.Earnings,
+                    r.Deductions, r.EmployerContributions, r.NetPay, r.DeclaredGross, r.DeclaredDeductions }), source }, JsonOptions)))).ToLowerInvariant();
+    }
 
     internal static bool SameSavedContent(ExcelPayslipBatch batch,ExcelPayslipBatch existing)
     {
@@ -30,6 +43,7 @@ public sealed partial class ExcelPayslipRepository
         if (batch.Month != existing.Month) throw new InvalidOperationException("An update must keep the saved salary month.");
         batch.Id = existing.Id; batch.CreatedAtUtc = existing.CreatedAtUtc; batch.CreatedBy = existing.CreatedBy;
         batch.ParentBatchId = existing.ParentBatchId;
+        batch.LocationBatch = existing.LocationBatch; batch.LocationLabel = existing.LocationLabel; batch.LocationImportHash = existing.LocationImportHash;
         foreach (var row in batch.Rows)
         {
             if(string.IsNullOrWhiteSpace(row.EmployeeCode))
@@ -106,6 +120,15 @@ public sealed partial class ExcelPayslipRepository
 
     private async Task<ExcelPayslipBatch?> CurrentSaveTargetAsync(MySqlConnection db, MySqlTransaction tx, int clientId, ExcelPayslipBatch request)
     {
+        if (request.CreateLocationBatch)
+        {
+            if (!Guid.TryParseExact(request.Id, "N", out _) || string.IsNullOrWhiteSpace(request.LocationLabel) || request.LocationLabel.Length > 190)
+                throw new InvalidOperationException("Use a new location import ID and a location/payroll-unit batch label.");
+            var previous = await ReadBatchAsync(db, clientId, request.Id, tx);
+            if (previous is not null && (!previous.LocationBatch || previous.LocationImportHash != LocationBatchImportHash(request)))
+                throw new InvalidOperationException("This location import ID was already saved with different inputs. Open its saved batch or start a new import.");
+            return previous;
+        }
         if (!string.IsNullOrWhiteSpace(request.Id))
         {
             if (!Guid.TryParseExact(request.Id, "N", out _)) throw new InvalidOperationException("The saved payslip ID is invalid.");
@@ -116,7 +139,9 @@ public sealed partial class ExcelPayslipRepository
         }
         var id = await db.ExecuteScalarAsync<string?>(@"SELECT id FROM excel_payslip_batches
 WHERE client_id=@ClientId AND JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.month'))=@Month
-ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE",new {ClientId=clientId,request.Month},tx);
+AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.locationBatch')),'false')=@LocationBatch
+AND (@LocationBatch='false' OR JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.locationLabel'))=@LocationLabel)
+ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE",new {ClientId=clientId,request.Month,LocationBatch=request.LocationBatch?"true":"false",request.LocationLabel},tx);
         return id is null ? null : await ReadBatchAsync(db,clientId,id,tx);
     }
 
