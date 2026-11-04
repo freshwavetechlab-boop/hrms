@@ -162,13 +162,13 @@ public class ExcelPayslipSimplePdfTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void BrandingIsAlwaysIncludedWhileSignatureChoiceControlsSealAndUnsignedNotice(bool includeSeal)
+    public void BrandingAndUnsignedNoticeRemainEvenForLegacySealRequests(bool includeSeal)
     {
         var row = Sample();
         using var pdf = Read(new ExcelPayslipPdfService().Create(Batch(row), [row], includeSeal));
-        Assert.Equal(!includeSeal, Content(pdf.Pages[0]).Contains(UnsignedNotice));
+        Assert.Contains(UnsignedNotice, Content(pdf.Pages[0]));
         Assert.Contains("GA DIGITAL WEB WORD (P) LTD", Content(pdf.Pages[0]));
-        Assert.Equal(includeSeal ? 2 : 1, pdf.Pages[0].Elements.GetDictionary("/Resources")!.Elements.GetDictionary("/XObject")?.Elements.Count ?? 0);
+        Assert.Equal(1, pdf.Pages[0].Elements.GetDictionary("/Resources")!.Elements.GetDictionary("/XObject")?.Elements.Count ?? 0);
     }
 
     [Fact]

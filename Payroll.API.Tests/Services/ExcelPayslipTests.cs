@@ -298,7 +298,7 @@ public sealed class ExcelPayslipTests
         reordered.AmountDecimalPlaces = 2;
         Assert.NotEqual(ExcelPayslipRepository.SendFingerprint("batch", first), ExcelPayslipRepository.SendFingerprint("batch", reordered));
         reordered.AmountDecimalPlaces = first.AmountDecimalPlaces;
-        reordered.IncludeSeal = false;
+        reordered.IncludeSeal = !first.IncludeSeal;
         Assert.NotEqual(ExcelPayslipRepository.SendFingerprint("batch", first), ExcelPayslipRepository.SendFingerprint("batch", reordered));
         reordered.IncludeSeal = first.IncludeSeal; reordered.EmailOverrides["a"] = "another@example.test";
         Assert.NotEqual(ExcelPayslipRepository.SendFingerprint("batch", first), ExcelPayslipRepository.SendFingerprint("batch", reordered));

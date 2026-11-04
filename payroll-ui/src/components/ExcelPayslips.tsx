@@ -51,6 +51,7 @@ import './EmployeeResignation.css'
 import { PageHeaderPortal } from './layout/AppPageHeader'
 import './ExcelPayslips.css'
 import { currentPayslip, mergePayslipMasterDetails, payslipDesignation } from '../utils/excelPayslipPresentation'
+import { fillMissingPayslipLocations, workLocationColumns } from '../utils/excelPayslipLocation'
 
 type Action = { kind: 'preview' | 'download' | 'send'; rowIds: string[] }
 type MailTab = 'All' | 'Pending' | 'Queued' | 'Sent' | 'Attention' | 'Missing'
@@ -116,6 +117,7 @@ export default function ExcelPayslips() {
   const [historyOpen, setHistoryOpen] = useState(false), [importOpen, setImportOpen] = useState(false)
   const [editingBatchId, setEditingBatchId] = useState('')
   const [importLocationLabel, setImportLocationLabel] = useState('')
+  const [missingWorkLocation, setMissingWorkLocation] = useState('')
   const [batchLocationFilter, setBatchLocationFilter] = useSessionPreference(`excel-payslips:${session?.user.id}:${clientId}:location`, '')
   const newLocationImportId = useRef(crypto.randomUUID().replaceAll('-', ''))
   const [locationFileQueue, setLocationFileQueue] = useState<File[]>([])
@@ -139,7 +141,7 @@ export default function ExcelPayslips() {
   const [review, setReview] = useState<(ExcelPayslipRow & {previewIdentity?:PayslipIdentityMatch}) | null>(null)
   const [warningsOpen, setWarningsOpen] = useState(false)
   const [correction, setCorrection] = useState<{ sheet: PayslipSheet; columns: PayslipColumn[]; sourceRow: number; sourceRows?: number[]; clientId: number } | null>(null)
-  const [action, setAction] = useState<Action | null>(null), [acknowledgeWarnings, setAcknowledgeWarnings] = useState(false), [includeSeal, setIncludeSeal] = useState(false)
+  const [action, setAction] = useState<Action | null>(null), [acknowledgeWarnings, setAcknowledgeWarnings] = useState(false)
   const [amountDecimalPlaces, setAmountDecimalPlaces] = useState<0 | 2>(0)
   const [sendMode, setSendMode] = useState<'Individual' | 'Combined'>('Combined'), [combinedEmail, setCombinedEmail] = useState(''), [emailOverrides, setEmailOverrides] = useState<Record<string, string>>({})
   const [excludedRecipientIds, setExcludedRecipientIds] = useState<string[]>([]), [excludeMissingRecipients, setExcludeMissingRecipients] = useState(true)
@@ -214,8 +216,12 @@ export default function ExcelPayslips() {
     else setError('The batch was deleted, but saved-batch indicators could not refresh. Reload the client list to check the remaining batches.')
   }
   const sheet = sheets.find(item => item.name === sheetName)
+  useEffect(() => { setMissingWorkLocation('') }, [clientId, sheetName, editingBatchId, importOpen])
   const workbookTemplate = sheet?.template
-  const headers = useMemo(() => sheet ? payslipHeaders(sheet, headerRow) : [], [sheet, headerRow])
+  // Editing a source cell must not reload the profile and replace an operator's
+  // in-progress mappings when the actual worksheet headings are unchanged.
+  const headerValues = JSON.stringify(sheet ? payslipHeaders(sheet, headerRow) : [])
+  const headers = useMemo<string[]>(() => JSON.parse(headerValues), [headerValues])
   const imported = useMemo(() => sheet ? buildExcelPayslipRows({ ...sheet, ...(sheet.template ? { template: { ...sheet.template, month } } : {}) }, headerRow, columns, excludedRows) : { rows: [], issues: [], excludedRows: [], excludedDetails: [] }, [sheet, headerRow, columns, excludedRows, month])
   const dependencyReport = useMemo(() => {
     try { return sheet ? collectWorkbookDependencies(sheet, dependencyRootKey, dependencyBooks, dependencyMappings, columns, headerRow, imported.excludedRows) : null }
@@ -666,7 +672,7 @@ export default function ExcelPayslips() {
     const initialEmailMode = nextEmailMode ?? (hasCoordinatorCopy ? 'Individual' : 'Combined')
     setNextEmailMode(null); setActionMailJob(null)
     setExcludedRecipientIds([]); setExcludeMissingRecipients(true)
-    setAction({ kind, rowIds }); setAcknowledgeWarnings(false); setIncludeSeal(false); setAmountDecimalPlaces(0); setSendMode(initialEmailMode); setRequestMissingEmails(false); setAttachRequestPayslips(false); pendingEmailRequest.current = null; setCombinedEmail(''); setEmailOverrides({}); setActionError(''); setPdfUrl(''); setDelivery([]); setSendProgress(''); setPendingSendIds([]); pendingJobRequest.current = null
+    setAction({ kind, rowIds }); setAcknowledgeWarnings(false); setAmountDecimalPlaces(0); setSendMode(initialEmailMode); setRequestMissingEmails(false); setAttachRequestPayslips(false); pendingEmailRequest.current = null; setCombinedEmail(''); setEmailOverrides({}); setActionError(''); setPdfUrl(''); setDelivery([]); setSendProgress(''); setPendingSendIds([]); pendingJobRequest.current = null
   }
   const downloadBlob = (blob: Blob) => {
     const url = URL.createObjectURL(blob), anchor = document.createElement('a')
@@ -676,7 +682,7 @@ export default function ExcelPayslips() {
     if (!batch || !action || needsAck || inFlight.current || !actionRows.length) return
     inFlight.current = true; setBusy(true); setActionError('')
     try {
-      const result = await getExcelPayslipPdf(clientId, batch.id, { rowIds: action.rowIds, includeSeal, acknowledgeWarnings, amountDecimalPlaces })
+      const result = await getExcelPayslipPdf(clientId, batch.id, { rowIds: action.rowIds, includeSeal: false, acknowledgeWarnings, amountDecimalPlaces })
       if (!result.ok || !result.data) return setActionError(result.error || 'Unable to create PDF.')
       if (action.kind === 'download') downloadBlob(result.data)
       setPdfUrl(URL.createObjectURL(result.data))
@@ -688,7 +694,7 @@ export default function ExcelPayslips() {
       if (attachRequestPayslips && needsAck) return setActionError('Review and acknowledge the payslip warnings before attaching salary PDFs.')
       if (!emailValid(combinedEmail.trim())) return setActionError('Enter a valid recipient email for the request.')
       const request = pendingEmailRequest.current || { requestId: crypto.randomUUID(), rowIds: emailRequestRows.map(row => row.id), email: combinedEmail.trim(),
-        attachPayslips: attachRequestPayslips, includeSeal, amountDecimalPlaces, acknowledgeWarnings }
+        attachPayslips: attachRequestPayslips, includeSeal: false, amountDecimalPlaces, acknowledgeWarnings }
       pendingEmailRequest.current = request
       const requestScope = scope.current
       inFlight.current = true; setBusy(true); setActionError('')
@@ -709,7 +715,7 @@ export default function ExcelPayslips() {
     const eligibleIds = selectedMailRows.map(row => row.id).filter(id => !handledIds.has(id) && canEmailRow(id, sendMode, combinedEmail))
     if (!eligibleIds.length && !pendingJobRequest.current) return setActionError('No unsent payslips remain in this selection. Refresh email status to check delivery progress.')
     const request = pendingJobRequest.current || {
-      rowIds: eligibleIds, includeSeal, acknowledgeWarnings, amountDecimalPlaces, mode: sendMode, email: combinedEmail.trim(),
+      rowIds: eligibleIds, includeSeal: false, acknowledgeWarnings, amountDecimalPlaces, mode: sendMode, email: combinedEmail.trim(),
       emailOverrides: Object.fromEntries(Object.entries(emailOverrides).filter(([id]) => eligibleIds.includes(id)).map(([id, value]) => [id, value.trim()])),
       requestId: crypto.randomUUID(),
     }
@@ -853,6 +859,16 @@ export default function ExcelPayslips() {
         {sheet && <><Descriptions size="small" column={{ xs: 1, sm: 2, lg: 4 }} className="excel-payslip-import-destinations" aria-label="Excel data destinations"><Descriptions.Item label="Payslips">Saved amounts → PDF download</Descriptions.Item><Descriptions.Item label="Salary setup">Monthly inputs + formulas → components and templates</Descriptions.Item><Descriptions.Item label="Attendance">Reviewed days → this employee and salary month</Descriptions.Item><Descriptions.Item label="Employee Master">Employee details → matched or reviewed new records</Descriptions.Item></Descriptions><div className="excel-payslip-form-grid"><Form.Item label="Worksheet"><Select aria-label="Payslip worksheet" disabled={!!editingBatchId} value={sheetName} options={sheets.map(item => ({ value: item.name, label: item.name }))} onChange={value => { const next = sheets.find(item => item.name === value)!; setSheetName(value); setMonth(next.template?.month || inferPayslipMonth(next)); setSimpleLayout(next.template?.simpleLayout === true) }} /></Form.Item><Form.Item label="Header row"><InputNumber aria-label="Payslip header row" disabled={!!editingBatchId} min={1} max={100000} value={headerRow} onChange={value => setHeaderRow(value || 1)} /></Form.Item><Form.Item label="Salary month" required><Input aria-label="Payslip salary month" disabled={!!editingBatchId} type="month" value={month} onChange={event => setMonth(event.target.value)} /></Form.Item></div>
           {dependencyReport && <ExcelWorkbookDependencies books={dependencyBooks} mappings={dependencyMappings} report={dependencyReport} disabled={busy || mappingBusy} reviewedKey={reviewedCaptureKey} referenceOnly={referenceOnly} onFiles={files => void supplyDependencyFiles(files)} onMappings={value => { setDependencyMappings(value); setReviewedCaptureKey(''); setReferenceOnly(false) }} onReview={setReviewedCaptureKey} onReferenceOnly={setReferenceOnly} />}
           <details className="excel-payslip-import-options"><summary>More import options{template && <Tag color="blue">Existing template: {template.name}</Tag>}</summary>
+            <Form.Item label="Fill missing work location (optional)" extra="Enter the confirmed location for this file. Fills only literal blanks on included employee rows; existing locations, salary amounts and Employee Master stay unchanged. Review and save this batch to keep the change.">
+              <Space.Compact block><Input aria-label="Missing payslip work location" maxLength={190} value={missingWorkLocation} onChange={event => setMissingWorkLocation(event.target.value)} placeholder="Confirmed work location" /><Button disabled={!canManage || busy || mappingBusy || !missingWorkLocation.trim() || workLocationColumns(columns).length !== 1} onClick={() => {
+                try {
+                  const result = fillMissingPayslipLocations(sheet, columns, imported.rows.map(row => row.sourceRow), missingWorkLocation)
+                  setSheets(current => current.map(item => item === sheet ? result.sheet : item))
+                  setMappingNotice(`${result.changed} blank work locations filled in this preview. Review and ${editingBatchId ? 'update the selected batch' : 'save the location batch'} to keep them.`)
+                } catch (failure) { setImportError(failure instanceof Error ? failure.message : 'Unable to fill work locations.') }
+              }}>Fill blank locations</Button></Space.Compact>
+              {workLocationColumns(columns).length !== 1 && <span className="excel-payslip-muted">Map one Work Location column as Information to use this option.</span>}
+            </Form.Item>
             <Form.Item label="Existing salary template (optional)" extra="Keep Use uploaded Excel for this import. An existing template only helps match columns to existing components; selecting it does not assign a template to employees."><Select aria-label="Payslip salary template" loading={templatesLoading} disabled={!templatesReady || suggesting} value={templateId || ''} options={[{ value: '', label: 'Use uploaded Excel (recommended)' }, ...templates.map(item => ({ value: String(item.id), label: item.name }))]} onChange={value => { setTemplateId(value); setColumns(current => current.map(column => ({ ...column, componentId: undefined }))) }} /></Form.Item>
             <Form.Item extra="Changes the downloaded PDF layout only; salary calculations stay the same."><Checkbox checked={importOptions.simpleLayout} onChange={event => setSimpleLayout(current => ({ ...(typeof current === 'boolean' ? { simpleLayout: current } : current), simpleLayout: event.target.checked }))}>Compact payslip PDF</Checkbox></Form.Item>
           </details>
@@ -900,7 +916,7 @@ export default function ExcelPayslips() {
     {correction?.clientId === clientId && !correction.sourceRows && <ExcelPayslipAmountEditor key={`${clientId}:${editingBatchId}:${correction.sourceRow}`} sheet={correction.sheet} columns={correction.columns} sourceRow={correction.sourceRow} busy={busy} ready={templatesReady && !mappingBusy} error={importError} onClose={() => setCorrection(null)} onSave={(edits, calculated) => { void saveCorrection(edits, calculated) }} />}
 
     <Drawer title={action?.kind === 'send' ? 'Email imported payslips' : 'Payslip PDF'} open={!!action} width="min(960px, 98vw)" onClose={() => { if (!busy) { setAction(null); setPdfUrl('') } }} closable={!busy} maskClosable={!busy} className="excel-payslip-action" footer={<Space wrap className="excel-payslip-footer"><Button disabled={busy} onClick={() => { setAction(null); setPdfUrl('') }}>Close</Button>{pdfUrl && <><Button onClick={() => iframe.current?.contentWindow?.print()}>Print PDF</Button><Button href={pdfUrl} download={`payslips-${batch?.month}.pdf`}>Download PDF</Button></>}{action?.kind === 'send' ? <Button type="primary" loading={busy} disabled={!canManage || sendMode === 'Combined' && !emailValid(combinedEmail.trim()) || (requestingEmailIds ? !emailRequestRows.length || needsAck : needsAck) || (!pendingSendIds.length && !selectedMailRows.some(row => canEmailRow(row.id, sendMode, combinedEmail) && !delivery.some(item => item.rowId === row.id && item.status !== 'Error')))} onClick={() => void send()}>{sendProgress || (requestingEmailIds ? attachRequestPayslips ? 'Request IDs & send combined PDF' : 'Request email IDs' : pendingSendIds.length ? 'Retry / check email request' : delivery.length ? 'Send remaining emails' : 'Send email')}</Button> : <Button type="primary" loading={busy} disabled={needsAck || !actionRows.length} onClick={() => void createPdf()}>{action?.kind === 'download' ? 'Generate & download PDF' : 'Generate preview'}</Button>}</Space>}>
-      <Space wrap><Tag>{actionRows.length} payslips</Tag><Tag>{batch?.month}</Tag><Checkbox checked={includeSeal} disabled={busy || pendingSendIds.length > 0 || !!pendingEmailRequest.current} onChange={event => { setIncludeSeal(event.target.checked); setPdfUrl('') }}>Include company seal</Checkbox></Space>
+      <Space wrap><Tag>{actionRows.length} payslips</Tag><Tag>{batch?.month}</Tag></Space>
       <Form.Item label="Amount display" style={{ marginTop: 16 }}><Select aria-label="Payslip amount display" value={amountDecimalPlaces} disabled={busy || pendingSendIds.length > 0 || !!pendingEmailRequest.current} options={[{ value: 0, label: 'Whole rupees' }, { value: 2, label: '2 decimal places' }]} onChange={value => { setAmountDecimalPlaces(value); setPdfUrl('') }} style={{ width: 210 }} /></Form.Item>
       {actionError && <Alert type="error" showIcon message={actionError} />}
       {action?.kind === 'send' && currentActionMailJob && <ExcelPayslipMailProgress jobs={[currentActionMailJob]} selectedId={currentActionMailJob.id} onSelect={chooseMailJob} loading={mailJobs.loading} error={mailJobs.error} onRefresh={mailJobs.refresh} />}

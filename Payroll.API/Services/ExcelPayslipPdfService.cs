@@ -16,8 +16,6 @@ public sealed partial class ExcelPayslipPdfService
     private static readonly XBrush Pink = new XSolidBrush(XColor.FromArgb(249, 225, 228));
     private static readonly XBrush Pale = new XSolidBrush(XColor.FromArgb(248, 248, 248));
     private static readonly XPen Border = new(XColor.FromArgb(125, 125, 125), .5);
-    public static string SealPath(string? runtimeDirectory = null) => Path.Combine(runtimeDirectory ?? AppContext.BaseDirectory,
-        "PrivateAssets", "ExcelPayslips", "PLRS", "GADSignatureSeal.png");
 
     public void ValidateLayout(ExcelPayslipBatch batch, IReadOnlyList<ExcelPayslipRow> rows)
     {
@@ -33,7 +31,7 @@ public sealed partial class ExcelPayslipPdfService
             else MakePlan(measure, batch, row);
     }
 
-    public byte[] Create(ExcelPayslipBatch batch, IReadOnlyList<ExcelPayslipRow> rows, bool includeSeal = true, int amountDecimalPlaces = 0,
+    public byte[] Create(ExcelPayslipBatch batch, IReadOnlyList<ExcelPayslipRow> rows, bool includeSeal = false, int amountDecimalPlaces = 0,
         ExcelPayslipCalculationSource? calculationSource = null)
     {
         ArgumentNullException.ThrowIfNull(batch);
@@ -45,8 +43,7 @@ public sealed partial class ExcelPayslipPdfService
         EnsureFonts();
         using var logoStream = new MemoryStream(Resource("PrivateAssets.ExcelPayslips.GADLogo.png"));
         using var logo = XImage.FromStream(logoStream);
-        using var sealStream = includeSeal ? OpenSeal() : null;
-        using var seal = sealStream is null ? null : XImage.FromStream(sealStream);
+        // Retain the legacy argument for existing callers and queued receipts; payslips are always unsigned.
         using var document = new PdfDocument();
         document.Info.Title = $"Salary slips - {MonthLabel(batch.Month)}";
         document.Info.Author = "GA DIGITAL WEB WORD (P) LTD";
@@ -55,19 +52,12 @@ public sealed partial class ExcelPayslipPdfService
             var page = document.AddPage();
             page.Size = PdfSharp.PageSize.A4;
             using var gfx = XGraphics.FromPdfPage(page);
-            if (batch.SimpleLayout) DrawSimplePage(gfx, batch, row, logo, seal, amountDecimalPlaces, calculationSource);
-            else DrawPage(gfx, batch, row, logo, seal, amountDecimalPlaces);
+            if (batch.SimpleLayout) DrawSimplePage(gfx, batch, row, logo, amountDecimalPlaces, calculationSource);
+            else DrawPage(gfx, batch, row, logo, amountDecimalPlaces);
         }
         using var output = new MemoryStream();
         document.Save(output, false);
         return output.ToArray();
-    }
-
-    private static MemoryStream OpenSeal()
-    {
-        var path = SealPath();
-        if (!File.Exists(path)) throw new InvalidOperationException("The supplied Excel payslip signature and seal is missing from this deployment.");
-        return new MemoryStream(File.ReadAllBytes(path));
     }
 
     private static void EnsureFonts()
@@ -180,7 +170,7 @@ public sealed partial class ExcelPayslipPdfService
         Text(gfx, "NO.1, HARGOBIND ENCLAVE, VIKAS MARG EXTN., DELHI-110092", Font(8), Left + 84, Top + 39, Width - 96, 20, centered: true);
     }
 
-    private static void DrawPage(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, XImage logo, XImage? seal, int amountDecimalPlaces)
+    private static void DrawPage(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, XImage logo, int amountDecimalPlaces)
     {
         var plan = MakePlan(gfx, batch, row, amountDecimalPlaces);
         var normal = Font(plan.Size); var bold = Font(plan.Size, true);
@@ -236,15 +226,8 @@ public sealed partial class ExcelPayslipPdfService
                 employerY += plan.EmployerHeights[i];
             }
         }
-        var signatureX = Left + Width / 2 + 34;
-        if (seal is not null)
-        {
-            Image(gfx, seal, signatureX, y, Width / 2 - 68, 123);
-            Text(gfx, "Employer Signature", normal, signatureX, y + 126, Width / 2 - 68, 17, centered: true);
-        }
-        else
-            gfx.DrawString("This is a system-generated payslip and does not require a signature.", Font(8), XBrushes.Gray,
-                new XRect(Left, Bottom + 8, Width, 18), XStringFormats.TopCenter);
+        gfx.DrawString("This is a system-generated payslip and does not require a signature.", Font(8), XBrushes.Gray,
+            new XRect(Left, Bottom + 8, Width, 18), XStringFormats.TopCenter);
 
         void MoneyHeader(string label, double x, double top)
         {

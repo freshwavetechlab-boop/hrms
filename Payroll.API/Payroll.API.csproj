@@ -29,7 +29,6 @@
     <!-- Private runtime signing asset, explicitly supplied for API deployment. Never wwwroot/UI. -->
     <Content Include="PrivateAssets\OfferSigning\GadAuthrizedSignAndSeal.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <EmbeddedResource Include="PrivateAssets\ExcelPayslips\GADLogo.png" />
-    <Content Include="PrivateAssets\ExcelPayslips\PLRS\GADSignatureSeal.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <PropertyGroup>

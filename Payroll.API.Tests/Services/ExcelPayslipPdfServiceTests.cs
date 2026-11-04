@@ -10,6 +10,14 @@ namespace Payroll.API.Tests.Services;
 
 public class ExcelPayslipPdfServiceTests
 {
+    [Fact]
+    public void NewPdfAndSendSelectionsDefaultToUnsigned()
+    {
+        Assert.False(new ExcelPayslipSelection().IncludeSeal);
+        Assert.False(new SendExcelPayslipsRequest().IncludeSeal);
+        Assert.False(new ExcelPayslipEmailRequest().IncludeSeal);
+    }
+
     private static ExcelPayslipRow Sample(string name = "Sample Employee") => new()
     {
         Id = "source-row-6", SourceRow = 6, EmployeeName = name, EmployeeCode = "SOURCE-001",
@@ -50,10 +58,10 @@ public class ExcelPayslipPdfServiceTests
             Assert.InRange(page.Width.Point, 595, 596); Assert.InRange(page.Height.Point, 841, 843);
             var resources = page.Elements.GetDictionary("/Resources")!;
             Assert.NotNull(resources.Elements.GetDictionary("/Font"));
-            Assert.Equal(2, resources.Elements.GetDictionary("/XObject")!.Elements.Count);
+            Assert.Single(resources.Elements.GetDictionary("/XObject")!.Elements);
             Assert.True(page.Contents.Elements.Count > 0);
         }
-        // Shared image objects prevent hundreds of copies of the same signature/logo.
+        // The branding logo is shared without adding signature or stamp images.
         Assert.Equal(ImageIds(document.Pages[0]), ImageIds(document.Pages[1]));
     }
 
@@ -69,14 +77,14 @@ public class ExcelPayslipPdfServiceTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void UnsignedNoticeReplacesSignatureOnlyWhenSealIsExcluded(bool includeSeal)
+    public void LegacySealFlagCannotRenderRetiredStampOrSignature(bool includeSeal)
     {
         var row = Sample();
         using var pdf = PdfReader.Open(new MemoryStream(new ExcelPayslipPdfService().Create(Batch(row), [row], includeSeal)), PdfDocumentOpenMode.Import);
         var content = Encoding.Latin1.GetString(pdf.Pages[0].Contents.CreateSingleContent().Stream.UnfilteredValue);
-        Assert.Equal(!includeSeal, content.Contains("This is a system-generated payslip and does not require a signature."));
-        Assert.Equal(includeSeal, content.Contains("Employer Signature"));
-        Assert.Equal(includeSeal ? 2 : 1, ImageIds(pdf.Pages[0]).Length);
+        Assert.Contains("This is a system-generated payslip and does not require a signature.", content);
+        Assert.DoesNotContain("Employer Signature", content);
+        Assert.Single(ImageIds(pdf.Pages[0]));
     }
 
     [Fact]

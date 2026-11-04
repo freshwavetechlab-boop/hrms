@@ -146,7 +146,7 @@ public sealed partial class ExcelPayslipPdfService
         throw new InvalidOperationException($"Excel row {row.SourceRow} has too much text to fit legibly on one simple salary slip. Shorten visible labels or reduce mapped components.");
     }
 
-    private static void DrawSimplePage(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, XImage logo, XImage? seal, int decimals,
+    private static void DrawSimplePage(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, XImage logo, int decimals,
         ExcelPayslipCalculationSource? calculationSource)
     {
         var plan = MakeSimplePlan(gfx, batch, row, decimals, calculationSource);
@@ -200,12 +200,11 @@ public sealed partial class ExcelPayslipPdfService
             y += plan.EmployerHeights[index];
         }
         EmployerCells(new("Total Employer Contributions", Amount(plan.EmployerTotal, decimals)), plan.EmployerTotalHeight, Pink);
-        if (seal is not null) Image(gfx, seal, Left + EmployerWidth + 12, footerY + 8, Width - EmployerWidth - 24, plan.FooterHeight - 16);
         y = footerY + plan.FooterHeight;
         Box(Left, Width, plan.FooterNoteHeight, "", fill: Pale);
         Text(gfx, EmployerNote, Font(8), Left + 7, y + 6, Width - 14, plan.FooterNoteHeight - 12);
         y += plan.FooterNoteHeight;
-        if (seal is null) gfx.DrawString("This is a system-generated payslip and does not require a signature.", Font(8), XBrushes.Gray,
+        gfx.DrawString("This is a system-generated payslip and does not require a signature.", Font(8), XBrushes.Gray,
             new XRect(Left, y + 8, Width, 18), XStringFormats.TopCenter);
 
         void EmployerCells(SimpleField field, double height, XBrush? fill = null)

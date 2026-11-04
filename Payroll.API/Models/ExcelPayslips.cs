@@ -168,7 +168,8 @@ public sealed class ExcelPayslipBatchSummary
 public class ExcelPayslipSelection
 {
     public List<string> RowIds { get; set; } = [];
-    public bool IncludeSeal { get; set; } = true;
+    // Legacy option retained for request/receipt compatibility. Rendering is always unsigned.
+    public bool IncludeSeal { get; set; }
     public int AmountDecimalPlaces { get; set; }
     public bool AcknowledgeWarnings { get; set; }
 }
