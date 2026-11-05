@@ -1,11 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
-import { Alert, Button, Drawer, Form, Input, InputNumber, Select, Space, Tag } from 'antd'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Alert, Button, Drawer, Form, Input, InputNumber, Select, Space, Switch, Tag } from 'antd'
 import { DownloadOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons'
-import DataTable from './DataTable'
+import DataTable, { type Column } from './DataTable'
 import FileDropZone from './FileDropZone'
 import { PageHeaderPortal } from './layout/AppPageHeader'
-import { downloadRosterDrafts, editDocumentRoster, getDocumentRoster, getDocumentTemplates, uploadDocumentRoster, type DocumentRosterRow, type DocumentTemplate, type RosterImportResult, type RosterImportSettings, type RosterPreview, type RosterSheet } from '../services/recruitmentDocumentService'
+import { downloadRosterDrafts, editDocumentRoster, getDocumentRoster, getDocumentTemplates, getRosterSigningAsset, getRosterWorkLocations, linkRosterWorkLocation, releaseRosterLetters, removeRosterSigningAsset, uploadDocumentRoster, uploadRosterSigningAsset, type DocumentRosterRow, type DocumentTemplate, type RosterImportResult, type RosterImportSettings, type RosterPreview, type RosterSheet, type RosterSigningAsset } from '../services/recruitmentDocumentService'
 import { suggestRosterMapping } from '../utils/recruitmentDocumentLayout'
+import { filterRosterRows, rosterLocationName, rosterMasterLocationField, rosterPermissions, rosterReleaseReady, selectedRosterRows, signingAssetFileError } from '../utils/recruitmentRosterOperations'
+import { useAuthSession } from './AuthGate'
+import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
+import type { WorkLocation } from '../types/payroll'
 import './RecruitmentDocumentRoster.css'
 
 export default function RecruitmentDocumentRosterLauncher({ clientId, onChanged }: { clientId: number; onChanged: () => Promise<void> }) {
@@ -16,25 +20,69 @@ export default function RecruitmentDocumentRosterLauncher({ clientId, onChanged 
     return () => { active = false }
   }, [clientId])
   if (!clientId || !templates.length) return null
-  return <><PageHeaderPortal slot="recruitment-page-controls"><Button icon={<UploadOutlined />} onClick={() => setOpen(true)}>Employee lists &amp; draft letters</Button></PageHeaderPortal>
+  return <><PageHeaderPortal slot="recruitment-page-controls"><Button icon={<UploadOutlined />} onClick={() => setOpen(true)}>Employee lists &amp; offer letters</Button></PageHeaderPortal>
     {open && <RecruitmentDocumentRoster key={clientId} clientId={clientId} templates={templates} onClose={() => setOpen(false)} onChanged={onChanged} />}</>
 }
 
 function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: { clientId: number; templates: DocumentTemplate[]; onClose: () => void; onChanged: () => Promise<void> }) {
+  const session = useAuthSession()
+  const { canManageOffers, canImport, canRelease } = rosterPermissions(session?.user.permissions || [])
+  const preferenceScope = `recruitment.document-roster:${session?.user.id}:${clientId}`
   const [rows, setRows] = useState<DocumentRosterRow[]>([]), [loading, setLoading] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('')
-  const [group, setGroup] = useState(''), [selected, setSelected] = useState<number[]>([]), [importOpen, setImportOpen] = useState(false)
+  const [group, setGroup] = useSessionPreference(`${preferenceScope}:group`, ''), [workLocationFilter, setWorkLocationFilter] = useSessionPreference(`${preferenceScope}:work-location`, 0)
+  const [search, setSearch] = useSessionPreference(`${preferenceScope}:search`, '')
+  const [selected, setSelected] = useSessionPreference<number[]>(`${preferenceScope}:selection`, []), [importOpen, setImportOpen] = useState(false)
+  const [locations, setLocations] = useState<WorkLocation[]>([]), [locationError, setLocationError] = useState('')
+  const [linkOpen, setLinkOpen] = useState(false), [linkLocationId, setLinkLocationId] = useState<number | undefined>()
+  const [releaseIds, setReleaseIds] = useState<number[] | null>(null)
   const [edit, setEdit] = useState<DocumentRosterRow | null>(null), [editValues, setEditValues] = useState<Record<string, string>>({})
   const alive = useRef(true)
   useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
   const load = async () => {
     setLoading(true)
-    try { const r = await getDocumentRoster(clientId); if (!alive.current) return; if (!r.ok) setError(r.error || 'Unable to load employee lists.'); else { setRows(r.data); setSelected(current => current.filter(id => r.data.some(row => row.id === id && !row.documentIssues.length))) } }
+    try {
+      const [r, locationResult] = await Promise.all([getDocumentRoster(clientId), getRosterWorkLocations(clientId)])
+      if (!alive.current) return
+      if (!r.ok) setError(r.error || 'Unable to load employee lists.')
+      else { setRows(r.data); setSelected(current => current.filter(id => r.data.some(row => row.id === id))) }
+      if (locationResult.ok) { setLocations(locationResult.data); setLocationError('') }
+      else { setLocations([]); setLocationError(locationResult.error || 'Unable to load permitted work locations.') }
+    }
+    catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to load employee lists.') }
     finally { if (alive.current) setLoading(false) }
   }
   useEffect(() => { void load() }, [clientId]) // scope is remounted when the selected client changes
-  const visible = rows.filter(row => !group || row.sourceGroup === group)
+  const baseVisible = useMemo(() => filterRosterRows(rows, group, workLocationFilter).filter(row => !search.trim() || [row.sourceGroup, row.candidateCode, row.candidateName, rosterLocationName(row, locations), ...Object.values(row.values)].join(' ').toLowerCase().includes(search.trim().toLowerCase())), [rows, group, workLocationFilter, search, locations])
+  const [tableView, setTableView] = useState<{ source: DocumentRosterRow[]; ids: number[] } | null>(null)
+  const onVisibleRowsChange = useCallback((filtered: DocumentRosterRow[]) => {
+    const ids = filtered.map(row => row.id)
+    setTableView(current => current?.source === baseVisible && current.ids.length === ids.length && current.ids.every((id, index) => id === ids[index]) ? current : { source: baseVisible, ids })
+  }, [baseVisible])
+  const visible = useMemo(() => {
+    if (tableView?.source !== baseVisible) return []
+    const byId = new Map(baseVisible.map(row => [row.id, row]))
+    return tableView.ids.flatMap(id => { const row = byId.get(id); return row ? [row] : [] })
+  }, [baseVisible, tableView])
   const ready = visible.filter(row => !row.documentIssues.length)
-  const selectedReady = selected.filter(id => ready.some(r => r.id === id))
+  const selectedRows = selectedRosterRows(visible, selected)
+  const selectedReady = selectedRosterRows(visible, selected, true).map(row => row.id)
+  const selectedReleaseReady = selectedRows.filter(rosterReleaseReady).map(row => row.id)
+  const rosterColumns = useMemo<Column<DocumentRosterRow>[]>(() => [
+    { key: 'sourceGroup', label: 'Source group', width: 210 }, { key: 'candidateCode', label: 'Profile code', width: 130 }, { key: 'candidateName', label: 'Employee', width: 220 }, { key: 'workLocation', label: 'Work location / institute', value: row => rosterLocationName(row, locations), width: 240 },
+    { key: 'designation', label: 'Designation', value: row => row.values.positionTitle || 'Not supplied', width: 220 }, { key: 'joiningDate', label: 'Date of joining', value: row => row.values.joiningDate || 'Not supplied' }, { key: 'tenure', label: 'Contract end', value: row => row.values.contractEndDate || 'Not supplied' },
+    { key: 'basic', label: 'Monthly basic', value: row => row.values.monthlyBasic || '' }, { key: 'gross', label: 'Monthly gross', value: row => row.values.monthlyGross || '' }, { key: 'readiness', label: 'Draft readiness', value: row => row.documentIssues.length ? row.documentIssues.join('; ') : 'Ready for draft', width: 250 },
+    { key: 'released', label: 'Released offer', width: 180, value: row => row.releasedAt ? row.offerNumber || 'Released' : 'Not released' },
+  ], [locations])
+  const linkLocation = async () => {
+    if (!canManageOffers || !linkLocationId || busy || !selectedRows.length) return
+    setBusy(true); setError('')
+    try {
+      const r = await linkRosterWorkLocation(clientId, selectedRows, linkLocationId)
+      if (!r.ok) throw new Error(r.error || 'Unable to link work location.')
+      setLinkOpen(false); await load(); await onChanged(); setNotice(`${selectedRows.length} profiles linked to ${locations.find(location => location.id === linkLocationId)?.name || 'the selected work location'}.`)
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to link work location.') }
+    finally { if (alive.current) setBusy(false) }
+  }
   const generate = async (ids: number[]) => {
     if (busy || !ids.length) return
     setBusy(true); setError('')
@@ -49,28 +97,91 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
     catch (e) { setError(e instanceof Error ? e.message : 'Unable to save document details.') }
     finally { if (alive.current) setBusy(false) }
   }
-  return <><Drawer open title="Employee lists & draft letters" className="recruitment-document-roster" width="min(1380px, 98vw)" onClose={() => { if (!busy) onClose() }} closable={!busy} maskClosable={!busy} footer={<Button disabled={busy} onClick={onClose}>Close</Button>}>
+  return <><Drawer open title="Employee lists & offer letters" className="recruitment-document-roster" width="min(1380px, 98vw)" onClose={() => { if (!busy && !releaseIds) onClose() }} closable={!busy && !releaseIds} maskClosable={!busy && !releaseIds} footer={<Button disabled={busy || !!releaseIds} onClick={onClose}>Close</Button>}>
     <div className="document-roster-toolbar"><Space wrap><Select aria-label="Employee list group" style={{ minWidth: 220, maxWidth: 360 }} value={group} options={[{ value: '', label: 'All source groups' }, ...[...new Set(rows.map(r => r.sourceGroup))].map(value => ({ value, label: value }))]} onChange={setGroup} />
+      <Select aria-label="Roster work location filter" showSearch optionFilterProp="label" className="document-roster-location-select" value={workLocationFilter} options={[{ value: 0, label: 'All permitted work locations' }, { value: -1, label: 'Not linked to a work location' }, ...locations.map(location => ({ value: location.id, label: location.name }))]} onChange={setWorkLocationFilter} />
+      <Input.Search aria-label="Search employee list" placeholder="Search employee list" allowClear value={search} onChange={event => setSearch(event.target.value)} className="document-roster-search" />
       <Tag>{visible.length} profiles</Tag><Tag color="green">{ready.length} draft ready</Tag><Tag color="orange">{visible.length - ready.length} need details</Tag></Space>
-      <Space wrap><Button icon={<ReloadOutlined />} disabled={busy} onClick={() => void load()}>Refresh</Button><Button type="primary" icon={<UploadOutlined />} disabled={busy} onClick={() => setImportOpen(true)}>Import employee list</Button><Button disabled={busy || !ready.length} onClick={() => setSelected(ready.slice(0, 200).map(row => row.id))}>Select ready ({ready.length > 200 ? 'first 200' : ready.length})</Button><Button disabled={busy || !selected.length} onClick={() => setSelected([])}>Clear selection</Button><Button icon={<DownloadOutlined />} disabled={busy || !selectedReady.length} loading={busy && !edit} onClick={() => void generate(selectedReady)}>Download selected drafts ({selectedReady.length})</Button></Space></div>
-    <Alert type="info" showIcon message="Existing manpower and unsigned offer drafts" description="Source salary, project, tenure and posting details stay with the imported profiles. Missing document details remain pending. Draft generation does not approve, sign, email or mark an employee joined." />
+      <Space wrap><Button icon={<ReloadOutlined />} disabled={busy} onClick={() => void load()}>Refresh</Button>{canImport && <Button type="primary" icon={<UploadOutlined />} disabled={busy} onClick={() => setImportOpen(true)}>Import employee list</Button>}<Button disabled={busy || !visible.length} onClick={() => setSelected(visible.slice(0, 200).map(row => row.id))}>Select all ({visible.length > 200 ? 'first 200' : visible.length})</Button><Button disabled={busy || !ready.length} onClick={() => setSelected(ready.slice(0, 200).map(row => row.id))}>Select ready ({ready.length > 200 ? 'first 200' : ready.length})</Button><Button disabled={busy || !selected.length} onClick={() => setSelected([])}>Clear selection</Button>
+        {canManageOffers && <Button disabled={busy || !selectedRows.length || !locations.length} onClick={() => { setLinkLocationId(undefined); setLinkOpen(true) }}>Set work location ({selectedRows.length})</Button>}
+        {canManageOffers && <Button disabled={busy} onClick={() => setReleaseIds([])}>Signature &amp; stamp</Button>}
+        <Button icon={<DownloadOutlined />} disabled={busy || !selectedReady.length} loading={busy && !edit && !linkOpen} onClick={() => void generate(selectedReady)}>Download selected drafts ({selectedReady.length})</Button>
+        {canRelease && <Button type="primary" disabled={busy || !selectedReleaseReady.length} onClick={() => setReleaseIds(selectedReleaseReady)}>Release selected ({selectedReleaseReady.length})</Button>}
+      </Space></div>
+    <Alert type="info" showIcon message="Review details, then download drafts or release letters" description="Draft PDFs are unsigned. Release letters together with an optional signature and stamp. Missing details remain pending." />
+    {locationError && <Alert type="warning" showIcon message={locationError} />}
+    {canRelease && selectedRows.some(row => !row.workLocationId) && <Alert type="warning" showIcon message="Link a work location before releasing the selected unlinked profiles." />}
     {error && <Alert closable type="error" showIcon message={error} onClose={() => setError('')} />}{notice && <Alert closable type="success" showIcon message={notice} onClose={() => setNotice('')} />}
-    <div className="document-roster-table"><DataTable fillHeight rows={visible} loading={loading} getRowId={row => row.id} title="Employee list" exportFileName="employee-list-draft-letters" emptyText="No employee lists imported for this client." rowSelection={{ selectedRowKeys: selectedReady, onChange: keys => setSelected(keys.map(Number)), getCheckboxProps: row => ({ disabled: busy || row.documentIssues.length > 0 }) }} columns={[
-      { key: 'sourceGroup', label: 'Source group', width: 210 }, { key: 'candidateCode', label: 'Profile code', width: 130 }, { key: 'candidateName', label: 'Employee', width: 220 }, { key: 'workLocation', label: 'Work location', value: row => row.workLocation || 'Not supplied', width: 210 },
-      { key: 'designation', label: 'Designation', value: row => row.values.positionTitle || 'Not supplied', width: 220 }, { key: 'joiningDate', label: 'Date of joining', value: row => row.values.joiningDate || 'Not supplied' }, { key: 'tenure', label: 'Contract end', value: row => row.values.contractEndDate || 'Not supplied' },
-      { key: 'basic', label: 'Monthly basic', value: row => row.values.monthlyBasic || '' }, { key: 'gross', label: 'Monthly gross', value: row => row.values.monthlyGross || '' }, { key: 'readiness', label: 'Draft readiness', value: row => row.documentIssues.length ? row.documentIssues.join('; ') : 'Ready for draft', width: 250 },
-    ]} actionsWidth={190} actions={row => <Space><Button size="small" disabled={busy} onClick={() => { setEdit(row); setEditValues({ ...row.values }) }}>Details / Edit</Button><Button size="small" disabled={busy || !!row.documentIssues.length} onClick={() => void generate([row.id])}>Draft PDF</Button></Space>} /></div>
+    <div className="document-roster-table"><DataTable fillHeight hideSearch rows={baseVisible} columns={rosterColumns} onVisibleRowsChange={onVisibleRowsChange} loading={loading} getRowId={row => row.id} title="Employee list" exportFileName="employee-list-offer-letters" emptyText="No employee lists match these filters." rowSelection={{ selectedRowKeys: selectedRows.map(row => row.id), onChange: keys => setSelected(keys.map(Number)), getCheckboxProps: () => ({ disabled: busy }) }} actionsWidth={canRelease ? 265 : 190} actions={row => <Space><Button size="small" disabled={busy} onClick={() => { setEdit(row); setEditValues({ ...row.values }) }}>Details / Edit</Button><Button size="small" disabled={busy || !!row.documentIssues.length} onClick={() => void generate([row.id])}>Draft PDF</Button>{canRelease && <Button size="small" disabled={busy || !rosterReleaseReady(row)} title={!row.workLocationId ? 'Link a work location before release' : row.documentIssues.length ? 'Complete document details before release' : undefined} onClick={() => setReleaseIds([row.id])}>Release</Button>}</Space>} /></div>
   </Drawer>
-  {importOpen && <RosterImportDrawer clientId={clientId} templates={templates} onClose={() => setImportOpen(false)} onSaved={async result => { setImportOpen(false); await load(); await onChanged(); setNotice(`${result.savedRows} list rows saved: ${result.createdProfiles} new profiles, ${result.reusedProfiles} existing profiles reused.${result.errors.length ? ' ' + result.errors.join(' ') : ''}`) }} />}
-  <Drawer open={!!edit} title={edit ? `Document details · ${edit.candidateName}` : 'Document details'} width="min(850px, 96vw)" onClose={() => { if (!busy) setEdit(null) }} closable={!busy} maskClosable={!busy} footer={<Space><Button disabled={busy} onClick={() => setEdit(null)}>Cancel</Button><Button type="primary" loading={busy} onClick={() => void saveEdit()}>Save details</Button></Space>}>
-    {edit && <><Alert type={edit.documentIssues.length ? 'warning' : 'success'} showIcon message={edit.documentIssues.length ? edit.documentIssues.join('; ') : 'Ready for unsigned draft'} description={`Source: ${edit.sourceFileName} · ${edit.sourceSheetName} · Row ${edit.sourceRow}`} /><Form layout="vertical" className="document-roster-fields">{templates.find(t => t.id === edit.templateId)?.fields.map(f => <Form.Item key={f.key} label={f.label} required={f.required} extra={f.type === 'percent' ? 'Enter 30% or 0.30 for thirty percent.' : undefined}><Input aria-label={`Document ${f.key}`} type={f.type === 'date' ? 'date' : 'text'} inputMode={['money', 'number', 'percent'].includes(f.type) ? 'decimal' : undefined} maxLength={4000} disabled={['candidateName', 'candidateEmail', 'candidatePhone', 'candidateCode'].includes(f.key)} value={editValues[f.key] || ''} onChange={e => setEditValues(v => ({ ...v, [f.key]: e.target.value }))} /></Form.Item>)}</Form></>}
+  {importOpen && <RosterImportDrawer clientId={clientId} templates={templates} locations={locations} onClose={() => setImportOpen(false)} onSaved={async result => { setImportOpen(false); await load(); await onChanged(); setNotice(`${result.savedRows} list rows saved: ${result.createdProfiles} new profiles, ${result.reusedProfiles} existing profiles reused.${result.errors.length ? ' ' + result.errors.join(' ') : ''}`) }} />}
+  <Drawer open={linkOpen} title="Set work location / institute" width="min(540px, 96vw)" onClose={() => { if (!busy) setLinkOpen(false) }} closable={!busy} maskClosable={!busy} footer={<Space><Button disabled={busy} onClick={() => setLinkOpen(false)}>Cancel</Button><Button type="primary" loading={busy} disabled={!linkLocationId || !selectedRows.length} onClick={() => void linkLocation()}>Link {selectedRows.length} profiles</Button></Space>}>
+    {error && <Alert type="error" showIcon message={error} />}
+    <p>Choose an existing work location for the selected profiles.</p><Form layout="vertical"><Form.Item label="Work location / institute" required><Select aria-label="Link roster work location" value={linkLocationId} showSearch optionFilterProp="label" placeholder="Choose a work location" disabled={busy} options={locations.map(location => ({ value: location.id, label: location.name }))} onChange={setLinkLocationId} /></Form.Item></Form><p className="document-roster-selected-summary">{selectedRows.map(row => row.candidateName).join(', ')}</p>
+  </Drawer>
+  {releaseIds && <RosterReleaseDrawer clientId={clientId} ids={releaseIds} canManageAsset={canManageOffers} canRelease={canRelease} onClose={() => setReleaseIds(null)} onReleased={async count => { setReleaseIds(null); await load(); await onChanged(); setNotice(`${count} offer letter${count > 1 ? 's' : ''} released and downloaded.`) }} />}
+  <Drawer open={!!edit} title={edit ? `Document details · ${edit.candidateName}` : 'Document details'} width="min(850px, 96vw)" onClose={() => { if (!busy) setEdit(null) }} closable={!busy} maskClosable={!busy} footer={<Space><Button disabled={busy} onClick={() => setEdit(null)}>Cancel</Button><Button type="primary" loading={busy} disabled={!canImport && !canManageOffers} onClick={() => void saveEdit()}>Save details</Button></Space>}>
+    {edit && <><Alert type={edit.documentIssues.length ? 'warning' : 'success'} showIcon message={edit.documentIssues.length ? edit.documentIssues.join('; ') : 'Ready for unsigned draft'} description={`Source: ${edit.sourceFileName} · ${edit.sourceSheetName} · Row ${edit.sourceRow}`} /><Form layout="vertical" className="document-roster-fields">{templates.find(t => t.id === edit.templateId)?.fields.map(f => <Form.Item key={f.key} label={f.label} required={f.required} extra={edit.workLocationId && rosterMasterLocationField(f.key) ? 'Managed by Work Location' : f.type === 'percent' ? 'Enter 30% or 0.30 for thirty percent.' : undefined}><Input aria-label={`Document ${f.key}`} type={f.type === 'date' ? 'date' : 'text'} inputMode={['money', 'number', 'percent'].includes(f.type) ? 'decimal' : undefined} maxLength={4000} disabled={['candidateName', 'candidateEmail', 'candidatePhone', 'candidateCode'].includes(f.key) || !!edit.workLocationId && rosterMasterLocationField(f.key) || !canImport && !canManageOffers} value={editValues[f.key] || ''} onChange={e => setEditValues(v => ({ ...v, [f.key]: e.target.value }))} /></Form.Item>)}</Form></>}
   </Drawer></>
 }
 
-function RosterImportDrawer({ clientId, templates, onClose, onSaved }: { clientId: number; templates: DocumentTemplate[]; onClose: () => void; onSaved: (result: RosterImportResult) => Promise<void> }) {
+function RosterReleaseDrawer({ clientId, ids, canManageAsset, canRelease, onClose, onReleased }: { clientId: number; ids: number[]; canManageAsset: boolean; canRelease: boolean; onClose: () => void; onReleased: (count: number) => Promise<void> }) {
+  const [asset, setAsset] = useState<RosterSigningAsset | null>(null), [applySignature, setApplySignature] = useState(false)
+  const [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [error, setError] = useState('')
+  const alive = useRef(true)
+  useEffect(() => {
+    alive.current = true
+    void getRosterSigningAsset(clientId).then(result => {
+      if (!alive.current) return
+      if (!result.ok) { setError(result.error || 'Unable to load the saved signature and stamp.'); return }
+      setAsset(result.data); setApplySignature(result.data.available)
+    }).catch(e => { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to load the saved signature and stamp.') }).finally(() => { if (alive.current) setLoading(false) })
+    return () => { alive.current = false }
+  }, [clientId])
+  const upload = async (file: File) => {
+    if (busy || loading || !canManageAsset) return
+    const invalid = signingAssetFileError(file)
+    if (invalid) { setError(invalid); return }
+    setBusy(true); setError('')
+    try { const saved = await uploadRosterSigningAsset(clientId, file); if (alive.current) { setAsset(saved); setApplySignature(saved.available) } }
+    catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to save the signature and stamp.') }
+    finally { if (alive.current) setBusy(false) }
+  }
+  const remove = async () => {
+    if (busy || !canManageAsset || !asset?.available) return
+    setBusy(true); setError('')
+    try {
+      const result = await removeRosterSigningAsset(clientId)
+      if (!result.ok) throw new Error(result.error || 'Unable to remove the saved image.')
+      if (alive.current) { setAsset({ ...asset, available: false, fileName: '' }); setApplySignature(false) }
+    } catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to remove the saved image.') }
+    finally { if (alive.current) setBusy(false) }
+  }
+  const release = async () => {
+    if (busy || loading || !canRelease || !ids.length || !asset || (applySignature && !asset.available)) return
+    setBusy(true); setError('')
+    try { await releaseRosterLetters(clientId, ids, applySignature); await onReleased(ids.length) }
+    catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to release offer letters.') }
+    finally { if (alive.current) setBusy(false) }
+  }
+  return <Drawer open title={ids.length ? `Release ${ids.length} offer letter${ids.length > 1 ? 's' : ''}` : 'Signature and stamp'} className="document-roster-release" width="min(640px, 96vw)" onClose={() => { if (!busy) onClose() }} closable={!busy} maskClosable={!busy} footer={<Space><Button disabled={busy} onClick={onClose}>{ids.length ? 'Cancel' : 'Close'}</Button>{canRelease && !!ids.length && <Button type="primary" icon={<DownloadOutlined />} loading={busy} disabled={loading || !asset || (applySignature && !asset.available)} onClick={() => void release()}>Release &amp; download ({ids.length})</Button>}</Space>}>
+    <Alert type="info" showIcon message={ids.length ? 'Release all selected letters together' : 'Save a signature and stamp for this client'} description={ids.length ? 'Use the saved signature and stamp, or switch it off for plain letters. Draft PDFs remain available separately.' : 'Upload one combined image to use when releasing offer letters.'} />
+    {error && <Alert type="error" showIcon message={error} />}
+    <section className="document-roster-signature-section" aria-busy={loading || busy}>
+      <h3>Signature and stamp</h3>
+      <p>{canManageAsset ? 'Upload one combined PNG or JPEG image, up to 2 MB. It will be saved for this client.' : 'The saved signature and stamp belongs to this client.'}</p>
+      {canManageAsset && <div className={busy || loading ? 'document-roster-upload-disabled' : undefined}><FileDropZone accept="image/png,image/jpeg,.png,.jpg,.jpeg" title="Upload signature and stamp" hint="PNG or JPEG · up to 2 MB" fileName={asset?.available ? asset.fileName : ''} onFile={file => void upload(file)} /></div>}
+      {asset?.available && <Space wrap className="document-roster-asset-status"><Tag color="green">Saved for this client · {asset.fileName}</Tag>{canManageAsset && <Button size="small" disabled={busy} onClick={() => void remove()}>Remove saved image</Button>}</Space>}
+      <div className="document-roster-signature-toggle"><Switch aria-label="Apply signature and stamp" checked={applySignature} loading={loading} disabled={busy || loading || !asset?.available} onChange={setApplySignature} /><span>Apply signature and stamp</span></div>
+      {!loading && !asset?.available && <p>{canManageAsset ? 'No image saved. You can release plain letters or upload an image above.' : 'No image saved. An offer manager can upload one; you can release plain letters.'}</p>}
+    </section>
+  </Drawer>
+}
+
+function RosterImportDrawer({ clientId, templates, locations, onClose, onSaved }: { clientId: number; templates: DocumentTemplate[]; locations: WorkLocation[]; onClose: () => void; onSaved: (result: RosterImportResult) => Promise<void> }) {
   const [templateId, setTemplateId] = useState(templates[0]?.id || 0), [preset, setPreset] = useState('')
   const [file, setFile] = useState<File | null>(null), [sheets, setSheets] = useState<RosterSheet[]>([]), [preview, setPreview] = useState<RosterPreview | null>(null), [selected, setSelected] = useState<number[]>([])
-  const [settings, setSettings] = useState<RosterImportSettings>({ clientId, templateId, sourceGroup: '', sheetName: '', headerRow: 4, mapping: {}, defaults: {}, sourceRows: [], previewToken: '' })
+  const [settings, setSettings] = useState<RosterImportSettings>({ clientId, templateId, workLocationId: null, sourceGroup: '', sheetName: '', headerRow: 4, mapping: {}, defaults: {}, sourceRows: [], previewToken: '' })
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [phase, setPhase] = useState('')
   const template = templates.find(t => t.id === templateId), sheet = sheets.find(s => s.name === settings.sheetName)
   const invalidate = (patch: Partial<RosterImportSettings>) => { setSettings(s => ({ ...s, ...patch })); setPreview(null); setSelected([]) }
@@ -104,6 +215,7 @@ function RosterImportDrawer({ clientId, templates, onClose, onSaved }: { clientI
       <Form.Item label="Offer document template" required><Select aria-label="Roster document template" value={templateId} options={templates.map(t => ({ value: t.id, label: t.templateName }))} onChange={value => { setTemplateId(value); setPreset(''); setSheets([]); setFile(null); invalidate({ templateId: value, mapping: {}, defaults: {}, sourceGroup: '', sheetName: '' }) }} /></Form.Item>
       <Form.Item label="Input preset (optional)"><Select aria-label="Roster input preset" value={preset} options={[{ value: '', label: 'Choose / enter values manually' }, ...(template?.importPresets || []).map(p => ({ value: p.name, label: p.name }))]} onChange={value => { setPreset(value); const p = template?.importPresets.find(p => p.name === value); invalidate({ sourceGroup: p?.name || '', headerRow: p?.headerRow || 4, defaults: p?.defaults || {} }); setSheets([]); setFile(null) }} /></Form.Item>
       <Form.Item label="Source group" required><Input aria-label="Roster source group" maxLength={180} value={settings.sourceGroup} onChange={e => invalidate({ sourceGroup: e.target.value })} placeholder="Institute / office / source list" /></Form.Item>
+      <Form.Item label="Work location / institute (optional)"><Select aria-label="Import roster work location" allowClear showSearch optionFilterProp="label" placeholder="Choose an existing work location" value={settings.workLocationId || undefined} options={locations.map(location => ({ value: location.id, label: location.name }))} onChange={value => invalidate({ workLocationId: value || null })} /></Form.Item>
       <Form.Item label="Header row"><InputNumber aria-label="Roster header row" min={1} max={100} value={settings.headerRow} onChange={v => { const next = { ...settings, headerRow: v || 1 }; invalidate({ headerRow: v || 1 }); if (file) void inspect(file, next) }} /></Form.Item>
     </Form>
     <FileDropZone accept=".xlsx" title="Upload employee workbook" hint="Choose the original employee list. The workbook is read without changing its cells or formulas." fileName={file?.name || ''} onFile={f => { if (!busy) void inspect(f) }} />

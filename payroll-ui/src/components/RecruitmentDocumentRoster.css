@@ -6,4 +6,15 @@
 .document-roster-mapping { margin-block: 12px; }
 .document-roster-mapping summary { cursor: pointer; font-weight: 600; padding-block: 8px; }
 .document-roster-import .ant-alert + .ant-alert { margin-top: 10px; }
+.document-roster-location-select { min-width: 240px; max-width: 360px; }
+.document-roster-search { width: 240px; max-width: 100%; }
+.document-roster-selected-summary { color: var(--muted); overflow-wrap: anywhere; }
+.document-roster-release .ant-drawer-body { display: flex; flex-direction: column; gap: 16px; }
+.document-roster-signature-section { min-width: 0; }
+.document-roster-signature-section h3 { margin: 0 0 8px; }
+.document-roster-signature-section p { color: var(--muted); }
+.document-roster-signature-toggle { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
+.document-roster-asset-status { margin-top: 12px; }
+.document-roster-upload-disabled { opacity: .65; }
 @media (max-width: 600px) { .document-roster-fields { grid-template-columns: minmax(0, 1fr); } .document-roster-toolbar > .ant-space { max-width: 100%; } }
+@media (max-width: 600px) { .document-roster-location-select { min-width: 0; width: min(100%, 360px); } .recruitment-document-roster .document-roster-toolbar .ant-select { max-width: 100%; } }

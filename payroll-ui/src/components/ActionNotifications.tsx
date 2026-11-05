@@ -8,6 +8,7 @@ import type { RecruitmentInterview } from '../types/payroll'
 import { getAttendanceGaps } from '../services/attendanceIntegrationService'
 import { dismissExcelPayslipMailJob, getExcelPayslipMailJobs, type ExcelPayslipMailJob } from '../services/excelPayslipService'
 import { getRecruitmentMomPings } from '../services/recruitmentCaseService'
+import { isUnrestrictedClientAdmin } from '../utils/clientAccess'
 
 type ActionItem = { key: string; title: string; detail: string; route: string; mailJob?: ExcelPayslipMailJob }
 type PendingTask = { id: number; stageName: string; resourceType: string; resourceId: string }
@@ -24,7 +25,7 @@ export default function ActionNotifications() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const generation = useRef(0)
-  const canSeeMailJobs = Boolean(session?.user.permissions.some(permission => ['payroll.run', 'payroll.approve', 'payroll.payments'].includes(permission)))
+  const canSeeMailJobs = isUnrestrictedClientAdmin(session?.user) && Boolean(session?.user.permissions.some(permission => ['payroll.run', 'payroll.approve', 'payroll.payments'].includes(permission)))
   const jobScope = `${session?.user.id}:${session?.user.clientId || ''}:${canSeeMailJobs}`
   const currentJobScope = useRef(jobScope)
   currentJobScope.current = jobScope

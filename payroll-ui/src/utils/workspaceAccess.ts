@@ -2,7 +2,8 @@ const payrollReports=new Set(['salary-register','payslip-register','excel-paysli
 const complianceReports=new Set(['pf-register','pf-ecr-report','esi-register','pt-register','statutory-summary','tds-register','form16-register'])
 const billingReports=new Set(['client-billing-report','payroll-cost-report'])
 export const hasReportWorkspace=(permissions:string[])=>permissions.some(code=>['reports.view','reports.payroll.view','reports.compliance.view','reports.billing.view'].includes(code))
-export function canOpenReport(permissions:string[],menu:string,code?:string){
+export function canOpenReport(permissions:string[],menu:string,code?:string,unrestrictedAdmin=false){
+  if(code==='excel-payslips'&&!unrestrictedAdmin)return false
   if(permissions.includes('reports.view'))return true
   if(!code)return false
   return menu==='Payroll Reports'&&permissions.includes('reports.payroll.view')&&payrollReports.has(code)

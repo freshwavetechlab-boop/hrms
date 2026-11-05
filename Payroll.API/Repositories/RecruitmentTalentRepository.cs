@@ -219,7 +219,7 @@ AND ((@Email<>'' AND NormalizedEmail=@Email)
  OR (@Phone<>'' AND (NormalizedPhone=@Phone OR (LENGTH(@Phone)>=10 AND RIGHT(NormalizedPhone,10)=RIGHT(@Phone,10)))))
 ORDER BY Id LIMIT 1", new { request.Id, Email = normalizedEmail, Phone = normalizedPhone });
                 if (duplicate is not null)
-                    return (null, $"A talent profile already exists: {duplicate.CandidateCode} - {duplicate.FirstName} {duplicate.LastName}. Open the existing profile instead of creating a duplicate.");
+                    return (null, CandidateConflictMessage(duplicate, user, request.ClientId));
             }
 
             var retention = request.RetentionUntil ?? (request.Id <= 0 ? DateTime.UtcNow.AddMonths(candidateRetentionMonths) : null);
@@ -4692,6 +4692,10 @@ WHERE instance.ApplicationId=@ApplicationId AND instance.Status IN ('Active','Pa
         db.ExecuteAsync(@"INSERT INTO person_activity_events (ClientId,CandidateId,EmployeeId,ModuleCode,EventType,EventTitle,EventSummary,ResourceType,ResourceId,ActorUserId,Visibility,IsSensitive,MetadataJson,OccurredAt) VALUES (@ClientId,@CandidateId,@EmployeeId,@Module,@EventType,@Title,@Summary,@ResourceType,@ResourceId,@UserId,'HR',FALSE,@MetadataJson,UTC_TIMESTAMP())", new { ClientId = clientId, CandidateId = candidateId, EmployeeId = employeeId, Module = module, EventType = eventType, Title = title, Summary = summary ?? "", ResourceType = resourceType, ResourceId = resourceId, UserId = user.Id, MetadataJson = ValidJson(metadataJson, "{}") }, transaction);
 
     private static bool CanAccessClient(AuthUser user, int clientId) => user.ClientId is null || user.ClientId == clientId;
+    internal static string CandidateConflictMessage(RecruitmentCandidate duplicate, AuthUser user, int clientId) =>
+        SelectedClientAccess.IsSelected(user) && duplicate.ClientId != clientId
+            ? "The supplied contact details conflict with an existing talent profile. Ask an administrator to review the identity before creating a duplicate."
+            : $"A talent profile already exists: {duplicate.CandidateCode} - {duplicate.FirstName} {duplicate.LastName}. Open the existing profile instead of creating a duplicate.";
     private static async Task<bool> CanAccessCandidateAsync(MySqlConnection db, AuthUser user, RecruitmentCandidate candidate)
     {
         if (user.ClientId is null || user.ClientId == candidate.ClientId) return true;

@@ -15,8 +15,12 @@ export const loadSecurityData = async () => {
   return { users, roles, permissions, auditLogs, clients, employees, workLocations }
 }
 
-export async function saveSecurityUser(body: unknown) {
-  const response = await postJson('/api/security/users', body, null)
+export async function saveSecurityUser(body: unknown, clientAccessRequired = false) {
+  const selected = typeof body === 'object' && body !== null && 'clientAccessMode' in body && body.clientAccessMode === 'Selected'
+  // The distinct endpoint makes an older API fail closed instead of ignoring
+  // new scope fields and interpreting a null ClientId as All clients.
+  const path = clientAccessRequired || selected ? '/api/security/users/client-access' : '/api/security/users'
+  const response = await postJson(path, body, null)
   return { ok: response.ok, error: response.error }
 }
 

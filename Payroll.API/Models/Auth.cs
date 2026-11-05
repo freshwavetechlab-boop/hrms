@@ -7,6 +7,8 @@ public class AuthUser
     public string DisplayName { get; set; } = string.Empty;
     public string Mobile { get; set; } = string.Empty;
     public int? ClientId { get; set; }
+    public string ClientAccessMode { get; set; } = "Legacy";
+    public List<int> AssignedClientIds { get; set; } = [];
     public int? EmployeeId { get; set; }
     public string RecruitmentScopeMode { get; set; } = "Client";
     public List<int> RecruitmentLocationIds { get; set; } = [];
@@ -35,6 +37,8 @@ public class SaveAuthUserRequest
     public string Mobile { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
     public int? ClientId { get; set; }
+    public string ClientAccessMode { get; set; } = "Legacy";
+    public List<int> AssignedClientIds { get; set; } = [];
     public int? EmployeeId { get; set; }
     public string RecruitmentScopeMode { get; set; } = "Client";
     public List<int> RecruitmentLocationIds { get; set; } = [];

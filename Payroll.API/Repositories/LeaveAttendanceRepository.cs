@@ -1311,7 +1311,7 @@ VALUES (@ClientId, @Name, @Code, @Type, @Description, TRUE); SELECT LAST_INSERT_
     {
         var rows = await ParseImportFileAsync(file);
         var totalRows = Math.Max(0, rows.Skip(1).Count(row => row.Any(value => !string.IsNullOrWhiteSpace(value))));
-        var job = new ClientImportJobStatus(Guid.NewGuid(), "Queued", totalRows, 0, 0, 0, []);
+        var job = new ClientImportJobStatus(Guid.NewGuid(), "Queued", totalRows, 0, 0, 0, []) { ClientId = clientId };
         LeaveTypeImportJobs[job.JobId] = job;
         _ = Task.Run(async () =>
         {
@@ -1615,7 +1615,7 @@ VALUES (@ClientId, @Name, @HolidayType, @StartDate, @EndDate, @Description, @All
     {
         var rows = await ParseImportFileAsync(file);
         var totalRows = Math.Max(0, rows.Skip(1).Count(row => row.Any(value => !string.IsNullOrWhiteSpace(value))));
-        var job = new ClientImportJobStatus(Guid.NewGuid(), "Queued", totalRows, 0, 0, 0, []);
+        var job = new ClientImportJobStatus(Guid.NewGuid(), "Queued", totalRows, 0, 0, 0, []) { ClientId = clientId };
         HolidayImportJobs[job.JobId] = job;
         _ = Task.Run(async () =>
         {

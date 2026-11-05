@@ -1,10 +1,11 @@
 import type { Client, Employee, PayRun, PayRunDiagnostics, PayrollAdjustment, RunEmployee } from '../types/payroll'
 import { deleteJson, getJson, postEmpty, postJson, putJson } from './apiClient'
 import { payrollAdjustmentPayload } from '../utils/payrollAdjustmentIdentity'
+import { filterActiveClientOptions } from './clientRequestScope'
 
-export const getClients = async (lookup = false) => (await getJson<Client[]>(`/api/clients${lookup ? '?lookup=true' : ''}`, []))
+export const getClients = async (lookup = false, includeAssigned = false) => filterActiveClientOptions((await getJson<Client[]>(`/api/clients${lookup ? '?lookup=true' : ''}`, []))
   .map(client => ({ ...client, id: Number(client.id) }))
-  .filter(client => client.isActive && Number.isSafeInteger(client.id) && client.id > 0)
+  .filter(client => client.isActive && Number.isSafeInteger(client.id) && client.id > 0), includeAssigned)
 export const getEmployees = () => getJson<Employee[]>('/api/employees', [])
 export const getPayrollEmployeeOptions = () => getJson<Employee[]>('/api/payroll/employee-options', [])
 export const getPayRuns = () => getJson<PayRun[]>('/api/pay-runs', [])

@@ -215,6 +215,49 @@ CREATE TABLE IF NOT EXISTS payrunemployeelines (
         return root.ToJsonString(JsonOptions);
     }
 
+    internal static async Task SaveSelectedClientSetupJsonAsync(MySqlConnection connection, MySqlTransaction transaction, int clientId, JsonObject before, JsonObject after)
+    {
+        var oldStructures = (before["salaryStructures"] as JsonArray ?? []).OfType<JsonObject>().Where(row => SettingsRepository.IsPureClientRow(row, clientId)).ToDictionary(SettingsRepository.ReadRowId);
+        var structures = (after["salaryStructures"] as JsonArray ?? []).OfType<JsonObject>().Where(row => SettingsRepository.IsPureClientRow(row, clientId)).ToArray();
+        var removedStructures = oldStructures.Keys.Except(structures.Select(SettingsRepository.ReadRowId)).Where(id => id > 0).ToArray();
+        if (removedStructures.Length > 0)
+        {
+            await connection.ExecuteAsync("DELETE FROM salarystructurelines WHERE StructureId IN @Ids", new { Ids = removedStructures }, transaction);
+            await connection.ExecuteAsync("DELETE FROM salarystructures WHERE Id IN @Ids", new { Ids = removedStructures }, transaction);
+        }
+        foreach (var node in structures.Where(node => !oldStructures.TryGetValue(SettingsRepository.ReadRowId(node), out var old) || !JsonNode.DeepEquals(old, node)))
+        {
+            var row = node.Deserialize<StructureDto>(JsonOptions) ?? throw new InvalidOperationException("Submit a valid salary structure.");
+            await connection.ExecuteAsync(@"INSERT INTO salarystructures (Id,ClientId,ClientRef,Name,AnnualCtc,Active)
+VALUES (@Id,@ClientId,@ClientRef,@Name,@AnnualCtc,@Active)
+ON DUPLICATE KEY UPDATE ClientId=@ClientId,ClientRef=@ClientRef,Name=@Name,AnnualCtc=@AnnualCtc,Active=@Active", new { row.Id, ClientId = clientId, ClientRef = row.ClientId ?? "", row.Name, AnnualCtc = ToDecimal(row.AnnualCtc), row.Active }, transaction);
+            await connection.ExecuteAsync("DELETE FROM salarystructurelines WHERE StructureId=@Id", new { row.Id }, transaction);
+            var index = 0;
+            foreach (var line in row.Lines)
+                await connection.ExecuteAsync(@"INSERT INTO salarystructurelines (StructureId,ComponentId,ValueText,CalculationType,Formula,BaseComponent,ProRataOverride,RoundingMode,SortOrder)
+VALUES (@StructureId,@ComponentId,@ValueText,@CalculationType,@Formula,@BaseComponent,@ProRataOverride,@RoundingMode,@SortOrder)", new { StructureId = row.Id, line.ComponentId, ValueText = line.Value ?? "", line.CalculationType, line.Formula, line.BaseComponent, line.ProRataOverride, line.RoundingMode, SortOrder = index++ }, transaction);
+        }
+        var oldTemplates = (before["payslipTemplates"] as JsonArray ?? []).OfType<JsonObject>().Where(row => SettingsRepository.IsPureClientRow(row, clientId)).ToDictionary(SettingsRepository.ReadRowId);
+        var templates = (after["payslipTemplates"] as JsonArray ?? []).OfType<JsonObject>().Where(row => SettingsRepository.IsPureClientRow(row, clientId)).ToArray();
+        var removedTemplates = oldTemplates.Keys.Except(templates.Select(SettingsRepository.ReadRowId)).Where(id => id > 0).ToArray();
+        if (removedTemplates.Length > 0) await connection.ExecuteAsync("DELETE FROM paysliptemplates WHERE Id IN @Ids", new { Ids = removedTemplates }, transaction);
+        foreach (var node in templates.Where(node => !oldTemplates.TryGetValue(SettingsRepository.ReadRowId(node), out var old) || !JsonNode.DeepEquals(old, node)))
+        {
+            var row = node.Deserialize<PayslipTemplateDto>(JsonOptions) ?? throw new InvalidOperationException("Submit a valid payslip template.");
+            await connection.ExecuteAsync(@"INSERT INTO paysliptemplates (Id,ClientId,ClientRef,Name,Theme,ShowLogo,ShowClient,ShowYtd,ShowBank,Note,Active)
+VALUES (@Id,@ClientId,@ClientRef,@Name,@Theme,@ShowLogo,@ShowClient,@ShowYtd,@ShowBank,@Note,@Active)
+ON DUPLICATE KEY UPDATE ClientId=@ClientId,ClientRef=@ClientRef,Name=@Name,Theme=@Theme,ShowLogo=@ShowLogo,ShowClient=@ShowClient,ShowYtd=@ShowYtd,ShowBank=@ShowBank,Note=@Note,Active=@Active", new { row.Id, ClientId = clientId, ClientRef = row.ClientId ?? "", row.Name, row.Theme, row.ShowLogo, row.ShowClient, row.ShowYtd, row.ShowBank, row.Note, row.Active }, transaction);
+        }
+        if (!JsonNode.DeepEquals(before["tax"], after["tax"]))
+        {
+            var saved = await connection.QueryFirstOrDefaultAsync<(int Id, string SetupJson)>("SELECT Id,SetupJson FROM payrollsetups ORDER BY Id LIMIT 1", transaction: transaction);
+            var retained = ParseRoot(saved.SetupJson); retained["tax"] = after["tax"]?.DeepClone();
+            var setupJson = retained.ToJsonString(JsonOptions);
+            if (saved.Id > 0) await connection.ExecuteAsync("UPDATE payrollsetups SET SetupJson=@setupJson WHERE Id=@Id", new { saved.Id, setupJson }, transaction);
+            else await connection.ExecuteAsync("INSERT INTO payrollsetups (SetupJson) VALUES (@setupJson)", new { setupJson }, transaction);
+        }
+    }
+
     public static async Task SaveSetupJsonAsync(MySqlConnection connection, string json)
     {
         var root = ParseRoot(json);

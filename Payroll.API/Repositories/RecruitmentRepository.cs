@@ -582,6 +582,17 @@ PositionName=@PositionName,NumberOfPositions=@NumberOfPositions,Location=@Locati
         return scoped;
     }
 
+    public async Task<List<RecruitmentOpenPosition>> PipelinePositionsAsync(AuthUser user, int? requestedClientId, int? workLocationId = null)
+    {
+        var clientId = user.ClientId ?? (requestedClientId is > 0 ? requestedClientId : null);
+        await using var db = Db(); await db.OpenAsync();
+        if (workLocationId is > 0 && (clientId is not > 0 || !await RecruitmentAccessScope.CanAccessWorkLocationIdAsync(db, user, clientId.Value, workLocationId)))
+            return [];
+        var rows = await db.QueryAsync<RecruitmentOpenPosition>(OpenPositionSql("WHERE (@ClientId IS NULL OR p.ClientId=@ClientId) ORDER BY p.CreatedAt DESC"), new { ClientId = clientId });
+        var scoped = await RecruitmentAccessScope.FilterWorkLocationsAsync(db, user, rows, row => row.ClientId, row => row.BranchId > 0 ? row.BranchId : null);
+        return workLocationId is > 0 ? scoped.Where(row => row.BranchId == workLocationId).ToList() : scoped;
+    }
+
     public async Task<(bool Ok, string Error)> DeleteOpenPositionAsync(long id, AuthUser user)
     {
         await using var db = Db();

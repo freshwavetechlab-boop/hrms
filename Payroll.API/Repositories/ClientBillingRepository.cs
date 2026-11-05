@@ -40,7 +40,7 @@ public class ClientBillingRepository(IConfiguration configuration)
 ON DUPLICATE KEY UPDATE IsEnabled=@IsEnabled, AdvancedCostingEnabled=@AdvancedCostingEnabled, UpdatedAt=CURRENT_TIMESTAMP", module);
     }
 
-    public async Task<ClientBillingAdvancedSetup> GetAdvancedAsync()
+    public async Task<ClientBillingAdvancedSetup> GetAdvancedAsync(int? clientId = null)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureTablesAsync(db);
         return new ClientBillingAdvancedSetup
@@ -49,8 +49,9 @@ ON DUPLICATE KEY UPDATE IsEnabled=@IsEnabled, AdvancedCostingEnabled=@AdvancedCo
 FROM client_billing_cost_rule_headers h
 JOIN clients c ON c.Id=h.ClientId
 LEFT JOIN worklocations w ON w.Id=h.WorkLocationId
-ORDER BY c.Name, WorkLocationName, h.EffectiveFrom DESC, h.Id DESC"),
-            Lines = await db.QueryAsync<ClientBillingCostRuleLine>(@"SELECT l.*, h.RuleName FROM client_billing_cost_rule_lines l JOIN client_billing_cost_rule_headers h ON h.Id=l.HeaderId ORDER BY h.RuleName,l.SortOrder,l.Id")
+WHERE (@ClientId IS NULL OR h.ClientId=@ClientId)
+ORDER BY c.Name, WorkLocationName, h.EffectiveFrom DESC, h.Id DESC", new { ClientId = clientId }),
+            Lines = await db.QueryAsync<ClientBillingCostRuleLine>(@"SELECT l.*, h.RuleName FROM client_billing_cost_rule_lines l JOIN client_billing_cost_rule_headers h ON h.Id=l.HeaderId WHERE (@ClientId IS NULL OR h.ClientId=@ClientId) ORDER BY h.RuleName,l.SortOrder,l.Id", new { ClientId = clientId })
         };
     }
 
@@ -109,14 +110,15 @@ VALUES (@ClientId,@WorkLocationId,'Salary + employer statutory + commission',CUR
         return (headerId, "");
     }
 
-    public async Task<IEnumerable<ClientBillingConfiguration>> GetAsync()
+    public async Task<IEnumerable<ClientBillingConfiguration>> GetAsync(int? clientId = null)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureTablesAsync(db);
         return await db.QueryAsync<ClientBillingConfiguration>(@"SELECT b.*, c.Name AS ClientName, COALESCE(w.Name,'All locations') AS WorkLocationName
 FROM client_billing_configurations b
 JOIN clients c ON c.Id=b.ClientId
 LEFT JOIN worklocations w ON w.Id=b.WorkLocationId
-ORDER BY c.Name, WorkLocationName, b.RateCardType, b.EffectiveFrom DESC, b.Id DESC");
+WHERE (@ClientId IS NULL OR b.ClientId=@ClientId)
+ORDER BY c.Name, WorkLocationName, b.RateCardType, b.EffectiveFrom DESC, b.Id DESC", new { ClientId = clientId });
     }
 
     public async Task<(long Id, string Error)> SaveAsync(ClientBillingConfiguration row)

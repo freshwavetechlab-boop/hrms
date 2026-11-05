@@ -19,6 +19,6 @@ public static class WorkspacePermissions
         ||Has(user,"reports.billing.view")&&BillingReports.Contains(code);
     public static bool CanReadPayrollContext(AuthUser user)=>Has(user,"payroll.run","payroll.approve","payroll.payments","reports.view","reports.payroll.view","reports.compliance.view","reports.billing.view");
     public static bool CanReadPayslips(AuthUser user)=>Has(user,"payroll.run","payroll.approve","payroll.payments","reports.view","reports.payroll.view");
-    public static bool CanManageBilling(AuthUser user)=>Has(user,"settings.manage")||user.ClientId is null&&Has(user,"billing.manage");
+    public static bool CanManageBilling(AuthUser user)=>Has(user,"settings.manage")||(user.ClientId is null||SelectedClientAccess.IsSelected(user))&&Has(user,"billing.manage");
     public static bool CanReadPayrollAttendance(AuthUser user)=>Has(user,"payroll.run","payroll.approve","payroll.payments");
 }

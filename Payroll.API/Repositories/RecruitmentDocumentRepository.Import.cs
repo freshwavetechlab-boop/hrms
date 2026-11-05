@@ -128,6 +128,7 @@ public sealed partial class RecruitmentDocumentRepository
     public async Task<RecruitmentRosterPreview> PreviewAsync(byte[] file, string fileName, RecruitmentRosterImport request, AuthUser user)
     {
         Access(user, request.ClientId);
+        IntakeAccess(user);
         if (request.SourceGroup is null || request.SourceGroup.Trim().Length is < 1 or > 180 || request.SourceGroup.Any(char.IsControl)
             || request.HeaderRow is < 1 or > 100 || request.SheetName is null || request.SheetName.Length > 100
             || request.Defaults is null || request.Defaults.Count > 80 || request.Defaults.Any(p => p.Value is null || p.Value.Length > 4000)
@@ -137,6 +138,9 @@ public sealed partial class RecruitmentDocumentRepository
         if (!fileName.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) || fileName.Length > 255) throw new InvalidOperationException("Upload an .xlsx employee list.");
         await using var db = Db(); await db.OpenAsync();
         if (!await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM clients WHERE Id=@Id AND IsActive=TRUE)", new { Id = request.ClientId })) throw new InvalidOperationException("Select an active client.");
+        if (request.WorkLocationId is <= 0) throw new InvalidOperationException("Select an existing work location or leave it unassigned.");
+        await RequireLocationAsync(db, user, request.ClientId, request.WorkLocationId);
+        var locations = await RecruitmentAccessScope.WorkLocationsAsync(db, user, request.ClientId);
         var template = await TemplateAsync(db, request.ClientId, request.TemplateId); var layout = LayoutDocumentPdfService.Parse(template.BodyTemplate);
         if (!layout.Inputs.Any(f => f.Key == "candidateName") || !layout.Inputs.Any(f => f.Key is "candidateEmail" or "candidatePhone"))
             throw new InvalidOperationException("The roster template must define candidateName and an email or phone input.");
@@ -153,7 +157,7 @@ public sealed partial class RecruitmentDocumentRepository
             var name = raw.GetValueOrDefault("candidateName", "").Trim();
             if (name.Length == 0 || HeaderKey(name) == HeaderKey(header.Values[mapping["candidateName"]]) || Regex.IsMatch(name, @"^(grand\s*)?total(?:s|\s|:|$)", RegexOptions.IgnoreCase)) continue;
             var values = NormalizeInputs(layout, raw);
-            var row = new RecruitmentRosterPreviewRow { SourceRow = source.Row, CandidateName = name, Email = raw.GetValueOrDefault("candidateEmail", "").Trim(), Phone = Phones(raw.GetValueOrDefault("candidatePhone", "")).FirstOrDefault() ?? "", PositionTitle = values.GetValueOrDefault("positionTitle", ""), WorkLocation = values.GetValueOrDefault("jobLocation", ""), Values = values,
+            var row = new RecruitmentRosterPreviewRow { SourceRow = source.Row, WorkLocationId = request.WorkLocationId, CandidateName = name, Email = raw.GetValueOrDefault("candidateEmail", "").Trim(), Phone = Phones(raw.GetValueOrDefault("candidatePhone", "")).FirstOrDefault() ?? "", PositionTitle = values.GetValueOrDefault("positionTitle", ""), WorkLocation = values.GetValueOrDefault("jobLocation", ""), Values = values,
                 SourceValues = header.Values.Select((h, i) => new { Key = (i + 1).ToString(CultureInfo.InvariantCulture) + ": " + h, Value = source.Values.ElementAtOrDefault(i) ?? "" }).ToDictionary(p => p.Key, p => p.Value) };
             if (name.Length > 240 || name.Split(' ', 2)[0].Length > 120 || name.Split(' ', 2).ElementAtOrDefault(1)?.Length > 120) row.ImportIssues.Add("Candidate name is too long for the profile");
             if (row.Email.Length > 190 || row.Email.Length > 0 && !Regex.IsMatch(row.Email, @"^[^\s@<>;,]+@[^\s@<>;,]+\.[^\s@<>;,]+$")) row.ImportIssues.Add("Review the email address");
@@ -171,7 +175,7 @@ public sealed partial class RecruitmentDocumentRepository
         var phones = preview.Rows.SelectMany(r => Phones(r.Values.GetValueOrDefault("candidatePhone", r.Phone))).Distinct().ToArray();
         var matches = (await db.QueryAsync<IdentityCandidate>("SELECT Id,ClientId,FirstName,LastName,NormalizedEmail,NormalizedPhone,ProfileStatus FROM recruitment_candidates WHERE NormalizedEmail IN @Emails OR RIGHT(NormalizedPhone,10) IN @Phones", new { Emails = emails, Phones = phones })).ToArray();
         await EnsureAsync(db);
-        var existingInputs = (await db.QueryAsync<ExistingInput>("SELECT CandidateId,CAST(ValuesJson AS CHAR) ValuesJson FROM recruitment_document_roster WHERE ClientId=@ClientId AND TemplateId=@TemplateId AND SourceGroup=@SourceGroup", new { request.ClientId, request.TemplateId, SourceGroup = request.SourceGroup.Trim() })).ToDictionary(r => r.CandidateId);
+        var existingInputs = (await db.QueryAsync<ExistingInput>("SELECT CandidateId,WorkLocationId,CAST(ValuesJson AS CHAR) ValuesJson FROM recruitment_document_roster WHERE ClientId=@ClientId AND TemplateId=@TemplateId AND SourceGroup=@SourceGroup", new { request.ClientId, request.TemplateId, SourceGroup = request.SourceGroup.Trim() })).ToDictionary(r => r.CandidateId);
         foreach (var row in preview.Rows)
         {
             var identities = Identities(row).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -183,12 +187,28 @@ public sealed partial class RecruitmentDocumentRepository
                 if (candidate.ClientId != request.ClientId) row.ImportIssues.Add("An existing profile in another client uses this contact; resolve it before import");
                 else if (candidate.ProfileStatus == "Archived") row.ImportIssues.Add("An archived profile uses this contact; review or restore it before import");
                 else if (NameKey(candidate.FirstName + " " + candidate.LastName) != NameKey(row.CandidateName)) row.ImportIssues.Add("The contact matches a different saved candidate name; review identity");
-                else { row.CandidateId = candidate.Id; row.MatchStatus = "Existing profile"; if (existingInputs.TryGetValue(candidate.Id, out var old)) row.Values = MergeValues(old.ValuesJson, row.Values); }
+                else
+                {
+                    row.CandidateId = candidate.Id; row.MatchStatus = "Existing profile";
+                    if (existingInputs.TryGetValue(candidate.Id, out var old))
+                    {
+                        if (!CanSeeLocation(user, old.WorkLocationId, locations)) row.ImportIssues.Add("The existing document row is outside your permitted work locations");
+                        else
+                        {
+                            row.ExistingRevision = RowRevision(old.ValuesJson, old.WorkLocationId);
+                            row.WorkLocationId ??= old.WorkLocationId;
+                            row.Values = MergeValues(old.ValuesJson, row.Values);
+                        }
+                    }
+                }
             }
             if (row.ImportIssues.Count > 0) row.MatchStatus = "Review identity";
+            var location = locations.FirstOrDefault(item => item.Id == row.WorkLocationId);
+            if (location is not null) { ApplyLocationValues(row.Values, location); row.WorkLocation = location.Name; }
             LayoutDocumentPdfService.PrepareValues(layout, row.Values, false, out var missing); row.DocumentIssues = missing;
+            if (row.WorkLocationId.HasValue && location is null) row.DocumentIssues.Add("The linked work location is unavailable or inactive");
         }
-        var fingerprint = JsonSerializer.Serialize(new { request.ClientId, request.TemplateId, Group = request.SourceGroup.Trim(), preview.FileHash, TemplateHash = Hash(template.BodyTemplate), preview.SheetName, request.HeaderRow, Mapping = mapping.OrderBy(p => p.Key).ToArray(), Defaults = request.Defaults.OrderBy(p => p.Key).ToArray() }, Json);
+        var fingerprint = JsonSerializer.Serialize(new { request.ClientId, request.TemplateId, request.WorkLocationId, Group = request.SourceGroup.Trim(), preview.FileHash, TemplateHash = Hash(template.BodyTemplate), preview.SheetName, request.HeaderRow, Mapping = mapping.OrderBy(p => p.Key).ToArray(), Defaults = request.Defaults.OrderBy(p => p.Key).ToArray(), Existing = preview.Rows.Select(r => new { r.SourceRow, r.ExistingRevision, r.WorkLocationId }), Locations = locations.Where(l => preview.Rows.Any(r => r.WorkLocationId == l.Id)).OrderBy(l => l.Id) }, Json);
         preview.PreviewToken = Hash(fingerprint); return preview;
     }
     private static IEnumerable<string> Identities(RecruitmentRosterPreviewRow row)
@@ -201,11 +221,12 @@ public sealed partial class RecruitmentDocumentRepository
         public long Id { get; set; } public int ClientId { get; set; } public string FirstName { get; set; } = ""; public string LastName { get; set; } = "";
         public string NormalizedEmail { get; set; } = ""; public string NormalizedPhone { get; set; } = ""; public string ProfileStatus { get; set; } = "";
     }
-    private sealed class ExistingInput { public long CandidateId { get; set; } public string ValuesJson { get; set; } = "{}"; }
+    private sealed class ExistingInput { public long CandidateId { get; set; } public int? WorkLocationId { get; set; } public string ValuesJson { get; set; } = "{}"; }
 
     public async Task<object> InspectAsync(byte[] file, string fileName, int clientId, int templateId, int headerRow, AuthUser user)
     {
         Access(user, clientId);
+        IntakeAccess(user);
         if (headerRow is < 1 or > 100 || !fileName.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Select an .xlsx workbook and its header row (1 to 100).");
         await using var db = Db(); await db.OpenAsync(); await TemplateAsync(db, clientId, templateId);
         return ReadWorkbook(file).Select(s => new { s.Name, Headers = s.Rows.FirstOrDefault(r => r.Row == headerRow)?.Values ?? [], Sample = s.Rows.FirstOrDefault(r => r.Row > headerRow)?.Values ?? [] }).ToArray();

@@ -40,6 +40,7 @@ builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 
 builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddScoped<ISelectedClientOwnershipLookup, SelectedClientOwnershipStore>();
 builder.Services.AddSwaggerGen(options => options.DocumentFilter<ApiCatalogDocumentFilter>());
 builder.Services.AddHttpClient();
 builder.Services.AddHttpClient(nameof(AttachmentContentResult), client => client.Timeout = TimeSpan.FromSeconds(30))
@@ -137,7 +138,7 @@ builder.Services.AddSingleton<EssMssRepository>();
 builder.Services.AddSingleton<EmployeeProfileCompletionService>();
 builder.Services.AddSingleton<WorkflowRepository>();
 builder.Services.AddSingleton<TaxEngineRepository>();
-builder.Services.AddSingleton<DashboardRepository>();
+builder.Services.AddScoped<DashboardRepository>();
 builder.Services.AddSingleton<NotificationAutomationRepository>();
 builder.Services.AddSingleton<NotificationRepository>();
 builder.Services.AddSingleton<CommunicationRepository>();
@@ -199,6 +200,13 @@ builder.Services.AddHostedService<AttendanceBatchJobWorker>();
 
 var app = builder.Build();
 const string AuthCookieName = "payroll_auth";
+
+if (args.Contains("--migrate-client-access"))
+{
+    await app.Services.GetRequiredService<AuthRepository>().MigrateClientAccessAsync();
+    app.Logger.LogInformation("Selected-client access schema is ready. Existing users, roles and client assignments were not changed.");
+    return;
+}
 
 // Narrow additive migration entrypoint: avoids running unrelated legacy seed/migration routines.
 if (args.Any(arg => arg.Equals("--setup-mom-attachments", StringComparison.OrdinalIgnoreCase)))
@@ -371,6 +379,7 @@ app.Use(async (context, next) =>
     }
 });
 
+app.UseMiddleware<SelectedClientScopeMiddleware>();
 app.UseMiddleware<WorkflowActionMiddleware>();
 
 app.Use(async (context, next) =>
@@ -1012,7 +1021,15 @@ app.MapGet("/api/dashboard", async (DashboardRepository repository, int? clientI
 .WithName("GetDashboard")
 .WithOpenApi();
 
-app.MapGet("/api/workflows", async (WorkflowRepository repository, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(403));
+app.MapGet("/api/workflows", async (WorkflowRepository repository, HttpContext context) =>
+{
+    if (!HasPermission(context,"workflow.manage")) return Results.StatusCode(403);
+    var user = CurrentUser(context);
+    var rows = await repository.GetAsync();
+    return Results.Ok(SelectedClientAccess.IsSelected(user)
+        ? rows.Where(row => row.ClientId is null or 0 || row.ClientId == user.ClientId)
+        : rows);
+});
 app.MapGet("/api/workflows/activities", async (WorkflowRepository repository, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetActivitiesAsync()) : Results.StatusCode(403));
 app.MapGet("/api/workflows/activities/catalog", async (WorkflowRepository repository, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetActivitiesForSetupAsync()) : Results.StatusCode(403));
 app.MapGet("/api/workflows/action-rules", async (WorkflowRepository repository, HttpContext context) => HasPermission(context,"workflow.manage") ? Results.Ok(await repository.GetActionRulesForSetupAsync()) : Results.StatusCode(403));
@@ -1549,12 +1566,28 @@ app.MapPost("/api/recruitment/seed-pack/import", async (RecruitmentSeedPackServi
     return result is null ? Results.BadRequest(new { error }) : Results.Ok(result);
 }).DisableAntiforgery().WithMetadata(new RequestSizeLimitAttribute(550L * 1024 * 1024));
 
-app.MapGet("/api/recruitment/pipeline-workspace", async (RecruitmentPipelineRepository repository, int? clientId, long? positionId, long? jobPostingId, HttpContext context) =>
+app.MapGet("/api/recruitment/work-locations", async (IConfiguration configuration, int clientId, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context) || !CanAccessClient(context, clientId)) return Results.StatusCode(403);
+    await using var db = new MySqlConnector.MySqlConnection(configuration.GetConnectionString("Default"));
+    await db.OpenAsync(context.RequestAborted);
+    return Results.Ok(await RecruitmentAccessScope.WorkLocationsAsync(db, CurrentUser(context), clientId));
+});
+app.MapGet("/api/recruitment/pipeline-targets", async (RecruitmentRepository recruitment, RecruitmentPipelineRepository repository, int? clientId, int? workLocationId, HttpContext context) =>
+{
+    if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    var user = CurrentUser(context);
+    if (clientId is > 0 && !CanAccessClient(context, clientId.Value)) return Results.StatusCode(403);
+    var positions = await recruitment.PipelinePositionsAsync(user, clientId, workLocationId);
+    var postings = await repository.PipelinePostingsAsync(positions.Select(row => row.Id));
+    return Results.Ok(new { positions, postings });
+});
+app.MapGet("/api/recruitment/pipeline-workspace", async (RecruitmentPipelineRepository repository, int? clientId, long? positionId, long? jobPostingId, int? workLocationId, HttpContext context) =>
 {
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
     var user = CurrentUser(context);
     if (user.ClientId.HasValue && clientId.HasValue && user.ClientId.Value != clientId.Value) return Results.StatusCode(403);
-    var workspace = await repository.GetPipelineWorkspaceAsync(clientId, positionId, jobPostingId, user);
+    var workspace = await repository.GetPipelineWorkspaceAsync(clientId, positionId, jobPostingId, user, workLocationId);
     return workspace is null ? Results.StatusCode(403) : Results.Ok(workspace);
 });
 
@@ -2554,10 +2587,10 @@ recruitmentOrchestration.MapPost("/applications/{applicationId:long}/pipeline", 
     var (id, error) = await EnsureRecruitmentApplicationAutomationAsync(applicationId, user, repository, actions, candidateActions);
     return id.HasValue ? Results.Ok(new { pipelineInstanceId = id.Value }) : Results.BadRequest(new { error });
 });
-recruitmentOrchestration.MapGet("/pipeline-board", async (RecruitmentPipelineRepository repository, long positionId, long? jobPostingId, HttpContext context) =>
+recruitmentOrchestration.MapGet("/pipeline-board", async (RecruitmentPipelineRepository repository, long positionId, long? jobPostingId, int? workLocationId, HttpContext context) =>
 {
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
-    var board = await repository.GetPipelineBoardAsync(positionId, CurrentUser(context), jobPostingId);
+    var board = await repository.GetPipelineBoardAsync(positionId, CurrentUser(context), jobPostingId, workLocationId);
     return board is null ? Results.NotFound() : Results.Ok(board);
 });
 recruitmentOrchestration.MapGet("/applications/{applicationId:long}/transitions", async (RecruitmentPipelineRepository repository, long applicationId, HttpContext context) =>
@@ -2950,6 +2983,20 @@ app.MapPost("/api/security/users", async (AuthRepository repository, SaveAuthUse
 })
 .WithName("SaveSecurityUser")
 .WithOpenApi();
+
+// A separate capability endpoint prevents an older API from silently interpreting
+// Selected-client requests as a legacy unrestricted (ClientId=null) account.
+app.MapPost("/api/security/users/client-access", async (AuthRepository repository, SaveAuthUserRequest request, HttpContext context) =>
+{
+    var actor=CurrentUser(context);
+    if(!SelectedClientAccess.IsUnrestrictedAdministrator(actor) || !actor.Permissions.Contains("security.manage")) return Results.StatusCode(403);
+    if(string.IsNullOrWhiteSpace(request.Email)||string.IsNullOrWhiteSpace(request.DisplayName)) return Results.BadRequest(new{error="Email and display name are required."});
+    if(request.Id==0&&string.IsNullOrWhiteSpace(request.Password))return Results.BadRequest(new{error="Temporary password is required for a new user."});
+    if(request.TransferRoles&&request.RoleSourceUserId==actor.Id)return Results.BadRequest(new{error="You cannot transfer roles away from your own signed-in account."});
+    try { var user=await repository.SaveUserAsync(request); return user is null?Results.BadRequest(new{error="Unable to save user."}):Results.Ok(user); }
+    catch(InvalidOperationException error){return Results.BadRequest(new{error=error.Message});}
+    catch(Exception){return Results.BadRequest(new{error="Unable to save user. Check the selected client assignment and login details."});}
+}).WithName("SaveSelectedClientAccessUser");
 
 app.MapPost("/api/security/users/copy-roles", async (AuthRepository repository, CopyAuthUserRolesRequest request, HttpContext context) =>
 {
@@ -3454,11 +3501,11 @@ app.MapPost("/api/organization", async (OrganizationRepository repository, Organ
 
 app.MapGet("/api/setup", async (SettingsRepository repository, HttpContext context) =>
 {
-    if (HasPermission(context, "settings.manage"))
+    if (HasPermission(context, "settings.manage") && !SelectedClientAccess.IsSelected(CurrentUser(context)))
         return Results.Text(await repository.GetAsync(), "application/json");
     var user = CurrentUser(context);
-    return user.ClientId.HasValue && HasPermission(context, "client.settings.manage")
-        ? Results.Text(await repository.GetForClientAsync(user.ClientId.Value), "application/json")
+    return user.ClientId.HasValue && (HasPermission(context, "client.settings.manage") || SelectedClientAccess.IsSelected(user) && HasPermission(context, "settings.manage"))
+        ? Results.Text(await (SelectedClientAccess.IsSelected(user) ? repository.GetForSelectedClientAsync(user.ClientId.Value) : repository.GetForClientAsync(user.ClientId.Value)), "application/json")
         : Results.StatusCode(StatusCodes.Status403Forbidden);
 })
 .WithName("GetPayrollSetup")
@@ -3468,10 +3515,13 @@ app.MapPost("/api/setup", async (SettingsRepository repository, JsonElement setu
 {
     try
     {
-    if (HasPermission(context, "settings.manage"))
+    if (HasPermission(context, "settings.manage") && !SelectedClientAccess.IsSelected(CurrentUser(context)))
         await repository.SaveAsync(setup.GetRawText());
-    else if (CurrentUser(context).ClientId is int clientId && HasPermission(context, "client.settings.manage"))
-        await repository.SaveForClientAsync(clientId, setup.GetRawText());
+    else if (CurrentUser(context).ClientId is int clientId && (HasPermission(context, "client.settings.manage") || SelectedClientAccess.IsSelected(CurrentUser(context)) && HasPermission(context, "settings.manage")))
+    {
+        if(SelectedClientAccess.IsSelected(CurrentUser(context))) await repository.SaveForSelectedClientAsync(clientId, setup.GetRawText());
+        else await repository.SaveForClientAsync(clientId, setup.GetRawText());
+    }
     else
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     return Results.Ok(setup);
@@ -3518,7 +3568,7 @@ app.MapPost("/api/client-billing/module", async (ClientBillingRepository reposit
 .WithOpenApi();
 
 app.MapGet("/api/client-billing/configurations", async (ClientBillingRepository repository, HttpContext context) =>
-    WorkspacePermissions.CanManageBilling(CurrentUser(context)) ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(StatusCodes.Status403Forbidden))
+    WorkspacePermissions.CanManageBilling(CurrentUser(context)) ? Results.Ok(await repository.GetAsync(SelectedClientAccess.IsSelected(CurrentUser(context)) ? CurrentUser(context).ClientId : null)) : Results.StatusCode(StatusCodes.Status403Forbidden))
 .WithName("GetClientBillingConfigurations")
 .WithOpenApi();
 
@@ -3532,7 +3582,7 @@ app.MapPost("/api/client-billing/configurations", async (ClientBillingRepository
 .WithOpenApi();
 
 app.MapGet("/api/client-billing/advanced", async (ClientBillingRepository repository, HttpContext context) =>
-    WorkspacePermissions.CanManageBilling(CurrentUser(context)) ? Results.Ok(await repository.GetAdvancedAsync()) : Results.StatusCode(403))
+    WorkspacePermissions.CanManageBilling(CurrentUser(context)) ? Results.Ok(await repository.GetAdvancedAsync(SelectedClientAccess.IsSelected(CurrentUser(context)) ? CurrentUser(context).ClientId : null)) : Results.StatusCode(403))
 .WithName("GetClientBillingAdvanced")
 .WithOpenApi();
 
@@ -3592,7 +3642,7 @@ app.MapGet("/api/client-billing/configurations/import-jobs/{jobId:guid}", (Clien
 .WithOpenApi();
 
 app.MapGet("/api/travel-expense/setup", async (TravelExpenseRepository repository, HttpContext context) =>
-    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(403))
+    HasPermission(context, "settings.manage") ? Results.Ok(await repository.GetAsync(SelectedClientAccess.IsSelected(CurrentUser(context)) ? CurrentUser(context).ClientId : null)) : Results.StatusCode(403))
 .WithName("GetTravelExpenseSetup")
 .WithOpenApi();
 
@@ -3779,7 +3829,7 @@ app.MapDelete("/api/integrations/ai/{id:long}", async (RecruitmentAiScoringServi
     return ok ? Results.NoContent() : Results.BadRequest(new { error });
 });
 
-app.MapGet("/api/tax-engine", async (TaxEngineRepository repository, HttpContext context) => HasPermission(context, "settings.manage") || HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.GetAsync()) : Results.StatusCode(403));
+app.MapGet("/api/tax-engine", async (TaxEngineRepository repository, HttpContext context) => HasPermission(context, "settings.manage") || HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.GetAsync(SelectedClientAccess.IsSelected(CurrentUser(context)) ? CurrentUser(context).ClientId : null)) : Results.StatusCode(403));
 app.MapPost("/api/tax-engine/client-settings", async (TaxEngineRepository repository, ClientTaxSetting request, HttpContext context) => HasPermission(context, "settings.manage") ? Results.Ok(await repository.SaveClientSettingAsync(request)) : Results.StatusCode(403));
 app.MapPost("/api/tax-engine/slabs", async (TaxEngineRepository repository, TaxSlab request, HttpContext context) => HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.SaveSlabAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
 app.MapPost("/api/tax-engine/surcharges", async (TaxEngineRepository repository, TaxSurcharge request, HttpContext context) => HasPermission(context, "tax.statutory.manage") ? Results.Ok(await repository.SaveSurchargeAsync(request, CurrentUser(context).Id)) : Results.StatusCode(403));
@@ -4263,7 +4313,11 @@ app.MapPost("/api/leave-attendance/import-balances/finalize", async (LeaveBalanc
 .WithOpenApi();
 
 app.MapGet("/api/clients", async (OrganizationRepository repository, bool? lookup, HttpContext context) =>
-    Results.Ok(await repository.GetClientsAsync(CurrentUser(context).ClientId, lookup == true)))
+{
+    var user = CurrentUser(context);
+    var clients = await repository.GetClientsAsync(user.ClientId, lookup == true);
+    return Results.Ok(SelectedClientAccess.IsSelected(user) ? clients.Where(c => user.AssignedClientIds.Contains(c.Id)) : clients);
+})
 .WithName("GetClients")
 .WithOpenApi();
 

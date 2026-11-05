@@ -14,7 +14,7 @@ public static class RecruitmentDocumentEndpoints
         {
             var user = currentUser(context.HttpContext);
             if (user.Id <= 0 || !user.IsActive || user.MustChangePassword) return Results.Unauthorized();
-            if (!RecruitmentPermissions.Has(user, "recruitment.candidate.manage")) return Results.StatusCode(403);
+            if (!RecruitmentPermissions.Has(user, "recruitment.candidate.manage", "recruitment.offer.manage", "recruitment.offer.issue")) return Results.StatusCode(403);
             try { return await next(context); }
             catch (UnauthorizedAccessException) { return Results.StatusCode(403); }
             catch (Exception e) when (e is InvalidOperationException or JsonException or InvalidDataException or ArgumentException or System.Xml.XmlException)
@@ -24,6 +24,38 @@ public static class RecruitmentDocumentEndpoints
             Results.Ok(await repository.TemplatesAsync(clientId, currentUser(context))));
         routes.MapGet("/rows", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
             Results.Ok(await repository.RowsAsync(clientId, currentUser(context))));
+        routes.MapGet("/work-locations", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
+            Results.Ok(await repository.WorkLocationsAsync(clientId, currentUser(context))));
+        routes.MapPost("/rows/work-location", async (RecruitmentDocumentRepository repository, int clientId, RecruitmentRosterWorkLocationSelection request, HttpContext context) =>
+        { await repository.AssignWorkLocationAsync(clientId, request, currentUser(context)); return Results.NoContent(); });
+        routes.MapGet("/signing-asset", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
+            Results.Ok(await repository.SigningAssetAsync(clientId, currentUser(context))));
+        routes.MapPost("/signing-asset", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
+        {
+            // Authorize before accepting or decoding any uploaded image bytes.
+            var user = currentUser(context);
+            if (!RecruitmentPermissions.Has(user, "recruitment.offer.manage")) return Results.StatusCode(403);
+            if (!context.Request.HasFormContentType) throw new InvalidOperationException("Upload one PNG or JPEG signature and stamp image.");
+            var form = await context.Request.ReadFormAsync(context.RequestAborted);
+            var file = form.Files.GetFile("file");
+            if (form.Files.Count != 1 || file is null || file.Length is < 1 or > DocumentSigningImage.MaximumBytes) throw new InvalidOperationException("Upload one PNG or JPEG image of up to 2 MB.");
+            using var stream = new MemoryStream(); await file.CopyToAsync(stream, context.RequestAborted);
+            return Results.Ok(await repository.SaveSigningAssetAsync(clientId, stream.ToArray(), file.FileName, user));
+        }).WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(3 * 1024 * 1024));
+        routes.MapDelete("/signing-asset", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
+        { await repository.DeleteSigningAssetAsync(clientId, currentUser(context)); return Results.NoContent(); });
+        routes.MapPost("/rows/{id:long}/release", async (RecruitmentDocumentRepository repository, int clientId, long id, bool? applySignature, HttpContext context) =>
+        {
+            var result = await repository.ReleaseAsync(clientId, id, applySignature ?? true, currentUser(context));
+            context.Response.Headers.Append("Access-Control-Expose-Headers", "Content-Disposition");
+            return Results.File(result.Bytes, "application/pdf", result.FileName);
+        });
+        routes.MapPost("/releases", async (RecruitmentDocumentRepository repository, int clientId, RecruitmentRosterReleaseSelection request, HttpContext context) =>
+        {
+            var result = await repository.ReleaseZipAsync(clientId, request, currentUser(context));
+            context.Response.Headers.Append("Access-Control-Expose-Headers", "Content-Disposition");
+            return Results.File(result.Bytes, "application/zip", result.FileName);
+        });
         routes.MapPost("/inspect", async (RecruitmentDocumentRepository repository, HttpContext context) =>
         {
             var (file, name, settings) = await ReadUpload(context);

@@ -517,6 +517,8 @@ public sealed class RecruitmentAllRejectedRollback
 public class RecruitmentPipelineBoard
 {
     public int ClientId { get; set; }
+    public int? WorkLocationId { get; set; }
+    public string WorkLocationName { get; set; } = "";
     public long PositionId { get; set; }
     public long? JobPostingId { get; set; }
     public string PositionCode { get; set; } = "";
@@ -572,6 +574,8 @@ public class RecruitmentPipelineWorkspaceLane
 
 public class RecruitmentPipelineDemandCard
 {
+    public int? WorkLocationId { get; set; }
+    public string WorkLocationName { get; set; } = "";
     public long? InterviewRoundsApplicationId { get; set; }
     public DateTime? CompletedAtUtc { get; set; }
     public bool OverallSlaPaused { get; set; }
@@ -621,6 +625,9 @@ public class RecruitmentPipelineDemandCard
 
 public class RecruitmentPipelineBoardCard
 {
+    public int ClientId { get; set; }
+    public int? WorkLocationId { get; set; }
+    public string WorkLocationName { get; set; } = "";
     public long PositionId { get; set; }
     public string PositionTitle { get; set; } = "";
     public string PositionCode { get; set; } = "";

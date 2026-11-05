@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { Breadcrumb } from 'antd'
 import type { BreadcrumbProps } from 'antd'
 
-export default function AppPageHeader({ title, description, icon, breadcrumbs, actions, recruitment = false, workspace }: {
+export default function AppPageHeader({ title, description, icon, breadcrumbs, actions, recruitment = false, workspace, externalClientScope = false }: {
   title: string
   description: string
   icon: ReactNode
@@ -11,6 +11,7 @@ export default function AppPageHeader({ title, description, icon, breadcrumbs, a
   actions?: ReactNode
   workspace?: string
   recruitment?: boolean
+  externalClientScope?: boolean
 }) {
   const slots = workspace || (recruitment ? 'recruitment' : '')
   return <header className={`hrms-page-header${slots ? ' recruitment-page-header' : ''}`}>
@@ -19,7 +20,7 @@ export default function AppPageHeader({ title, description, icon, breadcrumbs, a
       <div className="hrms-page-copy">
         <div className="hrms-page-context-row">
           <Breadcrumb className="hrms-page-breadcrumb" items={breadcrumbs} />
-          <div className="hrms-page-actions">{actions}{slots && <span id={`${slots}-client-controls`} />}</div>
+          <div className="hrms-page-actions">{actions}{slots && !externalClientScope && <span id={`${slots}-client-controls`} />}</div>
         </div>
         <h1>{title}</h1>
         {slots ? <div className="recruitment-title-controls"><span id={`${slots}-view-controls`} /><span id={`${slots}-page-controls`} /></div> : <p>{description}</p>}

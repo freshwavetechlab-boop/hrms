@@ -690,6 +690,14 @@ ApprovedAtUtc=CASE WHEN @Status='Approved' THEN UTC_TIMESTAMP() ELSE NULL END,Up
         return await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
     }
 
+    public async Task<IEnumerable<RecruitmentJobPosting>> PipelinePostingsAsync(IEnumerable<long> permittedPositionIds)
+    {
+        var ids = permittedPositionIds.Distinct().ToArray();
+        if (ids.Length == 0) return [];
+        await using var db = Db(); await db.OpenAsync();
+        return await db.QueryAsync<RecruitmentJobPosting>(JobPostingSelect + " WHERE p.PositionId IN @Ids AND p.Status='Published' ORDER BY p.CreatedAtUtc DESC", new { Ids = ids });
+    }
+
     public async Task<RecruitmentJobPosting?> GetJobPostingAsync(long id, AuthUser user)
     {
         await using var db = Db();
@@ -1366,6 +1374,7 @@ Description=@Description,IsActive=@IsActive WHERE Id=@Id AND ClientId=@ClientId"
         await db.OpenAsync();
         var application = await db.QueryFirstOrDefaultAsync<ApplicationSourceRow>("SELECT Id,PositionId,ClientId,JobPostingId FROM recruitment_candidate_applications WHERE Id=@Id", new { Id = applicationId });
         if (application is null || (user.ClientId is not null && user.ClientId != application.ClientId)) return (null, "Candidate application was not found.");
+        if (RecruitmentAccessScope.IsRestricted(user) && !await RecruitmentAccessScope.CanAccessApplicationWorkLocationAsync(db, user, applicationId)) return (null, "Candidate application was not found in your work location scope.");
         var existing = await db.ExecuteScalarAsync<long?>("SELECT Id FROM recruitment_application_pipeline_instances WHERE ApplicationId=@Id", new { Id = applicationId });
         if (existing is not null) return (existing, "");
         var assignment = await ResolveApplicationPipelineAssignmentAsync(db, application, user.Id);
@@ -1433,21 +1442,24 @@ WHERE PositionId=@PositionId AND JobPostingId IS NULL AND PipelineVersionId=@Pip
 ORDER BY Id DESC LIMIT 1", new { application.PositionId, PipelineVersionId = versions[0] });
     }
 
-    public async Task<RecruitmentPipelineBoard?> GetPipelineBoardAsync(long positionId, AuthUser user, long? jobPostingId = null)
+    public async Task<RecruitmentPipelineBoard?> GetPipelineBoardAsync(long positionId, AuthUser user, long? jobPostingId = null, int? workLocationId = null)
     {
-        await EnsureMissingApplicationPipelinesAsync(user.ClientId, positionId, jobPostingId, user);
         await using var db = Db();
         await db.OpenAsync();
-        var position = await db.QueryFirstOrDefaultAsync<PositionBoardRow>("SELECT Id PositionId,PositionCode,PositionTitle,ClientId FROM recruitment_open_positions WHERE Id=@Id", new { Id = positionId });
+        var position = await db.QueryFirstOrDefaultAsync<PositionBoardRow>("SELECT p.Id PositionId,p.PositionCode,p.PositionTitle,p.ClientId,NULLIF(p.BranchId,0) WorkLocationId,COALESCE(w.Name,'') WorkLocationName FROM recruitment_open_positions p LEFT JOIN worklocations w ON w.Id=p.BranchId AND w.ClientId=p.ClientId WHERE p.Id=@Id", new { Id = positionId });
         if (position is null || (user.ClientId is not null && user.ClientId != position.ClientId)) return null;
+        if (workLocationId is > 0 && position.WorkLocationId != workLocationId) return null;
+        if ((RecruitmentAccessScope.IsRestricted(user) || workLocationId is > 0)
+            && !await RecruitmentAccessScope.CanAccessWorkLocationIdAsync(db, user, position.ClientId, position.WorkLocationId)) return null;
+        await EnsureMissingApplicationPipelinesAsync(user.ClientId, positionId, jobPostingId, user);
         var assignment = await db.QueryFirstOrDefaultAsync<RecruitmentPositionPipelineAssignment>(@"SELECT assignmentRow.* FROM recruitment_position_pipeline_assignments assignmentRow
 JOIN recruitment_pipeline_versions versionRow ON versionRow.Id=assignmentRow.PipelineVersionId AND versionRow.ScopeType IN ('Application','Hybrid')
 WHERE assignmentRow.PositionId=@Id AND assignmentRow.IsActive=TRUE
 AND ((@JobPostingId IS NULL AND assignmentRow.JobPostingId IS NULL)
  OR (@JobPostingId IS NOT NULL AND (assignmentRow.JobPostingId=@JobPostingId OR assignmentRow.JobPostingId IS NULL)))
 ORDER BY CASE WHEN assignmentRow.JobPostingId=@JobPostingId THEN 0 ELSE 1 END,assignmentRow.AssignedAtUtc DESC,assignmentRow.Id DESC LIMIT 1", new { Id = positionId, JobPostingId = jobPostingId });
-        if (assignment is null) return new RecruitmentPipelineBoard { ClientId = position.ClientId, PositionId = positionId, JobPostingId = jobPostingId, PositionCode = position.PositionCode, PositionTitle = position.PositionTitle };
-        var board = new RecruitmentPipelineBoard { ClientId = position.ClientId, PositionId = positionId, JobPostingId = jobPostingId, PositionCode = position.PositionCode, PositionTitle = position.PositionTitle, PipelineVersionId = assignment.PipelineVersionId };
+        if (assignment is null) return new RecruitmentPipelineBoard { ClientId = position.ClientId, WorkLocationId = position.WorkLocationId, WorkLocationName = position.WorkLocationName, PositionId = positionId, JobPostingId = jobPostingId, PositionCode = position.PositionCode, PositionTitle = position.PositionTitle };
+        var board = new RecruitmentPipelineBoard { ClientId = position.ClientId, WorkLocationId = position.WorkLocationId, WorkLocationName = position.WorkLocationName, PositionId = positionId, JobPostingId = jobPostingId, PositionCode = position.PositionCode, PositionTitle = position.PositionTitle, PipelineVersionId = assignment.PipelineVersionId };
         board.Lanes = (await db.QueryAsync<RecruitmentPipelineBoardLane>(@"SELECT Id StageId,StageCode,StageName,StageType,CardScope,DisplayOrder,SlaDurationMinutes,SlaWarningMinutes,AllowPause,PauseBehavior,IsTerminal
 FROM recruitment_pipeline_stages WHERE PipelineVersionId=@PipelineVersionId AND CardScope='Application' AND IsActive=TRUE ORDER BY DisplayOrder,Id", assignment)).ToList();
         if (board.Lanes.Count > 0)
@@ -1493,22 +1505,32 @@ WHERE a.PositionId=@PositionId AND pi.PipelineVersionId=@PipelineVersionId AND s
 AND (@JobPostingId IS NULL OR a.JobPostingId=@JobPostingId)
 ORDER BY s.EnteredAtUtc", new { PositionId = positionId, assignment.PipelineVersionId, JobPostingId = jobPostingId })).ToList();
         await RecruitmentTalentRepository.ApplyBoardEligibilityAsync(db, cards.Select(x => x.Card).ToList());
+        foreach (var card in cards) { card.ClientId = position.ClientId; card.WorkLocationId = position.WorkLocationId; card.WorkLocationName = position.WorkLocationName; }
         foreach (var lane in board.Lanes)
             lane.Applications = cards.Where(x => x.StageId == lane.StageId
                 && RecruitmentEligibility.CanEnterPipeline(x.Card.EligibilityStatus, x.Card.AtsScore, x.Card.AtsShortlistThreshold)).Select(x => x.Card).ToList();
         return board;
     }
 
-    public async Task<RecruitmentPipelineWorkspace?> GetPipelineWorkspaceAsync(int? clientId, long? positionId, long? jobPostingId, AuthUser user)
+    public async Task<RecruitmentPipelineWorkspace?> GetPipelineWorkspaceAsync(int? clientId, long? positionId, long? jobPostingId, AuthUser user, int? workLocationId = null)
     {
         if (user.ClientId.HasValue && clientId.HasValue && user.ClientId.Value != clientId.Value) return null;
         var effectiveClientId = user.ClientId ?? (clientId is > 0 ? clientId : null);
-        await EnsureMissingApplicationPipelinesAsync(effectiveClientId, positionId, jobPostingId, user);
         await using var db = Db();
         await db.OpenAsync();
+        if (workLocationId is > 0 && (effectiveClientId is not > 0 || !await RecruitmentAccessScope.CanAccessWorkLocationIdAsync(db, user, effectiveClientId.Value, workLocationId))) return null;
+        var locationScope = await PipelinePositionIdsAsync(db, effectiveClientId, workLocationId, user);
+        var scopedPositionIds = locationScope?.PositionIds;
+        await EnsureMissingApplicationPipelinesAsync(effectiveClientId, positionId, jobPostingId, user, scopedPositionIds);
+        var parameters = new { ClientId = effectiveClientId, PositionId = positionId is > 0 ? positionId : null,
+            JobPostingId = jobPostingId is > 0 ? jobPostingId : null, LocationScope = scopedPositionIds is not null,
+            ScopedWorkLocationIds = locationScope?.WorkLocationIds is { Length: > 0 } allowedLocations ? allowedLocations : [-1],
+            ScopedPositionIds = scopedPositionIds is { Length: > 0 } ? scopedPositionIds : [-1L] };
 
         var demandCards = (await db.QueryAsync<WorkspaceDemandRow>(@"SELECT
 workOrder.ClientId,line.Id WorkOrderLineId,line.WorkOrderId,workOrder.WorkOrderNumber,
+COALESCE(NULLIF(positionRow.BranchId,0),NULLIF(requisition.BranchId,0)) WorkLocationId,
+COALESCE((SELECT Name FROM worklocations WHERE Id=COALESCE(NULLIF(positionRow.BranchId,0),NULLIF(requisition.BranchId,0)) AND ClientId=workOrder.ClientId),'') WorkLocationName,
 TRUE HasWorkOrder,
 CASE WHEN hiringCase.Id IS NOT NULL AND workOrder.Status='Draft' THEN 'Active' ELSE workOrder.Status END WorkOrderStatus,
 line.PositionName,line.PayBandLevelCode,line.Division,
@@ -1554,6 +1576,7 @@ LEFT JOIN recruitment_job_postings posting ON posting.Id=(
  SELECT jp.Id FROM recruitment_job_postings jp WHERE jp.PositionId=positionRow.Id
    AND (@JobPostingId IS NULL OR jp.Id=@JobPostingId) ORDER BY jp.Id DESC LIMIT 1)
 WHERE (@ClientId IS NULL OR workOrder.ClientId=@ClientId)
+  AND (@LocationScope=FALSE OR COALESCE(NULLIF(positionRow.BranchId,0),NULLIF(requisition.BranchId,0)) IN @ScopedWorkLocationIds)
   AND (@PositionId IS NULL OR positionRow.Id=@PositionId)
   AND (@JobPostingId IS NULL OR posting.Id=@JobPostingId)
   AND (line.RequisitionId IS NULL OR requisition.Id IS NOT NULL)
@@ -1561,10 +1584,11 @@ WHERE (@ClientId IS NULL OR workOrder.ClientId=@ClientId)
   AND (requisition.Id IS NOT NULL OR positionRow.Id IS NOT NULL OR hiringCase.Id IS NOT NULL)
   AND line.Status<>'Superseded' AND (hiringCase.Id IS NULL OR NOT " + RecruitmentCaseRepository.HistoricalHiringCaseSql + @")
 ORDER BY workOrder.ReceivedAtUtc DESC,workOrder.Id DESC,line.LineNumber,line.Id",
-            new { ClientId = effectiveClientId, PositionId = positionId is > 0 ? positionId : null, JobPostingId = jobPostingId is > 0 ? jobPostingId : null })).ToList();
+            parameters)).ToList();
 
         var directRequestCards = (await db.QueryAsync<WorkspaceDemandRow>(@"SELECT
 positionRow.ClientId,-positionRow.Id WorkOrderLineId,0 WorkOrderId,'Direct hiring request' WorkOrderNumber,
+NULLIF(positionRow.BranchId,0) WorkLocationId,COALESCE((SELECT Name FROM worklocations WHERE Id=positionRow.BranchId AND ClientId=positionRow.ClientId),'') WorkLocationName,
 FALSE HasWorkOrder,'Not linked' WorkOrderStatus,
 positionRow.PositionTitle PositionName,'' PayBandLevelCode,
 COALESCE(NULLIF(positionRow.BusinessUnit,''),NULLIF(positionRow.Department,''),'') Division,
@@ -1596,6 +1620,7 @@ LEFT JOIN recruitment_job_postings posting ON posting.Id=(
     SELECT jp.Id FROM recruitment_job_postings jp WHERE jp.PositionId=positionRow.Id
       AND (@JobPostingId IS NULL OR jp.Id=@JobPostingId) ORDER BY jp.Id DESC LIMIT 1)
 WHERE (@ClientId IS NULL OR positionRow.ClientId=@ClientId)
+  AND (@LocationScope=FALSE OR positionRow.Id IN @ScopedPositionIds)
   AND (@PositionId IS NULL OR positionRow.Id=@PositionId)
   AND (@JobPostingId IS NULL OR posting.Id=@JobPostingId)
   AND requisition.Status='Approved'
@@ -1605,7 +1630,7 @@ WHERE (@ClientId IS NULL OR positionRow.ClientId=@ClientId)
       WHERE line.PositionId=positionRow.Id OR line.RequisitionId=requisition.Id
   )
 ORDER BY requisition.RequestDate DESC,positionRow.Id DESC",
-            new { ClientId = effectiveClientId, PositionId = positionId is > 0 ? positionId : null, JobPostingId = jobPostingId is > 0 ? jobPostingId : null })).ToList();
+            parameters)).ToList();
         demandCards.AddRange(directRequestCards);
         // One approved position/requisition is one hiring demand. Older databases can
         // retain a placeholder work-order line after the real request is linked, which
@@ -1628,17 +1653,19 @@ ORDER BY requisition.RequestDate DESC,positionRow.Id DESC",
 FROM recruitment_open_positions positionRow
 JOIN recruitment_position_pipeline_assignments assignment ON assignment.PositionId=positionRow.Id AND assignment.IsActive=TRUE
 WHERE (@ClientId IS NULL OR positionRow.ClientId=@ClientId)
+  AND (@LocationScope=FALSE OR positionRow.Id IN @ScopedPositionIds)
   AND (@PositionId IS NULL OR positionRow.Id=@PositionId)
   AND (@JobPostingId IS NULL OR assignment.JobPostingId=@JobPostingId OR assignment.JobPostingId IS NULL)",
-            new { ClientId = effectiveClientId, PositionId = positionId is > 0 ? positionId : null, JobPostingId = jobPostingId is > 0 ? jobPostingId : null })).ToList();
+            parameters)).ToList();
 
         var applicationVersions = (await db.QueryAsync<long>(@"SELECT DISTINCT pipelineInstance.PipelineVersionId
 FROM recruitment_application_pipeline_instances pipelineInstance
 JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=pipelineInstance.ApplicationId
 WHERE (@ClientId IS NULL OR applicationRow.ClientId=@ClientId)
+  AND (@LocationScope=FALSE OR applicationRow.PositionId IN @ScopedPositionIds)
   AND (@PositionId IS NULL OR applicationRow.PositionId=@PositionId)
   AND (@JobPostingId IS NULL OR applicationRow.JobPostingId=@JobPostingId)",
-            new { ClientId = effectiveClientId, PositionId = positionId is > 0 ? positionId : null, JobPostingId = jobPostingId is > 0 ? jobPostingId : null })).ToList();
+            parameters)).ToList();
 
         var publishedPositionVersions = (await db.QueryAsync<WorkspacePublishedPipelineRow>(@"SELECT definition.ClientId,versionRow.Id PipelineVersionId
 FROM recruitment_pipeline_versions versionRow
@@ -1679,7 +1706,7 @@ WHERE versionRow.Status='Published' AND definition.IsActive=TRUE
             .Concat(publishedPositionVersions.Select(row => row.PipelineVersionId))
             .Concat(publishedApplicationVersions)
             .Distinct().ToArray();
-        var progressCandidates = await RecruitmentHiringProgress.ReadCandidatesAsync(db, demandCards.Select(card => card.PositionId ?? 0), user);
+        var progressCandidates = await RecruitmentHiringProgress.ReadCandidatesAsync(db, demandCards.Select(card => card.PositionId ?? 0), user, authoritativeWorkLocation: true);
         var workspace = new RecruitmentPipelineWorkspace { ClientId = effectiveClientId };
         if (versionIds.Length == 0)
         {
@@ -1735,7 +1762,8 @@ ORDER BY stageRow.PipelineVersionId,stageRow.DisplayOrder,stageRow.Id", new { Ve
         var candidateCards = (await db.QueryAsync<WorkspaceBoardCardRow>(@"SELECT pipelineInstance.PipelineVersionId,stageInstance.PipelineStageId StageId,
 applicationRow.Id ApplicationId,applicationRow.ApplicationCode,applicationRow.CandidateId,
 CONCAT(candidate.FirstName,' ',candidate.LastName) CandidateName,candidate.Email CandidateEmail,
-applicationRow.PositionId,positionContext.PositionTitle,positionContext.PositionCode,
+applicationRow.ClientId,applicationRow.PositionId,positionContext.PositionTitle,positionContext.PositionCode,
+NULLIF(positionContext.BranchId,0) WorkLocationId,COALESCE((SELECT Name FROM worklocations WHERE Id=positionContext.BranchId AND ClientId=positionContext.ClientId),'') WorkLocationName,
 CASE WHEN stageDefinition.StageType='Rejected' THEN COALESCE((SELECT previousStage.StageName FROM recruitment_application_stage_instances previousInstance
  JOIN recruitment_pipeline_stages previousStage ON previousStage.Id=previousInstance.PipelineStageId
  WHERE previousInstance.ApplicationId=applicationRow.Id AND previousInstance.Id<stageInstance.Id AND previousInstance.Status='Completed'
@@ -1767,11 +1795,12 @@ JOIN recruitment_open_positions positionContext ON positionContext.Id=applicatio
 JOIN recruitment_candidates candidate ON candidate.Id=applicationRow.CandidateId
 JOIN recruitment_pipeline_stages stageDefinition ON stageDefinition.Id=stageInstance.PipelineStageId AND stageDefinition.CardScope='Application'
 WHERE stageInstance.Status IN ('Active','Paused')
+  AND (@LocationScope=FALSE OR applicationRow.PositionId IN @ScopedPositionIds)
   AND (@ClientId IS NULL OR applicationRow.ClientId=@ClientId)
   AND (@PositionId IS NULL OR applicationRow.PositionId=@PositionId)
   AND (@JobPostingId IS NULL OR applicationRow.JobPostingId=@JobPostingId)
 ORDER BY stageInstance.EnteredAtUtc",
-            new { ClientId = effectiveClientId, PositionId = positionId is > 0 ? positionId : null, JobPostingId = jobPostingId is > 0 ? jobPostingId : null })).ToList();
+            parameters)).ToList();
         await RecruitmentTalentRepository.ApplyBoardEligibilityAsync(db, candidateCards.Cast<RecruitmentPipelineBoardCard>().ToList());
         foreach (var candidate in candidateCards.Where(x => RecruitmentEligibility.CanEnterPipeline(x.EligibilityStatus, x.AtsScore, x.AtsShortlistThreshold)))
         {
@@ -1781,7 +1810,19 @@ ORDER BY stageInstance.EnteredAtUtc",
         return workspace;
     }
 
-    private async Task EnsureMissingApplicationPipelinesAsync(int? clientId, long? positionId, long? jobPostingId, AuthUser user)
+    private sealed record PipelineWorkLocationScope(long[] PositionIds, int[] WorkLocationIds);
+    private static async Task<PipelineWorkLocationScope?> PipelinePositionIdsAsync(MySqlConnection db, int? clientId, int? workLocationId, AuthUser user)
+    {
+        if (!RecruitmentAccessScope.IsRestricted(user) && workLocationId is not > 0) return null;
+        if (clientId is not > 0) return new([], []);
+        var locations = (await RecruitmentAccessScope.WorkLocationsAsync(db, user, clientId.Value)).Select(row => row.Id)
+            .Where(id => workLocationId is not > 0 || id == workLocationId).ToArray();
+        if (locations.Length == 0) return new([], []);
+        var positions = (await db.QueryAsync<long>("SELECT Id FROM recruitment_open_positions WHERE ClientId=@ClientId AND BranchId IN @LocationIds", new { ClientId = clientId.Value, LocationIds = locations })).ToArray();
+        return new(positions, locations);
+    }
+
+    private async Task EnsureMissingApplicationPipelinesAsync(int? clientId, long? positionId, long? jobPostingId, AuthUser user, long[]? scopedPositionIds = null)
     {
         await using var db = Db();
         await db.OpenAsync();
@@ -1789,12 +1830,15 @@ ORDER BY stageInstance.EnteredAtUtc",
 FROM recruitment_candidate_applications applicationRow
 LEFT JOIN recruitment_application_pipeline_instances pipelineInstance ON pipelineInstance.ApplicationId=applicationRow.Id
 WHERE pipelineInstance.Id IS NULL
+  AND (@LocationScope=FALSE OR applicationRow.PositionId IN @ScopedPositionIds)
   AND (@ClientId IS NULL OR applicationRow.ClientId=@ClientId)
   AND (@PositionId IS NULL OR applicationRow.PositionId=@PositionId)
   AND (@JobPostingId IS NULL OR applicationRow.JobPostingId=@JobPostingId)
 ORDER BY applicationRow.Id LIMIT 200", new
         {
             ClientId = clientId,
+            LocationScope = scopedPositionIds is not null,
+            ScopedPositionIds = scopedPositionIds is { Length: > 0 } ? scopedPositionIds : [-1L],
             PositionId = positionId is > 0 ? positionId : null,
             JobPostingId = jobPostingId is > 0 ? jobPostingId : null
         })).ToList();
@@ -1874,6 +1918,7 @@ VALUES (@ApplicationId,@StageInstanceId,@TransitionId,@Reason,@Status,@UserId);S
     {
         await using var db = Db();
         await db.OpenAsync();
+        if (RecruitmentAccessScope.IsRestricted(user) && !await RecruitmentAccessScope.CanAccessApplicationWorkLocationAsync(db, user, applicationId)) return [];
         var rows = (await db.QueryAsync<RecruitmentPipelineTransition>(@"SELECT t.*,f.StageCode FromStageCode,n.StageCode ToStageCode
 FROM recruitment_candidate_applications a
 JOIN recruitment_application_pipeline_instances pi ON pi.ApplicationId=a.Id
@@ -2059,6 +2104,7 @@ ORDER BY transitionRow.DisplayOrder,transitionRow.Id", new { Id = applicationId,
     {
         await using var db = Db();
         await db.OpenAsync();
+        if (RecruitmentAccessScope.IsRestricted(user) && !await RecruitmentAccessScope.CanAccessApplicationWorkLocationAsync(db, user, applicationId)) return [];
         return await db.QueryAsync<RecruitmentApplicationStageTimelineItem>(@"SELECT instance.Id,instance.ApplicationPipelineInstanceId,
 instance.ApplicationId,instance.PipelineStageId,stageRow.StageCode,stageRow.StageName,stageRow.StageType,stageRow.DisplayOrder,
 instance.Status,instance.OutcomeCode,instance.EnteredAtUtc,instance.DueAtUtc,instance.ExitedAtUtc,
@@ -2178,6 +2224,7 @@ ORDER BY transitionRow.DisplayOrder,transitionRow.Id", new { StageId = row.Pipel
         var request = await db.QueryFirstOrDefaultAsync<TransitionRequestRow>(@"SELECT r.*,a.ClientId FROM recruitment_pipeline_transition_requests r
 JOIN recruitment_candidate_applications a ON a.Id=r.ApplicationId WHERE r.Id=@Id", new { Id = transitionRequestId });
         if (request is null || (user.ClientId is not null && user.ClientId != request.ClientId)) return (null, "Transition request was not found.");
+        if (RecruitmentAccessScope.IsRestricted(user) && !await RecruitmentAccessScope.CanAccessApplicationWorkLocationAsync(db, user, request.ApplicationId)) return (null, "Transition request was not found in your work location scope.");
         if (!request.Status.Equals("Pending Approval", StringComparison.OrdinalIgnoreCase)) return (null, "Transition request is no longer pending approval.");
         if (normalized == "Approved") return await ApplyTransitionAsync(transitionRequestId, user.Id);
         await db.ExecuteAsync("UPDATE recruitment_pipeline_transition_requests SET Status=@Status,DecidedByUserId=@UserId,DecidedAtUtc=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = transitionRequestId, Status = normalized, UserId = user.Id });
@@ -2189,6 +2236,7 @@ JOIN recruitment_candidate_applications a ON a.Id=r.ApplicationId WHERE r.Id=@Id
         if (string.IsNullOrWhiteSpace(request.Reason)) return (null, "Pause reason is required.");
         await using var db = Db();
         await db.OpenAsync();
+        if (RecruitmentAccessScope.IsRestricted(user) && !await RecruitmentAccessScope.CanAccessApplicationWorkLocationAsync(db, user, applicationId)) return (null, "Active application stage was not found.");
         var stage = await CurrentStageAsync(db, applicationId, user.ClientId);
         if (stage is null) return (null, "Active application stage was not found.");
         if (stage.Status.Equals("Paused", StringComparison.OrdinalIgnoreCase)) return (null, "Application stage is already paused.");
@@ -2205,6 +2253,7 @@ JOIN recruitment_candidate_applications a ON a.Id=r.ApplicationId WHERE r.Id=@Id
     {
         await using var db = Db();
         await db.OpenAsync();
+        if (RecruitmentAccessScope.IsRestricted(user) && !await RecruitmentAccessScope.CanAccessApplicationWorkLocationAsync(db, user, applicationId)) return (null, "Active application stage was not found.");
         var stage = await CurrentStageAsync(db, applicationId, user.ClientId);
         if (stage is null) return (null, "Active application stage was not found.");
         if (!stage.Status.Equals("Paused", StringComparison.OrdinalIgnoreCase)) return (null, "Application stage is not paused.");
@@ -3386,7 +3435,7 @@ LEFT JOIN clients c ON c.Id=p.ClientId";
     private sealed class PostingSourceRow { public int ClientId { get; set; } public long RequisitionId { get; set; } public string PositionTitle { get; set; } = ""; public string JobLocation { get; set; } = ""; public string JobDescriptionStatus { get; set; } = ""; public long JobDescriptionRequisitionId { get; set; } }
     private sealed class AssignmentSourceRow { public int ClientId { get; set; } public string Status { get; set; } = ""; public string ScopeType { get; set; } = ""; public int PipelineClientId { get; set; } }
     private sealed class ApplicationSourceRow { public long Id { get; set; } public long PositionId { get; set; } public int ClientId { get; set; } public long? JobPostingId { get; set; } }
-    private sealed class PositionBoardRow { public long PositionId { get; set; } public string PositionCode { get; set; } = ""; public string PositionTitle { get; set; } = ""; public int ClientId { get; set; } }
+    private sealed class PositionBoardRow { public long PositionId { get; set; } public string PositionCode { get; set; } = ""; public string PositionTitle { get; set; } = ""; public int ClientId { get; set; } public int? WorkLocationId { get; set; } public string WorkLocationName { get; set; } = ""; }
     private sealed class StageScopeBackfillRow { public long Id { get; set; } public long PipelineVersionId { get; set; } public string ScopeType { get; set; } = "Application"; public string StageCode { get; set; } = ""; public string StageName { get; set; } = ""; public string CardScope { get; set; } = "Application"; public int DisplayOrder { get; set; } public bool IsActive { get; set; } }
     private sealed class WorkspaceDemandRow : RecruitmentPipelineDemandCard { public long? AssignedPipelineVersionId { get; set; } }
     private sealed class WorkspaceAssignmentRow { public long PositionId { get; set; } public int ClientId { get; set; } public long PipelineVersionId { get; set; } }

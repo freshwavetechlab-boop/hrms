@@ -473,6 +473,8 @@ export type RecruitmentPipelineTransitionRule = {
 
 export type RecruitmentPipelineBoard = {
   clientId: number
+  workLocationId?: number | null
+  workLocationName?: string
   positionId: number
   jobPostingId?: number | null
   positionCode: string
@@ -497,6 +499,9 @@ export type RecruitmentPipelineBoardLane = {
 }
 
 export type RecruitmentPipelineBoardCard = {
+  clientId?: number
+  workLocationId?: number | null
+  workLocationName?: string
   positionId?: number
   positionTitle?: string
   positionCode?: string
@@ -524,6 +529,8 @@ export type RecruitmentPipelineBoardCard = {
 }
 
 export type RecruitmentPipelineDemandCard = {
+  workLocationId?: number | null
+  workLocationName?: string
   interviewRoundsApplicationId?: number | null
   hiringProgress?: HiringProgress
   cardType: 'Demand'

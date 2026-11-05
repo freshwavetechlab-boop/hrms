@@ -1,6 +1,7 @@
 import { toast } from '../components/ToastProvider'
 import { resolveRuntimeApiBase } from './apiBaseUrl'
 import { recruitmentDeleteActions } from './recruitmentDeleteFeedback'
+import { activeClientHeader, beginClientScopedWrite, configureClientRequestScope } from './clientRequestScope'
 
 export const api = resolveRuntimeApiBase(
   import.meta.env.VITE_API_URL,
@@ -46,17 +47,22 @@ export async function apiRequest(path: string, options: ApiOptions = {}) {
   const controller = new AbortController()
   const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs ?? 30000)
   const stopLoading = startLoading(options)
+  const stopScopedWrite = beginClientScopedWrite(path, options.method)
   const headers = new Headers(options.headers)
   const isFormData = options.body instanceof FormData
   const legacyToken = sessionStorage.getItem(legacyTokenKey) || localStorage.getItem(legacyTokenKey)
 
   if (options.body && !isFormData && !headers.has('Content-Type')) headers.set('Content-Type', jsonContent)
   if (legacyToken && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${legacyToken}`)
+  const activeClient = activeClientHeader(path)
+  if (activeClient) headers.set('X-Client-Id', activeClient)
 
   try {
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal
     const response = await fetch(apiUrl(path), { ...options, headers, credentials: 'include', signal })
+    if (response.status === 403 && activeClient) window.dispatchEvent(new Event('payroll:client-access-refresh'))
     if (response.status === 401) {
+      configureClientRequestScope(null)
       sessionStorage.removeItem(legacyTokenKey)
       localStorage.removeItem(legacyTokenKey)
       window.dispatchEvent(new CustomEvent('payroll:unauthorized'))
@@ -65,6 +71,7 @@ export async function apiRequest(path: string, options: ApiOptions = {}) {
   } finally {
     window.clearTimeout(timeout)
     stopLoading()
+    stopScopedWrite()
   }
 }
 
@@ -113,15 +120,21 @@ export async function postForm<TResult>(path: string, body: FormData, fallback: 
 export function postFormWithProgress<TResult>(path: string, body: FormData, fallback: TResult, onProgress: (percent: number) => void, timeoutMs = 120000, timeoutMessage = 'Upload timed out.'): Promise<ApiResult<TResult>> {
   return new Promise(resolve => {
     const request = new XMLHttpRequest()
+    const stopScopedWrite = beginClientScopedWrite(path, 'POST')
     const legacyToken = sessionStorage.getItem(legacyTokenKey) || localStorage.getItem(legacyTokenKey)
     request.open('POST', apiUrl(path))
     request.withCredentials = true
     if (legacyToken) request.setRequestHeader('Authorization', `Bearer ${legacyToken}`)
+    const activeClient = activeClientHeader(path)
+    if (activeClient) request.setRequestHeader('X-Client-Id', activeClient)
+    request.onloadend = stopScopedWrite
     request.upload.onprogress = event => {
       if (event.lengthComputable) onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)))
     }
     request.onload = () => {
+      if (request.status === 403 && activeClient) window.dispatchEvent(new Event('payroll:client-access-refresh'))
       if (request.status === 401) {
+        configureClientRequestScope(null)
         sessionStorage.removeItem(legacyTokenKey)
         localStorage.removeItem(legacyTokenKey)
         window.dispatchEvent(new CustomEvent('payroll:unauthorized'))

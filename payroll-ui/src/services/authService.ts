@@ -5,7 +5,9 @@ type LoginData = { token: string; user: AuthUser }
 
 export async function getCurrentUser() {
   const response = await apiRequest('/api/auth/me')
-  return response.ok ? response.json() as Promise<AuthUser> : null
+  if (response.status === 401 || response.status === 403) return null
+  if (!response.ok) throw new Error('Unable to refresh account access.')
+  return response.json() as Promise<AuthUser>
 }
 
 export async function login(email: string, password: string) {

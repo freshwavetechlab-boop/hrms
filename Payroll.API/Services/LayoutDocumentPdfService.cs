@@ -14,6 +14,7 @@ public sealed class LayoutDocumentPdfService
     public const string Marker = "<!-- frevo-document-layout:v1 -->";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow };
     private static readonly Regex Token = new(@"\{\{\s*([A-Za-z][A-Za-z0-9_.]{0,79})\s*\}\}", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(200));
+    private static readonly Regex SignaturePlaceholder = new(@"^\[\s*Signature\s*(?:&|and)\s*Stamp(?:\s+of\s+[^\]\r\n]{1,100})?\s*\]$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
     private static readonly CultureInfo India = CultureInfo.GetCultureInfo("en-IN");
     public static bool IsLayout(string? body) => body?.TrimStart().StartsWith(Marker, StringComparison.Ordinal) == true;
 
@@ -70,11 +71,12 @@ public sealed class LayoutDocumentPdfService
         {
             foreach (var e in elements)
             {
-                if (e is null || e.Kind is not ("text" or "line" or "rect" or "image") || !Range(e.X, 0, layout.PageWidth)
+                if (e is null || e.Kind is not ("text" or "line" or "rect" or "image" or "signature") || !Range(e.X, 0, layout.PageWidth)
                     || !Range(e.Y, 0, layout.PageHeight) || !Range(e.Width, 0, layout.PageWidth - e.X + .01)
                     || !Range(e.Height, 0, layout.PageHeight - e.Y + .01) || !Range(e.StrokeWidth, .1, 4) || e.MinFontSize != 0 && !Range(e.MinFontSize, 6, e.FontSize)
-                    || e.Kind == "image" && e.Asset != "organizationLogo" || e.Kind is "text" or "rect" or "image" && (e.Width <= 0 || e.Height <= 0))
-                    throw new InvalidOperationException("A document element is invalid or outside the page. Only the organization logo asset is supported.");
+                    || e.Kind == "image" && e.Asset != "organizationLogo" || e.Kind == "signature" && e.Asset is not ("" or "signatureAndStamp")
+                    || e.Kind is "text" or "rect" or "image" or "signature" && (e.Width <= 0 || e.Height <= 0))
+                    throw new InvalidOperationException("A document element is invalid or outside the page. Use the organization logo or a configured signature slot.");
                 Text(e);
             }
         }
@@ -89,9 +91,9 @@ public sealed class LayoutDocumentPdfService
             Elements(s.Elements);
             foreach (var b in s.Blocks)
             {
-                if (b is null || b.Kind is not ("paragraph" or "table" or "gap") || !Range(b.SpaceBefore, 0, 300)
+                if (b is null || b.Kind is not ("paragraph" or "table" or "gap" or "signature") || !Range(b.SpaceBefore, 0, 300)
                     || !Range(b.SpaceAfter, 0, 300) || !Range(b.Indent, 0, s.Width - 20) || !Range(b.Height, 0, layout.PageHeight)
-                    || b.Bullet is null || b.Bullet.Length > 5 || b.Rows is null || b.ColumnWidths is null)
+                    || b.Kind == "signature" && b.Height <= 0 || b.Bullet is null || b.Bullet.Length > 5 || b.Rows is null || b.ColumnWidths is null)
                     throw new InvalidOperationException("A document flow block is invalid.");
                 Text(b);
                 if (b.Kind == "table")
@@ -110,7 +112,11 @@ public sealed class LayoutDocumentPdfService
             foreach (Match m in Token.Matches(text))
                 if (!allowed.Contains(m.Groups[1].Value.Split('.')[0])) throw new InvalidOperationException("The document uses an undeclared field: " + m.Groups[1].Value + ".");
     }
-    public static readonly string[] BuiltInKeys = ["candidateName", "candidateFirstName", "candidateLastName", "candidateEmail", "candidatePhone", "candidateCode", "clientName", "organizationName", "offerNumber", "offerDate", "date", "joiningDate", "positionTitle", "jobLocation", "currency", "formattedCtc", "offeredCtc", "expiryDate", "remarks", "companyName", "ctcInWords"];
+    public static readonly string[] BuiltInKeys = ["candidateName", "candidateFirstName", "candidateLastName", "candidateEmail", "candidatePhone", "candidateCode", "clientName", "organizationName", "offerNumber", "offerDate", "date", "joiningDate", "positionTitle", "jobLocation", "currency", "formattedCtc", "offeredCtc", "expiryDate", "remarks", "companyName", "ctcInWords", "workLocation", "workLocationName", "workLocationAddress", "workLocationCity", "workLocationState", "institutionName", "institutionShortName", "institutionLocation", "instituteName", "instituteAddress", "city", "state"];
+
+    private static bool IsSignaturePlaceholder(DocumentText text) => SignaturePlaceholder.IsMatch(text.Runs.Count > 0 ? string.Concat(text.Runs.Select(run => run.Text)) : text.Text);
+    public static bool HasSignatureSlot(RecruitmentDocumentLayout layout) => layout.Header.Concat(layout.Footer).Any(e => e.Kind == "signature" || e.Kind == "text" && IsSignaturePlaceholder(e))
+        || layout.Sections.Any(section => section.Elements.Any(e => e.Kind == "signature" || e.Kind == "text" && IsSignaturePlaceholder(e)) || section.Blocks.Any(block => block.Kind == "signature" || block.Kind == "paragraph" && IsSignaturePlaceholder(block)));
 
     public static Dictionary<string, string> PrepareValues(RecruitmentDocumentLayout layout, IReadOnlyDictionary<string, string> input, bool requireAll, out List<string> missing)
     {
@@ -170,22 +176,27 @@ public sealed class LayoutDocumentPdfService
         return values;
     }
 
-    public (byte[]? Bytes, string Error) Create(string body, IReadOnlyDictionary<string, string> input, byte[]? organizationLogo = null, bool draft = true)
+    public (byte[]? Bytes, string Error) Create(string body, IReadOnlyDictionary<string, string> input, byte[]? organizationLogo = null, bool draft = true, byte[]? signatureAndStamp = null)
     {
         try
         {
             var layout = Parse(body);
+            if (signatureAndStamp is not null && draft) throw new InvalidOperationException("Use release generation to apply a signature and stamp. Draft PDFs remain unsigned.");
+            if (signatureAndStamp is not null && !HasSignatureSlot(layout)) throw new InvalidOperationException("Configure a signature-and-stamp slot in the document template before applying the uploaded image.");
+            var signingData = signatureAndStamp is null ? null : DocumentSigningImage.Validate(signatureAndStamp);
             var values = PrepareValues(layout, input, true, out _);
             DocumentFontResolver.EnsureInitialized();
             using var document = new PdfDocument(); document.Info.Title = Expand(layout.Title, values);
             using var logoStream = organizationLogo is null ? null : new MemoryStream(organizationLogo);
             using var logo = logoStream is null ? null : XImage.FromStream(logoStream);
+            using var signingStream = signingData is null ? null : new MemoryStream(signingData.Bytes, false);
+            using var signing = signingStream is null ? null : XImage.FromStream(signingStream);
             XGraphics? gfx = null;
             void Page()
             {
                 gfx?.Dispose(); var page = document.AddPage(); page.Width = XUnit.FromPoint(layout.PageWidth); page.Height = XUnit.FromPoint(layout.PageHeight);
                 gfx = XGraphics.FromPdfPage(page);
-                foreach (var e in layout.Header.Concat(layout.Footer)) Element(gfx, e, values, logo);
+                foreach (var e in layout.Header.Concat(layout.Footer)) Element(gfx, e, values, logo, signing);
                 if (draft) gfx.DrawString("UNSIGNED DRAFT", Font("sans", 7, false, false), XBrushes.Gray, new XRect(layout.PageWidth - 182, 103, 120, 10), XStringFormats.TopRight);
             }
             try
@@ -193,10 +204,29 @@ public sealed class LayoutDocumentPdfService
                 foreach (var section in layout.Sections)
                 {
                     Page(); var used = 1; var y = section.Top;
-                    if (!section.Flow) { foreach (var e in section.Elements) Element(gfx!, e, values, logo); continue; }
+                    if (!section.Flow)
+                    {
+                        foreach (var e in section.Elements)
+                        {
+                            // Existing layouts keep their original text placeholder,
+                            // so older API deployments can still parse the same JSON.
+                            // Use only its available blank area; never cover the next
+                            // signatory name or another positioned document element.
+                            if (signing is not null && e.Kind == "text" && IsSignaturePlaceholder(e))
+                            {
+                                var width = Math.Min(e.Width, 220);
+                                var nextY = section.Elements.Where(other => other.Y > e.Y + .1 && other.X < e.X + width && other.X + other.Width > e.X).Select(other => other.Y).DefaultIfEmpty(layout.PageHeight).Min();
+                                var height = Math.Max(e.Height, Math.Min(60, nextY - e.Y - 4));
+                                Signature(gfx!, signing, e, values, e.X, e.Y, width, Math.Min(height, layout.PageHeight - e.Y));
+                            }
+                            else Element(gfx!, e, values, logo, signing);
+                        }
+                        continue;
+                    }
                     foreach (var block in section.Blocks)
                     {
-                        var height = block.Kind == "table" ? TableHeight(gfx!, block, values) : block.Kind == "gap" ? block.Height : Lines(gfx!, block, values, section.Width - block.Indent).Count * block.LineHeight;
+                        var legacySignature = signing is not null && block.Kind == "paragraph" && IsSignaturePlaceholder(block);
+                        var height = block.Kind == "table" ? TableHeight(gfx!, block, values) : block.Kind is "gap" or "signature" ? block.Height : legacySignature ? Math.Max(36, block.LineHeight) : Lines(gfx!, block, values, section.Width - block.Indent).Count * block.LineHeight;
                         if (height + block.SpaceBefore > section.Bottom - section.Top) throw new InvalidOperationException("A document block is too tall for its page. Review the layout or field length.");
                         if (y + block.SpaceBefore + height > section.Bottom)
                         {
@@ -205,6 +235,7 @@ public sealed class LayoutDocumentPdfService
                         }
                         y += block.SpaceBefore;
                         if (block.Kind == "table") Table(gfx!, block, values, section.Left, y);
+                        else if (block.Kind == "signature" || legacySignature) Signature(gfx!, signing, block, values, section.Left + block.Indent, y, section.Width - block.Indent, height);
                         else if (block.Kind != "gap")
                         {
                             if (block.Bullet.Length > 0) gfx!.DrawString(block.Bullet, Font(block.FontFamily, block.FontSize, block.Bold, block.Italic), XBrushes.Black, section.Left, y + block.FontSize);
@@ -299,14 +330,29 @@ public sealed class LayoutDocumentPdfService
             y += heights[r];
         }
     }
-    private static void Element(XGraphics gfx, DocumentElement e, IReadOnlyDictionary<string, string> values, XImage? logo)
+    private static void Signature(XGraphics gfx, XImage? signing, DocumentText fallback, IReadOnlyDictionary<string,string> values, double x, double y, double width, double height)
     {
+        if (signing is null)
+        {
+            if (Lines(gfx, fallback, values, width).Count * fallback.LineHeight > height + .1) throw new InvalidOperationException("The signature placeholder exceeds its configured box; no text was omitted.");
+            Draw(gfx, fallback, values, x, y, width); return;
+        }
+        var scale = Math.Min(width / signing.PixelWidth, height / signing.PixelHeight);
+        var imageWidth = signing.PixelWidth * scale; var imageHeight = signing.PixelHeight * scale;
+        var left = fallback.Align == "right" ? x + width - imageWidth : fallback.Align == "center" ? x + (width - imageWidth) / 2 : x;
+        gfx.DrawImage(signing, left, y + (height - imageHeight) / 2, imageWidth, imageHeight);
+    }
+    private static void Element(XGraphics gfx, DocumentElement e, IReadOnlyDictionary<string, string> values, XImage? logo, XImage? signing)
+    {
+        if (signing is not null && e.Kind == "text" && IsSignaturePlaceholder(e))
+        { Signature(gfx, signing, e, values, e.X, e.Y, e.Width, e.Height); return; }
         var pen = new XPen(XColors.Black, e.StrokeWidth);
         switch (e.Kind)
         {
             case "line": gfx.DrawLine(pen, e.X, e.Y, e.X + e.Width, e.Y + e.Height); break;
             case "rect": gfx.DrawRectangle(pen, e.X, e.Y, e.Width, e.Height); break;
             case "image": if (logo is null) throw new InvalidOperationException("Configure the organization logo before generating this document."); gfx.DrawImage(logo, e.X, e.Y, e.Width, e.Height); break;
+            case "signature": Signature(gfx, signing, e, values, e.X, e.Y, e.Width, e.Height); break;
             case "text":
                 DocumentText fitted = e;
                 if (e.MinFontSize > 0)

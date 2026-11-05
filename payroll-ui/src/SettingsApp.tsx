@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState, type MouseEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { AppstoreOutlined, BankOutlined, BellOutlined, DownOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons'
-import { Avatar, Badge, Button, Dropdown, Input, Menu, Space, Tooltip } from 'antd'
+import { Avatar, Badge, Button, Dropdown, Input, Menu, Select, Space, Tooltip, message } from 'antd'
 import type { MenuProps } from 'antd'
 import AppIcon from './components/AppIcon'
 import type { IconName } from './components/AppIcon'
@@ -28,6 +28,7 @@ import PayrollAttendancePage from './pages/PayrollAttendancePage'
 import PayrollPage from './pages/PayrollPage'
 import ReportingPage, { reportItems } from './pages/ReportingPage'
 import { billingOnlySettings, canOpenReport, hasReportWorkspace } from './utils/workspaceAccess'
+import { assignedClients, isSelectedClientUser, isUnrestrictedClientAdmin } from './utils/clientAccess'
 import type { ReportDefinition, ReportingMenu } from './pages/ReportingPage'
 import RecruitmentPage, { recruitmentViews, type RecruitmentPageView, type RecruitmentRequestNavigation } from './pages/RecruitmentPage'
 import { getJsonResult } from './services/apiClient'
@@ -310,12 +311,15 @@ export default function SettingsApp() {
   const permissions = currentUser?.permissions ?? []
   const permissionsKey = permissions.join(',')
   const billingOnly = billingOnlySettings(permissions)
-  const permittedReportItems = (menu: ReportingMenu) => reportItems(menu).filter(report => canOpenReport(permissions, menu, report.code))
+  const selectedClientAccess = isSelectedClientUser(currentUser)
+  const assignedClientKey = assignedClients(currentUser).join(',')
+  const excelAdminAccess = isUnrestrictedClientAdmin(currentUser)
+  const permittedReportItems = (menu: ReportingMenu) => reportItems(menu).filter(report => canOpenReport(permissions, menu, report.code, excelAdminAccess))
   const hasAnyPermission = (...codes: string[]) => codes.some(code => grantedPermissions.has(code))
-  const clientScopedAdmin = Boolean(currentUser?.clientId && !grantedPermissions.has('security.manage'))
-  const canManageApps = currentUser?.clientId == null && hasAnyPermission('settings.manage')
-  const canManageSecurity = hasAnyPermission('security.manage', 'client.users.manage', 'client.roles.assign')
-  const isSuperAdmin = Boolean(currentUser?.clientId == null && currentUser?.roles.some(role => role.toLowerCase() === 'super_admin'))
+  const clientScopedAdmin = selectedClientAccess || Boolean(currentUser?.clientId && !grantedPermissions.has('security.manage'))
+  const canManageApps = !selectedClientAccess && currentUser?.clientId == null && hasAnyPermission('settings.manage')
+  const canManageSecurity = !selectedClientAccess && hasAnyPermission('security.manage', 'client.users.manage', 'client.roles.assign')
+  const isSuperAdmin = Boolean(!selectedClientAccess && currentUser?.clientId == null && currentUser?.roles.some(role => role.toLowerCase() === 'super_admin'))
   const [hasAssignedInterviews, setHasAssignedInterviews] = useState(false)
   const interviewOnly = !isSuperAdmin && !hasAnyPermission('settings.manage', 'recruitment.manage', 'recruitment.interview.schedule')
     && !Array.from(grantedPermissions).some(permission => permission.startsWith('recruitment.') && permission !== 'recruitment.interview.panel')
@@ -334,7 +338,7 @@ export default function SettingsApp() {
     if (code === 'LeaveAttendance') return hasAnyPermission('attendance.manage', 'leave.manage', 'mss.attendance.manage', 'mss.attendance.client.manage')
     if (code === 'TalentAcquisition') return hasAssignedInterviews || isSuperAdmin || hasAnyPermission('settings.manage') || Array.from(grantedPermissions).some(permission => permission.startsWith('recruitment.'))
     if (code === 'Security') return canManageSecurity || canManageApps
-    if (code === 'Workflows') return hasAnyPermission('workflow.manage', 'settings.manage', 'client.settings.manage')
+    if (code === 'Workflows') return !selectedClientAccess && hasAnyPermission('workflow.manage', 'settings.manage', 'client.settings.manage')
     if (code === 'Settings') return hasAnyPermission('settings.manage', 'client.settings.manage', 'billing.manage')
     if (code === 'Reports') return hasReportWorkspace(permissions)
     return false
@@ -358,7 +362,7 @@ export default function SettingsApp() {
   const initialReportingTab = routeParts[0] === 'reports' ? fromSlug(reportingMenus, routeParts.at(-1), 'Payroll Reports')
     : savedReportingTab && reportingMenus.includes(savedReportingTab) ? savedReportingTab : 'Payroll Reports'
   const dashboardView = routeParts[0] === 'dashboard' && dashboardViews.includes(routeParts[1] as DashboardView) ? routeParts[1] as DashboardView : 'overview'
-  const isExcelDashboard = routeParts[0] === 'dashboard' && routeParts[1] === 'excel-payslips' && hasAnyPermission('reports.view', 'reports.payroll.view')
+  const isExcelDashboard = routeParts[0] === 'dashboard' && routeParts[1] === 'excel-payslips' && excelAdminAccess && hasAnyPermission('reports.view', 'reports.payroll.view')
   const [requestNavigation, setRequestNavigation] = useState<RecruitmentRequestNavigation | null>(null)
   const recruitmentView = routeParts[0] === 'recruitment' ? fromSlug(recruitmentViews, routeParts[1], 'Dashboard') : 'Dashboard'
   const recruitmentQuery = new URLSearchParams(routeLocation.search)
@@ -415,10 +419,20 @@ export default function SettingsApp() {
   const [mainModule, setMainModule] = useState<ModuleCode>(initialModule)
   const [shellOrg, setShellOrg] = useState<Org>(org0)
   const [scopedClient, setScopedClient] = useState<Client | null>(null)
+  const [assignedClientOptions, setAssignedClientOptions] = useState<Client[]>([])
+  const [assignedClientLoading, setAssignedClientLoading] = useState(false)
+  useEffect(() => {
+    let active = true
+    if (!selectedClientAccess) { setAssignedClientOptions([]); setAssignedClientLoading(false); return }
+    setAssignedClientLoading(true)
+    const allowed = new Set(assignedClients(currentUser))
+    void getClients(false, true).then(rows => { if (active) setAssignedClientOptions(rows.filter(row => allowed.has(row.id) && row.isActive)) }).finally(() => { if (active) setAssignedClientLoading(false) })
+    return () => { active = false }
+  }, [selectedClientAccess, assignedClientKey, currentUser?.id, currentUser?.clientId])
   const activeModule = visibleModules.find(module => module.code === mainModule) ?? modules[0]
   const dashboardAccess = [...(currentUser?.dashboardAccess?.length ? currentUser.dashboardAccess : fallbackDashboardAccess)]
-    .filter(item => item.code !== excelDashboardAccess.code || hasAnyPermission('reports.view', 'reports.payroll.view'))
-  if (hasAnyPermission('reports.view', 'reports.payroll.view') && !dashboardAccess.some(item => item.code === excelDashboardAccess.code)) dashboardAccess.push(excelDashboardAccess)
+    .filter(item => item.code !== excelDashboardAccess.code || excelAdminAccess && hasAnyPermission('reports.view', 'reports.payroll.view'))
+  if (excelAdminAccess && hasAnyPermission('reports.view', 'reports.payroll.view') && !dashboardAccess.some(item => item.code === excelDashboardAccess.code)) dashboardAccess.push(excelDashboardAccess)
   const talentAccess = recruitmentDashboardAccess(currentUser?.permissions || [])
   if ((talentAccess.positions || talentAccess.cases || talentAccess.requisitions || talentAccess.applications || talentAccess.interviews || talentAccess.offers) && !dashboardAccess.some(item => item.code === talentDashboardAccess.code)) dashboardAccess.push(talentDashboardAccess)
   if (!dashboardAccess.length) dashboardAccess.push(...fallbackDashboardAccess)
@@ -539,6 +553,7 @@ export default function SettingsApp() {
   useEffect(() => {
     const parts = routeLocation.pathname.split('/').filter(Boolean)
     const tabSlug = parts.at(-1)
+    if (parts[0] === 'dashboard' && parts[1] === 'excel-payslips' && !excelAdminAccess) { navigate('/dashboard', { replace: true }); return }
 
     if (parts[0] === 'tasks') {
       setShowMyTasks(true)
@@ -721,7 +736,7 @@ export default function SettingsApp() {
       return
     }
     setMainModule('Dashboard')
-  }, [canManageStatutory, canViewEmployeeCommunication, clientScopedAdmin, isSuperAdmin, permissionsKey, navigate, routeLocation.pathname, routeLocation.search])
+  }, [canManageStatutory, canViewEmployeeCommunication, clientScopedAdmin, isSuperAdmin, excelAdminAccess, permissionsKey, navigate, routeLocation.pathname, routeLocation.search])
 
   useEffect(() => {
     if (!navOpen) return
@@ -876,10 +891,13 @@ export default function SettingsApp() {
         : <SettingsPage tab={clientScopedAdmin && !['Client Config Check', 'Salary Templates', 'Payslip Templates', 'Work Locations'].includes(tab) ? 'Salary Templates' : tab} onMessage={() => undefined} />
   }
 
+  const clientScopeControl = selectedClientAccess
+    ? <Select aria-label="Assigned client" style={{ width: 280, maxWidth: '100%' }} value={session?.activeClientId || undefined} showSearch optionFilterProp="label" placeholder="Select assigned client" loading={assignedClientLoading} disabled={!assignedClientOptions.length} options={assignedClientOptions.map(client => ({ value: client.id, label: client.name }))} onChange={value => { if (!session?.selectClient(value)) void message.info('Wait for the current save or upload to finish before switching clients.') }} />
+    : clientScopedAdmin && scopedClient ? <span className="scoped-client-chip" data-testid="scoped-client-chip">{scopedClient.logoDataUrl ? <img src={scopedClient.logoDataUrl} alt={`${scopedClient.name} logo`} /> : <BankOutlined />}{scopedClient.name}</span> : undefined
   const shellClassName = ['hrms-shell', navOpen ? '' : 'rail-collapsed', appDrawerOpen ? 'drawer-open' : '', mobileShell && navOpen ? 'mobile-nav-open' : ''].filter(Boolean).join(' ')
 
   return <div className={shellClassName}>
-    <MailAutomationProvider enabled={Boolean(currentUser?.permissions.includes('settings.manage'))} />
+    <MailAutomationProvider enabled={!selectedClientAccess && Boolean(currentUser?.permissions.includes('settings.manage'))} />
     {mobileShell && navOpen && <button className="hrms-sidebar-scrim" type="button" aria-label="Close sidebar" onClick={() => setNavOpen(false)} />}
     <aside className="hrms-sidebar" ref={sidebarRef}>
       <div className="hrms-sidebar-head">
@@ -913,7 +931,7 @@ export default function SettingsApp() {
             </button>
           </Dropdown>
         </Space>
-        <AppPageHeader workspace={!showMyTasks && !isProfile ? mainModule === 'Security' && securityAppsTab === 'Attendance API Integrator' ? 'attendance-adapters' : mainModule === 'Workflows' && workflowTab === 'API Catalog' ? 'workflows' : mainModule === 'Settings' && settingsSection === 'LeaveAttendance' ? 'attendance-settings' : mainModule === 'Settings' && settingsSection === 'General' && tab === 'Statutory Setup' ? 'statutory-settings' : mainModule === 'Dashboard' ? 'dashboard' : mainModule === 'Employees' && employeeTab === 'Employee Master' ? 'employees' : mainModule === 'Reports' && reportingReport.code === 'payslip-register' ? 'payslips' : mainModule === 'Reports' && reportingReport.code === 'excel-payslips' ? 'excel-payslips' : undefined : undefined} recruitment={mainModule === 'TalentAcquisition' && !showMyTasks && !isProfile} title={pageTitle} description={pageDescription} icon={<AppIcon name={pageIconName} />} breadcrumbs={breadcrumbItems} actions={clientScopedAdmin && scopedClient ? <span className="scoped-client-chip" data-testid="scoped-client-chip">{scopedClient.logoDataUrl ? <img src={scopedClient.logoDataUrl} alt={`${scopedClient.name} logo`} /> : <BankOutlined />}{scopedClient.name}</span> : undefined} />
+        <AppPageHeader workspace={!showMyTasks && !isProfile ? mainModule === 'Security' && securityAppsTab === 'Attendance API Integrator' ? 'attendance-adapters' : mainModule === 'Workflows' && workflowTab === 'API Catalog' ? 'workflows' : mainModule === 'Settings' && settingsSection === 'LeaveAttendance' ? 'attendance-settings' : mainModule === 'Settings' && settingsSection === 'General' && tab === 'Statutory Setup' ? 'statutory-settings' : mainModule === 'Dashboard' ? 'dashboard' : mainModule === 'Employees' && employeeTab === 'Employee Master' ? 'employees' : mainModule === 'Reports' && reportingReport.code === 'payslip-register' ? 'payslips' : mainModule === 'Reports' && reportingReport.code === 'excel-payslips' ? 'excel-payslips' : undefined : undefined} recruitment={mainModule === 'TalentAcquisition' && !showMyTasks && !isProfile} title={pageTitle} description={pageDescription} icon={<AppIcon name={pageIconName} />} breadcrumbs={breadcrumbItems} actions={clientScopeControl} externalClientScope={selectedClientAccess} />
       </div>
       <div className="hrms-content">
         <div className="hrms-page-body">{renderPage()}</div>

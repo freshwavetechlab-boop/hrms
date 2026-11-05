@@ -10,17 +10,18 @@ import {
 } from '@ant-design/icons'
 import { Badge, Button, Card, Checkbox, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Tag, message } from 'antd'
 import { useAuthSession } from './AuthGate'
-import { getRecruitmentOpenPositions } from '../services/recruitmentService'
 import { deleteApplication } from '../services/recruitmentTalentService'
 import {
-  getRecruitmentApplicationStageHistory, getRecruitmentApplicationTransitions, getRecruitmentJobPostings, getRecruitmentPipelineBoard,
+  getRecruitmentApplicationStageHistory, getRecruitmentApplicationTransitions, getRecruitmentPipelineTargets, getRecruitmentPipelineBoard, getRecruitmentWorkLocations,
   pauseRecruitmentApplication, resumeRecruitmentApplication, transitionRecruitmentApplication,
 } from '../services/recruitmentOrchestrationService'
 import type {
   RecruitmentJobPosting, RecruitmentPipelineBoard as Board, RecruitmentPipelineBoardCard,
   RecruitmentApplicationStageTimelineItem, RecruitmentPipelineBoardLane, RecruitmentPipelineTransition, RecruitmentUnifiedPipelineLane,
 } from '../types/recruitmentOrchestration'
-import type { RecruitmentOpenPosition } from '../types/payroll'
+import type { RecruitmentOpenPosition, WorkLocation } from '../types/payroll'
+import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
+import { matchesRecruitmentWorkLocation, recruitmentWorkLocationLabel } from '../utils/recruitmentWorkLocation'
 import type { RecruitmentPipelineDisplayMode } from '../types/recruitmentPipelineView'
 import { recruitmentPipelineDisplayOptions, recruitmentPipelineDisplayStorageKey } from '../types/recruitmentPipelineView'
 import { usePipelineScroller } from '../utils/usePipelineScroller'
@@ -41,6 +42,7 @@ type Props = {
   clientPipelineCandidateCount?: number
   onCandidateCountChange?: (count: number | null) => void
   clientPipelineLanes?: RecruitmentUnifiedPipelineLane[]
+  workLocationId?: number
 }
 type TransitionDraft = { card: RecruitmentPipelineBoardCard; transition: RecruitmentPipelineTransition; reason: string }
 type PauseDraft = { card: RecruitmentPipelineBoardCard; reason: string }
@@ -53,6 +55,8 @@ type PipelineTarget = {
   positionId: number
   postingId: number
   label: string
+  workLocationName: string
+  workLocationId: number
 }
 type PipelineTableRow = {
   id: number
@@ -62,7 +66,7 @@ type PipelineTableRow = {
   liveElapsed: number
 }
 
-export default function RecruitmentPipelineBoard({ initialClientId = 0, clientScopeManaged = false, positionId: suppliedPositionId = 0, onOpenCandidate, onScheduleInterview, embedded = false, displayMode, onDisplayModeChange, clientPipelineCandidateCount, onCandidateCountChange, clientPipelineLanes = [] }: Props) {
+export default function RecruitmentPipelineBoard({ initialClientId = 0, clientScopeManaged = false, positionId: suppliedPositionId = 0, onOpenCandidate, onScheduleInterview, embedded = false, displayMode, onDisplayModeChange, clientPipelineCandidateCount, onCandidateCountChange, clientPipelineLanes = [], workLocationId: suppliedWorkLocationId }: Props) {
   const session = useAuthSession()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [postings, setPostings] = useState<RecruitmentJobPosting[]>([])
@@ -70,6 +74,9 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
   const [postingId, setPostingId] = useState(0)
   const [positionId, setPositionId] = useState(suppliedPositionId)
   const [clientId, setClientId] = useState(initialClientId)
+  const [localWorkLocationId, setLocalWorkLocationId] = useSessionPreference(`recruitment.pipeline.location:${session?.user.id ?? 'guest'}:${clientId}`, 0)
+  const workLocationId = suppliedWorkLocationId ?? localWorkLocationId
+  const [workLocations, setWorkLocations] = useState<WorkLocation[]>([])
   const [board, setBoard] = useState<Board | null>(null)
   const [query, setQuery] = useState('')
   const [slaFilter, setSlaFilter] = useState('All')
@@ -106,10 +113,7 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
     ++boardRequest.current
     setLoading(true)
     setBoard(null)
-    const [allPostings, nextPositions] = await Promise.all([
-      getRecruitmentJobPostings(initialClientId),
-      getRecruitmentOpenPositions(initialClientId),
-    ])
+    const { postings: allPostings, positions: nextPositions } = await getRecruitmentPipelineTargets(clientId, workLocationId)
     if (requestId !== targetsRequest.current) return
     // Only a published public posting is a candidate-pipeline target. A draft or
     // closed posting must not hide its underlying open position.
@@ -133,12 +137,22 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
     setPostingId(nextPostingId)
     if (!nextPositionId) { setBoard(null); setLoading(false) }
     return { positionId: nextPositionId, postingId: nextPostingId }
-  }, [initialClientId, suppliedPositionId])
+  }, [clientId, suppliedPositionId, workLocationId])
 
   useEffect(() => { void loadTargets(suppliedPositionId, 0); return () => { ++targetsRequest.current; ++boardRequest.current } }, [loadTargets, suppliedPositionId])
   useEffect(() => { setClientId(initialClientId) }, [initialClientId])
+  useEffect(() => {
+    let active = true
+    if (suppliedWorkLocationId !== undefined || !clientId) { setWorkLocations([]); return }
+    void getRecruitmentWorkLocations(clientId).then(rows => {
+      if (!active) return
+      setWorkLocations(rows)
+      if (localWorkLocationId && !rows.some(row => row.id === localWorkLocationId)) setLocalWorkLocationId(0)
+    })
+    return () => { active = false }
+  }, [clientId, suppliedWorkLocationId, localWorkLocationId])
   useEffect(() => { if (suppliedPositionId) setPositionId(suppliedPositionId) }, [suppliedPositionId])
-  useEffect(() => { if (positionId) void loadBoard(positionId, postingId || undefined) }, [positionId, postingId])
+  useEffect(() => { if (positionId) void loadBoard(positionId, postingId || undefined) }, [positionId, postingId, workLocationId])
   useEffect(() => {
     const id = window.setInterval(() => setTick(Date.now()), 1000)
     return () => window.clearInterval(id)
@@ -152,7 +166,7 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
     const requestId = ++boardRequest.current
     setLoading(true)
     try {
-      const next = await getRecruitmentPipelineBoard(targetPositionId, targetPostingId)
+      const next = await getRecruitmentPipelineBoard(targetPositionId, targetPostingId, workLocationId)
       if (requestId !== boardRequest.current) return
       setBoard(next ?? null)
       setLoadedAt(Date.now())
@@ -171,7 +185,9 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
       clientName: row.clientName,
       positionId: row.positionId,
       postingId: row.id,
-      label: `${row.positionCode} · ${row.publicTitle || row.positionTitle} (Job posting)`,
+      workLocationId: positions.find(position => position.id === row.positionId)?.branchId || 0,
+      workLocationName: positions.find(position => position.id === row.positionId)?.branchName || '',
+      label: `${row.positionCode} · ${row.publicTitle || row.positionTitle} (Job posting)${positions.find(position => position.id === row.positionId)?.branchName ? ` · ${positions.find(position => position.id === row.positionId)?.branchName}` : ''}`,
     }))
     const positionTargets = positions
       .map(row => ({
@@ -180,12 +196,14 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
         clientName: row.clientName,
         positionId: row.id,
         postingId: 0,
-        label: `${row.positionCode} · ${row.positionTitle} (${postingPositionIds.has(row.id) ? 'All sources' : 'Open position'}) · ${row.candidateCount || 0} applications`,
+        workLocationId: row.branchId || 0,
+        workLocationName: row.branchName || '',
+        label: `${row.positionCode} · ${row.positionTitle} (${postingPositionIds.has(row.id) ? 'All sources' : 'Open position'})${row.branchName ? ` · ${row.branchName}` : ''} · ${row.candidateCount || 0} applications`,
       }))
     return [...postingTargets, ...positionTargets]
   }, [postings, positions])
   const clientOptions = useMemo(() => Array.from(new Map(pipelineTargets.map(row => [row.clientId, row.clientName])).entries()).map(([value, label]) => ({ value, label })), [pipelineTargets])
-  const targetOptions = pipelineTargets.filter(row => !clientId || row.clientId === clientId).map(row => ({ value: row.key, label: row.label }))
+  const targetOptions = pipelineTargets.filter(row => (!clientId || row.clientId === clientId) && matchesRecruitmentWorkLocation(row.workLocationId, workLocationId)).map(row => ({ value: row.key, label: row.label }))
   const selectedTargetKey = postingId ? `posting:${postingId}` : positionId ? `position:${positionId}` : undefined
   const elapsedSinceLoad = Math.max(0, Math.floor((tick - loadedAt) / 1000))
   const normalizedQuery = query.trim().toLowerCase()
@@ -203,8 +221,8 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
       pauseBehavior: 'ShiftStageAndOverall',
       isTerminal: ['Completed', 'Rejected', 'Withdrawn'].includes(lane.stageType),
       processDocumentRequirements: [],
-      applications: lane.applications,
-    })), [clientPipelineLanes])
+      applications: lane.applications.filter(card => matchesRecruitmentWorkLocation(card.workLocationId, workLocationId)),
+    })), [clientPipelineLanes, workLocationId])
   const activeLanes = board?.lanes ?? (!positionId && !postingId ? templateLanes : [])
   const selectedCandidateCount = activeLanes.reduce((count, lane) => count + lane.applications.length, 0)
   useEffect(() => { onCandidateCountChange?.(loading ? null : selectedCandidateCount) }, [loading, selectedCandidateCount, onCandidateCountChange])
@@ -317,6 +335,7 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
     </div>}
     <Card size="small" className="candidate-pipeline-filters"><div className="candidate-pipeline-filter-grid">
       {!clientScopeManaged && <div className="candidate-pipeline-filter-field"><span>Client</span><Select aria-label="Pipeline client" allowClear value={clientId || undefined} placeholder="All clients" options={clientOptions} onChange={value => { const next = Number(value || 0); setClientId(next); const first = pipelineTargets.find(row => !next || row.clientId === next); if (first) chooseTarget(first.key); else { ++boardRequest.current; setPositionId(0); setPostingId(0); setBoard(null); setLoading(false) } }} /></div>}
+      {suppliedWorkLocationId === undefined && <div className="candidate-pipeline-filter-field"><span>Work location</span><Select aria-label="Candidate pipeline work location" disabled={!clientId} showSearch optionFilterProp="label" value={workLocationId} options={[{ value: 0, label: 'All permitted work locations' }, ...workLocations.map(row => ({ value: row.id, label: recruitmentWorkLocationLabel(row) }))]} onChange={setLocalWorkLocationId} /></div>}
       <div className="candidate-pipeline-filter-field"><span>Position / job posting {board?.pipelineVersionId && <Tag>Pipeline #{board.pipelineVersionId}</Tag>}</span><Select aria-label="Pipeline position or job posting" showSearch optionFilterProp="label" value={selectedTargetKey} placeholder="Select position or job posting" options={targetOptions} onChange={chooseTarget} /></div>
       <div className="candidate-pipeline-filter-field"><span>Search candidates</span><Input aria-label="Search pipeline candidates" allowClear prefix={<SearchOutlined />} value={query} onChange={event => setQuery(event.target.value)} placeholder="Candidate, email or application" /></div>
       <div className="candidate-pipeline-filter-field"><span>SLA status</span><Select aria-label="Candidate SLA status" value={slaFilter} onChange={setSlaFilter} options={['All', 'On track', 'Due soon', 'Overdue', 'Paused'].map(value => ({ value, label: value === 'All' ? 'All SLA states' : value }))} /></div>
@@ -341,6 +360,7 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
         columns={[
           { key: 'candidate', label: 'Candidate', width: '210px', value: row => row.card.candidateName, render: row => <div className="pipeline-table-candidate"><strong>{row.card.candidateName}</strong><small>{row.card.candidateEmail}</small></div> },
           { key: 'application', label: 'Application', width: '150px', value: row => row.card.applicationCode },
+          { key: 'workLocation', label: 'Work location', width: '200px', value: row => row.card.workLocationName || 'Not linked' },
           { key: 'stage', label: 'Stage', width: '210px', value: row => row.lane.stageName, render: row => <div className="pipeline-table-candidate"><Tag color={stageColor(row.lane.stageType)}>{row.lane.stageName}</Tag>{row.lane.stageType === 'Rejected' && row.card.rejectedFromStageName && <small>Rejected after {row.card.rejectedFromStageName}</small>}</div> },
           { key: 'ats', label: 'ATS score', width: '100px', value: row => recruitmentEligibility(row.card).showScore ? row.card.atsScore ?? '' : recruitmentEligibility(row.card).label, render: row => <RecruitmentEligibilityBadge row={row.card} showScore /> },
           { key: 'interview', label: 'Interview score', width: '120px', value: row => row.card.interviewScore ?? '', render: row => row.card.interviewScore == null ? '-' : `${row.card.interviewScore.toFixed(1)} / 100` },
@@ -405,6 +425,7 @@ function CandidateCard({ lane, card, elapsedSinceLoad, transitions, recoverySele
     {lane.stageType === 'Interview' && <RecruitmentInterviewRounds applicationId={card.applicationId} editable={false} onSchedule={onSchedule} />}
     {card.positionTitle && <div data-testid="candidate-job" style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', marginBottom: 8 }}><strong>{card.positionTitle}</strong>{card.positionCode && <div>{card.positionCode}</div>}</div>}
     <div className={`pipeline-card-name ${onRecoverySelected ? 'has-selection' : ''}`}>{onRecoverySelected && <Checkbox aria-label={`Select ${card.candidateName} for return`} checked={recoverySelected} onChange={event => onRecoverySelected(event.target.checked)} />}<strong title={card.candidateName}>{card.candidateName}</strong><RecruitmentEligibilityBadge row={card} showScore />{card.interviewScore != null && <Tag color={card.interviewScore >= 60 ? 'green' : 'orange'}>Interview {card.interviewScore.toFixed(1)}</Tag>}</div>
+    {card.workLocationName && <div className="pipeline-card-meta"><span>Work location: {card.workLocationName}</span></div>}
     <div className="pipeline-card-meta"><span><UserOutlined /> {card.applicationCode}</span><span className="pipeline-card-email" title={card.candidateEmail}>{card.candidateEmail}</span>{lane.stageType === 'Rejected' && card.rejectedFromStageName && <span><RollbackOutlined /> Rejected after {card.rejectedFromStageName}{card.rejectedAtUtc ? ` · ${new Date(card.rejectedAtUtc).toLocaleString('en-IN')}` : ''}</span>}<span data-testid="stage-elapsed-clock"><ClockCircleOutlined /> In stage {formatClock(liveElapsed * 1000)}</span>{card.pausedDurationSeconds > 0 && <span>Paused total: {formatClock(card.pausedDurationSeconds * 1000)}</span>}<span>Status: {card.stageStatus}</span>{card.pendingBlockingActionCount > 0 && <Tag color="gold">{card.pendingBlockingActionCount} required action pending</Tag>}{card.failedActionCount > 0 && <Tag color="error">{card.failedActionCount} automation failed</Tag>}</div>
     <div className="pipeline-card-footer"><Tag data-testid="sla-clock" className={`sla-chip ${sla.className}`}>{sla.label}: {sla.clock}</Tag><Space size={4} wrap>
       {onOpen && <Button size="small" onClick={onOpen}>Profile</Button>}

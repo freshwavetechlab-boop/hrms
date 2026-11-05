@@ -1,4 +1,5 @@
 import { apiRequest, apiUrl, getJson, getJsonResult, postJson } from './apiClient'
+import { activeClientHeader } from './clientRequestScope'
 import type { InternalInterviewConfiguration, InternalInterviewContext, InternalInterviewEvent, InternalInterviewView, InterviewMediaGrant, InterviewQuestion } from '../types/internalInterviews'
 
 export const internalInterviewRoot = '/api/recruitment/internal-interviews'
@@ -41,7 +42,10 @@ export class InterviewSessionClient {
   recordings() { return this.request<InterviewRecording[]>('/recordings') }
   async recordingSource(recordingId: string) {
     if (this.token !== undefined) throw new Error('Recording replay requires a panel/HR login.')
-    const url = apiUrl(`${this.root}/recordings/${encodeURIComponent(recordingId)}`)
+    const source = new URL(apiUrl(`${this.root}/recordings/${encodeURIComponent(recordingId)}`), window.location.origin)
+    const activeClient = activeClientHeader(this.root)
+    if (activeClient) source.searchParams.set('clientId', activeClient)
+    const url = source.toString()
     // Native video sends the existing HttpOnly login cookie, not an access token in the URL.
     // Probe one byte using that exact cookie path; a legacy bearer-only session must sign in again.
     const response = await fetch(url, { credentials: 'include', headers: { Range: 'bytes=0-0' }, signal: AbortSignal.timeout(15000) })

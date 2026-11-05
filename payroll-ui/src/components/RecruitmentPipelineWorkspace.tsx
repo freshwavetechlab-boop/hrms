@@ -1,20 +1,21 @@
 import RecruitmentEligibilityBadge from './RecruitmentEligibilityBadge'
 import { recruitmentDuration, recruitmentJobSla } from '../utils/recruitmentSla'
 import { PageHeaderPortal } from './layout/AppPageHeader'
-import { useRecruitmentView, useRecruitmentPipelineDisplay } from '../hooks/useRecruitmentPreferences'
+import { useRecruitmentView, useRecruitmentPipelineDisplay, useSessionPreference } from '../hooks/useRecruitmentPreferences'
 import RecruitmentHiringProgress from './RecruitmentHiringProgress'
 import RecruitmentInterviewRounds from './RecruitmentInterviewRounds'
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import {
   ApartmentOutlined, ArrowLeftOutlined, ArrowRightOutlined, BranchesOutlined, ClockCircleOutlined, DeploymentUnitOutlined, HistoryOutlined,
   FileDoneOutlined, FileTextOutlined, PauseCircleOutlined, PlayCircleOutlined, ProfileOutlined, RocketOutlined, SettingOutlined, TeamOutlined,
 } from '@ant-design/icons'
 import { Alert, Badge, Button, Card, Drawer, Empty, Form, Input, Modal, Segmented, Select, Skeleton, Space, Tabs, Tag, Tooltip, message } from 'antd'
 import { useNavigate } from 'react-router-dom'
-import { getRecruitmentPipelineWorkspace } from '../services/recruitmentOrchestrationService'
+import { getRecruitmentPipelineWorkspace, getRecruitmentWorkLocations } from '../services/recruitmentOrchestrationService'
 import { advanceRecruitmentHiringCase, getRecruitmentHiringCaseTransitions, pauseRecruitmentHiringCase, resumeRecruitmentHiringCase, startRecruitmentHiringCase } from '../services/recruitmentCaseService'
 import { getDropdowns } from '../services/settingsService'
-import type { Drop } from '../types/payroll'
+import type { Drop, WorkLocation } from '../types/payroll'
+import { recruitmentWorkLocationLabel } from '../utils/recruitmentWorkLocation'
 import type { RecruitmentPipelineBoardCard, RecruitmentPipelineDemandCard, RecruitmentPipelineWorkspace as PipelineWorkspaceResponse, RecruitmentUnifiedPipelineLane } from '../types/recruitmentOrchestration'
 import type { RecruitmentPipelineDisplayMode } from '../types/recruitmentPipelineView'
 import { recruitmentPipelineDisplayOptions, recruitmentPipelineDisplayStorageKey } from '../types/recruitmentPipelineView'
@@ -52,6 +53,9 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
   const [view, setView] = useState<PipelineView>(initialView)
   const [selectedCandidateCount, setSelectedCandidateCount] = useState<number | null>(null)
   const [workspace, setWorkspace] = useState<PipelineWorkspaceResponse>(emptyWorkspace)
+  const [workLocations, setWorkLocations] = useState<WorkLocation[]>([])
+  const [workLocationId, setWorkLocationId] = useSessionPreference(`recruitment.pipeline.location:${session?.user.id ?? 'guest'}:${initialClientId}`, 0)
+  const workspaceRequest = useRef(0)
   const [workspaceSyncedAt, setWorkspaceSyncedAt] = useState(Date.now())
   const [clockNow, setClockNow] = useState(Date.now())
   const [loading, setLoading] = useState(hasClientScope)
@@ -72,7 +76,19 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
   const sharedPipelineDisplay = useRecruitmentPipelineDisplay()
   const displayMode: RecruitmentPipelineDisplayMode = sharedPipelineDisplay ?? (sharedView ? sharedView === 'Table' ? 'table' : 'pipeline' : localDisplayMode)
   useEffect(() => { setView(initialView) }, [initialView])
+  useEffect(() => {
+    let active = true
+    setWorkLocations([])
+    if (!initialClientId) return
+    void getRecruitmentWorkLocations(initialClientId).then(rows => {
+      if (!active) return
+      setWorkLocations(rows)
+      if (workLocationId && !rows.some(row => row.id === workLocationId)) setWorkLocationId(0)
+    })
+    return () => { active = false }
+  }, [initialClientId, workLocationId])
   const load = useCallback(async (silent = false) => {
+    const request = ++workspaceRequest.current
     if (!initialClientId) {
       setWorkspace(emptyWorkspace)
       setLoading(false)
@@ -80,21 +96,23 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
     }
     if (!silent) setLoading(true)
     try {
-      let nextWorkspace = await getRecruitmentPipelineWorkspace(initialClientId, positionId)
+      let nextWorkspace = await getRecruitmentPipelineWorkspace(initialClientId, positionId, 0, workLocationId)
+      if (request !== workspaceRequest.current) return
       const automaticStarts = canOperateHiringJourney
         ? [...nextWorkspace.unassignedDemandCards, ...nextWorkspace.lanes.flatMap(lane => lane.demandCards)]
           .filter(card => card.hasWorkOrder && !card.hiringCaseId && card.requisitionId && card.pipelineVersionId && !card.needsPipelineSelection && !['Completed', 'Cancelled'].includes(card.status))
         : []
       if (automaticStarts.length) {
         const results = await Promise.all(automaticStarts.map(card => startRecruitmentHiringCase(card.workOrderLineId, card.pipelineVersionId!, true)))
-        if (results.some(result => result.ok && result.data)) nextWorkspace = await getRecruitmentPipelineWorkspace(initialClientId, positionId)
+        if (results.some(result => result.ok && result.data)) nextWorkspace = await getRecruitmentPipelineWorkspace(initialClientId, positionId, 0, workLocationId)
       }
+      if (request !== workspaceRequest.current) return
       setWorkspace(nextWorkspace)
       setWorkspaceSyncedAt(Date.now())
     }
-    finally { if (!silent) setLoading(false) }
-  }, [canOperateHiringJourney, initialClientId, positionId])
-  useEffect(() => { void load() }, [load])
+    finally { if (!silent && request === workspaceRequest.current) setLoading(false) }
+  }, [canOperateHiringJourney, initialClientId, positionId, workLocationId])
+  useEffect(() => { void load(); return () => { ++workspaceRequest.current } }, [load])
   useEffect(() => {
     const timer = window.setInterval(() => setClockNow(Date.now()), 1_000)
     return () => window.clearInterval(timer)
@@ -151,6 +169,7 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
           { value: 'candidates', disabled: !hasClientScope, label: <span title={view === 'candidates' && displayMode !== 'flow' ? 'Candidates in the selected position / posting pipeline' : 'Candidates across this client pipeline'}><TeamOutlined /> Candidates <Badge data-testid="pipeline-candidate-count" count={view === 'candidates' && displayMode !== 'flow' ? selectedCandidateCount ?? '…' : candidateCount} showZero color="#2563eb" /></span> },
         ]}
       />
+      <Select aria-label="Hiring pipeline work location" style={{ minWidth: 220, maxWidth: 340 }} disabled={!hasClientScope} showSearch optionFilterProp="label" value={workLocationId} options={[{ value: 0, label: 'All permitted work locations' }, ...workLocations.map(row => ({ value: row.id, label: recruitmentWorkLocationLabel(row) }))]} onChange={setWorkLocationId} />
       {!sharedView && <div className="pipeline-command-controls">{canManagePipeline && <Button data-testid="manage-hiring-pipeline" icon={<SettingOutlined />} disabled={!hasClientScope} onClick={() => setPipelineManagerOpen(true)}>Manage pipeline</Button>}{canChooseClient && <Select aria-label="Pipeline client scope" allowClear showSearch optionFilterProp="label" value={initialClientId || undefined} options={clientOptions} placeholder="Select client" onChange={onClientChange} />}<Select aria-label="Pipeline display view" value={displayMode} onChange={setDisplayMode} options={recruitmentPipelineDisplayOptions} /></div>}
     </div>
 
@@ -171,7 +190,7 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
           onOpenCandidates={() => setWorkspaceView('candidates')}
           onChanged={() => void load(true)}
         />)}
-    {hasClientScope && displayMode !== 'flow' && view === 'candidates' && <RecruitmentPipelineBoard embedded key={`candidate-pipeline-${initialClientId}-${positionId}`} initialClientId={initialClientId} clientScopeManaged={clientScopeManaged} positionId={positionId} displayMode={displayMode} onDisplayModeChange={setDisplayMode} clientPipelineCandidateCount={candidateCount} onCandidateCountChange={setSelectedCandidateCount} clientPipelineLanes={journeyLanes.filter(lane => lane.cardScope === 'Application')} />}
+    {hasClientScope && displayMode !== 'flow' && view === 'candidates' && <RecruitmentPipelineBoard embedded key={`candidate-pipeline-${initialClientId}-${positionId}-${workLocationId}`} initialClientId={initialClientId} clientScopeManaged={clientScopeManaged} positionId={positionId} workLocationId={workLocationId} displayMode={displayMode} onDisplayModeChange={setDisplayMode} clientPipelineCandidateCount={candidateCount} onCandidateCountChange={setSelectedCandidateCount} clientPipelineLanes={journeyLanes.filter(lane => lane.cardScope === 'Application')} />}
     <Drawer className="recruitment-pipeline-manager-drawer" title="Manage hiring automation" open={designerOpen && canManagePipeline && hasClientScope} width="min(1480px, 98vw)" onClose={() => setPipelineManagerOpen(false)} destroyOnClose>
       <Tabs className="recruitment-automation-tabs" activeKey={managerTool} onChange={key => setPipelineManagerTool(key as PipelineManagerTool)} items={[
         { key: 'pipeline', label: <span><BranchesOutlined aria-hidden /> Pipeline design</span>, children: <RecruitmentPipelineDesigner key={`pipeline-manager-${initialClientId}-${managerRevision}`} initialClientId={initialClientId} dropdowns={designerDropdowns} onDropdownsChange={setDesignerDropdowns} onSaved={() => void load(true)} /> },
@@ -289,6 +308,7 @@ function DemandBoard({ clientId, lanes, unassigned, displayMode, clockNow, works
       emptyText="No hiring demand matches this client scope."
       columns={[
         { key: 'position', label: 'Hiring demand', width: '220px', value: row => row.card.positionName, render: row => <div className="pipeline-table-candidate"><strong>{row.card.positionName}</strong><small>{row.card.division || row.card.payBandLevelCode || 'Role details pending'}</small></div> },
+        { key: 'workLocation', label: 'Work location', width: '200px', value: row => row.card.workLocationName || 'Not linked' },
         { key: 'workOrder', label: 'Work order', width: '190px', value: row => row.card.workOrderNumber },
         { key: 'stage', label: 'Current stage', width: '190px', value: row => row.stageName, render: row => <Tag color={stageColor(row.stageType)}>{row.stageName}</Tag> },
         { key: 'request', label: 'Request', width: '130px', value: row => row.card.requisitionStatus || 'Not started', render: row => <Tag color={statusColor(row.card.requisitionStatus || '')}>{row.card.requisitionStatus || 'Not started'}</Tag> },
@@ -334,6 +354,7 @@ function DemandCard({ card, clientId, clockNow, workspaceSyncedAt, onChanged }: 
       <div className="demand-card-statuses">{card.hiringCaseId && <Tag color={!card.overallDueAtUtc ? 'default' : jobSla.breached ? 'error' : 'success'}>{jobSla.label}</Tag>}</div>
     </div>
     <div className="demand-card-context">
+      {card.workLocationName && <Tag>{card.workLocationName}</Tag>}
       {card.division && <span><ApartmentOutlined /> {card.division}</span>}
       <Tag color="cyan"><TeamOutlined /> {card.candidateCount || 0} candidate{card.candidateCount === 1 ? '' : 's'}</Tag>
       <Tag>Required: {card.requiredCandidateCount ?? '—'}</Tag><Tag color="blue">In panel: {card.inPanelCount ?? 0}</Tag><Tag color="green">Selected: {card.selectedCandidateCount ?? 0}</Tag>

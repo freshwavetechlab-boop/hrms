@@ -1938,7 +1938,10 @@ ORDER BY Type, ClientId DESC, Value;", new { ClientId = clientId });
 }
 
 public record ClientImportResult(int TotalRows, int Inserted, int Updated, List<string> Errors);
-public record ClientImportJobStatus(Guid JobId, string State, int TotalRows, int CompletedRows, int Inserted, int Updated, List<string> Errors);
+public record ClientImportJobStatus(Guid JobId, string State, int TotalRows, int CompletedRows, int Inserted, int Updated, List<string> Errors)
+{
+    public int? ClientId { get; init; }
+}
 public sealed class SalaryTemplateImportDraft
 {
     public SalaryTemplateImportDraft(int clientId, string name, string annualCtc, bool active, List<SalaryTemplateLineDraft> lines)

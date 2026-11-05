@@ -1,5 +1,6 @@
 import { apiRequest, apiUrl, deleteJson, getJson, getJsonResult, postFormWithProgress, postJson, putJson, readError } from './apiClient'
 import { currentRecruitmentJobPostings } from './recruitmentJobVersions'
+import type { RecruitmentOpenPosition, WorkLocation } from '../types/payroll'
 export { normalizePublicCareerUrl } from './publicCareerUrl'
 import type {
   CandidateActionDecision,
@@ -118,17 +119,26 @@ export const saveRecruitmentPipelineVersion = (definitionId: number, version: Re
 export const publishRecruitmentPipelineVersion = (versionId: number) =>
   postJson(`${internalBase}/pipeline-versions/${versionId}/publish`, {}, null as RecruitmentPipelineVersion | null, { successMessage: 'Pipeline version published.' })
 
-export const getRecruitmentPipelineBoard = (positionId: number, jobPostingId?: number) => {
+export const getRecruitmentWorkLocations = (clientId: number) => getJson<WorkLocation[]>(`/api/recruitment/work-locations?clientId=${clientId}`, [])
+export const getRecruitmentPipelineTargets = (clientId = 0, workLocationId = 0) => {
+  const query = new URLSearchParams()
+  if (clientId) query.set('clientId', String(clientId))
+  if (workLocationId) query.set('workLocationId', String(workLocationId))
+  return getJson<{ positions: RecruitmentOpenPosition[]; postings: RecruitmentJobPosting[] }>('/api/recruitment/pipeline-targets' + (query.size ? `?${query}` : ''), { positions: [], postings: [] })
+}
+export const getRecruitmentPipelineBoard = (positionId: number, jobPostingId?: number, workLocationId = 0) => {
   const query = new URLSearchParams({ positionId: String(positionId) })
   if (jobPostingId) query.set('jobPostingId', String(jobPostingId))
+  if (workLocationId) query.set('workLocationId', String(workLocationId))
   return getJson<RecruitmentPipelineBoard | null>(`${internalBase}/pipeline-board?${query}`, null)
 }
 
-export const getRecruitmentPipelineWorkspace = (clientId = 0, positionId = 0, jobPostingId = 0) => {
+export const getRecruitmentPipelineWorkspace = (clientId = 0, positionId = 0, jobPostingId = 0, workLocationId = 0) => {
   const query = new URLSearchParams()
   if (clientId) query.set('clientId', String(clientId))
   if (positionId) query.set('positionId', String(positionId))
   if (jobPostingId) query.set('jobPostingId', String(jobPostingId))
+  if (workLocationId) query.set('workLocationId', String(workLocationId))
   return getJson<RecruitmentPipelineWorkspace>('/api/recruitment/pipeline-workspace' + (query.size ? `?${query}` : ''), { clientId, lanes: [], unassignedDemandCards: [] })
 }
 

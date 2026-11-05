@@ -2,10 +2,11 @@ using Dapper;
 using System.Globalization;
 using MySqlConnector;
 using Payroll.API.Models;
+using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
-public class DashboardRepository(IConfiguration configuration)
+public class DashboardRepository(IConfiguration configuration, ISelectedClientOwnershipLookup? ownership = null)
 {
     private MySqlConnection CreateConnection()
     {
@@ -25,14 +26,34 @@ public class DashboardRepository(IConfiguration configuration)
     internal static int ResolveClientId(AuthUser user, int? requestedClientId) =>
         user.ClientId ?? Math.Max(requestedClientId.GetValueOrDefault(), 0);
 
+    internal static async Task<List<long>> FilterApprovalTaskIdsAsync(IEnumerable<long> taskIds, int clientId, ISelectedClientOwnershipLookup ownership)
+    {
+        var allowed = new List<long>();
+        if (clientId <= 0) return allowed;
+        foreach (var id in taskIds.Distinct().Where(id => id > 0))
+            if (await ownership.ClientIdAsync(new("workflow-task", id.ToString(CultureInfo.InvariantCulture))) == clientId) allowed.Add(id);
+        return allowed;
+    }
+
     public async Task<DashboardSnapshot> GetAsync(int clientId, AuthUser user, string? selectedMonth = null)
     {
         var month = ResolveMonth(selectedMonth, DateTime.Today);
         await using var connection = CreateConnection();
         await connection.OpenAsync();
 
-        var parameters = new { ClientId = clientId, Month = month, ExplicitMonth = !string.IsNullOrWhiteSpace(selectedMonth), UserId = user.Id };
         var sections = DashboardAccess.For(user);
+        var selectedScope = SelectedClientAccess.IsSelected(user);
+        var scopedTaskIds = new List<long>();
+        if (selectedScope && sections.Approvals)
+        {
+            var taskIds = await connection.QueryAsync<long>("SELECT Id FROM workflowtasks WHERE ApproverUserId=@UserId", new { UserId = user.Id });
+            if (ownership is not null) scopedTaskIds = await FilterApprovalTaskIdsAsync(taskIds, clientId, ownership);
+        }
+        // Dapper's nonempty sentinel also keeps every aggregate empty when a
+        // selected account has no tasks in its current client.
+        if (scopedTaskIds.Count == 0) scopedTaskIds.Add(-1);
+        var parameters = new { ClientId = clientId, Month = month, ExplicitMonth = !string.IsNullOrWhiteSpace(selectedMonth), UserId = user.Id,
+            SelectedScope = selectedScope, ScopedTaskIds = scopedTaskIds };
 
         var clients = (await connection.QueryAsync<DashboardClient>(@"
 SELECT Id, Name, Code
@@ -98,6 +119,7 @@ WHERE attendance_month = @Month
 SELECT COUNT(*)
 FROM workflowtasks
 WHERE ApproverUserId = @UserId
+  AND (@SelectedScope = FALSE OR Id IN @ScopedTaskIds)
   AND Status = 'Pending';", parameters)
             : 0;
 
@@ -219,6 +241,7 @@ SELECT COALESCE(NULLIF(TRIM(s.Name), ''), 'Pending') AS Label, COUNT(*) AS Value
 FROM workflowtasks t
 JOIN workflowstages s ON s.Id = t.StageId
 WHERE t.ApproverUserId = @UserId
+  AND (@SelectedScope = FALSE OR t.Id IN @ScopedTaskIds)
   AND t.Status = 'Pending'
 GROUP BY COALESCE(NULLIF(TRIM(s.Name), ''), 'Pending')
 ORDER BY Value DESC, Label
@@ -230,6 +253,7 @@ LIMIT 8;", parameters)).ToList()
 SELECT COALESCE(NULLIF(TRIM(Status), ''), 'Actioned') AS Label, COUNT(*) AS Value
 FROM workflowtasks
 WHERE ApproverUserId = @UserId
+  AND (@SelectedScope = FALSE OR Id IN @ScopedTaskIds)
   AND Status <> 'Pending'
 GROUP BY COALESCE(NULLIF(TRIM(Status), ''), 'Actioned')
 ORDER BY Value DESC, Label
@@ -361,6 +385,7 @@ SELECT COALESCE(NULLIF(TRIM(i.ResourceType), ''), 'Workflow') AS Label, COUNT(*)
 FROM workflowtasks t
 JOIN workflowinstances i ON i.Id = t.InstanceId
 WHERE t.ApproverUserId = @UserId
+  AND (@SelectedScope = FALSE OR t.Id IN @ScopedTaskIds)
   AND t.Status = 'Pending'
 GROUP BY COALESCE(NULLIF(TRIM(i.ResourceType), ''), 'Workflow')
 ORDER BY Value DESC, Label
@@ -379,6 +404,7 @@ FROM (
     END AS Bucket
     FROM workflowtasks
     WHERE ApproverUserId = @UserId
+      AND (@SelectedScope = FALSE OR Id IN @ScopedTaskIds)
       AND Status = 'Pending'
 ) x
 GROUP BY Bucket

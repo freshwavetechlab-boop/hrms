@@ -16,6 +16,7 @@ import { reportAttendanceValue } from '../utils/payrollAttendanceDisplay'
 import { workforceValue } from '../utils/employeeWorkforce'
 import { useAuthSession } from '../components/AuthGate'
 import { canOpenReport } from '../utils/workspaceAccess'
+import { isUnrestrictedClientAdmin } from '../utils/clientAccess'
 
 export type ReportingMenu = (typeof reportingMenus)[number]
 export type ReportDefinition = { name: string; code?: string }
@@ -64,7 +65,7 @@ const catalogue = {
 export const reportItems = (menu: ReportingMenu) => catalogue[menu] ?? []
 export default function ReportingPage({ activeMenu, activeReport }: { activeMenu: ReportingMenu; activeReport: ReportDefinition }) {
   const session = useAuthSession()
-  if (!canOpenReport(session?.user.permissions ?? [], activeMenu, activeReport.code)) return <Alert type="warning" showIcon message="You do not have access to this report." />
+  if (!canOpenReport(session?.user.permissions ?? [], activeMenu, activeReport.code, isUnrestrictedClientAdmin(session?.user))) return <Alert type="warning" showIcon message="You do not have access to this report." />
   if (activeReport.code === 'excel-payslips') return <ExcelPayslips />
   return activeReport.code === 'payslip-register' ? <PayslipRegister /> : <ReportingWorkspace activeReport={activeReport} />
 }

@@ -1,7 +1,7 @@
-import { Children, isValidElement, useCallback, useMemo, useState, type CSSProperties, type Key, type ReactNode } from 'react'
+import { Children, isValidElement, useCallback, useEffect, useMemo, useState, type CSSProperties, type Key, type ReactNode } from 'react'
 import { DownOutlined, FileExcelOutlined, FileOutlined, FilePdfOutlined, FileTextOutlined, FileWordOutlined } from '@ant-design/icons'
 import { Button, Checkbox, Dropdown, Empty, Input, Pagination, Table } from 'antd'
-import type { ColumnsType, TablePaginationConfig, TableRowSelection } from 'antd/es/table/interface'
+import type { ColumnsType, FilterValue, TablePaginationConfig, TableRowSelection } from 'antd/es/table/interface'
 import type { MenuProps } from 'antd'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -33,6 +33,7 @@ type DataTableProps<T> = {
   exportToolbar?: ReactNode
   primaryAction?: ReactNode
   onExcelExport?: (visibleRows: T[]) => void
+  onVisibleRowsChange?: (visibleRows: T[]) => void
   exportDisabled?: boolean
   hideInactiveClear?: boolean
   hideSearch?: boolean
@@ -91,6 +92,7 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
   const [tableKey, setTableKey] = useState(0)
   const [dirtyTable, setDirtyTable] = useState(false)
   const [visibleTableState, setVisibleTableState] = useState<{ source: T[]; rows: T[] } | null>(null)
+  const [columnFilters, setColumnFilters] = useState<Record<string, FilterValue | null>>({})
   const [exportFormat, setExportFormat] = useState<ExportFormat>('excel')
   const [cardPage, setCardPage] = useState(1)
   const pageSizeOptions = props.pageSizeOptions ?? [10, 25, 50, 100]
@@ -102,7 +104,7 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
   const searchable = useCallback((row: T) => columns.map(column => text(valueOf(row, column))).join(' ').toLowerCase(), [columns, valueOf])
 
   const data = useMemo(() => rows.filter(row => !query || searchable(row).includes(query.toLowerCase())), [rows, query, searchable])
-  const exportRows = props.view !== 'Cards' && visibleTableState?.source === data ? visibleTableState.rows : data
+  const legacyExportRows = props.view !== 'Cards' && visibleTableState?.source === data ? visibleTableState.rows : data
   const antColumns = useMemo<ColumnsType<T>>(() => {
     const mapped = columns.map(column => {
       const key = String(column.key)
@@ -127,12 +129,24 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
     return actions || onEdit ? [...mapped, { key: '__actions', title: 'Actions', fixed: 'right' as const, width: actionsWidth, render: (_: unknown, row: T) => <div className="ant-table-row-actions">{actions ? actions(row) : <Button size="small" onClick={() => onEdit?.(row)}>Edit</Button>}</div> }] : mapped
   }, [columns, rows, actions, onEdit, valueOf, actionsWidth])
 
+  const visibleRows = useMemo(() => {
+    if (!props.onVisibleRowsChange || props.view === 'Cards' || visibleTableState?.source === data) return legacyExportRows
+    // A refreshed source keeps Ant Table's active facets. Reuse their actual
+    // predicates so an opted-in bulk toolbar cannot expand to hidden records.
+    return data.filter(row => antColumns.every(column => {
+      const selectedValues = columnFilters[String(column.key)]
+      return !selectedValues?.length || !('onFilter' in column) || !column.onFilter || selectedValues.some(value => column.onFilter!(typeof value === 'bigint' ? String(value) : value, row))
+    }))
+  }, [props.onVisibleRowsChange, props.view, visibleTableState, data, legacyExportRows, antColumns, columnFilters])
+  const exportRows = props.onVisibleRowsChange ? visibleRows : legacyExportRows
+  useEffect(() => { props.onVisibleRowsChange?.(visibleRows) }, [props.onVisibleRowsChange, visibleRows])
+
   const rowHeight = 48
   const tableBodyHeight = props.scrollY ?? Math.max(rowHeight * Math.max(1, tablePageSize), 360)
   const tableStyle = { '--data-table-body-min-height': typeof tableBodyHeight === 'number' ? `${tableBodyHeight}px` : String(tableBodyHeight) } as CSSProperties
   const tableVerticalScroll = props.fillHeight || props.scrollY !== undefined ? tableBodyHeight : undefined
   const pagination: TablePaginationConfig = { pageSize: tablePageSize, pageSizeOptions: pageSizeOptions.map(String), showSizeChanger: true, showTotal: (total, range) => `${range[0]}-${range[1]} of ${total}` }
-  const clear = () => { setQuery(''); setDirtyTable(false); setVisibleTableState(null); setTableKey(value => value + 1) }
+  const clear = () => { setQuery(''); setDirtyTable(false); setVisibleTableState(null); setColumnFilters({}); setTableKey(value => value + 1) }
   const exportValueOf = (row: T, column: Column<T>) => {
     if (column.exportValue) return column.exportValue(row)
     const value = valueOf(row, column)
@@ -203,7 +217,7 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
 
   return <div className={`ant-smart-table${props.fillHeight ? ' table-fill-height' : ''}`} style={tableStyle}>
     <div className="ant-table-toolbar">
-      <div className="ant-table-summary">{title && <strong>{title}</strong>}<span>{data.length} of {rows.length} rows</span></div>
+      <div className="ant-table-summary">{title && <strong>{title}</strong>}<span>{(props.onVisibleRowsChange ? visibleRows : data).length} of {rows.length} rows</span></div>
       <div className="ant-table-actions">
         {!props.hideSearch && <Input allowClear className="table-filter" placeholder="Search table..." value={query} onChange={event => setQuery(event.target.value)} />}
         {(props.hideInactiveClear === false || query || dirtyTable) && <Button onClick={clear}>Reset</Button>}
@@ -246,10 +260,11 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
       rowSelection={props.rowSelection ? { preserveSelectedRowKeys: true, ...props.rowSelection, selectedRowKeys: props.rowSelection.selectedRowKeys?.map(String) } : undefined}
       tableLayout="fixed"
       scroll={tableVerticalScroll === undefined ? { x: tableScrollX } : { x: tableScrollX, y: tableVerticalScroll }}
-      onChange={(paginationState, __, ___, extra) => {
+      onChange={(paginationState, filters, ___, extra) => {
         if (paginationState.pageSize && paginationState.pageSize !== tablePageSize) setTablePageSize(paginationState.pageSize)
         setDirtyTable(true)
         setVisibleTableState({ source: data, rows: extra.currentDataSource as T[] })
+        if (props.onVisibleRowsChange) { setColumnFilters(filters); props.onVisibleRowsChange(extra.currentDataSource as T[]) }
       }}
     />}
   </div>

@@ -13,7 +13,7 @@ import { useAuthSession } from './AuthGate'
 import '../SecurityAccess.css'
 import '../RoleAccessSummary.css'
 
-const user0 = { id: 0, email: '', displayName: '', mobile: '', password: '', clientId: '', employeeId: '', recruitmentScopeMode: 'Client' as 'Client' | 'EmployeeLocation' | 'SelectedLocations', recruitmentLocationIds: [] as number[], isActive: true, mustChangePassword: true, roles: ['mss_manager'] }
+const user0 = { id: 0, email: '', displayName: '', mobile: '', password: '', clientId: '', clientScopeChoice: 'All' as 'All' | 'Single' | 'Selected', assignedClientIds: [] as number[], employeeId: '', recruitmentScopeMode: 'Client' as 'Client' | 'EmployeeLocation' | 'SelectedLocations', recruitmentLocationIds: [] as number[], isActive: true, mustChangePassword: true, roles: ['mss_manager'] }
 const role0 = { id: 0, code: '', name: '', description: '', permissions: [] as string[], isSystem: false }
 const userImportHeaders = ['Email', 'Display Name', 'Mobile', 'Employee Code', 'Roles', 'Temporary Password', 'Active', 'Must Change Password']
 const securityTabs = ['Users', 'Roles', 'Audit'] as const
@@ -166,6 +166,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   const session = useAuthSession()
   const clientScopeId = session?.user.clientId
   const clientScopedAdmin = Boolean(clientScopeId && !session?.user.permissions.includes('security.manage'))
+  const canAssignSelectedClients = !clientScopeId && session?.user.clientAccessMode === 'Legacy' && Boolean(session?.user.permissions.includes('security.manage'))
   const [users, setUsers] = useState<AuthUser[]>([]), [roles, setRoles] = useState<AuthRole[]>([]), [permissions, setPermissions] = useState<AuthPermission[]>([]), [auditLogs, setAuditLogs] = useState<AuditLog[]>([])
   const [clients, setClients] = useState<Client[]>([]), [employees, setEmployees] = useState<Employee[]>([]), [workLocations, setWorkLocations] = useState<WorkLocation[]>([])
   const [user, setUser] = useState(user0), [role, setRole] = useState(role0), [msg, setMsg] = useState(''), [directoryClientId, setDirectoryClientId] = useState(clientScopeId ? String(clientScopeId) : '')
@@ -202,9 +203,10 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   }, [permissions])
   const employeeOptions = employees.filter(employee => (!user.clientId || employee.clientId === Number(user.clientId)) && (String(employee.id) === user.employeeId || (!usedEmployeeIds.has(employee.id) && !usedEmails.has(normalizeEmail(employee.workEmail)))))
   const unlinkedEmployees = employees.filter(employee => employee.isActive && employee.workEmail && !allUsedEmployeeIds.has(employee.id) && !allUsedEmails.has(normalizeEmail(employee.workEmail)) && (!directoryClientId || employee.clientId === Number(directoryClientId)))
-  const visibleUsers = users.filter(item => (!item.clientId || activeClientIds.has(item.clientId)) && (!directoryClientId || item.clientId === Number(directoryClientId)))
+  const visibleUsers = users.filter(item => (!item.clientId || activeClientIds.has(item.clientId)) && (!directoryClientId || item.clientId === Number(directoryClientId) || item.clientAccessMode === 'Selected' && item.assignedClientIds?.includes(Number(directoryClientId))))
   const rolePermissions = rolePermissionCodes
   const clientName = (clientId?: number | null) => clientId ? clients.find(client => client.id === clientId)?.name || `Client #${clientId}` : 'All clients'
+  const userClientNames = (item: AuthUser) => item.clientAccessMode === 'Selected' ? `Selected: ${(item.assignedClientIds || []).map(id => clientName(id)).join(', ') || 'No active clients'}` : clientName(item.clientId)
   const roleName = (code: string) => roles.find(item => item.code === code)?.name || code
   const parseRoleCodes = (value: string, fallback: string[] = []) => {
     const selected = unique(value.split(/[;,|]/).map(item => {
@@ -253,7 +255,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     }))
   }
 
-  const openNewUser = () => { setCreatedCredentials(null); setResetMustChangePassword(true); setPasswordPolicyOverride(null); setRoleSourceUser(null); setTransferCopiedRoles(false); setUser({ ...user0, clientId: clientScopeId ? String(clientScopeId) : directoryClientId }); setUserDrawerOpen(true) }
+  const openNewUser = () => { setCreatedCredentials(null); setResetMustChangePassword(true); setPasswordPolicyOverride(null); setRoleSourceUser(null); setTransferCopiedRoles(false); setUser({ ...user0, clientId: clientScopeId ? String(clientScopeId) : directoryClientId, clientScopeChoice: clientScopeId || directoryClientId ? 'Single' : 'All' }); setUserDrawerOpen(true) }
   const openRoleCopy = (source: AuthUser) => {
     const copyableRoles = source.roles.filter(code => roles.some(role => role.code === code))
     if (!copyableRoles.length) {
@@ -273,7 +275,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     setPasswordPolicyOverride(null)
     setRoleSourceUser(roleCopySource)
     setTransferCopiedRoles(false)
-    setUser({ ...user0, roles: copyableRoles, clientId: roleCopySource.clientId ? String(roleCopySource.clientId) : '' })
+    setUser({ ...user0, roles: copyableRoles, clientId: roleCopySource.clientId ? String(roleCopySource.clientId) : '', clientScopeChoice: roleCopySource.clientAccessMode === 'Selected' ? 'Selected' : roleCopySource.clientId ? 'Single' : 'All', assignedClientIds: [...(roleCopySource.assignedClientIds || [])] })
     setRoleCopySource(null)
     setUserDrawerOpen(true)
   }
@@ -317,7 +319,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     setPasswordPolicyOverride(null)
     setRoleSourceUser(null)
     setTransferCopiedRoles(false)
-    setUser({ id: selected.id, email: selected.email, displayName: selected.displayName, mobile: selected.mobile || '', password: '', clientId: selected.clientId ? String(selected.clientId) : '', employeeId: selected.employeeId ? String(selected.employeeId) : '', recruitmentScopeMode: selected.recruitmentScopeMode || 'Client', recruitmentLocationIds: selected.recruitmentLocationIds || [], isActive: selected.isActive, mustChangePassword: selected.mustChangePassword, roles: selected.roles })
+    setUser({ id: selected.id, email: selected.email, displayName: selected.displayName, mobile: selected.mobile || '', password: '', clientId: selected.clientId ? String(selected.clientId) : '', clientScopeChoice: selected.clientAccessMode === 'Selected' ? 'Selected' : selected.clientId ? 'Single' : 'All', assignedClientIds: [...(selected.assignedClientIds || [])], employeeId: selected.employeeId ? String(selected.employeeId) : '', recruitmentScopeMode: selected.recruitmentScopeMode || 'Client', recruitmentLocationIds: selected.recruitmentLocationIds || [], isActive: selected.isActive, mustChangePassword: selected.mustChangePassword, roles: selected.roles })
     setUserDrawerOpen(true)
   }
   const openNewRole = () => { setRole(role0); setRoleDrawerOpen(true) }
@@ -331,6 +333,10 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     if (!user.displayName.trim() || !user.email.trim()) { setMsg('Display name and email/login ID are required.'); return }
     if (user.id === 0 && !user.password.trim()) { setMsg('Temporary password is required for a new user.'); return }
     if (user.roles.length === 0) { setMsg('Select at least one role before saving the user.'); return }
+    if (user.clientScopeChoice === 'Selected' && !canAssignSelectedClients) { setMsg('Selected clients require the updated API and an unrestricted security administrator.'); return }
+    if (user.clientScopeChoice === 'Single' && !user.clientId) { setMsg('Select the client for Single client access.'); return }
+    if (user.clientScopeChoice === 'Selected' && !user.assignedClientIds.length) { setMsg('Select at least one assigned client.'); return }
+    if (user.clientScopeChoice === 'Selected' && user.employeeId) { setMsg('Selected clients are available for standalone business users. Remove the employee link first.'); return }
     if (user.recruitmentScopeMode === 'EmployeeLocation' && !user.employeeId) { setMsg('Link an employee before using employee work-location visibility.'); return }
     if (user.recruitmentScopeMode === 'SelectedLocations' && user.recruitmentLocationIds.length === 0) { setMsg('Select at least one recruitment location.'); return }
     setSaving(true)
@@ -341,7 +347,9 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
         displayName: user.displayName.trim(),
         mobile: user.mobile.trim(),
         password: user.password,
-        clientId: user.clientId ? Number(user.clientId) : null,
+        clientId: user.clientScopeChoice === 'Single' && user.clientId ? Number(user.clientId) : null,
+        clientAccessMode: user.clientScopeChoice === 'Selected' ? 'Selected' : 'Legacy',
+        assignedClientIds: user.clientScopeChoice === 'Selected' ? user.assignedClientIds : [],
         employeeId: user.employeeId ? Number(user.employeeId) : null,
         recruitmentScopeMode: user.recruitmentScopeMode,
         recruitmentLocationIds: user.recruitmentScopeMode === 'SelectedLocations' ? user.recruitmentLocationIds : [],
@@ -355,7 +363,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
             ? { mustChangePassword: resetMustChangePassword }
             : passwordPolicyOverride === null ? {} : { mustChangePassword: passwordPolicyOverride }),
       }
-      const response = await saveSecurityUser(body)
+      const response = await saveSecurityUser(body, user.clientScopeChoice === 'Selected' || users.some(item => item.id === user.id && item.clientAccessMode === 'Selected'))
       setMsg(response.ok ? 'User saved and role assignments updated.' : response.error || 'User save failed.')
       if (response.ok) {
         if (user.id === 0) setCreatedCredentials({ email: body.email, password: body.password })
@@ -431,11 +439,11 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
 
   const useEmployee = (employeeId: string) => {
     const selected = employees.find(employee => String(employee.id) === employeeId)
-    setUser({ ...user, employeeId, clientId: selected ? String(selected.clientId) : user.clientId, email: selected?.workEmail || user.email, displayName: selected ? `${selected.firstName} ${selected.lastName}`.trim() : user.displayName, roles: user.roles.includes('employee') ? user.roles : [...user.roles, 'employee'] })
+    setUser({ ...user, employeeId, clientScopeChoice: selected ? 'Single' : user.clientScopeChoice, assignedClientIds: selected ? [] : user.assignedClientIds, clientId: selected ? String(selected.clientId) : user.clientId, email: selected?.workEmail || user.email, displayName: selected ? `${selected.firstName} ${selected.lastName}`.trim() : user.displayName, roles: user.roles.includes('employee') ? user.roles : [...user.roles, 'employee'] })
   }
   const provisionEmployee = (employee: Employee) => {
     setCreatedCredentials(null)
-    setUser({ ...user0, employeeId: String(employee.id), clientId: String(employee.clientId), email: employee.workEmail, displayName: `${employee.firstName} ${employee.lastName}`.trim(), mobile: employee.personalDetails?.mobile || '', roles: ['employee'] })
+    setUser({ ...user0, employeeId: String(employee.id), clientScopeChoice: 'Single', clientId: String(employee.clientId), email: employee.workEmail, displayName: `${employee.firstName} ${employee.lastName}`.trim(), mobile: employee.personalDetails?.mobile || '', roles: ['employee'] })
     setUserDrawerOpen(true)
     setMsg(`Provisioning login access for ${employee.firstName} ${employee.lastName}.`)
   }
@@ -591,11 +599,13 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
       <header><div><span className="eyebrow purple">User access</span><h3>{user.id ? 'Edit user' : roleSourceUser ? 'Add user with copied roles' : 'Add user'}</h3><p>{roleSourceUser ? `Roles are preselected from ${roleSourceUser.displayName || roleSourceUser.email}.` : 'Create an employee-linked login or a standalone business user.'}</p></div><button type="button" aria-label="Close user drawer" onClick={closeUserDrawer}>x</button></header>
       <div className="component-drawer-form security-component-drawer-form">
         {roleSourceUser && <Alert className="wide" type={transferCopiedRoles ? 'warning' : 'info'} showIcon message={transferCopiedRoles ? 'Transfer selected roles' : 'Copy selected roles'} description={<span>{transferCopiedRoles ? `After this new user is created, the selected roles will be removed from ${roleSourceUser.displayName || roleSourceUser.email}. ` : `${roleSourceUser.displayName || roleSourceUser.email} will keep the selected roles. `}<AntCheckbox disabled={roleSourceUser.id === session?.user.id} checked={transferCopiedRoles} onChange={event => setTransferCopiedRoles(event.target.checked)}>Remove these roles from source user after creation</AntCheckbox>{roleSourceUser.id === session?.user.id && <small>You can copy your own roles, but cannot transfer them while signed in.</small>}</span>} />}
-        <InfoField label="User type" help="Choose employee-linked ESS access or a standalone business login."><SearchSelect value={user.roles.includes('employee') && user.employeeId ? 'employee' : 'business'} onChange={value => value === 'employee' ? setUser({ ...user, roles: ['employee'] }) : setUser({ ...user, employeeId: '', roles: ['mss_manager'] })} options={[{ value: 'business', label: 'Business user' }, { value: 'employee', label: 'Employee / ESS user' }]} /></InfoField>
-        {!clientScopedAdmin && <InfoField label="Client scope" help="Leave blank for cross-client access."><SearchSelect value={user.clientId} onChange={value => setUser({ ...user, clientId: value, employeeId: '', recruitmentLocationIds: [] })} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></InfoField>}
-        <InfoField label="Employee link" help="Employee Master records not yet linked to another login." className="wide"><SearchSelect value={user.employeeId} onChange={useEmployee} options={[{ value: '', label: 'No employee link' }, ...employeeOptions.map(employee => ({ value: employee.id, label: `${employee.firstName} ${employee.lastName} / ${employee.employeeCode} / ${employee.department}` }))]} /></InfoField>
-        {!clientScopedAdmin && <InfoField label="Recruitment visibility" help="Roles control actions; this scope controls which positions and candidates are visible."><SearchSelect value={user.recruitmentScopeMode} onChange={value => setUser({ ...user, recruitmentScopeMode: value as typeof user.recruitmentScopeMode, recruitmentLocationIds: value === 'SelectedLocations' ? user.recruitmentLocationIds : [] })} options={[{ value: 'Client', label: 'All assigned-client positions' }, { value: 'EmployeeLocation', label: 'Employee work location only' }, { value: 'SelectedLocations', label: 'Selected locations' }]} /></InfoField>}
-        {!clientScopedAdmin && user.recruitmentScopeMode === 'SelectedLocations' && <InfoField label="Visible recruitment locations" help="Select one or more HO, Tech Centre or ARO locations." className="wide"><Select mode="multiple" className="app-search-select" popupClassName="app-search-select-dropdown" showSearch optionFilterProp="label" value={user.recruitmentLocationIds} onChange={values => setUser({ ...user, recruitmentLocationIds: values })} options={workLocations.filter(location => !user.clientId || location.clientId === Number(user.clientId)).map(location => ({ value: location.id, label: `${location.name}${location.city ? ` / ${location.city}` : ''}` }))} placeholder="Select visible locations" /></InfoField>}
+        <InfoField label="User type" help="Choose employee-linked ESS access or a standalone business login."><SearchSelect value={user.roles.includes('employee') && user.employeeId ? 'employee' : 'business'} onChange={value => value === 'employee' ? setUser({ ...user, clientScopeChoice: 'Single', assignedClientIds: [], roles: ['employee'] }) : setUser({ ...user, employeeId: '', roles: ['mss_manager'] })} options={[{ value: 'business', label: 'Business user' }, { value: 'employee', label: 'Employee / ESS user' }]} /></InfoField>
+        {!clientScopedAdmin && <InfoField label="Client access" help="Roles control pages and actions. Client access controls whose records this user can work with."><Select className="app-search-select" aria-label="User client access" value={user.clientScopeChoice} onChange={value => setUser({ ...user, clientScopeChoice: value, clientId: value === 'Single' ? user.clientId : '', assignedClientIds: value === 'Selected' ? user.assignedClientIds : [], employeeId: '', recruitmentScopeMode: 'Client', recruitmentLocationIds: [] })} options={[{ value: 'All', label: 'All clients' }, { value: 'Single', label: 'Single client' }, { value: 'Selected', label: 'Selected clients', disabled: !canAssignSelectedClients }]} /></InfoField>}
+        {!clientScopedAdmin && user.clientScopeChoice === 'Single' && <InfoField label="Client" help="This user can access only the selected client."><SearchSelect value={user.clientId} onChange={value => setUser({ ...user, clientId: value, employeeId: '', recruitmentScopeMode: 'Client', recruitmentLocationIds: [] })} options={[{ value: '', label: 'Select a client' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></InfoField>}
+        {!clientScopedAdmin && user.clientScopeChoice === 'Selected' && <InfoField label="Assigned clients" help="Select every client this business user may access. Other clients are excluded from their data access." className="wide"><Select mode="multiple" aria-label="Assigned user clients" className="app-search-select" showSearch optionFilterProp="label" maxTagCount="responsive" value={user.assignedClientIds} onChange={values => setUser({ ...user, assignedClientIds: values, recruitmentLocationIds: user.recruitmentLocationIds.filter(id => workLocations.some(location => location.id === id && values.includes(location.clientId))) })} options={clients.map(client => ({ value: client.id, label: client.name }))} placeholder="Choose one or more clients" /></InfoField>}
+        <InfoField label="Employee link" help={user.clientScopeChoice === 'Selected' ? 'Selected-client access is for standalone business users. Employee-linked ESS/MSS keeps its existing single-client scope.' : 'Employee Master records not yet linked to another login.'} className="wide"><SearchSelect disabled={user.clientScopeChoice === 'Selected'} value={user.employeeId} onChange={useEmployee} options={[{ value: '', label: 'No employee link' }, ...employeeOptions.map(employee => ({ value: employee.id, label: `${employee.firstName} ${employee.lastName} / ${employee.employeeCode} / ${employee.department}` }))]} /></InfoField>
+        {!clientScopedAdmin && <InfoField label="Recruitment visibility" help="Roles control actions; this scope controls which positions and candidates are visible."><SearchSelect value={user.recruitmentScopeMode} onChange={value => setUser({ ...user, recruitmentScopeMode: value as typeof user.recruitmentScopeMode, recruitmentLocationIds: value === 'SelectedLocations' ? user.recruitmentLocationIds : [] })} options={[{ value: 'Client', label: 'All assigned-client positions' }, ...(user.clientScopeChoice === 'Selected' ? [] : [{ value: 'EmployeeLocation', label: 'Employee work location only' }]), { value: 'SelectedLocations', label: 'Selected locations' }]} /></InfoField>}
+        {!clientScopedAdmin && user.recruitmentScopeMode === 'SelectedLocations' && <InfoField label="Visible recruitment locations" help="Select one or more HO, Tech Centre or ARO locations." className="wide"><Select mode="multiple" className="app-search-select" popupClassName="app-search-select-dropdown" showSearch optionFilterProp="label" value={user.recruitmentLocationIds} onChange={values => setUser({ ...user, recruitmentLocationIds: values })} options={workLocations.filter(location => user.clientScopeChoice === 'Selected' ? user.assignedClientIds.includes(location.clientId) : !user.clientId || location.clientId === Number(user.clientId)).map(location => ({ value: location.id, label: `${location.name}${location.city ? ` / ${location.city}` : ''}` }))} placeholder="Select visible locations" /></InfoField>}
         <InfoField label="Display name"><Input value={user.displayName} onChange={event => setUser({ ...user, displayName: event.target.value })} /></InfoField>
         <InfoField label="Email / Login ID"><Input value={user.email} onChange={event => setUser({ ...user, email: event.target.value })} /></InfoField>
         <InfoField label="Mobile number"><Input value={user.mobile} onChange={event => setUser({ ...user, mobile: event.target.value })} /></InfoField>
@@ -696,7 +706,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     </Space>}
   >
     {roleCopySource && <div className="security-role-copy-body">
-      <Alert type="info" showIcon message={`Source: ${roleCopySource.displayName || roleCopySource.email}`} description={`${clientName(roleCopySource.clientId)} · Existing target roles will be preserved.`} />
+      <Alert type="info" showIcon message={`Source: ${roleCopySource.displayName || roleCopySource.email}`} description={`${userClientNames(roleCopySource)} · Existing target roles will be preserved.`} />
       <div className="security-role-copy-mode" role="group" aria-label="Role assignment target type">
         <Button type={roleCopyMode === 'existing' ? 'primary' : 'default'} onClick={() => setRoleCopyMode('existing')}>Existing users</Button>
         <Button type={roleCopyMode === 'new' ? 'primary' : 'default'} onClick={() => setRoleCopyMode('new')}>New user</Button>
@@ -715,7 +725,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
             optionFilterProp="label"
             value={existingRoleTargetIds}
             onChange={values => setExistingRoleTargetIds(values)}
-            options={existingRoleTargets.map(item => ({ value: item.id, label: `${item.displayName} · ${item.email}${clientScopedAdmin ? '' : ` · ${clientName(item.clientId)}`}` }))}
+            options={existingRoleTargets.map(item => ({ value: item.id, label: `${item.displayName} · ${item.email}${clientScopedAdmin ? '' : ` · ${userClientNames(item)}`}` }))}
             placeholder="Search and select one or more users"
             notFoundContent="No compatible users in this client"
             popupClassName="security-role-copy-dropdown"
@@ -741,7 +751,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
       { key: 'displayName', label: 'User', width: '190px' },
       { key: 'email', label: 'Email / Login ID', width: '220px' },
       { key: 'mobile', label: 'Mobile', value: row => row.mobile || '-' },
-      { key: 'clientId', label: 'Client', value: row => clientName(row.clientId), width: '180px' },
+      { key: 'clientId', label: 'Client access', value: row => userClientNames(row), width: '220px' },
       { key: 'employeeId', label: 'Employee Link', value: row => row.employeeId ? `Employee #${row.employeeId}` : 'Standalone' },
       { key: 'roles', label: 'Roles', value: row => row.roles.map(roleName).join(', '), render: row => <Space size={4} wrap>{row.roles.map(code => <Tag key={code}>{roleName(code)}</Tag>)}</Space>, width: '240px' },
       { key: 'isActive', label: 'Status', value: row => row.isActive ? 'Active' : 'Inactive', render: row => <Tag color={row.isActive ? 'green' : 'red'}>{row.isActive ? 'Active' : 'Inactive'}</Tag> },

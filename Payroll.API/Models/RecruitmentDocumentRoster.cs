@@ -4,6 +4,7 @@ public sealed class RecruitmentRosterImport
 {
     public int ClientId { get; set; }
     public int TemplateId { get; set; }
+    public int? WorkLocationId { get; set; }
     public string SourceGroup { get; set; } = "";
     public string SheetName { get; set; } = "";
     public int HeaderRow { get; set; } = 4;
@@ -34,6 +35,8 @@ public sealed class RecruitmentRosterPreviewRow
     public string WorkLocation { get; set; } = "";
     public string MatchStatus { get; set; } = "New profile";
     public long? CandidateId { get; set; }
+    public int? WorkLocationId { get; set; }
+    public string ExistingRevision { get; set; } = "";
     public List<string> ImportIssues { get; set; } = [];
     public List<string> DocumentIssues { get; set; } = [];
     public Dictionary<string, string> Values { get; set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -53,6 +56,9 @@ public sealed class RecruitmentDocumentRosterRow
     public string SourceGroup { get; set; } = "";
     public string ProfileStatus { get; set; } = "";
     public string WorkLocation { get; set; } = "";
+    public int? WorkLocationId { get; set; }
+    public string OfferNumber { get; set; } = "";
+    public DateTime? ReleasedAt { get; set; }
     public string SourceFileName { get; set; } = "";
     public string SourceSheetName { get; set; } = "";
     public int SourceRow { get; set; }
@@ -69,3 +75,20 @@ public sealed class RecruitmentRosterImportResult
     public List<string> Errors { get; set; } = [];
 }
 public sealed record RecruitmentRosterEdit(Dictionary<string, string> Values, string Revision);
+public sealed record RecruitmentRosterWorkLocationSelection(List<long> Ids, int WorkLocationId, Dictionary<string, string> Revisions);
+public sealed class RecruitmentRosterReleaseSelection
+{
+    public List<long> Ids { get; set; } = [];
+    public bool ApplySignature { get; set; } = true;
+    public Dictionary<string, string>? Revisions { get; set; }
+}
+public sealed class RecruitmentSigningAssetMetadata
+{
+    public bool Available { get; set; }
+    public string FileName { get; set; } = "";
+    public string ContentType { get; set; } = "";
+    public int Width { get; set; }
+    public int Height { get; set; }
+    public string Sha256 { get; set; } = "";
+    public DateTime? UpdatedAt { get; set; }
+}

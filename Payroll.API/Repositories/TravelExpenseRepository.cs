@@ -18,7 +18,7 @@ public class TravelExpenseRepository(IConfiguration configuration)
         if (configuration.GetValue("TravelExpense:SeedSampleData", false)) await SeedSampleDataAsync(db);
     }
 
-    public async Task<TravelExpenseSetup> GetAsync()
+    public async Task<TravelExpenseSetup> GetAsync(int? clientId = null)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureTablesAsync(db);
         return new TravelExpenseSetup
@@ -26,21 +26,28 @@ public class TravelExpenseRepository(IConfiguration configuration)
             ClientSettings = await db.QueryAsync<TravelExpenseClientSetting>(@"SELECT s.*, COALESCE(c.Name,'') ClientName
 FROM travel_expense_client_settings s
 JOIN clients c ON c.Id=s.ClientId
-ORDER BY c.Name"),
-            Policies = await db.QueryAsync<TravelPolicy>(@"SELECT p.*, COALESCE(c.Name,'') CompanyName FROM travel_policies p LEFT JOIN clients c ON c.Id=p.CompanyId ORDER BY p.CompanyId, p.EffectiveFrom DESC, p.PolicyName"),
+WHERE (@ClientId IS NULL OR s.ClientId=@ClientId)
+ORDER BY c.Name", new { ClientId = clientId }),
+            Policies = await db.QueryAsync<TravelPolicy>(@"SELECT p.*, COALESCE(c.Name,'') CompanyName FROM travel_policies p LEFT JOIN clients c ON c.Id=p.CompanyId WHERE (@ClientId IS NULL OR p.CompanyId IN (0,@ClientId)) ORDER BY p.CompanyId, p.EffectiveFrom DESC, p.PolicyName", new { ClientId = clientId }),
             Assignments = await db.QueryAsync<TravelPolicyAssignment>(@"SELECT a.*, p.PolicyName, COALESCE(c.Name,'') CompanyName, COALESCE(w.Name,'') BranchName, COALESCE(CONCAT(e.FirstName,' ',e.LastName,' / ',e.EmployeeCode),'') EmployeeName
 FROM travel_policy_assignments a
 JOIN travel_policies p ON p.Id=a.PolicyId
 LEFT JOIN clients c ON c.Id=a.CompanyId
 LEFT JOIN worklocations w ON w.Id=a.BranchId
 LEFT JOIN employees e ON e.Id=a.EmployeeId
-ORDER BY a.Priority, p.PolicyName, a.Id DESC"),
-            Rules = await db.QueryAsync<TravelPolicyRule>(@"SELECT r.*, p.PolicyName, COALESCE(w.Name,'') WorkflowName FROM travel_policy_rules r JOIN travel_policies p ON p.Id=r.PolicyId LEFT JOIN workflowmasters w ON w.Id=r.WorkflowId ORDER BY p.PolicyName, r.RuleType, r.RuleName"),
+WHERE (@ClientId IS NULL OR (
+ COALESCE(NULLIF(a.CompanyId,0),e.ClientId,w.ClientId,NULLIF(p.CompanyId,0),0)=@ClientId
+ AND p.CompanyId IN (0,@ClientId)
+ AND (a.EmployeeId IS NULL OR e.ClientId=@ClientId)
+ AND (a.BranchId IS NULL OR w.ClientId=@ClientId)))
+ORDER BY a.Priority, p.PolicyName, a.Id DESC", new { ClientId = clientId }),
+            Rules = await db.QueryAsync<TravelPolicyRule>(@"SELECT r.*, p.PolicyName, COALESCE(w.Name,'') WorkflowName FROM travel_policy_rules r JOIN travel_policies p ON p.Id=r.PolicyId LEFT JOIN workflowmasters w ON w.Id=r.WorkflowId WHERE (@ClientId IS NULL OR p.CompanyId IN (0,@ClientId)) ORDER BY p.PolicyName, r.RuleType, r.RuleName", new { ClientId = clientId }),
             Categories = await db.QueryAsync<TravelExpenseCategory>(@"SELECT h.Id,hs.ClientId,COALESCE(client.Name,'') ClientName,NULL ParentId,'' ParentName,h.HeaderName ExpenseType,TRUE IsClaimHeader,h.HeaderCode CategoryCode,h.HeaderName CategoryName,
 FALSE ReceiptMandatory,FALSE GstApplicable,NULL DailyLimit,NULL MaximumClaim,FALSE RequiresFinanceApproval,FALSE RequiresManagerApproval,hs.IsEnabled IsActive,h.CreatedAt,h.UpdatedAt
 FROM expense_headers h
 JOIN client_expense_header_settings hs ON hs.HeaderId=h.Id
 JOIN clients client ON client.Id=hs.ClientId
+WHERE (@ClientId IS NULL OR hs.ClientId=@ClientId)
 UNION ALL
 SELECT c.Id,cs.ClientId,COALESCE(client.Name,'') ClientName,h.Id ParentId,h.HeaderName ParentName,h.HeaderName ExpenseType,FALSE IsClaimHeader,c.CategoryCode,c.CategoryName,
 cs.ReceiptMandatory,cs.GstApplicable,cs.DailyLimit,cs.MaximumClaim,cs.RequiresFinanceApproval,cs.RequiresManagerApproval,cs.IsEnabled IsActive,c.CreatedAt,c.UpdatedAt
@@ -48,8 +55,26 @@ FROM expense_categories c
 JOIN expense_headers h ON h.Id=c.HeaderId
 JOIN client_expense_category_settings cs ON cs.CategoryId=c.Id
 JOIN clients client ON client.Id=cs.ClientId
-ORDER BY ClientId, ExpenseType, IsClaimHeader DESC, CategoryName"),
-            Audit = await db.QueryAsync<TravelPolicyAudit>("SELECT * FROM travel_policy_audit ORDER BY ChangedOn DESC, Id DESC LIMIT 250")
+WHERE (@ClientId IS NULL OR cs.ClientId=@ClientId)
+ORDER BY ClientId, ExpenseType, IsClaimHeader DESC, CategoryName", new { ClientId = clientId }),
+            Audit = await db.QueryAsync<TravelPolicyAudit>(@"SELECT a.* FROM travel_policy_audit a
+WHERE @ClientId IS NULL OR (
+ (JSON_EXTRACT(a.OldValueJson,'$.ClientId') IS NULL OR CAST(JSON_UNQUOTE(JSON_EXTRACT(a.OldValueJson,'$.ClientId')) AS SIGNED) IN (0,@ClientId))
+ AND (JSON_EXTRACT(a.NewValueJson,'$.ClientId') IS NULL OR CAST(JSON_UNQUOTE(JSON_EXTRACT(a.NewValueJson,'$.ClientId')) AS SIGNED) IN (0,@ClientId))
+ AND (JSON_EXTRACT(a.OldValueJson,'$.CompanyId') IS NULL OR CAST(JSON_UNQUOTE(JSON_EXTRACT(a.OldValueJson,'$.CompanyId')) AS SIGNED) IN (0,@ClientId))
+ AND (JSON_EXTRACT(a.NewValueJson,'$.CompanyId') IS NULL OR CAST(JSON_UNQUOTE(JSON_EXTRACT(a.NewValueJson,'$.CompanyId')) AS SIGNED) IN (0,@ClientId))
+ AND (
+   (a.EntityType='TravelExpenseClientSetting' AND (EXISTS(SELECT 1 FROM travel_expense_client_settings s WHERE s.Id=a.EntityId AND s.ClientId=@ClientId)
+      OR COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(a.NewValueJson,'$.ClientId')) AS SIGNED),CAST(JSON_UNQUOTE(JSON_EXTRACT(a.OldValueJson,'$.ClientId')) AS SIGNED))=@ClientId))
+   OR (a.EntityType='TravelPolicy' AND (EXISTS(SELECT 1 FROM travel_policies p WHERE p.Id=a.EntityId AND p.CompanyId=@ClientId)
+      OR COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(a.NewValueJson,'$.CompanyId')) AS SIGNED),CAST(JSON_UNQUOTE(JSON_EXTRACT(a.OldValueJson,'$.CompanyId')) AS SIGNED))=@ClientId))
+   OR (a.EntityType='TravelPolicyAssignment' AND (EXISTS(SELECT 1 FROM travel_policy_assignments t JOIN travel_policies p ON p.Id=t.PolicyId LEFT JOIN employees e ON e.Id=t.EmployeeId LEFT JOIN worklocations w ON w.Id=t.BranchId WHERE t.Id=a.EntityId AND COALESCE(NULLIF(t.CompanyId,0),e.ClientId,w.ClientId,NULLIF(p.CompanyId,0),0)=@ClientId)
+      OR COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(a.NewValueJson,'$.CompanyId')) AS SIGNED),CAST(JSON_UNQUOTE(JSON_EXTRACT(a.OldValueJson,'$.CompanyId')) AS SIGNED))=@ClientId))
+   OR (a.EntityType='TravelPolicyRule' AND (EXISTS(SELECT 1 FROM travel_policy_rules r JOIN travel_policies p ON p.Id=r.PolicyId WHERE r.Id=a.EntityId AND p.CompanyId=@ClientId)
+      OR EXISTS(SELECT 1 FROM travel_policies p WHERE p.Id=COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(a.NewValueJson,'$.PolicyId')) AS SIGNED),CAST(JSON_UNQUOTE(JSON_EXTRACT(a.OldValueJson,'$.PolicyId')) AS SIGNED)) AND p.CompanyId=@ClientId)))
+   OR (a.EntityType IN ('ExpenseHeader','ExpenseCategory') AND COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(a.NewValueJson,'$.ClientId')) AS SIGNED),CAST(JSON_UNQUOTE(JSON_EXTRACT(a.OldValueJson,'$.ClientId')) AS SIGNED))=@ClientId)
+ ))
+ORDER BY a.ChangedOn DESC, a.Id DESC LIMIT 250", new { ClientId = clientId })
         };
     }
 

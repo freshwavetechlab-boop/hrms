@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS authusers (
     Mobile VARCHAR(40) NOT NULL DEFAULT '',
     PasswordHash VARCHAR(500) NOT NULL,
     ClientId INT NULL,
+    ClientAccessMode VARCHAR(20) NOT NULL DEFAULT 'Legacy',
     EmployeeId INT NULL,
     RecruitmentScopeMode VARCHAR(40) NOT NULL DEFAULT 'Client',
     IsActive BOOLEAN NOT NULL DEFAULT TRUE,
@@ -113,6 +114,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
         await EnsureForeignKeyAsync(connection, "authrolepermissions", "FK_AuthRolePermissions_Permission", "FOREIGN KEY (PermissionId) REFERENCES authpermissions(Id) ON DELETE CASCADE");
         await EnsureForeignKeyAsync(connection, "authsessions", "FK_AuthSessions_User", "FOREIGN KEY (UserId) REFERENCES authusers(Id) ON DELETE CASCADE");
         await EnsureColumnAsync(connection, "authusers", "EmployeeId", "INT NULL");
+        await EnsureClientAccessSchemaAsync(connection);
         await EnsureColumnAsync(connection, "authusers", "Mobile", "VARCHAR(40) NOT NULL DEFAULT '' AFTER DisplayName");
         await EnsureColumnAsync(connection, "authusers", "RecruitmentScopeMode", "VARCHAR(40) NOT NULL DEFAULT 'Client' AFTER EmployeeId");
         await EnsureColumnAsync(connection, "authroles", "ClientId", "INT NULL AFTER Id");
@@ -120,6 +122,30 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
         await EnsureForeignKeyAsync(connection, "authuser_recruitment_locations", "FK_AuthUserRecruitmentLocations_Location", "FOREIGN KEY (WorkLocationId) REFERENCES worklocations(Id) ON DELETE CASCADE");
         await SeedSecurityCatalogAsync(connection);
 
+    }
+
+    // An additive, narrowly scoped migration for existing installations. Unlike
+    // InitializeAsync, this does not seed roles, permissions or user accounts.
+    public async Task MigrateClientAccessAsync()
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync();
+        var coreTables = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('authusers','clients')");
+        if (coreTables != 2) throw new InvalidOperationException("Initialize the core clients and security schema before migrating client access.");
+        await EnsureClientAccessSchemaAsync(connection);
+    }
+
+    private static async Task EnsureClientAccessSchemaAsync(MySqlConnection connection)
+    {
+        await EnsureColumnAsync(connection, "authusers", "ClientAccessMode", "VARCHAR(20) NOT NULL DEFAULT 'Legacy' AFTER ClientId");
+        await connection.ExecuteAsync(@"CREATE TABLE IF NOT EXISTS authuser_clients (
+    UserId INT NOT NULL,
+    ClientId INT NOT NULL,
+    PRIMARY KEY (UserId, ClientId),
+    INDEX IX_AuthUserClients_ClientId (ClientId)
+)");
+        await EnsureForeignKeyAsync(connection, "authuser_clients", "FK_AuthUserClients_User", "FOREIGN KEY (UserId) REFERENCES authusers(Id) ON DELETE CASCADE");
+        await EnsureForeignKeyAsync(connection, "authuser_clients", "FK_AuthUserClients_Client", "FOREIGN KEY (ClientId) REFERENCES clients(Id) ON DELETE CASCADE");
     }
 
     public async Task<LoginResponse?> LoginAsync(LoginRequest request, string ipAddress, string userAgent)
@@ -246,7 +272,7 @@ UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { U
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
-        var users = (await connection.QueryAsync<AuthUser>(@"SELECT Id, Email, DisplayName, Mobile, ClientId, EmployeeId, RecruitmentScopeMode, IsActive, MustChangePassword
+        var users = (await connection.QueryAsync<AuthUser>(@"SELECT Id, Email, DisplayName, Mobile, ClientId, ClientAccessMode, EmployeeId, RecruitmentScopeMode, IsActive, MustChangePassword
 FROM authusers
 WHERE (@ClientId IS NULL OR ClientId = @ClientId)
 ORDER BY DisplayName;", new { ClientId = clientId })).ToList();
@@ -262,6 +288,7 @@ ORDER BY ur.UserId, p.Code;");
         var rolesByUser = roleRows.ToLookup(row => row.UserId, row => row.Code);
         var permissionsByUser = permissionRows.ToLookup(row => row.UserId, row => row.Code);
         var recruitmentLocations = (await connection.QueryAsync<UserRecruitmentLocationRow>(@"SELECT UserId,WorkLocationId FROM authuser_recruitment_locations ORDER BY UserId,WorkLocationId")).ToLookup(row => row.UserId, row => row.WorkLocationId);
+        var assignedClients = (await connection.QueryAsync<UserClientRow>(@"SELECT uc.UserId,uc.ClientId FROM authuser_clients uc JOIN clients c ON c.Id=uc.ClientId AND c.IsActive=TRUE ORDER BY uc.UserId,uc.ClientId")).ToLookup(row => row.UserId, row => row.ClientId);
         foreach (var user in users)
         {
             user.Roles = rolesByUser[user.Id].ToList();
@@ -269,6 +296,7 @@ ORDER BY ur.UserId, p.Code;");
             user.DashboardAccess = BuildDashboardAccess(user.Permissions);
             user.DefaultDashboardCode = user.DashboardAccess.FirstOrDefault()?.Code ?? string.Empty;
             user.RecruitmentLocationIds = recruitmentLocations[user.Id].ToList();
+            user.AssignedClientIds = assignedClients[user.Id].ToList();
         }
         return users;
     }
@@ -283,6 +311,12 @@ ORDER BY ur.UserId, p.Code;");
     {
         public int UserId { get; set; }
         public int WorkLocationId { get; set; }
+    }
+
+    private sealed class UserClientRow
+    {
+        public int UserId { get; set; }
+        public int ClientId { get; set; }
     }
 
     public async Task<IEnumerable<AuthRole>> GetRolesAsync(int? clientId = null)
@@ -315,13 +349,14 @@ ORDER BY r.Name;", new { ClientId = clientId, AssignableRoleCodes = ClientAssign
 
     private static async Task<AuthUser?> BuildUserAsync(MySqlConnection connection, int userId)
     {
-        var user = await connection.QueryFirstOrDefaultAsync<AuthUser>("SELECT Id, Email, DisplayName, Mobile, ClientId, EmployeeId, RecruitmentScopeMode, IsActive, MustChangePassword FROM authusers WHERE Id = @UserId", new { UserId = userId });
+        var user = await connection.QueryFirstOrDefaultAsync<AuthUser>("SELECT Id, Email, DisplayName, Mobile, ClientId, ClientAccessMode, EmployeeId, RecruitmentScopeMode, IsActive, MustChangePassword FROM authusers WHERE Id = @UserId", new { UserId = userId });
         if (user is null) return null;
         user.Roles = (await connection.QueryAsync<string>(@"SELECT r.Code FROM authroles r JOIN authuserroles ur ON ur.RoleId = r.Id WHERE ur.UserId = @UserId ORDER BY r.Code", new { UserId = userId })).ToList();
         user.Permissions = (await connection.QueryAsync<string>(@"SELECT DISTINCT p.Code FROM authpermissions p JOIN authrolepermissions rp ON rp.PermissionId = p.Id JOIN authuserroles ur ON ur.RoleId = rp.RoleId WHERE ur.UserId = @UserId ORDER BY p.Code", new { UserId = userId })).ToList();
         user.DashboardAccess = BuildDashboardAccess(user.Permissions);
         user.DefaultDashboardCode = user.DashboardAccess.FirstOrDefault()?.Code ?? string.Empty;
         user.RecruitmentLocationIds = (await connection.QueryAsync<int>("SELECT WorkLocationId FROM authuser_recruitment_locations WHERE UserId=@UserId ORDER BY WorkLocationId", new { UserId = userId })).ToList();
+        user.AssignedClientIds = (await connection.QueryAsync<int>("SELECT uc.ClientId FROM authuser_clients uc JOIN clients c ON c.Id=uc.ClientId AND c.IsActive=TRUE WHERE uc.UserId=@UserId ORDER BY uc.ClientId", new { UserId = userId })).ToList();
         return user;
     }
 
@@ -648,10 +683,29 @@ SELECT @UserId, Id FROM authroles WHERE Code = 'employee';", new { UserId = resu
 
     public async Task<AuthUser?> SaveUserAsync(SaveAuthUserRequest request, int? actorClientId = null)
     {
+        NormalizeClientAccess(request, actorClientId);
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await SeedSecurityCatalogAsync(connection);
         await using var transaction = await connection.BeginTransactionAsync();
+        if (request.ClientAccessMode == "Selected")
+        {
+            var activeClients = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM clients WHERE Id IN @ClientIds AND IsActive=TRUE", new { ClientIds = request.AssignedClientIds }, transaction);
+            if (activeClients != request.AssignedClientIds.Count)
+                throw new InvalidOperationException("Every assigned client must be active and available.");
+            if (request.Id > 0)
+            {
+                var isUnrestrictedAdmin = await connection.ExecuteScalarAsync<bool>(@"SELECT EXISTS(SELECT 1 FROM authusers u JOIN authuserroles ur ON ur.UserId=u.Id JOIN authrolepermissions rp ON rp.RoleId=ur.RoleId JOIN authpermissions p ON p.Id=rp.PermissionId WHERE u.Id=@Id AND u.IsActive=TRUE AND u.ClientId IS NULL AND u.ClientAccessMode='Legacy' AND p.Code='security.manage')", new { request.Id }, transaction);
+                if (isUnrestrictedAdmin && !await connection.ExecuteScalarAsync<bool>(@"SELECT EXISTS(SELECT 1 FROM authusers u JOIN authuserroles ur ON ur.UserId=u.Id JOIN authrolepermissions rp ON rp.RoleId=ur.RoleId JOIN authpermissions p ON p.Id=rp.PermissionId WHERE u.Id<>@Id AND u.IsActive=TRUE AND u.ClientId IS NULL AND u.ClientAccessMode='Legacy' AND p.Code='security.manage')", new { request.Id }, transaction))
+                    throw new InvalidOperationException("Keep at least one active unrestricted security administrator before changing this account to Selected clients.");
+            }
+            if (request.RecruitmentScopeMode == "SelectedLocations" && request.RecruitmentLocationIds.Count > 0)
+            {
+                var allowedLocations = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM worklocations WHERE Id IN @LocationIds AND ClientId IN @ClientIds AND IsActive=TRUE", new { LocationIds = request.RecruitmentLocationIds.Distinct().ToArray(), ClientIds = request.AssignedClientIds }, transaction);
+                if (allowedLocations != request.RecruitmentLocationIds.Distinct().Count())
+                    throw new InvalidOperationException("Recruitment locations must belong to the selected clients.");
+            }
+        }
         int? roleSourceClientId = null;
         HashSet<string>? sourceRoles = null;
         if (request.RoleSourceUserId.HasValue)
@@ -710,19 +764,22 @@ WHERE Code IN @RequestedRoles
         var userId = request.Id;
         if (userId == 0)
         {
-            userId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO authusers (Email, DisplayName, Mobile, PasswordHash, ClientId, EmployeeId, RecruitmentScopeMode, IsActive, MustChangePassword)
-VALUES (@Email, @DisplayName, @Mobile, @PasswordHash, @ClientId, @EmployeeId, @RecruitmentScopeMode, @IsActive, @MustChangePassword);
-SELECT LAST_INSERT_ID();", new { Email = email, request.DisplayName, Mobile = request.Mobile.Trim(), PasswordHash = HashPassword(request.Password), request.ClientId, request.EmployeeId, RecruitmentScopeMode = recruitmentScopeMode, request.IsActive, MustChangePassword = request.MustChangePassword ?? true }, transaction);
+            userId = (int)await connection.ExecuteScalarAsync<long>(@"INSERT INTO authusers (Email, DisplayName, Mobile, PasswordHash, ClientId, ClientAccessMode, EmployeeId, RecruitmentScopeMode, IsActive, MustChangePassword)
+VALUES (@Email, @DisplayName, @Mobile, @PasswordHash, @ClientId, @ClientAccessMode, @EmployeeId, @RecruitmentScopeMode, @IsActive, @MustChangePassword);
+SELECT LAST_INSERT_ID();", new { Email = email, request.DisplayName, Mobile = request.Mobile.Trim(), PasswordHash = HashPassword(request.Password), request.ClientId, request.ClientAccessMode, request.EmployeeId, RecruitmentScopeMode = recruitmentScopeMode, request.IsActive, MustChangePassword = request.MustChangePassword ?? true }, transaction);
         }
         else
         {
-            await connection.ExecuteAsync(@"UPDATE authusers SET Email=@Email, DisplayName=@DisplayName, Mobile=@Mobile, ClientId=@ClientId, EmployeeId=@EmployeeId, RecruitmentScopeMode=@RecruitmentScopeMode, IsActive=@IsActive WHERE Id=@Id", new { Id = userId, Email = email, request.DisplayName, Mobile = request.Mobile.Trim(), request.ClientId, request.EmployeeId, RecruitmentScopeMode = recruitmentScopeMode, request.IsActive }, transaction);
+            await connection.ExecuteAsync(@"UPDATE authusers SET Email=@Email, DisplayName=@DisplayName, Mobile=@Mobile, ClientId=@ClientId, ClientAccessMode=@ClientAccessMode, EmployeeId=@EmployeeId, RecruitmentScopeMode=@RecruitmentScopeMode, IsActive=@IsActive WHERE Id=@Id", new { Id = userId, Email = email, request.DisplayName, Mobile = request.Mobile.Trim(), request.ClientId, request.ClientAccessMode, request.EmployeeId, RecruitmentScopeMode = recruitmentScopeMode, request.IsActive }, transaction);
             if (!string.IsNullOrWhiteSpace(request.Password))
                 await connection.ExecuteAsync("UPDATE authusers SET PasswordHash=@PasswordHash, MustChangePassword=@MustChangePassword WHERE Id=@Id", new { Id = userId, PasswordHash = HashPassword(request.Password), MustChangePassword = request.MustChangePassword ?? true }, transaction);
             else if (request.MustChangePassword.HasValue)
                 await connection.ExecuteAsync("UPDATE authusers SET MustChangePassword=@MustChangePassword WHERE Id=@Id", new { Id = userId, MustChangePassword = request.MustChangePassword.Value }, transaction);
         }
 
+        await connection.ExecuteAsync("DELETE FROM authuser_clients WHERE UserId=@UserId", new { UserId = userId }, transaction);
+        if (request.ClientAccessMode == "Selected")
+            await connection.ExecuteAsync("INSERT INTO authuser_clients (UserId,ClientId) SELECT @UserId,Id FROM clients WHERE Id IN @ClientIds AND IsActive=TRUE", new { UserId = userId, ClientIds = request.AssignedClientIds }, transaction);
         await connection.ExecuteAsync("DELETE FROM authuserroles WHERE UserId=@UserId", new { UserId = userId }, transaction);
         if (request.Roles.Count > 0)
             await connection.ExecuteAsync(@"INSERT IGNORE INTO authuserroles (UserId, RoleId)
@@ -731,6 +788,8 @@ SELECT @UserId, Id FROM authroles WHERE Code IN @Roles;", new { UserId = userId,
             await connection.ExecuteAsync(@"DELETE ur FROM authuserroles ur
 JOIN authroles r ON r.Id=ur.RoleId
 WHERE ur.UserId=@SourceUserId AND r.Code IN @Roles;", new { SourceUserId = request.RoleSourceUserId.Value, request.Roles }, transaction);
+        if (request.ClientAccessMode == "Selected" && !await connection.ExecuteScalarAsync<bool>(@"SELECT EXISTS(SELECT 1 FROM authusers u JOIN authuserroles ur ON ur.UserId=u.Id JOIN authrolepermissions rp ON rp.RoleId=ur.RoleId JOIN authpermissions p ON p.Id=rp.PermissionId WHERE u.IsActive=TRUE AND u.ClientId IS NULL AND u.ClientAccessMode='Legacy' AND p.Code='security.manage')", transaction: transaction))
+            throw new InvalidOperationException("Keep at least one active unrestricted security administrator when assigning Selected clients.");
         await connection.ExecuteAsync("DELETE FROM authuser_recruitment_locations WHERE UserId=@UserId", new { UserId = userId }, transaction);
         if (recruitmentScopeMode.Equals("SelectedLocations", StringComparison.OrdinalIgnoreCase) && request.RecruitmentLocationIds.Count > 0)
             await connection.ExecuteAsync(@"INSERT IGNORE INTO authuser_recruitment_locations (UserId,WorkLocationId)
@@ -816,6 +875,9 @@ SELECT @TargetUserId, Id FROM authroles WHERE Code IN @Roles;",
 JOIN authroles r ON r.Id=ur.RoleId
 WHERE ur.UserId=@SourceUserId AND r.Code IN @Roles;",
                 new { request.SourceUserId, Roles = requestedRoles }, transaction);
+            var selectedTargets = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM authusers WHERE Id IN @Ids AND ClientAccessMode='Selected'", new { Ids = targetUserIds }, transaction);
+            if (selectedTargets > 0 && !await connection.ExecuteScalarAsync<bool>(@"SELECT EXISTS(SELECT 1 FROM authusers u JOIN authuserroles ur ON ur.UserId=u.Id JOIN authrolepermissions rp ON rp.RoleId=ur.RoleId JOIN authpermissions p ON p.Id=rp.PermissionId WHERE u.IsActive=TRUE AND u.ClientId IS NULL AND u.ClientAccessMode='Legacy' AND p.Code='security.manage')", transaction: transaction))
+                throw new InvalidOperationException("Keep at least one active unrestricted security administrator when transferring roles to Selected-client users.");
         }
 
         await transaction.CommitAsync();
@@ -912,7 +974,7 @@ FROM authusers u
 JOIN authuserroles ur ON ur.UserId = u.Id
 JOIN authrolepermissions rp ON rp.RoleId = ur.RoleId
 JOIN authpermissions p ON p.Id = rp.PermissionId
-WHERE u.Id <> @Id AND u.IsActive = TRUE AND p.Code = 'security.manage';", new { Id = id }, transaction);
+WHERE u.Id <> @Id AND u.IsActive = TRUE AND u.ClientId IS NULL AND u.ClientAccessMode = 'Legacy' AND p.Code = 'security.manage';", new { Id = id }, transaction);
             if (remainingSecurityAdmins == 0)
                 throw new InvalidOperationException("At least one active security administrator is required.");
         }
@@ -975,6 +1037,28 @@ LIMIT 5;", new { Id = id }, transaction)).ToList();
     {
         var exists = await connection.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @TableName AND COLUMN_NAME = @ColumnName", new { TableName = tableName, ColumnName = columnName });
         if (exists == 0) await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD COLUMN `{columnName}` {definition}");
+    }
+
+    internal static void NormalizeClientAccess(SaveAuthUserRequest request, int? actorClientId = null)
+    {
+        var mode = request.ClientAccessMode?.Trim();
+        if (string.Equals(mode, "Legacy", StringComparison.OrdinalIgnoreCase)) request.ClientAccessMode = "Legacy";
+        else if (string.Equals(mode, "Selected", StringComparison.OrdinalIgnoreCase)) request.ClientAccessMode = "Selected";
+        else throw new InvalidOperationException("Select a valid client access mode.");
+        if (request.AssignedClientIds is null || request.AssignedClientIds.Count > 1000 || request.AssignedClientIds.Any(id => id <= 0))
+            throw new InvalidOperationException("Select valid assigned clients.");
+        request.AssignedClientIds = request.AssignedClientIds.Distinct().OrderBy(id => id).ToList();
+        if (request.ClientAccessMode == "Selected")
+        {
+            if (actorClientId.HasValue) throw new InvalidOperationException("Only an unrestricted security administrator can assign Selected clients.");
+            if (request.ClientId.HasValue || request.EmployeeId.HasValue)
+                throw new InvalidOperationException("Selected-client business users cannot have a single-client or employee link.");
+            if (request.AssignedClientIds.Count == 0) throw new InvalidOperationException("Select at least one assigned client.");
+            if (NormalizeRecruitmentScopeMode(request.RecruitmentScopeMode) == "EmployeeLocation")
+                throw new InvalidOperationException("Selected-client users cannot use employee work-location visibility without an employee link.");
+        }
+        else if (request.AssignedClientIds.Count > 0)
+            throw new InvalidOperationException("Assigned clients require Selected clients mode.");
     }
 
     private static string NormalizeRecruitmentScopeMode(string? mode) =>

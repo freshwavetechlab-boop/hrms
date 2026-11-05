@@ -270,7 +270,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
     {
         if (!TryNormalizeImportMode(mode, out var normalizedMode, out var modeError))
         {
-            var failed = new EmployeeImportJobStatus(Guid.NewGuid(), "Failed", 0, 0, 0, 0, [modeError]);
+            var failed = new EmployeeImportJobStatus(Guid.NewGuid(), "Failed", 0, 0, 0, 0, [modeError]) { ClientId = clientId };
             ImportJobs[failed.JobId] = failed;
             return failed;
         }
@@ -279,13 +279,13 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         {
             var result = prepared.Error;
             var state = result.RequiresConfirmation ? "NeedsConfirmation" : "Failed";
-            var failed = new EmployeeImportJobStatus(Guid.NewGuid(), state, result.TotalRows, 0, 0, 0, result.Errors, result.ReviewToken, result.RequiresConfirmation, result.ReviewRows);
+            var failed = new EmployeeImportJobStatus(Guid.NewGuid(), state, result.TotalRows, 0, 0, 0, result.Errors, result.ReviewToken, result.RequiresConfirmation, result.ReviewRows) { ClientId = clientId };
             ImportJobs[failed.JobId] = failed;
             return failed;
         }
         var workbook = prepared.Workbook!;
         var totalRows = CountImportRows(workbook);
-        var job = new EmployeeImportJobStatus(Guid.NewGuid(), "Queued", totalRows, 0, 0, 0, []);
+        var job = new EmployeeImportJobStatus(Guid.NewGuid(), "Queued", totalRows, 0, 0, 0, []) { ClientId = clientId };
         ImportJobs[job.JobId] = job;
         _ = Task.Run(async () =>
         {
@@ -2162,5 +2162,8 @@ public record EmployeeImportJobStatus(
     List<string> Errors,
     Guid? ReviewToken = null,
     bool RequiresConfirmation = false,
-    List<EmployeeImportPreflightRow>? ReviewRows = null);
+    List<EmployeeImportPreflightRow>? ReviewRows = null)
+{
+    public int? ClientId { get; init; }
+}
 public record EmployeeDeletePreview(int EmployeeId, string EmployeeCode, string EmployeeName, List<string> Links, bool CanDelete);

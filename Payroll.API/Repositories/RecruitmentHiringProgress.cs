@@ -13,6 +13,7 @@ internal static class RecruitmentHiringProgress
         public long ApplicationId { get; set; }
         public long PositionId { get; set; }
         public int ClientId { get; set; }
+        public int? WorkLocationId { get; set; }
         public long? JobPostingId { get; set; }
         public string JobLocation { get; set; } = "";
         public string CandidateStageName { get; set; } = "";
@@ -27,11 +28,11 @@ internal static class RecruitmentHiringProgress
         public bool CandidateMomApproved { get; set; }
     }
 
-    internal static async Task<List<Candidate>> ReadCandidatesAsync(MySqlConnection db, IEnumerable<long> positionIds, AuthUser user)
+    internal static async Task<List<Candidate>> ReadCandidatesAsync(MySqlConnection db, IEnumerable<long> positionIds, AuthUser user, bool authoritativeWorkLocation = false)
     {
         var ids = positionIds.Where(id => id > 0).Distinct().ToArray();
         if (ids.Length == 0) return [];
-        var rows = await db.QueryAsync<Candidate>(@"SELECT a.Id ApplicationId,a.PositionId,a.ClientId,a.JobPostingId,p.JobLocation,
+        var rows = await db.QueryAsync<Candidate>(@"SELECT a.Id ApplicationId,a.PositionId,a.ClientId,a.JobPostingId,p.JobLocation,NULLIF(p.BranchId,0) WorkLocationId,
 COALESCE(stage.StageName,a.CurrentStage,'') CandidateStageName,COALESCE(stage.StageType,'') CandidateStageType,
 COALESCE(CASE WHEN interview.Status='No Show' THEN 'No Show' ELSE interview.Result END,'') LatestInterviewResult,
 COALESCE(interview.Status IN ('Scheduled','Rescheduled','Completed'),FALSE) HasInterview,
@@ -51,7 +52,9 @@ LEFT JOIN recruitment_interviews interview ON interview.Id=(SELECT MAX(i.Id) FRO
 LEFT JOIN recruitment_offers offerRow ON offerRow.Id=(SELECT o.Id FROM recruitment_offers o WHERE o.ApplicationId=a.Id ORDER BY o.UpdatedAt DESC,o.Id DESC LIMIT 1)
 WHERE a.PositionId IN @Ids AND a.ApplicationType='Application' AND (@ClientId IS NULL OR a.ClientId=@ClientId)
 ORDER BY a.Id", new { Ids = ids, user.ClientId });
-        return await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
+        return authoritativeWorkLocation
+            ? await RecruitmentAccessScope.FilterWorkLocationsAsync(db, user, rows, row => row.ClientId, row => row.WorkLocationId)
+            : await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
     }
 
     internal static bool Excluded(Candidate row) => !row.IsJoined && (
