@@ -1,4 +1,5 @@
 import type { WorkLocation } from '../types/payroll'
+import { rosterEditValues } from '../utils/recruitmentRosterOperations'
 import { apiRequest, deleteJson, getJsonResult, postJson, putJson, readError } from './apiClient'
 
 export type DocumentInput = { key: string; label: string; type: 'text' | 'date' | 'money' | 'number' | 'percent'; required: boolean; sourceHeaders: string[]; defaultValue: string; blankText: string }
@@ -32,7 +33,7 @@ export async function uploadDocumentRoster<T>(action: 'inspect' | 'preview' | 'i
   if (!response.ok) throw new Error(await readError(response))
   return await response.json() as T
 }
-export const editDocumentRoster = (clientId: number, row: DocumentRosterRow, values: Record<string, string>) => putJson<{ values: Record<string, string>; revision: string }, null>(`${root}/rows/${row.id}?clientId=${clientId}`, { values, revision: row.revision }, null, { toast: false })
+export const editDocumentRoster = (clientId: number, row: DocumentRosterRow, values: Record<string, string>, fields: DocumentInput[]) => putJson<{ values: Record<string, string>; revision: string }, null>(`${root}/rows/${row.id}?clientId=${clientId}`, { values: rosterEditValues(fields, row, values), revision: row.revision }, null, { toast: false })
 
 export async function downloadRosterDrafts(clientId: number, ids: number[]) {
   const single = ids.length === 1

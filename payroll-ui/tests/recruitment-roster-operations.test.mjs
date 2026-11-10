@@ -6,12 +6,28 @@ import ts from 'typescript'
 const exports = {}
 const code = ts.transpileModule(readFileSync(new URL('../src/utils/recruitmentRosterOperations.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
 new Function('exports', code)(exports)
-const { filterRosterRows, selectedRosterRows, rosterLocationName, rosterMasterLocationField, rosterPermissions, rosterReleaseReady, signingAssetFileError } = exports
+const { filterRosterRows, selectedRosterRows, rosterLocationName, rosterMasterLocationField, rosterPermissions, rosterReleaseReady, signingAssetFileError, rosterEditValues } = exports
 const rows = [
   { id: 1, sourceGroup: 'Original Mumbai list', workLocationId: 11, workLocation: 'Old source text', documentIssues: [] },
   { id: 2, sourceGroup: 'Original Delhi list', workLocationId: 22, workLocation: 'Delhi', documentIssues: [] },
   { id: 3, sourceGroup: 'Original Mumbai list', workLocationId: null, workLocation: 'NIRWoH – Mumbai', documentIssues: ['Designation required'] },
 ]
+
+test('roster edits retain pending blanks and protect identity and linked master fields', () => {
+  const fields = ['joiningDate', 'contractEndDate', 'projectName', 'candidateEmail', 'institutionName', 'monthlyGross'].map(key => ({ key }))
+  const row = { workLocationId: 11, values: { joiningDate: '2026-11-03', contractEndDate: '', projectName: 'Old project', candidateEmail: 'old@example.test', institutionName: 'Master Institute', monthlyGross: '26000.00' } }
+  const draft = { ...row.values, joiningDate: '2026-11-02', projectName: '', candidateEmail: 'changed@example.test', institutionName: 'Attempted master edit', unknownField: 'must not be sent' }
+  assert.deepEqual(rosterEditValues(fields, row, draft), { joiningDate: '2026-11-02', projectName: '' })
+  assert.equal(row.values.monthlyGross, '26000.00')
+  assert.equal(row.values.joiningDate, '2026-11-03')
+})
+
+test('legacy unlinked locations remain editable and unchanged saves have no field changes', () => {
+  const row = { workLocationId: null, values: { jobLocation: 'Old source location', joiningDate: '2026-11-02' } }
+  const fields = [{ key: 'jobLocation' }, { key: 'joiningDate' }, { key: 'projectName' }]
+  assert.deepEqual(rosterEditValues(fields, row, { ...row.values, jobLocation: 'Reviewed source location' }), { jobLocation: 'Reviewed source location' })
+  assert.deepEqual(rosterEditValues(fields, row, { ...row.values }), {})
+})
 
 test('work-location filtering uses linked master IDs while legacy source-group and source text remain distinct', () => {
   assert.deepEqual(filterRosterRows(rows, '', 11).map(row => row.id), [1])

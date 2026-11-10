@@ -93,7 +93,13 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
   const saveEdit = async () => {
     if (!edit || busy) return
     setBusy(true); setError('')
-    try { const r = await editDocumentRoster(clientId, edit, editValues); if (!r.ok) throw new Error(r.error); setEdit(null); await load(); setNotice('Document inputs saved. Candidate identity and Employee Master are unchanged.') }
+    try {
+      const template = templates.find(item => item.id === edit.templateId)
+      if (!template) throw new Error('Document template is unavailable. Refresh the employee list before editing.')
+      const r = await editDocumentRoster(clientId, edit, editValues, template.fields)
+      if (!r.ok) throw new Error(r.error)
+      setEdit(null); await load(); setNotice('Document inputs saved. Candidate identity and Employee Master are unchanged.')
+    }
     catch (e) { setError(e instanceof Error ? e.message : 'Unable to save document details.') }
     finally { if (alive.current) setBusy(false) }
   }
@@ -121,6 +127,7 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
   </Drawer>
   {releaseIds && <RosterReleaseDrawer clientId={clientId} ids={releaseIds} canManageAsset={canManageOffers} canRelease={canRelease} onClose={() => setReleaseIds(null)} onReleased={async count => { setReleaseIds(null); await load(); await onChanged(); setNotice(`${count} offer letter${count > 1 ? 's' : ''} released and downloaded.`) }} />}
   <Drawer open={!!edit} title={edit ? `Document details · ${edit.candidateName}` : 'Document details'} width="min(850px, 96vw)" onClose={() => { if (!busy) setEdit(null) }} closable={!busy} maskClosable={!busy} footer={<Space><Button disabled={busy} onClick={() => setEdit(null)}>Cancel</Button><Button type="primary" loading={busy} disabled={!canImport && !canManageOffers} onClick={() => void saveEdit()}>Save details</Button></Space>}>
+    {error && <Alert type="error" showIcon message={error} />}
     {edit && <><Alert type={edit.documentIssues.length ? 'warning' : 'success'} showIcon message={edit.documentIssues.length ? edit.documentIssues.join('; ') : 'Ready for unsigned draft'} description={`Source: ${edit.sourceFileName} · ${edit.sourceSheetName} · Row ${edit.sourceRow}`} /><Form layout="vertical" className="document-roster-fields">{templates.find(t => t.id === edit.templateId)?.fields.map(f => <Form.Item key={f.key} label={f.label} required={f.required} extra={edit.workLocationId && rosterMasterLocationField(f.key) ? 'Managed by Work Location' : f.type === 'percent' ? 'Enter 30% or 0.30 for thirty percent.' : undefined}><Input aria-label={`Document ${f.key}`} type={f.type === 'date' ? 'date' : 'text'} inputMode={['money', 'number', 'percent'].includes(f.type) ? 'decimal' : undefined} maxLength={4000} disabled={['candidateName', 'candidateEmail', 'candidatePhone', 'candidateCode'].includes(f.key) || !!edit.workLocationId && rosterMasterLocationField(f.key) || !canImport && !canManageOffers} value={editValues[f.key] || ''} onChange={e => setEditValues(v => ({ ...v, [f.key]: e.target.value }))} /></Form.Item>)}</Form></>}
   </Drawer></>
 }

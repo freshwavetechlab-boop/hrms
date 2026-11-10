@@ -13,8 +13,20 @@ const api = {
   readError: async response => (await response.json()).message,
 }
 const exports = {}
+const operations = {}
+const operationsCode = ts.transpileModule(readFileSync(new URL('../src/utils/recruitmentRosterOperations.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
+new Function('exports', operationsCode)(operations)
 const code = ts.transpileModule(readFileSync(new URL('../src/services/recruitmentDocumentService.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
-new Function('exports', 'require', 'document', 'window', 'URL', code)(exports, () => api, { createElement: () => { const link = { click: () => downloads.push({ name: link.download, href: link.href }) }; return link } }, { setTimeout: callback => callback() }, { createObjectURL: () => 'blob:fixture', revokeObjectURL: () => {} })
+new Function('exports', 'require', 'document', 'window', 'URL', code)(exports, path => path.includes('recruitmentRosterOperations') ? operations : api, { createElement: () => { const link = { click: () => downloads.push({ name: link.download, href: link.href }) }; return link } }, { setTimeout: callback => callback() }, { createObjectURL: () => 'blob:fixture', revokeObjectURL: () => {} })
+
+test('editing a linked offer date sends only configured changes and keeps the original revision', async () => {
+  const row = { id: 3, revision: 'original-revision', workLocationId: 11, values: { joiningDate: '2026-11-03', monthlyBasic: '26000', candidateName: 'Test Person', jobLocation: 'Master Institute', workLocationCity: 'Master City' } }
+  await exports.editDocumentRoster(55, row, { ...row.values, joiningDate: '2026-11-02', instituteAddress: 'Master Address' }, [{ key: 'joiningDate' }, { key: 'monthlyBasic' }, { key: 'candidateName' }, { key: 'jobLocation' }])
+  const request = calls.pop()
+  assert.equal(request.args[0], '/api/recruitment/document-roster/rows/3?clientId=55')
+  assert.deepEqual(request.args[1], { values: { joiningDate: '2026-11-02' }, revision: 'original-revision' })
+  assert.equal(row.values.joiningDate, '2026-11-03', 'the original read model remains unchanged until save succeeds')
+})
 
 test('bulk master linking sends selected row revisions and the explicit client scope', async () => {
   await exports.linkRosterWorkLocation(55, [{ id: 1, revision: 'a' }, { id: 3, revision: 'c' }], 11)
