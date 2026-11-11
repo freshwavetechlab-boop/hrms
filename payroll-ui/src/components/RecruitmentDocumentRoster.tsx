@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Button, Drawer, Form, Input, InputNumber, Select, Space, Switch, Tag } from 'antd'
+import { useLocation } from 'react-router-dom'
+import { Alert, Button, Drawer, Dropdown, Form, Input, InputNumber, Select, Space, Switch, Tag } from 'antd'
 import { DownloadOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons'
 import DataTable, { type Column } from './DataTable'
 import FileDropZone from './FileDropZone'
@@ -11,14 +12,18 @@ import { useAuthSession } from './AuthGate'
 import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
 import type { WorkLocation } from '../types/payroll'
 import './RecruitmentDocumentRoster.css'
+import RecruitmentOfferMail, { OfferMailProgress } from './RecruitmentOfferMail'
+import { useRecruitmentOfferMail } from '../hooks/useRecruitmentOfferMail'
 
 export default function RecruitmentDocumentRosterLauncher({ clientId, onChanged }: { clientId: number; onChanged: () => Promise<void> }) {
+  const location = useLocation()
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]), [open, setOpen] = useState(false)
   useEffect(() => {
     let active = true; setOpen(false); setTemplates([])
     if (clientId > 0) void getDocumentTemplates(clientId).then(r => { if (active && r.ok) setTemplates(r.data) })
     return () => { active = false }
   }, [clientId])
+  useEffect(() => { if (new URLSearchParams(location.search).has('mailJobId')) setOpen(true) }, [location.search])
   if (!clientId || !templates.length) return null
   return <><PageHeaderPortal slot="recruitment-page-controls"><Button icon={<UploadOutlined />} onClick={() => setOpen(true)}>Employee lists &amp; offer letters</Button></PageHeaderPortal>
     {open && <RecruitmentDocumentRoster key={clientId} clientId={clientId} templates={templates} onClose={() => setOpen(false)} onChanged={onChanged} />}</>
@@ -35,6 +40,9 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
   const [locations, setLocations] = useState<WorkLocation[]>([]), [locationError, setLocationError] = useState('')
   const [linkOpen, setLinkOpen] = useState(false), [linkLocationId, setLinkLocationId] = useState<number | undefined>()
   const [releaseIds, setReleaseIds] = useState<number[] | null>(null)
+  const [mailRequest, setMailRequest] = useState<{ ids: number[]; retryFailed: boolean } | null>(null)
+  const [mobileFilters, setMobileFilters] = useState(false)
+  const mail = useRecruitmentOfferMail(clientId, canRelease, JSON.stringify([session?.user.id, session?.user.clientAccessMode, session?.user.assignedClientIds, session?.user.recruitmentScopeMode, session?.user.recruitmentLocationIds]))
   const [edit, setEdit] = useState<DocumentRosterRow | null>(null), [editValues, setEditValues] = useState<Record<string, string>>({})
   const alive = useRef(true)
   useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
@@ -72,6 +80,7 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
     { key: 'designation', label: 'Designation', value: row => row.values.positionTitle || 'Not supplied', width: 220 }, { key: 'joiningDate', label: 'Date of joining', value: row => row.values.joiningDate || 'Not supplied' }, { key: 'tenure', label: 'Contract end', value: row => row.values.contractEndDate || 'Not supplied' },
     { key: 'basic', label: 'Monthly basic', value: row => row.values.monthlyBasic || '' }, { key: 'gross', label: 'Monthly gross', value: row => row.values.monthlyGross || '' }, { key: 'readiness', label: 'Draft readiness', value: row => row.documentIssues.length ? row.documentIssues.join('; ') : 'Ready for draft', width: 250 },
     { key: 'released', label: 'Released offer', width: 180, value: row => row.releasedAt ? row.offerNumber || 'Released' : 'Not released' },
+    { key: 'employeeMaster', label: 'Employee Master', width: 180, value: row => row.employeeId ? row.employeeCode || `Employee ${row.employeeId}` : row.releasedAt ? 'Release again to link Master' : 'Added on release' },
   ], [locations])
   const linkLocation = async () => {
     if (!canManageOffers || !linkLocationId || busy || !selectedRows.length) return
@@ -104,23 +113,39 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
     finally { if (alive.current) setBusy(false) }
   }
   return <><Drawer open title="Employee lists & offer letters" className="recruitment-document-roster" width="min(1380px, 98vw)" onClose={() => { if (!busy && !releaseIds) onClose() }} closable={!busy && !releaseIds} maskClosable={!busy && !releaseIds} footer={<Button disabled={busy || !!releaseIds} onClick={onClose}>Close</Button>}>
-    <div className="document-roster-toolbar"><Space wrap><Select aria-label="Employee list group" style={{ minWidth: 220, maxWidth: 360 }} value={group} options={[{ value: '', label: 'All source groups' }, ...[...new Set(rows.map(r => r.sourceGroup))].map(value => ({ value, label: value }))]} onChange={setGroup} />
+    <div className="document-roster-toolbar"><Space wrap className={`document-roster-filter-controls${mobileFilters ? ' is-open' : ''}`}><Select aria-label="Employee list group" style={{ minWidth: 220, maxWidth: 360 }} value={group} options={[{ value: '', label: 'All source groups' }, ...[...new Set(rows.map(r => r.sourceGroup))].map(value => ({ value, label: value }))]} onChange={setGroup} />
       <Select aria-label="Roster work location filter" showSearch optionFilterProp="label" className="document-roster-location-select" value={workLocationFilter} options={[{ value: 0, label: 'All permitted work locations' }, { value: -1, label: 'Not linked to a work location' }, ...locations.map(location => ({ value: location.id, label: location.name }))]} onChange={setWorkLocationFilter} />
       <Input.Search aria-label="Search employee list" placeholder="Search employee list" allowClear value={search} onChange={event => setSearch(event.target.value)} className="document-roster-search" />
       <Tag>{visible.length} profiles</Tag><Tag color="green">{ready.length} draft ready</Tag><Tag color="orange">{visible.length - ready.length} need details</Tag></Space>
-      <Space wrap><Button icon={<ReloadOutlined />} disabled={busy} onClick={() => void load()}>Refresh</Button>{canImport && <Button type="primary" icon={<UploadOutlined />} disabled={busy} onClick={() => setImportOpen(true)}>Import employee list</Button>}<Button disabled={busy || !visible.length} onClick={() => setSelected(visible.slice(0, 200).map(row => row.id))}>Select all ({visible.length > 200 ? 'first 200' : visible.length})</Button><Button disabled={busy || !ready.length} onClick={() => setSelected(ready.slice(0, 200).map(row => row.id))}>Select ready ({ready.length > 200 ? 'first 200' : ready.length})</Button><Button disabled={busy || !selected.length} onClick={() => setSelected([])}>Clear selection</Button>
+      <Space wrap className="document-roster-desktop-actions"><Button icon={<ReloadOutlined />} disabled={busy} onClick={() => void load()}>Refresh</Button>{canImport && <Button type="primary" icon={<UploadOutlined />} disabled={busy} onClick={() => setImportOpen(true)}>Import employee list</Button>}<Button disabled={busy || !visible.length} onClick={() => setSelected(visible.slice(0, 200).map(row => row.id))}>Select all ({visible.length > 200 ? 'first 200' : visible.length})</Button><Button disabled={busy || !ready.length} onClick={() => setSelected(ready.slice(0, 200).map(row => row.id))}>Select ready ({ready.length > 200 ? 'first 200' : ready.length})</Button><Button disabled={busy || !selected.length} onClick={() => setSelected([])}>Clear selection</Button>
         {canManageOffers && <Button disabled={busy || !selectedRows.length || !locations.length} onClick={() => { setLinkLocationId(undefined); setLinkOpen(true) }}>Set work location ({selectedRows.length})</Button>}
         {canManageOffers && <Button disabled={busy} onClick={() => setReleaseIds([])}>Signature &amp; stamp</Button>}
         <Button icon={<DownloadOutlined />} disabled={busy || !selectedReady.length} loading={busy && !edit && !linkOpen} onClick={() => void generate(selectedReady)}>Download selected drafts ({selectedReady.length})</Button>
         {canRelease && <Button type="primary" disabled={busy || !selectedReleaseReady.length} onClick={() => setReleaseIds(selectedReleaseReady)}>Release selected ({selectedReleaseReady.length})</Button>}
+        {canRelease && <Button disabled={busy || !selectedRows.length || selectedRows.length > 200} onClick={() => setMailRequest({ ids: selectedRows.map(row => row.id), retryFailed: false })}>Email selected ({selectedRows.length})</Button>}
+      </Space><Space wrap className="document-roster-mobile-actions">
+        <Button onClick={() => setMobileFilters(value => !value)}>Filters ({Number(!!group) + Number(!!workLocationFilter) + Number(!!search.trim())})</Button>
+        <Button disabled={busy || !visible.length} onClick={() => setSelected(visible.slice(0, 200).map(row => row.id))}>Select all ({Math.min(visible.length, 200)})</Button>
+        {canRelease && <Button type="primary" disabled={busy || !selectedRows.length || selectedRows.length > 200} onClick={() => setMailRequest({ ids: selectedRows.map(row => row.id), retryFailed: false })}>Email selected ({selectedRows.length})</Button>}
+        {canRelease && <Button disabled={busy || !selectedReleaseReady.length} onClick={() => setReleaseIds(selectedReleaseReady)}>Release ({selectedReleaseReady.length})</Button>}
+        <Dropdown trigger={['click']} menu={{ items: [
+          { key: 'refresh', label: 'Refresh', onClick: () => void load() },
+          ...(canImport ? [{ key: 'import', label: 'Import employee list', onClick: () => setImportOpen(true) }] : []),
+          { key: 'clear', label: 'Clear selection', disabled: !selectedRows.length, onClick: () => setSelected([]) },
+          { key: 'ready', label: `Select ready (${Math.min(ready.length, 200)})`, disabled: !ready.length, onClick: () => setSelected(ready.slice(0, 200).map(row => row.id)) },
+          { key: 'drafts', label: `Download selected drafts (${selectedReady.length})`, disabled: !selectedReady.length, onClick: () => void generate(selectedReady) },
+          ...(canManageOffers ? [{ key: 'location', label: 'Set work location', disabled: !selectedRows.length, onClick: () => { setLinkLocationId(undefined); setLinkOpen(true) } }, { key: 'sign', label: 'Signature & stamp', onClick: () => setReleaseIds([]) }] : []),
+        ] }}><Button disabled={busy}>More</Button></Dropdown>
       </Space></div>
     <Alert type="info" showIcon message="Review details, then download drafts or release letters" description="Draft PDFs are unsigned. Release letters together with an optional signature and stamp. Missing details remain pending." />
     {locationError && <Alert type="warning" showIcon message={locationError} />}
+    {canRelease && <OfferMailProgress jobs={mail.jobs} loading={mail.loading} error={mail.error} onRefresh={mail.refresh} onRetry={ids => setMailRequest({ ids, retryFailed: true })} />}
     {canRelease && selectedRows.some(row => !row.workLocationId) && <Alert type="warning" showIcon message="Link a work location before releasing the selected unlinked profiles." />}
     {error && <Alert closable type="error" showIcon message={error} onClose={() => setError('')} />}{notice && <Alert closable type="success" showIcon message={notice} onClose={() => setNotice('')} />}
     <div className="document-roster-table"><DataTable fillHeight hideSearch rows={baseVisible} columns={rosterColumns} onVisibleRowsChange={onVisibleRowsChange} loading={loading} getRowId={row => row.id} title="Employee list" exportFileName="employee-list-offer-letters" emptyText="No employee lists match these filters." rowSelection={{ selectedRowKeys: selectedRows.map(row => row.id), onChange: keys => setSelected(keys.map(Number)), getCheckboxProps: () => ({ disabled: busy }) }} actionsWidth={canRelease ? 265 : 190} actions={row => <Space><Button size="small" disabled={busy} onClick={() => { setEdit(row); setEditValues({ ...row.values }) }}>Details / Edit</Button><Button size="small" disabled={busy || !!row.documentIssues.length} onClick={() => void generate([row.id])}>Draft PDF</Button>{canRelease && <Button size="small" disabled={busy || !rosterReleaseReady(row)} title={!row.workLocationId ? 'Link a work location before release' : row.documentIssues.length ? 'Complete document details before release' : undefined} onClick={() => setReleaseIds([row.id])}>Release</Button>}</Space>} /></div>
   </Drawer>
   {importOpen && <RosterImportDrawer clientId={clientId} templates={templates} locations={locations} onClose={() => setImportOpen(false)} onSaved={async result => { setImportOpen(false); await load(); await onChanged(); setNotice(`${result.savedRows} list rows saved: ${result.createdProfiles} new profiles, ${result.reusedProfiles} existing profiles reused.${result.errors.length ? ' ' + result.errors.join(' ') : ''}`) }} />}
+  {mailRequest && <RecruitmentOfferMail key={`${clientId}:${mailRequest.ids.join(',')}:${mailRequest.retryFailed}`} clientId={clientId} ids={mailRequest.ids} retryFailed={mailRequest.retryFailed} onClose={() => setMailRequest(null)} onQueued={job => { setMailRequest(null); mail.refresh(); setNotice(`${job.totalEmails} offer email(s) queued or tracked. Progress is available here and in Notifications.`) }} />}
   <Drawer open={linkOpen} title="Set work location / institute" width="min(540px, 96vw)" onClose={() => { if (!busy) setLinkOpen(false) }} closable={!busy} maskClosable={!busy} footer={<Space><Button disabled={busy} onClick={() => setLinkOpen(false)}>Cancel</Button><Button type="primary" loading={busy} disabled={!linkLocationId || !selectedRows.length} onClick={() => void linkLocation()}>Link {selectedRows.length} profiles</Button></Space>}>
     {error && <Alert type="error" showIcon message={error} />}
     <p>Choose an existing work location for the selected profiles.</p><Form layout="vertical"><Form.Item label="Work location / institute" required><Select aria-label="Link roster work location" value={linkLocationId} showSearch optionFilterProp="label" placeholder="Choose a work location" disabled={busy} options={locations.map(location => ({ value: location.id, label: location.name }))} onChange={setLinkLocationId} /></Form.Item></Form><p className="document-roster-selected-summary">{selectedRows.map(row => row.candidateName).join(', ')}</p>
@@ -172,7 +197,7 @@ function RosterReleaseDrawer({ clientId, ids, canManageAsset, canRelease, onClos
     finally { if (alive.current) setBusy(false) }
   }
   return <Drawer open title={ids.length ? `Release ${ids.length} offer letter${ids.length > 1 ? 's' : ''}` : 'Signature and stamp'} className="document-roster-release" width="min(640px, 96vw)" onClose={() => { if (!busy) onClose() }} closable={!busy} maskClosable={!busy} footer={<Space><Button disabled={busy} onClick={onClose}>{ids.length ? 'Cancel' : 'Close'}</Button>{canRelease && !!ids.length && <Button type="primary" icon={<DownloadOutlined />} loading={busy} disabled={loading || !asset || (applySignature && !asset.available)} onClick={() => void release()}>Release &amp; download ({ids.length})</Button>}</Space>}>
-    <Alert type="info" showIcon message={ids.length ? 'Release all selected letters together' : 'Save a signature and stamp for this client'} description={ids.length ? 'Use the saved signature and stamp, or switch it off for plain letters. Draft PDFs remain available separately.' : 'Upload one combined image to use when releasing offer letters.'} />
+    <Alert type="info" showIcon message={ids.length ? 'Release all selected letters together' : 'Save a signature and stamp for this client'} description={ids.length ? 'Release adds or links Employee Master using the existing identity checks. Use the saved signature and stamp, or switch it off for plain letters. Email selected letters separately after release.' : 'Upload one combined image to use when releasing offer letters.'} />
     {error && <Alert type="error" showIcon message={error} />}
     <section className="document-roster-signature-section" aria-busy={loading || busy}>
       <h3>Signature and stamp</h3>

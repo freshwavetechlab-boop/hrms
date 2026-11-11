@@ -16,5 +16,15 @@
 .document-roster-signature-toggle { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
 .document-roster-asset-status { margin-top: 12px; }
 .document-roster-upload-disabled { opacity: .65; }
+.document-roster-mobile-actions { display: none; }
+.document-roster-mail-drawer .ant-drawer-body, .document-roster-mail-history .ant-drawer-body { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: hidden; }
 @media (max-width: 600px) { .document-roster-fields { grid-template-columns: minmax(0, 1fr); } .document-roster-toolbar > .ant-space { max-width: 100%; } }
 @media (max-width: 600px) { .document-roster-location-select { min-width: 0; width: min(100%, 360px); } .recruitment-document-roster .document-roster-toolbar .ant-select { max-width: 100%; } }
+@media (max-width: 600px) {
+  .recruitment-document-roster .ant-drawer-body { overflow-y: auto; }
+  .recruitment-document-roster .document-roster-table { flex: 1 0 290px; min-height: 290px; }
+  .recruitment-document-roster .document-roster-toolbar { position: sticky; top: 0; z-index: 2; background: var(--hrms-surface, #fff); padding-bottom: 6px; }
+  .document-roster-desktop-actions { display: none; }
+  .document-roster-filter-controls:not(.is-open) { display: none; }
+  .document-roster-mobile-actions { display: inline-flex; }
+}

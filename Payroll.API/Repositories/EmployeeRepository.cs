@@ -147,6 +147,7 @@ UNIQUE KEY UX_employee_tax_regime (employee_id, financial_year));");
         var links = new List<string>();
         async Task Add(string label, string table, string column, string filter = "") { var count = await CountSafeAsync(db, table, column, id, filter); if (count > 0) links.Add($"{count} {label}{(count == 1 ? "" : "s")}"); }
         await Add("reporting employee", "employees", "ReportingManagerId", "AND IsActive=TRUE");
+        await Add("released offer employee link", "recruitment_document_roster", "EmployeeId");
         await Add("reporting manager user", "employees", "ReportingManagerUserId", "AND IsActive=TRUE");
         await Add("login user", "authusers", "EmployeeId", "AND IsActive=TRUE");
         await Add("pay run row", "payrunemployees", "EmployeeId");

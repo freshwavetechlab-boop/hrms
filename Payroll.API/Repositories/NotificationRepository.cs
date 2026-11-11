@@ -386,22 +386,24 @@ SELECT LAST_INSERT_ID();", new
         var smtp = await db.QueryFirstOrDefaultAsync<NotificationSmtpSetting>("SELECT * FROM notification_smtp_settings WHERE Id=1") ?? new NotificationSmtpSetting();
         if (!smtp.IsEnabled || smtp.DeliveryPaused) return 0;
         var rows = (await db.QueryAsync<NotificationQueueItem>(@"SELECT * FROM notification_queue
-WHERE (Status IN ('Pending','Retry') OR (EventCode IN (@ExcelEvent,@EmailRequestEvent,@EmailRequestPdfEvent) AND Status IN (@ExcelPending,@ExcelRetry))) AND RetryCount < 5
+WHERE (Status IN ('Pending','Retry') OR (EventCode IN (@ExcelEvent,@EmailRequestEvent,@EmailRequestPdfEvent) AND Status IN (@ExcelPending,@ExcelRetry)) OR (EventCode=@OfferEvent AND Status IN (@OfferPending,@OfferRetry))) AND RetryCount < 5
   AND (@QueueId IS NULL OR Id=@QueueId)
-ORDER BY CreatedAt LIMIT 20", new { QueueId = queueId, ExcelEvent = ExcelPayslipEvent, EmailRequestEvent = ExcelPayslipEmailRequestEvent, EmailRequestPdfEvent = ExcelPayslipEmailRequestPdfEvent, ExcelPending = ExcelPayslipPendingStatus, ExcelRetry = ExcelPayslipRetryStatus })).ToList();
+ORDER BY CreatedAt LIMIT 20", new { QueueId = queueId, ExcelEvent = ExcelPayslipEvent, EmailRequestEvent = ExcelPayslipEmailRequestEvent, EmailRequestPdfEvent = ExcelPayslipEmailRequestPdfEvent, ExcelPending = ExcelPayslipPendingStatus, ExcelRetry = ExcelPayslipRetryStatus,OfferEvent=RosterOfferEvent,OfferPending=RosterOfferPending,OfferRetry=RosterOfferRetry })).ToList();
         var count = 0;
         foreach (var row in rows)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var claimed = await db.ExecuteAsync(@"UPDATE notification_queue
 SET Status='Processing'
-WHERE Id=@Id AND (Status IN ('Pending','Retry') OR (EventCode IN (@ExcelEvent,@EmailRequestEvent,@EmailRequestPdfEvent) AND Status IN (@ExcelPending,@ExcelRetry))) AND RetryCount < 5",
-                new { row.Id, ExcelEvent = ExcelPayslipEvent, EmailRequestEvent = ExcelPayslipEmailRequestEvent, EmailRequestPdfEvent = ExcelPayslipEmailRequestPdfEvent, ExcelPending = ExcelPayslipPendingStatus, ExcelRetry = ExcelPayslipRetryStatus });
+WHERE Id=@Id AND (Status IN ('Pending','Retry') OR (EventCode IN (@ExcelEvent,@EmailRequestEvent,@EmailRequestPdfEvent) AND Status IN (@ExcelPending,@ExcelRetry)) OR (EventCode=@OfferEvent AND Status IN (@OfferPending,@OfferRetry))) AND RetryCount < 5",
+                new { row.Id, ExcelEvent = ExcelPayslipEvent, EmailRequestEvent = ExcelPayslipEmailRequestEvent, EmailRequestPdfEvent = ExcelPayslipEmailRequestPdfEvent, ExcelPending = ExcelPayslipPendingStatus, ExcelRetry = ExcelPayslipRetryStatus,OfferEvent=RosterOfferEvent,OfferPending=RosterOfferPending,OfferRetry=RosterOfferRetry });
             if (claimed == 0) continue;
 
+            NotificationMailDeliveryResult? acceptedOfferDelivery = null;
             try
             {
                 var delivery = await SendAsync(db, smtp, row, cancellationToken);
+                if(row.EventCode==RosterOfferEvent)acceptedOfferDelivery=delivery;
                 await db.ExecuteAsync("UPDATE notification_queue SET Status='Sent',SentAt=UTC_TIMESTAMP(),ErrorMessage=@Warning WHERE Id=@Id", new { row.Id, Warning = delivery.SentCopyWarning });
                 await WriteLogsAsync(db, row, "Sent", delivery.SentCopyWarning, delivery.MessageId);
                 await WriteSentCopyReceiptAsync(db, row, delivery);
@@ -409,7 +411,13 @@ WHERE Id=@Id AND (Status IN ('Pending','Retry') OR (EventCode IN (@ExcelEvent,@E
             }
             catch (Exception exception)
             {
-                var status = row.RetryCount + 1 >= 5 ? "Failed" : row.EventCode is ExcelPayslipEvent or ExcelPayslipEmailRequestEvent or ExcelPayslipEmailRequestPdfEvent ? ExcelPayslipRetryStatus : "Retry";
+                if(acceptedOfferDelivery is not null)
+                {
+                    await db.ExecuteAsync("UPDATE notification_queue SET Status='Sent',SentAt=COALESCE(SentAt,UTC_TIMESTAMP()),ErrorMessage=@Warning WHERE Id=@Id",new{row.Id,Warning="SMTP accepted the offer email, but a delivery receipt could not be saved. Do not resend. "+exception.Message});
+                    logger.LogWarning(exception,"Offer notification {QueueId} was accepted; receipt failure will not retry the email.",row.Id);
+                    continue;
+                }
+                var status = row.RetryCount + 1 >= 5 ? "Failed" : row.EventCode==RosterOfferEvent?RosterOfferRetry:row.EventCode is ExcelPayslipEvent or ExcelPayslipEmailRequestEvent or ExcelPayslipEmailRequestPdfEvent ? ExcelPayslipRetryStatus : "Retry";
                 await db.ExecuteAsync("UPDATE notification_queue SET Status=@Status,RetryCount=RetryCount+1,ErrorMessage=@Error WHERE Id=@Id", new { row.Id, Status = status, Error = exception.Message });
                 await WriteLogsAsync(db, row, status, exception.Message);
                 logger.LogWarning(exception, "Queued notification {QueueId} failed.", row.Id);
@@ -422,8 +430,8 @@ WHERE Id=@Id AND (Status IN ('Pending','Retry') OR (EventCode IN (@ExcelEvent,@E
     {
         await using var db = Db();
         await db.OpenAsync();
-        await db.ExecuteAsync("UPDATE notification_queue SET Status=CASE WHEN EventCode IN (@ExcelEvent,@EmailRequestEvent,@EmailRequestPdfEvent) THEN @ExcelPending ELSE 'Pending' END,RetryCount=0,ErrorMessage='',SentAt=NULL WHERE Id=@Id",
-            new { Id = id, ExcelEvent = ExcelPayslipEvent, EmailRequestEvent = ExcelPayslipEmailRequestEvent, EmailRequestPdfEvent = ExcelPayslipEmailRequestPdfEvent, ExcelPending = ExcelPayslipPendingStatus });
+        await db.ExecuteAsync("UPDATE notification_queue SET Status=CASE WHEN EventCode=@OfferEvent THEN @OfferPending WHEN EventCode IN (@ExcelEvent,@EmailRequestEvent,@EmailRequestPdfEvent) THEN @ExcelPending ELSE 'Pending' END,RetryCount=0,ErrorMessage='',SentAt=NULL WHERE Id=@Id AND (EventCode<>@OfferEvent OR (Status='Failed' AND SentAt IS NULL AND NOT EXISTS(SELECT 1 FROM notification_logs l WHERE l.QueueId=@Id AND l.Status='Sent')))",
+            new { Id = id, ExcelEvent = ExcelPayslipEvent, EmailRequestEvent = ExcelPayslipEmailRequestEvent, EmailRequestPdfEvent = ExcelPayslipEmailRequestPdfEvent, ExcelPending = ExcelPayslipPendingStatus,OfferEvent=RosterOfferEvent,OfferPending=RosterOfferPending });
     }
 
     public async Task<int> RetryAndProcessAsync(long id, CancellationToken cancellationToken)
@@ -613,7 +621,9 @@ LIMIT 1", new { evt.ResourceId });
         var builder = new BodyBuilder { HtmlBody = row.BodyHtml, TextBody = StripHtml(row.BodyHtml) };
         if (row.EventCode == "PAYSLIP.SEND")
             builder.Attachments.Add($"payslip-{row.ResourceId}.html", System.Text.Encoding.UTF8.GetBytes(row.BodyHtml), new ContentType("text", "html"));
-        if (row.EventCode == ExcelPayslipEvent)
+        if (row.EventCode == RosterOfferEvent)
+            await AttachReleasedOfferAsync(db,row,builder);
+        else if (row.EventCode == ExcelPayslipEvent)
             await AttachExcelPayslipPdfAsync(db, row, builder);
         else if (row.EventCode == ExcelPayslipEmailRequestPdfEvent)
             await AttachExcelPayslipEmailRequestPdfAsync(db, row, builder);

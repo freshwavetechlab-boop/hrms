@@ -66,6 +66,8 @@ public sealed class RecruitmentDocumentRosterRow
     public Dictionary<string, string> Values { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<string> DocumentIssues { get; set; } = [];
     public string Revision { get; set; } = "";
+    public int? EmployeeId { get; set; }
+    public string EmployeeCode { get; set; } = "";
 }
 public sealed class RecruitmentRosterImportResult
 {

@@ -24,6 +24,14 @@ public static class RecruitmentDocumentEndpoints
             Results.Ok(await repository.TemplatesAsync(clientId, currentUser(context))));
         routes.MapGet("/rows", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
             Results.Ok(await repository.RowsAsync(clientId, currentUser(context))));
+        routes.MapPost("/mail-preview",async(RecruitmentDocumentRepository repository,int clientId,RecruitmentOfferMailRequest request,HttpContext context)=>
+            Results.Ok(new {Items=await repository.PreviewOfferMailAsync(clientId,request,currentUser(context))}));
+        routes.MapPost("/mail-jobs",async(RecruitmentDocumentRepository repository,int clientId,RecruitmentOfferMailRequest request,HttpContext context)=>
+            Results.Ok(await repository.SubmitOfferMailAsync(clientId,request,currentUser(context))));
+        routes.MapGet("/mail-jobs",async(RecruitmentDocumentRepository repository,int? clientId,HttpContext context)=>
+            Results.Ok(new{Items=await repository.OwnOfferMailJobsAsync(currentUser(context),clientId)}));
+        routes.MapPost("/mail-jobs/{id}/dismiss",async(RecruitmentDocumentRepository repository,int clientId,string id,HttpContext context)=>
+        {await repository.DismissOfferMailJobAsync(clientId,id,currentUser(context));return Results.Ok(new{Ok=true});});
         routes.MapGet("/work-locations", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
             Results.Ok(await repository.WorkLocationsAsync(clientId, currentUser(context))));
         routes.MapPost("/rows/work-location", async (RecruitmentDocumentRepository repository, int clientId, RecruitmentRosterWorkLocationSelection request, HttpContext context) =>

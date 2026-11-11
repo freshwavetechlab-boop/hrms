@@ -1,0 +1,6 @@
+.bulk-mail-progress { flex: 0 0 auto; min-width: 0; padding: 10px 14px; border: 1px solid var(--hrms-line, #e5e8f0); border-radius: 10px; background: var(--hrms-surface, #fff); }
+.bulk-mail-progress .excel-payslip-summary { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; }
+.bulk-mail-progress .excel-payslip-muted { color: var(--muted); overflow-wrap: anywhere; }
+.bulk-mail-progress .ant-progress { margin: 4px 0; }
+.bulk-mail-progress .ant-space { max-width: 100%; }
+.bulk-mail-progress.is-compact { padding: 6px 10px; }

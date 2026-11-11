@@ -14,7 +14,7 @@ public partial class NotificationRepository
         DateTime since, MySqlTransaction? tx = null) => db.QueryAsync<NotificationDeliveryCandidate>(@"SELECT log.Id,log.QueueId,log.Recipient,
 log.ProviderMessageId MessageId,queue.Subject,@Sender Sender,log.CreatedAt SentAt,queue.EventCode,queue.ResourceType,queue.ResourceId,queue.ClientId
 FROM notification_logs log JOIN notification_queue queue ON queue.Id=log.QueueId
-WHERE log.Status='Sent' AND log.CreatedAt>=@since AND queue.EventCode='EXCEL_PAYSLIP.SEND' AND queue.ResourceType='ExcelPayslipBatch'",
+WHERE log.Status='Sent' AND log.CreatedAt>=@since AND ((queue.EventCode='EXCEL_PAYSLIP.SEND' AND queue.ResourceType='ExcelPayslipBatch') OR (queue.EventCode='RECRUITMENT_ROSTER.OFFER_SEND' AND queue.ResourceType='RecruitmentRosterOffer'))",
             new { since, Sender = smtp.FromEmail }, tx);
 
     private static async Task<int> RecordDeliveryReportsAsync(MySqlConnection db, MySqlTransaction tx, string mailbox, string key,

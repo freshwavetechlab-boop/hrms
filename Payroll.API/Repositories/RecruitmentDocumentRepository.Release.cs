@@ -64,11 +64,13 @@ public sealed partial class RecruitmentDocumentRepository
     }
     private static async Task EnsureReleaseSchemaCoreAsync(MySqlConnection db)
     {
-        foreach (var column in new[] { (Name: "WorkLocationId", Sql: "INT NULL"), (Name: "OfferNumber", Sql: "VARCHAR(160) NOT NULL DEFAULT ''") })
+        foreach (var column in new[] { (Name: "WorkLocationId", Sql: "INT NULL"), (Name: "OfferNumber", Sql: "VARCHAR(160) NOT NULL DEFAULT ''"), (Name:"EmployeeId",Sql:"INT NULL") })
             if (await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='recruitment_document_roster' AND column_name=@Name", new { column.Name }) == 0)
                 await db.ExecuteAsync($"ALTER TABLE recruitment_document_roster ADD COLUMN {column.Name} {column.Sql}");
         if (await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM information_schema.referential_constraints WHERE constraint_schema=DATABASE() AND constraint_name='FK_document_roster_work_location'") == 0)
             await db.ExecuteAsync("ALTER TABLE recruitment_document_roster ADD CONSTRAINT FK_document_roster_work_location FOREIGN KEY (WorkLocationId) REFERENCES worklocations(Id) ON DELETE RESTRICT");
+        if(await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM information_schema.referential_constraints WHERE constraint_schema=DATABASE() AND constraint_name='FK_document_roster_employee'")==0)
+            await db.ExecuteAsync("ALTER TABLE recruitment_document_roster ADD CONSTRAINT FK_document_roster_employee FOREIGN KEY (EmployeeId) REFERENCES employees(Id) ON DELETE RESTRICT");
         await db.ExecuteAsync("""
 CREATE TABLE IF NOT EXISTS recruitment_document_signing_assets (
  ClientId INT PRIMARY KEY,FileName VARCHAR(180) NOT NULL,ContentType VARCHAR(40) NOT NULL,
@@ -83,6 +85,7 @@ CREATE TABLE IF NOT EXISTS recruitment_document_roster_releases (
  UNIQUE KEY UX_document_roster_release(RosterId,RevisionKey),INDEX IX_document_roster_release_client(ClientId,RosterId),
  CONSTRAINT FK_document_roster_release_row FOREIGN KEY (RosterId) REFERENCES recruitment_document_roster(Id) ON DELETE RESTRICT);
 """);
+        await EnsureMailSchemaAsync(db);
     }
     public async Task<List<WorkLocation>> WorkLocationsAsync(int clientId, AuthUser user)
     {
@@ -168,8 +171,11 @@ ON DUPLICATE KEY UPDATE FileName=VALUES(FileName),ContentType=VALUES(ContentType
         IssueAccess(user, clientId); ValidateIds(request.Ids);
         if (request.Revisions is { Count: > 200 }) throw new InvalidOperationException("Select fewer rows to release.");
         await using var db = Db(); await db.OpenAsync(); await EnsureAsync(db);
+        await EmployeeRepository.PrepareRecruitmentSaveAsync(db);
         var allowed = await RecruitmentAccessScope.WorkLocationsAsync(db, user, clientId);
         await using var tx = await db.BeginTransactionAsync();
+        await db.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@ClientId AND IsActive=TRUE FOR UPDATE",new {ClientId=clientId},tx);
+        var currentEmployees=await EmployeeRepository.ReadExcelPayrollIdentitySnapshotAsync(db,tx,clientId);
         var rows = (await db.QueryAsync<RecruitmentDocumentRosterRow>("""
 SELECT r.*,CAST(r.ValuesJson AS CHAR) ValuesJson,c.CandidateCode,TRIM(CONCAT(c.FirstName,' ',c.LastName)) CandidateName,c.Email,c.Phone
 FROM recruitment_document_roster r JOIN recruitment_candidates c ON c.Id=r.CandidateId AND c.ClientId=r.ClientId AND c.ProfileStatus<>'Archived'
@@ -193,9 +199,7 @@ WHERE r.ClientId=@ClientId AND r.Id IN @Ids ORDER BY r.Id FOR UPDATE
             WorkLocation? location = row.WorkLocationId.HasValue ? await ActiveLocationAsync(db, clientId, row.WorkLocationId.Value, tx) : null;
             if (location is not null) ApplyLocationValues(values, location);
             var offerNumber = row.OfferNumber.Length > 0 ? row.OfferNumber : NewOfferNumber(client.Code, india.Year, row.Id);
-            values["candidateName"] = row.CandidateName; values["candidateEmail"] = row.Email; values["candidatePhone"] = row.Phone; values["candidateCode"] = row.CandidateCode;
-            values["clientName"] = client.Name; values["organizationName"] = organization?.Name ?? ""; values["offerNumber"] = offerNumber;
-            values.Remove("offerDate"); values.Remove("date");
+            PrepareReleaseValues(row,values,client.Name,organization?.Name ?? "",offerNumber);
             var inputsHash = Hash(SerializeValues(values)); var templateHash = Hash(template.BodyTemplate);
             var locationHash = Hash(JsonSerializer.Serialize(location, Json)); var signatureHash = asset?.Sha256 ?? "";
             var revisionKey = Hash(string.Join("|", inputsHash, templateHash, locationHash, signatureHash, logo is null ? "" : BytesHash(logo)));
@@ -214,10 +218,17 @@ VALUES(@Id,@ClientId,@OfferNumber,@RevisionKey,@TemplateHash,@InputsHash,@Locati
                 await db.ExecuteAsync("UPDATE recruitment_document_roster SET OfferNumber=@OfferNumber WHERE Id=@Id AND ClientId=@ClientId AND OfferNumber=''", new { OfferNumber = offerNumber, row.Id, ClientId = clientId }, tx);
                 await db.ExecuteAsync("INSERT INTO recruitment_document_roster_audit(RosterId,ClientId,Action,NewValuesJson,ActorUserId) VALUES(@Id,@ClientId,'Offer released',@Receipt,@UserId)", new { row.Id, ClientId = clientId, Receipt = JsonSerializer.Serialize(new { OfferNumber = offerNumber, RevisionKey = revisionKey, PdfHash = BytesHash(receipt.Bytes), SignatureHash = signatureHash, ReleasedAt = now }, Json), UserId = user.Id }, tx);
             }
+            await LinkReleasedEmployeeAsync(db,tx,row,values,location!,currentEmployees,user,offerNumber,allowed.Select(item=>item.Id).ToHashSet());
             size += receipt.Bytes.Length; if (size > 32 * 1024 * 1024) throw new InvalidOperationException("Release fewer letters at a time (32 MB limit).");
             results.Add(new(row.Id, receipt.Bytes, receipt.FileName, client.Name));
         }
         await tx.CommitAsync(); return results;
+    }
+    private static void PrepareReleaseValues(RecruitmentDocumentRosterRow row,Dictionary<string,string> values,string clientName,string organizationName,string offerNumber)
+    {
+        values["candidateName"]=row.CandidateName;values["candidateEmail"]=row.Email;values["candidatePhone"]=row.Phone;values["candidateCode"]=row.CandidateCode;
+        values["clientName"]=clientName;values["organizationName"]=organizationName;values["offerNumber"]=offerNumber;
+        values.Remove("offerDate");values.Remove("date");
     }
     private static byte[]? LogoBytes(string? data)
     {

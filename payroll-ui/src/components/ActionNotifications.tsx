@@ -9,8 +9,10 @@ import { getAttendanceGaps } from '../services/attendanceIntegrationService'
 import { dismissExcelPayslipMailJob, getExcelPayslipMailJobs, type ExcelPayslipMailJob } from '../services/excelPayslipService'
 import { getRecruitmentMomPings } from '../services/recruitmentCaseService'
 import { isUnrestrictedClientAdmin } from '../utils/clientAccess'
+import { dismissOfferMailJob, getOfferMailJobs, validOfferMailJobs, type OfferMailJob } from '../services/recruitmentOfferMailService'
+import type { BulkMailJob } from './BulkMailProgress'
 
-type ActionItem = { key: string; title: string; detail: string; route: string; mailJob?: ExcelPayslipMailJob }
+type ActionItem = { key: string; title: string; detail: string; route: string; mailJob?: ExcelPayslipMailJob; offerJob?: OfferMailJob }
 type PendingTask = { id: number; stageName: string; resourceType: string; resourceId: string }
 
 // Add future action providers here using authorized, recipient-scoped APIs.
@@ -21,25 +23,31 @@ export default function ActionNotifications() {
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<ActionItem[]>([])
   const [jobFeed, setJobFeed] = useState<{ scope: string; items: ExcelPayslipMailJob[] }>({ scope: '', items: [] })
+  const [offerFeed, setOfferFeed] = useState<{ scope: string; items: OfferMailJob[] }>({ scope: '', items: [] })
   const [dismissing, setDismissing] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const generation = useRef(0)
   const canSeeMailJobs = isUnrestrictedClientAdmin(session?.user) && Boolean(session?.user.permissions.some(permission => ['payroll.run', 'payroll.approve', 'payroll.payments'].includes(permission)))
+  const canSeeOfferJobs = Boolean(session?.user.permissions.some(permission => ['recruitment.offer.issue', 'recruitment.manage', 'settings.manage'].includes(permission)))
   const jobScope = `${session?.user.id}:${session?.user.clientId || ''}:${canSeeMailJobs}`
   const currentJobScope = useRef(jobScope)
   currentJobScope.current = jobScope
+  const offerScope = `${jobScope}:${canSeeOfferJobs}:${session?.user.clientAccessMode}:${session?.user.assignedClientIds?.join(',')}:${session?.user.recruitmentScopeMode}:${session?.user.recruitmentLocationIds?.join(',')}`
+  const currentOfferScope = useRef(offerScope)
+  currentOfferScope.current = offerScope
   const refresh = useCallback(async () => {
     const attempt = ++generation.current
-    if (!session) { setItems([]); setJobFeed({ scope: jobScope, items: [] }); setLoading(false); return }
+    if (!session) { setItems([]); setJobFeed({ scope: jobScope, items: [] }); setOfferFeed({ scope: offerScope, items: [] }); setLoading(false); return }
     setLoading(true)
     const canConfigure = session.user.permissions.some(p => ['settings.manage', 'client.settings.manage', 'attendance.manage', 'workflow.manage', 'employees.manage'].includes(p))
-    const [tasks, interviews, configuration, mailJobs, momPings] = await Promise.all([
+    const [tasks, interviews, configuration, mailJobs, momPings, offerJobs] = await Promise.all([
       getJsonResult<PendingTask[]>('/api/workflows/tasks/pending', [], { loader: false, toast: false }),
       getJsonResult<RecruitmentInterview[]>('/api/recruitment/interviews', [], { loader: false, toast: false }),
       canConfigure ? getAttendanceGaps(session.user.clientId || undefined) : Promise.resolve(null),
       canSeeMailJobs ? getExcelPayslipMailJobs() : Promise.resolve(null),
       getRecruitmentMomPings(),
+      canSeeOfferJobs ? getOfferMailJobs() : Promise.resolve(null),
     ])
     if (attempt !== generation.current) return
     const next: ActionItem[] = (tasks.data || []).map(task => ({ key: `approval:${task.id}`, title: task.stageName || 'Approval required', detail: `${task.resourceType} · ${task.resourceId}`, route: '/tasks' }))
@@ -60,13 +68,17 @@ export default function ActionNotifications() {
     const jobsValid = Boolean(mailJobs?.ok && validMailJobs(receivedJobs))
     if (jobsValid) setJobFeed({ scope: jobScope, items: receivedJobs! })
     else if (!canSeeMailJobs) setJobFeed({ scope: jobScope, items: [] })
-    setError(!tasks.ok || !momPings.ok || (interviews && !interviews.ok) || (configuration && !configuration.ok) || (mailJobs && !jobsValid) ? 'Some notifications could not be refreshed. Any displayed mail progress is the last known status; retry to check the latest.' : '')
+    const offersValid = Boolean(offerJobs?.ok && validOfferMailJobs(offerJobs.data.items))
+    if (offersValid) setOfferFeed({ scope: offerScope, items: offerJobs!.data.items })
+    else if (!canSeeOfferJobs || offerJobs?.status === 403) setOfferFeed({ scope: offerScope, items: [] })
+    setError(!tasks.ok || !momPings.ok || (interviews && !interviews.ok) || (configuration && !configuration.ok) || (mailJobs && !jobsValid) || (offerJobs && !offersValid) ? 'Some notifications could not be refreshed. Any displayed mail progress is the last known status; retry to check the latest.' : '')
     setLoading(false)
-  }, [session?.user.id, session?.user.clientId, session?.user.permissions.join('|')])
+  }, [session?.user.id, session?.user.clientId, session?.user.permissions.join('|'), offerScope])
 
   const notifications: ActionItem[] = [...items, ...(canSeeMailJobs && jobFeed.scope === jobScope ? jobFeed.items : [])
     .filter(job => !job.dismissedAtUtc && (!session?.user.clientId || job.clientId === session.user.clientId))
-    .map(job => ({ key: `excel-mail:${job.id}`, title: job.status === 'Completed' ? 'Excel payslip email complete' : job.status === 'Needs attention' ? 'Excel payslip email needs attention' : 'Excel payslip email in progress', detail: `${job.clientName} · ${job.month}`, route: `/reports/payroll-reports?report=excel-payslips&clientId=${job.clientId}&batchId=${encodeURIComponent(job.batchId)}&mailJobId=${encodeURIComponent(job.id)}`, mailJob: job }))]
+    .map(job => ({ key: `excel-mail:${job.id}`, title: job.status === 'Completed' ? 'Excel payslip email complete' : job.status === 'Needs attention' ? 'Excel payslip email needs attention' : 'Excel payslip email in progress', detail: `${job.clientName} · ${job.month}`, route: `/reports/payroll-reports?report=excel-payslips&clientId=${job.clientId}&batchId=${encodeURIComponent(job.batchId)}&mailJobId=${encodeURIComponent(job.id)}`, mailJob: job })),
+    ...(canSeeOfferJobs && offerFeed.scope === offerScope ? offerFeed.items : []).filter(job => !job.dismissedAtUtc).map(job => ({ key: `offer-mail:${job.id}`, title: job.status === 'Completed' ? 'Offer email complete' : job.status === 'Needs attention' ? 'Offer email needs attention' : 'Offer email in progress', detail: `${job.clientName} · ${job.total} offer letters`, route: `/recruitment/offers-and-pre-onboarding?clientId=${job.clientId}&mailJobId=${encodeURIComponent(job.id)}`, offerJob: job }))]
 
   const dismissJob = async (job: ExcelPayslipMailJob) => {
     if (!canSeeMailJobs || !job.isComplete || dismissing) return
@@ -79,6 +91,16 @@ export default function ActionNotifications() {
       setJobFeed(current => current.scope === requestedScope ? { ...current, items: current.items.filter(item => item.id !== job.id) } : current)
       window.dispatchEvent(new Event('hrms:actions-changed'))
     } else setError(result.error || 'Unable to dismiss this mail notification. Retry after refreshing its status.')
+  }
+  const dismissOfferJob = async (job: OfferMailJob) => {
+    if (!canSeeOfferJobs || !job.isComplete || dismissing) return
+    const requestedScope = offerScope
+    setDismissing(job.id)
+    const result = await dismissOfferMailJob(job.clientId, job.id)
+    setDismissing('')
+    if (currentOfferScope.current !== requestedScope) return
+    if (result.ok && result.data.ok) { setOfferFeed(current => ({ ...current, items: current.items.filter(item => item.id !== job.id) })); window.dispatchEvent(new Event('hrms:actions-changed')) }
+    else setError(result.error || 'Unable to dismiss the offer email notification.')
   }
 
   useEffect(() => {
@@ -97,8 +119,10 @@ export default function ActionNotifications() {
         <Button type="text" style={{ height: 'auto', width: '100%', whiteSpace: 'normal', textAlign: 'left', display: 'block', overflowWrap: 'anywhere' }} onClick={() => { setOpen(false); navigate(item.route) }}>
           <Typography.Text strong>{item.title}</Typography.Text><br /><Typography.Text type="secondary">{item.detail}</Typography.Text>
           {item.mailJob && <MailJobProgress job={item.mailJob} />}
+          {item.offerJob && <MailJobProgress job={item.offerJob} documentLabel="letters" />}
         </Button>
         {item.mailJob?.isComplete && <Button type="link" size="small" loading={dismissing === item.mailJob.id} disabled={Boolean(dismissing)} aria-label={`Dismiss ${item.mailJob.month} Excel payslip email notification`} onClick={() => void dismissJob(item.mailJob!)}>Dismiss</Button>}
+        {item.offerJob?.isComplete && <Button type="link" size="small" loading={dismissing === item.offerJob.id} disabled={Boolean(dismissing)} aria-label="Dismiss offer email notification" onClick={() => void dismissOfferJob(item.offerJob!)}>Dismiss</Button>}
       </List.Item>} />}
     </div>
   }><Badge count={notifications.length} overflowCount={99}><Button className="topbar-icon-btn" icon={<BellOutlined />} aria-label="Notifications" /></Badge></Popover>
@@ -117,8 +141,8 @@ function validMailJobs(value: unknown): value is ExcelPayslipMailJob[] {
     && new Set(value.map(job => job.id)).size === value.length
 }
 
-function MailJobProgress({ job }: { job: ExcelPayslipMailJob }) {
-  const detail = [`Emails SMTP accepted ${job.acceptedEmails ?? '?'} / ${job.totalEmails ?? '?'}`, `Sent copies saved ${job.sentCopySavedEmails ?? '?'}`, `${job.total} slips`, ...(job.mode === 'Combined' ? ['Coordinator copy'] : []), `Slips queued ${job.queued}`, ...(job.failed ? [`Failed ${job.failed}`] : []), ...(job.missingEmail ? [`Missing email ${job.missingEmail}`] : []), ...(job.sentCopyUnverifiedEmails ? [`Sent copy unverified ${job.sentCopyUnverifiedEmails}`] : []), ...(job.unknown ? [`Unknown ${job.unknown}`] : [])].join(' · ')
+function MailJobProgress({ job, documentLabel = 'slips' }: { job: BulkMailJob; documentLabel?: string }) {
+  const detail = [`Emails SMTP accepted ${job.acceptedEmails ?? '?'} / ${job.totalEmails ?? '?'}`, `Sent copies saved ${job.sentCopySavedEmails ?? '?'}`, `${job.total} ${documentLabel}`, ...(job.mode === 'Combined' ? ['Coordinator copy'] : []), `${documentLabel === 'slips' ? 'Slips' : 'Letters'} queued ${job.queued}`, ...(job.failed ? [`Failed ${job.failed}`] : []), ...(job.missingEmail ? [`Missing email ${job.missingEmail}`] : []), ...(job.notReleased ? [`Not released ${job.notReleased}`] : []), ...(job.sentCopyUnverifiedEmails ? [`Sent copy unverified ${job.sentCopyUnverifiedEmails}`] : []), ...(job.unknown ? [`Unknown ${job.unknown}`] : [])].join(' · ')
   return <div style={{ marginTop: 6 }}>
     <Tag color={job.status === 'Needs attention' ? 'orange' : job.isComplete ? 'green' : 'blue'}>{job.status}</Tag>
     <Typography.Text type="secondary">{job.completed} / {job.total} processed · {job.percentComplete}%</Typography.Text>

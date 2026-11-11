@@ -11,8 +11,8 @@ using Payroll.API.Services;
 namespace Payroll.API.Repositories;
 
 // Existing-manpower profiles, document inputs and explicitly authorized roster
-// releases. This does not create applications, ATS decisions, native offer
-// approvals/acceptance, employee masters or payroll.
+// releases. Release links Employee Master using the existing identity/infotype
+// services; native application approvals/acceptance and payroll are separate.
 public sealed partial class RecruitmentDocumentRepository(IConfiguration configuration, RecruitmentTalentRepository talent, LayoutDocumentPdfService pdf)
 {
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS recruitment_document_roster_audit (
         var rows = (await db.QueryAsync<RecruitmentDocumentRosterRow>("""
 SELECT r.Id,r.ClientId,r.CandidateId,r.TemplateId,r.WorkLocationId,r.OfferNumber,r.SourceGroup,r.SourceFileName,r.SourceSheetName,r.SourceRow,CAST(r.ValuesJson AS CHAR) ValuesJson,
  (SELECT MAX(ReleasedAt) FROM recruitment_document_roster_releases rr WHERE rr.RosterId=r.Id AND rr.ClientId=r.ClientId) ReleasedAt,
- t.TemplateName,c.CandidateCode,TRIM(CONCAT(c.FirstName,' ',c.LastName)) CandidateName,c.Email,c.Phone,c.ProfileStatus
+ t.TemplateName,c.CandidateCode,TRIM(CONCAT(c.FirstName,' ',c.LastName)) CandidateName,c.Email,c.Phone,c.ProfileStatus,COALESCE(r.EmployeeId,c.EmployeeId) EmployeeId,
+ COALESCE((SELECT EmployeeCode FROM employees e WHERE e.Id=COALESCE(r.EmployeeId,c.EmployeeId) AND e.ClientId=r.ClientId),'') EmployeeCode
 FROM recruitment_document_roster r JOIN recruitment_candidates c ON c.Id=r.CandidateId AND c.ClientId=r.ClientId
 LEFT JOIN recruitment_templates t ON t.Id=r.TemplateId WHERE r.ClientId=@ClientId ORDER BY r.SourceGroup,r.SourceFileName,r.SourceRow,r.Id
 """, new { ClientId = clientId })).ToList();

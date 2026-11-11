@@ -11,13 +11,13 @@ public static partial class RecruitmentAccessScope
         && (!user.ClientId.HasValue || user.ClientId == clientId);
     // Institute/posting visibility uses the existing Work Location ID. Keep the
     // older text-based matching below for its existing callers only.
-    public static async Task<List<WorkLocation>> WorkLocationsAsync(MySqlConnection db, AuthUser user, int clientId)
+    public static async Task<List<WorkLocation>> WorkLocationsAsync(MySqlConnection db, AuthUser user, int clientId, MySqlTransaction? transaction = null)
     {
         if (!HasClientContext(user, clientId)) return [];
-        var rows = (await db.QueryAsync<WorkLocation>("SELECT * FROM worklocations WHERE ClientId=@ClientId AND IsActive=TRUE ORDER BY Name,Id", new { ClientId = clientId })).ToList();
+        var rows = (await db.QueryAsync<WorkLocation>("SELECT * FROM worklocations WHERE ClientId=@ClientId AND IsActive=TRUE ORDER BY Name,Id", new { ClientId = clientId }, transaction)).ToList();
         int? employeeLocation = null;
         if (user.RecruitmentScopeMode.Equals("EmployeeLocation", StringComparison.OrdinalIgnoreCase) && user.EmployeeId is > 0)
-            employeeLocation = await db.ExecuteScalarAsync<int?>("SELECT NULLIF(WorkLocationId,0) FROM employees WHERE Id=@EmployeeId AND ClientId=@ClientId AND IsActive=TRUE", new { user.EmployeeId, ClientId = clientId });
+            employeeLocation = await db.ExecuteScalarAsync<int?>("SELECT NULLIF(WorkLocationId,0) FROM employees WHERE Id=@EmployeeId AND ClientId=@ClientId AND IsActive=TRUE", new { user.EmployeeId, ClientId = clientId }, transaction);
         return rows.Where(row => AllowsKnownWorkLocation(user, clientId, row.Id, employeeLocation)).ToList();
     }
 
