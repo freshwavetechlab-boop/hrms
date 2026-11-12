@@ -49,7 +49,7 @@ public sealed partial class ExcelPayslipRepository(IConfiguration configuration,
         var clients = await db.QueryAsync<PayslipClientPresence>(@"SELECT c.Id,c.Name,c.Code,c.IsActive,
 EXISTS(SELECT 1 FROM excel_payslip_batches b WHERE b.client_id=c.Id) AS HasSavedBatch
 FROM clients c WHERE c.IsActive=TRUE AND (@ClientId IS NULL OR c.Id=@ClientId) ORDER BY c.Name", new { ClientId = scopedClientId });
-        return clients.Where(IsSupportedClient).Select(c => new ExcelPayslipClient { Id = c.Id, Name = c.Name, HasSavedBatch = c.HasSavedBatch, LocationBatchesSupported = true }).ToArray();
+        return clients.Where(IsSupportedClient).Select(c => new ExcelPayslipClient { Id = c.Id, Name = c.Name, HasSavedBatch = c.HasSavedBatch, LocationBatchesSupported = true, AtomicMappingSaveSupported = true }).ToArray();
     }
 
     public async Task<IReadOnlyList<ExcelPayslipTemplate>> GetTemplatesAsync(int clientId)
@@ -187,8 +187,11 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
     {
         var error = ValidateBatch(request);
         if (error is not null) return (null, error);
+        if (ValidateBatchMappingProfile(request) is { } mappingError) return (null, mappingError);
         // Clone before normalizing warnings/metadata so callers cannot modify an accepted snapshot in memory.
         var batch = JsonSerializer.Deserialize<ExcelPayslipBatch>(JsonSerializer.Serialize(request, JsonOptions), JsonOptions)!;
+        var mappingProfile = batch.MappingProfile;
+        batch.MappingProfile = null;
         foreach (var row in batch.Rows)
         {
             row.Employment = null;
@@ -220,7 +223,13 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
         var client = await db.QueryFirstOrDefaultAsync<Client>("SELECT Id,Name,Code,IsActive FROM clients WHERE Id=@ClientId FOR UPDATE", new { ClientId = clientId }, tx);
         if (client is null || !IsSupportedClient(client)) return (null, "Select an active client.");
         var existing = await CurrentSaveTargetAsync(db, tx, clientId, request);
-        if (request.CreateLocationBatch && existing is not null) { await tx.RollbackAsync(); return (existing, null); }
+        if (request.CreateLocationBatch && existing is not null)
+        {
+            if (mappingProfile is { } retryProfile && await SaveProfileInTransactionAsync(db, tx, clientId, retryProfile) is { } retryError)
+                return (null, retryError);
+            await tx.CommitAsync();
+            return (existing, null);
+        }
         if (existing is not null)
         {
             await RequireCurrentConsolidationSourceAsync(db,tx,clientId,existing.Id);
@@ -325,6 +334,8 @@ WHERE l.client_id=@ClientId AND l.batch_id=@Id",new{ClientId=clientId,existing.I
         if(existing is not null)await db.ExecuteAsync("DELETE FROM excel_payslip_batch_originals WHERE client_id=@ClientId AND batch_id=@Id AND original_id NOT IN @Ids",
             new{ClientId=clientId,batch.Id,Ids=batch.OriginalWorkbooks!.Select(reference=>reference.Id).ToArray()},tx);
         await AnnotateEmploymentAsync(db, batch, tx, configuration);
+        if (mappingProfile is { } profile && await SaveProfileInTransactionAsync(db, tx, clientId, profile) is { } profileError)
+            return (null, profileError);
         await tx.CommitAsync();
         return (batch, null);
     }
@@ -354,24 +365,47 @@ WHERE l.client_id=@ClientId AND l.batch_id=@Id",new{ClientId=clientId,existing.I
         if (!ValidSignature(signature) || !signature.Equals(profile.GetProperty("headerSignature").GetString(), StringComparison.OrdinalIgnoreCase)) return (false, "The mapping profile must match its SHA-256 header signature.");
         await using var db = Db(); await db.OpenAsync(); await using var tx = await db.BeginTransactionAsync();
         if (!await SupportedAsync(db, clientId, tx)) return (false, "Select an active client.");
+        var saveError = await SaveProfileInTransactionAsync(db, tx, clientId, profile);
+        if (saveError is not null) return (false, saveError);
+        await tx.CommitAsync();
+        return (true, null);
+    }
+
+    private static async Task<string?> SaveProfileInTransactionAsync(MySqlConnection db, MySqlTransaction tx, int clientId, JsonElement profile)
+    {
         if (profile.TryGetProperty("salaryTemplateId", out var selectedTemplate) && !string.IsNullOrWhiteSpace(selectedTemplate.GetString()))
         {
             var templates = await ReadTemplatesAsync(db, clientId, tx);
-            if (!templates.Any(t => t.Id == selectedTemplate.GetString()!.Trim())) return (false, "The mapping profile salary template must belong to this client and be active.");
+            if (!templates.Any(t => t.Id == selectedTemplate.GetString()!.Trim())) return "The mapping profile salary template must belong to this client and be active.";
         }
         var code = MappingProfileStorageCode(clientId);
         var legacyJson = await db.ExecuteScalarAsync<string?>("SELECT CAST(SettingsJson AS CHAR) FROM modulesettings WHERE client_id=@ClientId AND ModuleCode=@Code", new { ClientId = clientId, Code = ProfileCode }, tx);
         await db.ExecuteAsync("INSERT INTO modulesettings(client_id,ModuleCode,IsEnabled,SettingsJson) VALUES(@ClientId,@Code,TRUE,CAST(@InitialJson AS JSON)) ON DUPLICATE KEY UPDATE ModuleCode=VALUES(ModuleCode)",
             new { ClientId = clientId, Code = code, InitialJson = string.IsNullOrWhiteSpace(legacyJson) ? "{}" : legacyJson }, tx);
         var json = await db.ExecuteScalarAsync<string?>("SELECT CAST(SettingsJson AS CHAR) FROM modulesettings WHERE client_id=@ClientId AND ModuleCode=@Code FOR UPDATE", new { ClientId = clientId, Code = code }, tx);
-        if (string.IsNullOrWhiteSpace(json)) return (false, "The client mapping record could not be prepared. Retry after checking database configuration.");
+        if (string.IsNullOrWhiteSpace(json)) return "The client mapping record could not be prepared. Retry after checking database configuration.";
         var profiles = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json, JsonOptions) ?? [];
-        var key = signature.ToLowerInvariant();
-        if (profiles.Count >= 50 && !profiles.ContainsKey(key)) return (false, "This client already has 50 mapping formats. Reuse an existing format.");
+        var key = profile.GetProperty("headerSignature").GetString()!.ToLowerInvariant();
+        if (profiles.Count >= 50 && !profiles.ContainsKey(key)) return "This client already has 50 mapping formats. Reuse an existing format.";
         profiles[key] = profile.Clone();
         await db.ExecuteAsync("UPDATE modulesettings SET SettingsJson=CAST(@Json AS JSON) WHERE client_id=@ClientId AND ModuleCode=@Code", new { ClientId = clientId, Code = code, Json = JsonSerializer.Serialize(profiles, JsonOptions) }, tx);
-        await tx.CommitAsync();
-        return (true, null);
+        return null;
+    }
+
+    internal static string? ValidateBatchMappingProfile(ExcelPayslipBatch batch)
+    {
+        if (batch.MappingProfile is not { } profile) return null; // Existing API callers keep their save contract.
+        if (ValidateProfile(profile) is { } error) return error;
+        if (batch.CalculationSource is not { Columns: { } sourceColumns } || sourceColumns.Any(column => column is null))
+            return "Save the reviewed mapping with its calculation source.";
+        var templateId = profile.TryGetProperty("salaryTemplateId", out var template) ? template.GetString()?.Trim() : "";
+        if ((templateId ?? "") != (batch.SalaryTemplateId?.Trim() ?? "")) return "The mapping salary template must match the selected batch.";
+        var columns = profile.GetProperty("columns").Deserialize<List<ExcelPayslipCalculationColumn>>(JsonOptions)!;
+        if (columns.Count != sourceColumns.Count || columns.Any(column => !sourceColumns.Any(saved =>
+            saved.ColumnIndex == column.ColumnIndex && saved.SourceHeader == column.SourceHeader && saved.Label == column.Label
+            && saved.Kind == column.Kind && (saved.ComponentId ?? "") == (column.ComponentId ?? "") && saved.BlankAsZero == column.BlankAsZero)))
+            return "The mapping columns must match the reviewed batch. Review the mapping and save again.";
+        return null;
     }
 
     private static bool ValidSignature(string? value) => Regex.IsMatch(value ?? "", @"\A[0-9a-fA-F]{64}\z");

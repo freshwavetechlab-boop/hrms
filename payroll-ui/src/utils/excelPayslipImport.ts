@@ -120,7 +120,7 @@ export function defaultPayslipMapping(headers: string[], sheet?: PayslipSheet, h
   const keys = headers.map(norm)
   const plrs = norm(headers[3] || '') === 'nameoftheperson' && norm(headers[10] || '') === 'wages' && norm(headers[13] || '') === 'netpay'
   const plrsKinds: Record<number, PayslipColumnKind> = { 2: 'info', 3: 'employeeName', 7: 'info', 8: 'info', 9: 'info', 10: 'earning', 11: 'deduction', 12: 'deduction', 13: 'netPay', 14: 'info', 15: 'employer', 16: 'employer', 21: 'info', 22: 'info', 25: 'info', 26: 'info' }
-  const netPattern = /^(?:net(?:pay|salary|wages|payable|amount)(?:able|amount|payable)?|netpaid(?:amount|salary)?|takehome(?:pay|salary)?|inhand(?:pay|salary)?|salaryinhand|amountpayable)$/
+  const netPattern = /^(?:net(?:pay|salary|wages|payable|amount)(?:able|amount|payable)?|netpayment|netpaid(?:amount|salary)?|takehome(?:pay|salary)?|inhand(?:pay|salary)?|salaryinhand|amountpayable)$/
   const grossPattern = /^(?:gross(?:pay|salary|wages|total|earnings|amount)?|total(?:earnings|income|salary|gross|grosspay|grosssalary))$/
   const netIndex = keys.findIndex(key => netPattern.test(key))
   const ctcIndex = keys.findIndex(key => /^(?:ctc|costtocompany)$/.test(key))
@@ -129,7 +129,7 @@ export function defaultPayslipMapping(headers: string[], sheet?: PayslipSheet, h
     if (/^(?:(?:employee|emp|staff|worker|personnel)(?:code|id|number|no)|codeofemployee)$/.test(key)) return 'employeeCode'
     if (isPayslipPhoneLabel(sourceHeader)) return 'info'
     if (plrs && columnIndex < 30) return plrsKinds[columnIndex] || 'ignore'
-    if (/^(?:(?:employees?|emp|staff|worker|person|candidate|conductor|driver)(?:full)?name|nameof(?:the)?(?:employee|person|staff|worker)|fullname|name)$/.test(key)) return 'employeeName'
+    if (/^(?:(?:employees?|emp|staff|worker|person|candidate|conductor|driver|attendant)(?:full)?name|nameof(?:the)?(?:employee|person|staff|worker|attendant)|fullname|name)$/.test(key)) return 'employeeName'
     if (/^(?:(?:employee|emp|personal|official|work)?email(?:address|id)?)$/.test(key)) return 'email'
     if (netPattern.test(key)) return 'netPay'
     if (grossPattern.test(key)) return 'grossTotal'

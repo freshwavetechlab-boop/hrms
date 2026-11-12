@@ -28,7 +28,7 @@ import { isPayslipEmailList, payslipEmailExport, readPayslipEmailUpdates } from 
 import { downloadXlsx } from '../utils/xlsx'
 import { canQueuePayslipEmail, payslipSentCopyLabel } from '../utils/excelPayslipDelivery'
 import { buildEditablePayslipSheet, downloadExcelPayslipTemplate } from '../utils/excelPayslipTemplate'
-import { getExcelPayslipBatch, getExcelPayslipCalculation, getExcelPayslipClients, getExcelPayslipHistory, getExcelPayslipPdf, getExcelPayslipProfile, getExcelPayslipTemplates, saveExcelPayslipProfile, startExcelPayslipMailJob, requestExcelPayslipEmailIds, type ExcelPayslipBatch, type ExcelPayslipCalculationSource, type ExcelPayslipDelivery, type ExcelPayslipMailJob, type ExcelPayslipRow, type PayslipIdentityMatch, type ExcelPayslipSendRequest, type ExcelPayslipSummary, type ExcelPayslipTemplate } from '../services/excelPayslipService'
+import { getExcelPayslipBatch, getExcelPayslipCalculation, getExcelPayslipClients, getExcelPayslipHistory, getExcelPayslipPdf, getExcelPayslipProfile, getExcelPayslipTemplates, startExcelPayslipMailJob, requestExcelPayslipEmailIds, type ExcelPayslipBatch, type ExcelPayslipCalculationSource, type ExcelPayslipDelivery, type ExcelPayslipMailJob, type ExcelPayslipRow, type PayslipIdentityMatch, type ExcelPayslipSendRequest, type ExcelPayslipSummary, type ExcelPayslipTemplate } from '../services/excelPayslipService'
 import { useAuthSession } from './AuthGate'
 import { toast } from './ToastProvider'
 import DataTable from './DataTable'
@@ -459,14 +459,6 @@ export default function ExcelPayslips() {
       if (suggestionRequest.current === controller) { setSuggesting(false); suggestionRequest.current = null }
     }
   }
-  const saveMapping = async () => {
-    if (!canManage || !clientId || !signature || busy) return
-    setBusy(true); setImportError(''); setMappingNotice('')
-    const result = await saveExcelPayslipProfile(clientId, { headerSignature: signature, columns, salaryTemplateId: templateId || undefined })
-    setBusy(false)
-    if (result.ok) setMappingNotice('Mapping saved for this client and these column headings.')
-    else setImportError(result.error || 'Unable to save mapping.')
-  }
   const supplyDependencyFiles = async (files: File[]) => {
     if (!canManage || !clientId || busy || !dependencyBooks.length || !files.length) return
     const requestedScope = scope.current, requestedBatch = batchSequence.current
@@ -483,11 +475,12 @@ export default function ExcelPayslips() {
     } catch (failure) { if (requestedScope === scope.current && requestedBatch === batchSequence.current) setImportError(failure instanceof Error ? failure.message : 'Dependency file could not be captured.') }
     finally { if (requestedScope === scope.current && requestedBatch === batchSequence.current) setBusy(false) }
   }
-  const saveBatch = async (correctedSheet?: PayslipSheet, configureMasters = false) => {
+  const saveBatch = async (correctedSheet?: PayslipSheet) => {
     if (!canManage || !clientId || busy || mappingBusy || !templatesReady) return false
-    if (configureMasters && !canConfigurePayroll) return false
     const failSave=(message:string)=>{setImportError(message);toast.error(message);return false}
     if (!editingBatchId && !supportsLocationBatches) return failSave('Update the API before saving an independent location batch. Existing batches were retained.')
+    if (clients.find(client => client.id === clientId)?.atomicMappingSaveSupported !== true) return failSave('Update the API to save payslips and their mapping together, then refresh and retry. No batch was saved.')
+    if (!signature) return failSave('Wait for the column mapping to load before saving.')
     const progress=(saveStage:string)=>setSimpleLayout(value=>({...typeof value==='boolean'?{simpleLayout:value}:value,saveStage}))
     const source = correctedSheet || sheet
     const preview = correctedSheet ? buildExcelPayslipRows({ ...correctedSheet, ...(correctedSheet.template ? { template: { ...correctedSheet.template, month } } : {}) }, headerRow, columns, excludedRows) : imported
@@ -515,22 +508,15 @@ export default function ExcelPayslips() {
     }
     const result = await saveBatchWithOriginalWorkbooks(clientId, { id: editingBatchId || newLocationImportId.current, createLocationBatch: !editingBatchId,
       locationBatch: !editingBatchId || batch?.locationBatch, locationLabel: importLocationLabel.trim() || fileName,
-      parentBatchId: editingBatchId || undefined, month, sourceFileName: fileName, sheetName, headerRow, simpleLayout: importOptions.simpleLayout, employeeCodeGeneration: importOptions.employeeCodeGeneration, salaryTemplateId: templateId || undefined, salaryTemplateName: template?.name, rows: preview.rows.map(row => ({ ...row, id: crypto.randomUUID() })), calculationSource: source ? { ...buildPayslipCalculationSource(source, headerRow, columns, preview.excludedRows), ...(editingBatchId ? editingCalculation.current : {}), ...capture } : undefined }, originalFiles.current, retainedOriginals.current, () => requestedScope === scope.current && requestedBatch === batchSequence.current, progress)
+      parentBatchId: editingBatchId || undefined, month, sourceFileName: fileName, sheetName, headerRow, simpleLayout: importOptions.simpleLayout, employeeCodeGeneration: importOptions.employeeCodeGeneration, salaryTemplateId: templateId || undefined, salaryTemplateName: template?.name, mappingProfile: { headerSignature: signature, columns, salaryTemplateId: templateId || undefined }, rows: preview.rows.map(row => ({ ...row, id: crypto.randomUUID() })), calculationSource: source ? { ...buildPayslipCalculationSource(source, headerRow, columns, preview.excludedRows), ...(editingBatchId ? editingCalculation.current : {}), ...capture } : undefined }, originalFiles.current, retainedOriginals.current, () => requestedScope === scope.current && requestedBatch === batchSequence.current, progress)
     if (requestedScope !== scope.current || requestedBatch !== batchSequence.current) return false
     if (!result.ok || !result.data) return failSave(result.error || 'Unable to save this batch. Check saved payslips before retrying an interrupted request.')
-    let mappingNotice = ''
-    if (configureMasters && signature) {
-      progress('Remembering this client’s reviewed mapping...')
-      const mapping = await saveExcelPayslipProfile(clientId, { headerSignature: signature, columns, salaryTemplateId: templateId || undefined })
-      if (requestedScope !== scope.current || requestedBatch !== batchSequence.current) return false
-      if (!mapping.ok) mappingNotice = ' The payslips were saved, but the client mapping preference could not be saved. Use Save mapping before the next import.'
-    }
     setBusy(false)
-    setBatch(result.data); setHistory(current => [batchSummary(result.data!), ...current.filter(item => item.id !== result.data!.id)]); rememberBatch(result.data.id); setSelectedIds([]); setImportOpen(false); setNotice(`${result.data.rows.length} payslips saved. Saved batches retain their imported amounts.${mappingNotice}`)
+    setBatch(result.data); setHistory(current => [batchSummary(result.data!), ...current.filter(item => item.id !== result.data!.id)]); rememberBatch(result.data.id); setSelectedIds([]); setImportOpen(false); setNotice(`${result.data.rows.length} payslips and their mapping saved. This mapping will also be used for this client's next import with the same headings.`)
     setWarningsOpen(false); setCorrection(null); setReview(null)
     if (locationFileQueue.length) {
       const [next, ...remaining] = locationFileQueue; setLocationFileQueue(remaining); setImportOpen(true); await upload(next)
-    } else if (configureMasters) setSetupRows(result.data.rows.map(row => row.id))
+    }
     return true
     } catch(failure) { return failSave(failure instanceof Error ? failure.message : 'Saving failed. Check saved payslips before retrying.') }
     finally { if(requestedScope===scope.current&&requestedBatch===batchSequence.current){setBusy(false);progress('')} }
@@ -636,7 +622,7 @@ export default function ExcelPayslips() {
       const { sourceBatchId, attendanceColumnIndex, monthDaysCell } = result.data
       const { captureVersion, workbookKey, completeSheetCapture, dependencyReviewStatus, workbookFiles, dependencySheets, externalMappings } = result.data
       editingCalculation.current = { sourceBatchId, attendanceColumnIndex, monthDaysCell, captureVersion, workbookKey, completeSheetCapture, dependencyReviewStatus, workbookFiles, dependencySheets, externalMappings }
-      setDependencyBooks(restoreCapturedWorkbooks(result.data, editable)); setDependencyRootKey(workbookKey || ''); setDependencyMappings(externalMappings || []); setReviewedCaptureKey(''); setReferenceOnly(false)
+      setDependencyBooks(restoreCapturedWorkbooks(result.data, editable)); setDependencyRootKey(workbookKey || ''); setDependencyMappings(externalMappings || []); setReviewedCaptureKey(''); setReferenceOnly(dependencyReviewStatus === 'ReferenceOnly')
       originalFiles.current = []
       setSheets([editable]); setSheetName(editable.name); setHeaderRow(editable.template.headerRow)
       setMonth(selectedBatch.month); setFileName(selectedBatch.sourceFileName); setEditingBatchId(selectedBatch.id); setSimpleLayout({ simpleLayout: selectedBatch.simpleLayout === true, employeeCodeGeneration: selectedBatch.employeeCodeGeneration })
@@ -844,10 +830,13 @@ export default function ExcelPayslips() {
       if (setup && canConfigurePayroll) next.set('reviewSetup', '1'); else next.delete('reviewSetup')
       setSearchParams(next)
     }} />
-    <Drawer title={editingBatchId ? 'Edit payslip mapping' : 'Import Excel payslips'} open={importOpen} width="min(1120px, 98vw)" onClose={() => { if (!busy) setImportOpen(false) }} closable={!busy} maskClosable={!busy} className="excel-payslip-import" footer={<Space wrap className="excel-payslip-footer"><Button disabled={busy} onClick={() => setImportOpen(false)}>Cancel</Button><Tooltip title="Save these column choices for future imports. This does not change a saved batch."><Button disabled={!canManage || !signature || busy || mappingBusy || !templatesReady} onClick={() => void saveMapping()}>{editingBatchId ? 'Save mapping preset' : 'Save mapping'}</Button></Tooltip><Button type={canConfigurePayroll ? 'default' : 'primary'} loading={busy} disabled={busy || !canManage || !imported.rows.length || !!imported.issues.length || mappingBusy || !templatesReady} onClick={() => void saveBatch()}>{editingBatchId ? 'Update selected batch' : locationFileQueue.length ? 'Save & next location' : 'Save location batch'} ({imported.rows.length})</Button>{canConfigurePayroll && <Button type="primary" loading={busy} disabled={busy || !canManage || !imported.rows.length || !!imported.issues.length || mappingBusy || !templatesReady} onClick={() => void saveBatch(undefined, true)}>Save &amp; Prepare Payroll</Button>}</Space>}>
+    <Drawer title={editingBatchId ? 'Edit payslip mapping' : 'Import Excel payslips'} open={importOpen} width="min(1120px, 98vw)" onClose={() => { if (!busy) setImportOpen(false) }} closable={!busy} maskClosable={!busy} className="excel-payslip-import" footer={<Space wrap className="excel-payslip-footer">
+      <Button disabled={busy} onClick={() => setImportOpen(false)}>Cancel</Button>
+      <Button type="primary" loading={busy} disabled={busy || !canManage || !signature || !imported.rows.length || !!imported.issues.length || mappingBusy || !templatesReady} onClick={() => void saveBatch()}>{locationFileQueue.length ? 'Save & next location' : 'Save changes'}</Button>
+    </Space>}>
       <ExcelPayslipCodePreview clientId={clientId} codes={payslipPreviewCodes(sheet, headerRow, columns)} identityRows={session?.user.permissions.some(permission => ["employees.view", "employees.manage", "security.manage"].includes(permission)) || !!session?.user.clientId && session?.user.permissions.includes("client.users.manage") ? payslipPreviewIdentities(sheet, headerRow, columns) : undefined}><Form component="div" layout="vertical" disabled={busy}>
         {busy&&importOptions.saveStage&&<div className="excel-payslip-save-progress" role="status" aria-live="polite"><Spin size="small"/><span>{importOptions.saveStage}</span></div>}
-        {editingBatchId ? <Alert type="info" showIcon message={`Editing ${month} · ${fileName}`} description="Changes apply to this selected batch. Other locations and months are retained; saving sends no email." /> : <FileDropZone accept=".xlsx,.csv" title="Upload salary spreadsheets" hint="Location files save as separate batches. Select several files to review and save each in sequence." fileName={fileName} onFile={file => { if (!busy) { setLocationFileQueue([]); void upload(file) } }} onFiles={files => { if (!busy) void uploadFiles(files) }} />}
+        {editingBatchId ? <Alert type="info" showIcon message={`Editing ${month} · ${fileName}`} description="Save changes updates these payslips and remembers the mapping for future imports with the same headings. Other batches are retained." /> : <FileDropZone accept=".xlsx,.csv" title="Upload salary spreadsheets" hint="Location files save as separate batches. Save changes also remembers your mapping for the next import." fileName={fileName} onFile={file => { if (!busy) { setLocationFileQueue([]); void upload(file) } }} onFiles={files => { if (!busy) void uploadFiles(files) }} />}
         {!editingBatchId && <Form.Item label="Location / payroll unit" extra={`${locationFileQueue.length ? `${locationFileQueue.length} more location files queued. ` : ''}This label identifies the batch; salary formulas and employee locations are retained.`}><Input aria-label="Payslip batch location" maxLength={190} value={importLocationLabel} onChange={event => setImportLocationLabel(event.target.value)} /></Form.Item>}
         {!editingBatchId && <Checkbox checked={separateLocationFiles} disabled={busy || locationFileQueue.length > 0} onChange={event => setSeparateLocationFiles(event.target.checked)}>Keep location files as separate batches (turn off to combine and review source splits)</Checkbox>}
         {templatesLoading && <Spin tip="Loading salary templates..." />}

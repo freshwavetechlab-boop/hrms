@@ -10,6 +10,59 @@ const { consolidatePayslipWorkbooks, suggestPayslipWorksheet, reviewPayslipTable
 const headers = ['Employee Name', 'Attendance', 'Rate', 'Basic', 'PF', 'Net Pay', 'UAN']
 const kinds = ['employeeName', 'info', 'ignore', 'earning', 'deduction', 'netPay', 'info']
 
+function attendantWorkbookSheets() {
+  const cell = value => ({ value: String(value) })
+  const recoveryHeaders = ['', '', 'S.NO', 'NAME OF ATTENDANT', 'NAME OF THE OFFICERS', 'DESIGNATION', 'BASIC', 'EMPLOYER SHARE EPF(12% OF BASIC WAGE 15000)', 'Net Payment', 'EMPLOYER SHARE EPF(13% OF BASIC WAGE 15000)']
+  const salaryHeaders = ['S.NO', 'NAME OF ATTENDANT', 'NAME OF THE OFFICERS', 'DESIGNATION', 'UAN NO.', 'DATE OF ATTACHMENT', 'BASIC', 'NO. OF WORKING DAYS', 'BASIC', 'EMPLOYER SHARE EPF(12% OF BASIC WAGE 15000)', 'Net Payment', 'EMPLOYER SHARE EPF(13% OF BASIC WAGE 15000)', 'SERVICES CHARGE 4% OF BASIC+EPF)', 'TOTAL VALUE', 'IGST(18% ON TAXABLE VALUE)', 'GROSS AMOUNT', 'ACCOUNT NO.', 'IFSC CODE']
+  const recovery = { name: 'recovery', columnCount: 10, rows: [
+    { sourceRow: 1, cells: [cell('Recovery detail')] },
+    { sourceRow: 3, cells: recoveryHeaders.map(cell) },
+    { sourceRow: 4, cells: ['', '', 1, 'Example employee', 'Example supervisor', 'Attendant', 900, 90, 810, 117].map(cell) },
+  ] }
+  const salaryValues = [1, 'Example employee', 'Example supervisor', 'Attendant', '101234567890', '01.01.2026', 42.125, 24, 1011, 101.1, 909.9, 131.43, 45.6972, 1188.1272, 213.862896, 1401.990096, '000123456789', 'TEST0000123']
+  const salary = { name: 'Salary Calculation Sheet', columnCount: 18, rows: [
+    { sourceRow: 1, cells: salaryHeaders.map(cell) },
+    { sourceRow: 2, cells: salaryValues.map(cell) },
+  ] }
+  salary.rows[1].cells[8].formulaText = 'G2*H2'
+  salary.rows[1].cells[10].formulaText = 'I2-J2'
+  return [recovery, salary]
+}
+
+test('a full attendant salary roster is selected ahead of a first recovery tab without mutating either source', () => {
+  const sheets = attendantWorkbookSheets(), before = structuredClone(sheets)
+  const selected = suggestPayslipWorksheet(sheets)
+  assert.equal(selected?.sheet, sheets[1])
+  assert.equal(selected.headerRow, 1)
+  assert.equal(selected.sheet.columnCount, 18, 'all columns after J remain in the selected worksheet')
+  assert.equal(selected.sheet.rows[0].cells[16].value, 'ACCOUNT NO.')
+  assert.equal(selected.sheet.rows[0].cells[17].value, 'IFSC CODE')
+  assert.equal(selected.sheet.rows[1].cells[10].value, '909.9')
+  assert.equal(selected.sheet.rows[1].cells[10].formulaText, 'I2-J2')
+  assert.deepEqual(sheets, before)
+})
+
+test('a usable recovery-only workbook and an existing ordinary salary roster retain header selection', () => {
+  const [recovery] = attendantWorkbookSheets(), before = structuredClone(recovery)
+  const selected = suggestPayslipWorksheet([recovery])
+  assert.equal(selected?.sheet, recovery, 'recovery is a valid reviewed import when it is the only salary table')
+  assert.equal(selected.headerRow, 3)
+  assert.deepEqual(recovery, before)
+  const ordinary = part('Source.xlsx', 'Example employee', 4).sheet
+  assert.equal(suggestPayslipWorksheet([ordinary]).sheet, ordinary)
+  assert.equal(suggestPayslipWorksheet([ordinary]).headerRow, 4)
+  const officerOnly = { name: 'Staff list', columnCount: 3, rows: [{ sourceRow: 1, cells: ['NAME OF THE OFFICERS', 'Basic', 'Net Payment'].map(value => ({ value })) }] }
+  assert.equal(suggestPayslipWorksheet([officerOnly]), null, 'an officer heading alone is not employee identity')
+})
+
+test('a salary-like worksheet title cannot override stronger employee and net header evidence', () => {
+  const [recovery] = attendantWorkbookSheets()
+  const weakSalary = { name: 'Salary Calculation Sheet', columnCount: 3, rows: [{ sourceRow: 1, cells: ['NAME OF THE OFFICERS', 'Basic', 'Net Payment'].map(value => ({ value })) }] }
+  const picked = suggestPayslipWorksheet([weakSalary, recovery])
+  assert.equal(picked?.sheet, recovery)
+  assert.equal(picked.headerRow, 3)
+})
+
 test('transport salary table headers are selected after a merged title instead of sending the title to AI', () => {
   const sheet = { name: 'billing', columnCount: 5, rows: [
     { sourceRow: 1, cells: [{ value: 'TMT SALARY SHEET SEP' }] },

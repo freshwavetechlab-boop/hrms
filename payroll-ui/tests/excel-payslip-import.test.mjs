@@ -8,6 +8,59 @@ const compiled = ts.transpileModule(readFileSync(new URL('../src/utils/excelPays
 const { parsePayslipCsv, defaultPayslipMapping, buildExcelPayslipRows, buildPayslipCalculationSource, translatePayslipSharedFormula, resolvePayslipSharedFormulas, payslipHeaders, payslipHeaderSignature, parsePayslipAmount, inferPayslipMonth, formatExcelPayslipAmount, formatPayslipSourceCell, payslipPhoneValue } = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'))
 const parse = text => { const sheet = parsePayslipCsv(text); const columns = defaultPayslipMapping(payslipHeaders(sheet, 1)); return { sheet, columns, result: buildExcelPayslipRows(sheet, 1, columns) } }
 
+test('attendant identity and Net Payment aliases map without using an officer as the employee', () => {
+  for (const nameHeader of ['NAME OF ATTENDANT', 'Name of the attendant', 'ATTENDANT NAME']) {
+    for (const netHeader of ['Net Payment', 'NET PAYMENT']) {
+      const sheet = parsePayslipCsv(`S.NO,${nameHeader},NAME OF THE OFFICERS,DESIGNATION,Basic,PF,${netHeader}\n1,Example employee,Example supervisor,Attendant,1000.125,100.0125,900.1125`)
+      const columns = defaultPayslipMapping(payslipHeaders(sheet, 1), sheet, 1)
+      assert.equal(columns[0].kind, 'ignore', 'a serial number is not an employee code')
+      assert.equal(columns[1].kind, 'employeeName', nameHeader)
+      assert.notEqual(columns[2].kind, 'employeeName', 'the reporting officer is not the salary recipient')
+      assert.equal(columns[6].kind, 'netPay', netHeader)
+      const result = buildExcelPayslipRows(sheet, 1, columns)
+      assert.deepEqual(result.issues, [])
+      assert.equal(result.rows.length, 1)
+      assert.equal(result.rows[0].employeeName, 'Example employee')
+      assert.equal(result.rows[0].netPay, 900.1125)
+      assert.equal(result.rows[0].earnings[0].amount, 1000.125)
+      assert.equal(result.rows[0].deductions[0].amount, 100.0125)
+    }
+  }
+})
+
+test('nearby officer, attendance and payment-detail labels do not become new singleton mappings', () => {
+  const columns = defaultPayslipMapping(['NAME OF THE OFFICERS', 'Attendant attendance', 'Net Payment Date', 'Payment', 'Attendant Name', 'Net Payment'])
+  assert.deepEqual(columns.filter(column => column.kind === 'employeeName').map(column => column.columnIndex), [4])
+  assert.deepEqual(columns.filter(column => column.kind === 'netPay').map(column => column.columnIndex), [5])
+})
+
+test('new aliases retain review when a workbook contains competing name or net columns', () => {
+  const { columns, result } = parse('Employee Name,Name of Attendant,Basic,Net Pay,Net Payment\nExample employee,Other employee,1000,1000,1000')
+  assert.equal(columns.filter(column => column.kind === 'employeeName').length, 2)
+  assert.equal(columns.filter(column => column.kind === 'netPay').length, 2)
+  assert.ok(result.issues.length > 0)
+  assert.equal(result.rows.length, 0, 'ambiguous new aliases cannot silently choose a recipient or take-home amount')
+})
+
+test('attendant and net-payment aliases preserve errors, formula caches and source precision', () => {
+  const sheet = parsePayslipCsv('NAME OF ATTENDANT,NAME OF THE OFFICERS,Basic,PF,Net Payment\nExample employee,Example supervisor,1000.125,100.0125,900.1125')
+  sheet.rows[1].cells[4].formulaText = 'C2-D2'
+  const before = JSON.stringify(sheet)
+  const columns = defaultPayslipMapping(payslipHeaders(sheet, 1), sheet, 1)
+  const result = buildExcelPayslipRows(sheet, 1, columns)
+  assert.deepEqual(result.issues, [])
+  assert.equal(result.rows[0].netPay, 900.1125)
+  const capture = buildPayslipCalculationSource(sheet, 1, columns)
+  assert.equal(capture.rows[1].cells[4].formulaText, 'C2-D2')
+  assert.equal(capture.rows[1].cells[4].value, '900.1125')
+  assert.equal(JSON.stringify(sheet), before)
+  sheet.rows[1].cells[4].error = '#REF!'
+  assert.ok(buildExcelPayslipRows(sheet, 1, columns).issues.some(issue => issue.message.includes('#REF!')))
+  delete sheet.rows[1].cells[4].error
+  sheet.rows[1].cells[4].missingCachedValue = true
+  assert.ok(buildExcelPayslipRows(sheet, 1, columns).issues.length > 0, 'recognizing Net Payment cannot turn missing formula results into zero')
+})
+
 test('reviewed old/new wage mapping keeps later sections, zero-pay identities and exact source amounts', () => {
   const sheet = parsePayslipCsv('Employee ID,Employee Name,Old Basic,Old Days,Old Wages,Old Allowance,Old Subtotal,New Basic,New Days,New Wages,New Allowance,New Subtotal,Total Earning payment,PF,Arrears,Net Pay,Employer PF\nSRC-1,Example One,3000,5,500,50,550,3300,25,2750,250,3000,3550,330,0,3220,357.5\n,Department total,,,500,50,550,,,2750,250,3000,3550,330,0,3220,357.5\nEmployee ID,Employee Name,Old Basic,Old Days,Old Wages,Old Allowance,Old Subtotal,New Basic,New Days,New Wages,New Allowance,New Subtotal,Total Earning payment,PF,Arrears,Net Pay,Employer PF\nSRC-2,Example Two,3000,0,0,0,0,3300,0,0,0,0,0,0,0,0,0\nSRC-3,Example Three,3000,5,500,50,550,3300,25,2750,150,2900,3450,330,75,3195,357.5');
   sheet.rows[1].cells[4].formulaText='C2/30*D2';

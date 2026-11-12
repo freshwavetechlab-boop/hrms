@@ -24,8 +24,12 @@ export function reviewPayslipTableBoundary(part: PayslipWorkbookPart) {
 export function suggestPayslipWorksheet(sheets: PayslipSheet[]) {
   const candidates = sheets.flatMap(sheet => sheet.rows.slice(0, 20).map(row => {
     const columns = defaultPayslipMapping(payslipHeaders(sheet, row.sourceRow), sheet, row.sourceRow)
-    return { sheet, headerRow: row.sourceRow, score: (columns.filter(c => c.kind === 'employeeName').length === 1 ? 20 : 0) + (columns.filter(c => c.kind === 'netPay').length === 1 ? 20 : 0) + Math.min(10, columns.filter(c => c.kind === 'earning').length) }
-  })).sort((a, b) => b.score - a.score)
+    // Break equally plausible payroll headers using the worksheet's purpose.
+    // Auxiliary recovery sheets can also contain Name/Basic/Net Payment; they
+    // remain usable alone and never outrank stronger existing header evidence.
+    const salarySheet = /(?:^|[^a-z])(?:salary|payroll|wages?)(?:[^a-z]|$)/i.test(sheet.name) ? 1 : 0
+    return { sheet, headerRow: row.sourceRow, score: (columns.filter(c => c.kind === 'employeeName').length === 1 ? 20 : 0) + (columns.filter(c => c.kind === 'netPay').length === 1 ? 20 : 0) + Math.min(10, columns.filter(c => c.kind === 'earning').length), salarySheet }
+  })).sort((a, b) => b.score - a.score || b.salarySheet - a.salarySheet)
   return candidates[0]?.score >= 40 ? candidates[0] : null
 }
 

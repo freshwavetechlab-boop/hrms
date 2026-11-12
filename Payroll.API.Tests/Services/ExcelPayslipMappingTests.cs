@@ -8,6 +8,34 @@ namespace Payroll.API.Tests.Services;
 public sealed class ExcelPayslipMappingTests
 {
     [Fact]
+    public void AttendantNetPaymentAndRecoveryRetrieveWorksheetSelectionWithoutClientData()
+    {
+        var columns = new[] { "Name of Attendant", "Name of the Officers", "Net Payment", "Basic", "Working Days", "UAN", "Recovery worksheet" }
+            .Select((header, index) => new ExcelPayslipMappingColumn { ColumnIndex = index, SourceHeader = header, Kind = "ignore" }).ToList();
+        var path = Path.Combine(AppContext.BaseDirectory, "FrevoPilot", "docs", "excel-payroll-mapping.md");
+        var lesson = Assert.Single(ExcelPayslipMappingService.Retrieve(columns, File.ReadAllText(path), []),
+            reference => reference.Title.StartsWith("Name of Attendant Name of the Officers Net Payment:"));
+        Assert.Contains("Recovery-only salary files remain importable", lesson.Content);
+        Assert.Contains("must not become a second employee-name column", lesson.Content);
+        Assert.Contains("Retain every populated source column, original value and formula", lesson.Content);
+        Assert.True(lesson.Content.Length < 2600);
+    }
+
+    [Fact]
+    public void RevertedDisplayChoicesRetrieveTheSaveBoundaryWithoutInferringSalaryRules()
+    {
+        var columns = new[] { "CTC", "Branch", "In Hand Salary", "Payslip Label" }
+            .Select((header, index) => new ExcelPayslipMappingColumn { ColumnIndex = index, SourceHeader = header, Kind = "ignore" }).ToList();
+        var path = Path.Combine(AppContext.BaseDirectory, "FrevoPilot", "docs", "excel-payroll-mapping.md");
+        var lesson = Assert.Single(ExcelPayslipMappingService.Retrieve(columns, File.ReadAllText(path), []),
+            reference => reference.Title.StartsWith("CTC Branch In Hand Salary Payslip Label:"));
+        Assert.Contains("preset alone cannot update", lesson.Content);
+        Assert.Contains("not a salary classification rule", lesson.Content);
+        Assert.Contains("original formulas and validation", lesson.Content);
+        Assert.True(lesson.Content.Length < 1800);
+    }
+
+    [Fact]
     public void Branding_graphics_retrieve_a_presentation_boundary_without_changing_salary_roles()
     {
         var columns = new[] { "Company Seal", "Employer Signature", "Logo Image", "Employee Name", "Basic", "Net Pay" }
@@ -33,7 +61,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("identity review", lesson.Content); Assert.True(lesson.Content.Length < 2600);
         Assert.Contains("explicitly fill literal blanks", lesson.Content);
         Assert.Contains("Mixed-location files require row-specific evidence", lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v20", ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Equal("excel-payroll-mapping-v23", ExcelPayslipMappingService.KnowledgeVersion);
     }
     [Fact]
     public void SplitWagePeriodLessonIsRetrievedFromAnonymousStructuralHeadings()
@@ -116,7 +144,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("display formatting only",lesson.Content);
         Assert.Contains("Literal scientific text",lesson.Content);
         Assert.Contains("identity-review evidence",lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v20",ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Equal("excel-payroll-mapping-v23",ExcelPayslipMappingService.KnowledgeVersion);
     }
     [Fact]
     public void EmployeeInputsAndEmployerCostLessonIsRetrievedFromAnonymousSalaryDayHeaders()
@@ -174,7 +202,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.True(lesson.Content.Length<2600);
         Assert.Contains("differing literal alone does not establish a new salary rule",lesson.Content);
         Assert.Contains("never freeze formula caches",lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v20",ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Equal("excel-payroll-mapping-v23",ExcelPayslipMappingService.KnowledgeVersion);
     }
     private static ExcelPayslipMappingRequest Request() => new() { Columns = [
         new() { ColumnIndex = 0, SourceHeader = "Employee name", Label = "Employee name", Kind = "employeeName" },
@@ -359,6 +387,14 @@ public sealed class ExcelPayslipMappingTests
         ExcelPayslipMappingService.ValidateRequest(request);
         var references = ExcelPayslipMappingService.Retrieve(request.Columns, File.ReadAllText(path), []);
         Assert.Contains(references, r => r.Title.StartsWith("Cross-sheet formula inputs"));
+        var dependencyLesson = Assert.Single(references, r => r.Title.StartsWith("Cross-sheet formula inputs"));
+        Assert.True(dependencyLesson.Content.Length <= 2600, "Dependency guidance must fit in its prompt reference.");
+        Assert.Contains("external-link relationships", dependencyLesson.Content);
+        Assert.Contains("once per workbook alias and target sheet", dependencyLesson.Content);
+        Assert.Contains("ReferenceOnly", dependencyLesson.Content);
+        Assert.Contains("without upgrading it to Reviewed", dependencyLesson.Content);
+        using var dependencyPrompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, references));
+        Assert.Contains("external-link relationships", dependencyPrompt.RootElement.GetRawText());
         Assert.Contains(1, Apply("""{"columns":[]} """, request).ReviewColumnIndexes);
     }
 
@@ -400,7 +436,7 @@ public sealed class ExcelPayslipMappingTests
         var references = ExcelPayslipMappingService.Retrieve(request.Columns, File.ReadAllText(path), []);
         var pattern = Assert.Single(references, item => item.Title.StartsWith("TMT pattern:"));
         using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, references));
-        Assert.Equal("excel-payroll-mapping-v20", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v23", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         var supplied = prompt.RootElement.GetProperty("references").EnumerateArray()
             .Single(item => item.GetProperty("title").GetString() == pattern.Title).GetProperty("content").GetString()!;
         Assert.Equal(pattern.Content, supplied); // The critical case must fit without prompt truncation.

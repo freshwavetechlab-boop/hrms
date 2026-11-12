@@ -8,6 +8,7 @@ public sealed class ExcelPayslipClient
     public string Name { get; set; } = "";
     public bool HasSavedBatch { get; set; }
     public bool LocationBatchesSupported { get; set; }
+    public bool AtomicMappingSaveSupported { get; set; }
 }
 
 public sealed record ExcelPayslipCodeGeneration(bool Enabled, int Digits);
@@ -112,6 +113,9 @@ public sealed record ExcelPayslipEmployment(int? EmployeeId, string EmployeeCode
 // Independent source snapshot: these identifiers never reference employee or pay-run records.
 public sealed class ExcelPayslipBatch
 {
+    // Accepted only on save; the preset is persisted in the batch transaction, not in its snapshot.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public System.Text.Json.JsonElement? MappingProfile { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public bool CreateLocationBatch { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public bool LocationBatch { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? LocationLabel { get; set; }

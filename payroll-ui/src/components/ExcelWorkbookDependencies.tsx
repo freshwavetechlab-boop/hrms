@@ -15,14 +15,17 @@ export default function ExcelWorkbookDependencies(props: Props) {
   const reviewed = workbookSourcesConfirmed(props.report, props.reviewedKey)
   const linkedSheets = [...new Set(props.report.references.map(r => r.targetSheet))]
   const internalOnly = props.books.length === 1 && !aliases.length && !hasIssues
+  const amountOnlyWithPendingSources = props.referenceOnly && hasIssues
   const links = [...new Map(props.report.references.map(r => [`${r.fromWorkbookKey}|${r.sheet}|${r.targetWorkbookKey || r.reference}|${r.targetSheet}`, r])).values()]
   return <section className="excel-workbook-dependencies" aria-label="Excel formula sources">
-    <Alert type={hasIssues || !props.books.length ? 'warning' : 'info'} showIcon message={hasIssues ? 'Some formula inputs need attention' : props.report.needsReview ? 'Linked sheets found in your Excel' : 'Excel source read'} description={internalOnly
+    <Alert type={hasIssues || !props.books.length ? 'warning' : 'info'} showIcon message={amountOnlyWithPendingSources ? 'Payslip amounts retained; calculation source pending' : hasIssues ? 'Some formula inputs need attention' : props.report.needsReview ? 'Linked sheets found in your Excel' : 'Excel source read'} description={amountOnlyWithPendingSources
+      ? 'The captured salary amounts and original formulas are retained. You can edit payslip mapping without repeating source review. Recalculation and payroll setup still need the missing formula inputs. See Formula source details below.'
+      : internalOnly
       ? `${props.books[0].sheets.length} worksheets are available in this file.${linkedSheets.length ? ` Formulas use ${linkedSheets.join(', ')}. These sheets are already included; no extra Excel file is needed.` : ' No other workbook is required by the mapped formulas.'}`
       : aliases.length ? 'Some formulas refer to a separate Excel file. Add that file and confirm which source it belongs to below.' : !props.books.length ? 'The original file is not attached to this saved source. Upload its original workbook to review formula inputs.' : 'Review the missing or unresolved formula inputs below.'} />
     {props.report.needsReview && internalSourcesIncluded && <Tag color="green">Linked sheets included automatically</Tag>}
     {props.report.needsReview && !internalSourcesIncluded && !hasIssues && <Checkbox disabled={props.disabled} checked={reviewed} onChange={event => props.onReview(event.target.checked ? props.report.reviewKey : '')}>Use these reviewed Excel files for formula inputs</Checkbox>}
-    <details className="excel-workbook-source-details" open={hasIssues || undefined}>
+    <details className="excel-workbook-source-details" open={hasIssues && !props.referenceOnly || undefined}>
       <summary>Formula source details (advanced) <Tag>{props.books.length} {props.books.length === 1 ? 'file' : 'files'}</Tag>{props.report.needsReview && <Tag color={reviewed && !hasIssues ? 'green' : 'orange'}>{internalSourcesIncluded ? 'Included' : reviewed && !hasIssues ? 'Reviewed' : 'Review needed'}</Tag>}</summary>
       <Space direction="vertical" style={{ width: '100%', paddingBlock: 12 }}>
         <p className="excel-payslip-muted">Original formulas and file versions are retained. This checks where inputs come from; payroll calculation is verified separately.</p>

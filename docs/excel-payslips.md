@@ -1,5 +1,17 @@
 # Excel Payslips
 
+## Salary worksheet and attendant/net-payment recognition
+
+Default mapping recognizes `Name of Attendant` (and `Attendant Name`) as the employee name and `Net Payment` as source net pay. Officer names remain separate metadata requiring review. When two worksheet/header candidates have equal existing evidence scores, salary/payroll/wage sheet names break the tie; neither a sheet title alone nor a first-sheet recovery table overrides stronger header evidence. Recovery-only sheets retain the existing import path. This affects new import suggestions only and never rewrites saved mappings, batches or original workbooks.
+
+Anonymous import/consolidation regressions cover the auxiliary-first workbook, officers-only rejection, recovery-only fallback, stronger existing header evidence and preservation of exact cached values/formulas. Mapping knowledge v23 retains the structural lesson with retrieval coverage.
+
+## One save for payslips and mapping
+
+The import/edit drawer has one primary **Save changes** action (**Save & next location** when files are queued). It saves the selected batch, its calculation source and the client/header mapping preset in the same database transaction. Reopening Edit mapping or importing the same headings reads the saved choices. An unsuccessful save leaves the drawer and edits available for retry; a preset validation/storage failure rolls back the batch/source changes as well. The preset must match the submitted source columns and salary template. Existing API callers that omit the optional `mappingProfile` retain their save contract; the UI checks the API capability before retaining/uploading originals.
+
+There is no separate preset-save action or combined save/payroll action in the drawer. **Configure payroll** remains the header action for reviewing employee, attendance and salary configuration after saving. Saving does not send mail or change Master/core payroll. It retains the selected batch identity and original workbook attachments; other locations, clients and months are untouched. The preset is request metadata, not part of a stored batch snapshot. No schema migration is required. Deploy the API with the UI so the combined-save capability is available.
+
 ## Unsealed payslips
 
 Payslip preview, download and email always retain the company logo and unsigned-document notice, without a seal or signature image. The retired payslip stamp asset and its deployment entry have been removed, and the action dialog no longer offers a seal checkbox. Legacy `includeSeal` fields remain readable only to preserve stored queue/request fingerprints; even `true` cannot render the retired artwork. Both detailed and simple layouts follow this rule. No employee, salary, attendance, saved source, original workbook or earlier delivery record is rewritten by this presentation change.
@@ -283,6 +295,12 @@ The endpoint is `POST /api/excel-payslips/suggest-mapping?clientId=...` under th
 Validation: `dotnet test Payroll.API.Tests/Payroll.API.Tests.csproj --filter FullyQualifiedName~ExcelPayslip`, `node --test tests/excel-payslip-mapping.test.mjs tests/excel-payslip-import.test.mjs` from `payroll-ui`, and `node tools/test-excel-payslip-ai-mapping-ui.mjs` with the existing Playwright module environment variable. The browser test intercepts API traffic and performs no batch/master/mail writes.
 
 ## Learning from import incidents
+
+### Reopening saved amounts with a missing external attendance workbook
+
+The 2026-11-12 source check matched the October workbook fingerprint to the saved mapping. Its two actual worksheets are `COPY` and `OCT 2026`; 351 formulas refer through external alias `[1]` to a separate attendance workbook's period sheet. This is one missing workbook dependency, not 351 different salary errors. The original external-link relationships confirm that the target is external; cached link data is not a reviewed replacement workbook. Existing October payslips retain their saved amounts and original formulas.
+
+Reopening the selected saved mapping previously reset the explicit `ReferenceOnly` choice to false and flooded the advanced panel with one warning per formula cell. The edit flow now retains that saved choice, groups unresolved notices by workbook/alias/target sheet, and keeps all individual cells in the advanced trace. Fresh imports do not inherit that choice. Explicit saved-amount editing does not promote the source to `Reviewed`, enable formula recalculation or waive native payroll setup checks. The exact separate attendance workbook remains necessary for recalculation. Runtime knowledge v22 retains this diagnostic boundary in the always-retrieved cross-sheet reference. Synthetic collector/component regressions verify warning grouping and the saved choice; existing backend workbook-binding/calculation tests verify the unresolved-source boundary. No production batch, employee, salary amount or September record was changed during this fix.
 
 Knowledge revision v19 retains the blank-location diagnostic boundary alongside location batches. A city-specific file can still contain blank Location cells in its employee rows. **Edit mapping → More import options → Fill missing work location** applies an explicitly confirmed location only to literal blanks on included employee rows; review and Update selected batch persists the edited copy. It retains existing locations, formulas, amounts, exclusions, original workbook attachments and Master data. Formula/error/missing-cache blanks are not filled. Do not infer employee identity/contact values or work location from filenames. `excel-payslip-location.test.mjs` covers the source/row round trip and protected blanks; the mapping retrieval test checks the anonymized boundary without employee/client data.
 

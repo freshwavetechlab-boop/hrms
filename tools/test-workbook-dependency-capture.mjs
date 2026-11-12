@@ -45,6 +45,36 @@ const checks = []
   checks.push('External aliases require one explicit reviewed exact version; missing/ambiguous mappings remain actionable')
 }
 {
+  const source = rootSheet()
+  source.rows = [source.rows[0], ...Array.from({ length: 351 }, (_, i) => ({ sourceRow: i + 2, cells: [{ value: `Synthetic-${i}`, dataType: 'Text' }, cell('30'), cell('28', `VLOOKUP(A${i + 2},'[1]Attendance'!A2:D352,4,0)`)] }))]
+  const before = JSON.stringify(source), report = collect(source)
+  assert.equal(report.issues.length, 1)
+  assert.match(report.issues[0], /\[1\] \/ Attendance: 351 formula cells/)
+  assert.match(report.issues[0], /Upload the separate source workbook/)
+  assert.equal(report.references.length, 351)
+  assert.equal(api.workbookSourcesConfirmed(report, report.reviewKey), false)
+  assert.equal(JSON.stringify(source), before)
+  // A same-named sheet in the salary file does not prove what external [1] means.
+  assert.equal(report.fields.externalMappings.length, 0)
+  checks.push('351 financial references produce one actionable source issue while preserving every cell trace; genuine external inputs remain unresolved')
+}
+{
+  const source = rootSheet("VLOOKUP(A2,'[1]Attendance'!A2:D3,4,0)+VLOOKUP(A2,'[1]Leave'!A2:D3,4,0)")
+  const report = collect(source)
+  assert.equal(report.issues.length, 2)
+  assert.match(report.issues[0], /\[1\] \/ Attendance/)
+  assert.match(report.issues[1], /\[1\] \/ Leave/)
+  assert.equal(api.workbookSourcesConfirmed(report, report.reviewKey), false)
+  const editor = fs.readFileSync(path.join(root, 'payroll-ui/src/components/ExcelPayslips.tsx'), 'utf8')
+  const reopen = editor.slice(editor.indexOf('const editMapping ='), editor.indexOf('const correctRow ='))
+  assert.match(reopen, /setReferenceOnly\(dependencyReviewStatus\s*===\s*'ReferenceOnly'\)/)
+  const restored = api.restoreCapturedWorkbooks({ ...report.fields, dependencyReviewStatus: 'ReferenceOnly', sheetName: source.name, columnCount: source.columnCount, rows: source.rows }, source)
+  const reopenedReport = collect(source, restored)
+  assert.deepEqual(reopenedReport.issues, report.issues)
+  assert.equal(api.workbookSourcesConfirmed(reopenedReport, reopenedReport.reviewKey), false)
+  checks.push('Saved amounts-only editing restores its explicit mode without claiming external calculation inputs are reviewed; separate target sheets retain separate issues')
+}
+{
   const source = rootSheet("VLOOKUP(A2,'[1]Attendance'!A2:D3,4,0)+VLOOKUP(A2,'[2]Attendance'!A2:D3,4,0)")
   const extra = { key: key2, sha256: hash2, fileName: 'dependency.xlsx', sheets: [attendance] }, maps = ['[1]', '[2]'].map(reference => ({ fromWorkbookKey: key, reference, toWorkbookKey: key2, reviewed: true }))
   const result = collect(source, [book(source), extra], maps)
@@ -81,5 +111,24 @@ const checks = []
   assert.equal(captured.sheets[0].rows[1].cells[0].value, '0007'); assert.equal(captured.sheets[0].rows[1].cells[0].dataType, 'Text')
   assert.equal(captured.file, file)
   checks.push('Explicitly supplied synthetic bytes remain unchanged; CSV key types and leading zeroes are preserved')
+}
+{
+  const uiRequire = createRequire(path.join(root, 'payroll-ui/package.json'))
+  const component = { exports: {} }, sourceFile = path.join(root, 'payroll-ui/src/components/ExcelWorkbookDependencies.tsx')
+  const compiled = ts.transpileModule(fs.readFileSync(sourceFile, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText
+  new Function('require', 'module', 'exports', compiled)(name => name === '../utils/workbookDependencyCapture' ? api : uiRequire(name), component, component.exports)
+  const React = uiRequire('react'), { renderToStaticMarkup } = uiRequire('react-dom/server')
+  const source = rootSheet("VLOOKUP(A2,'[1]Attendance'!A2:D3,4,0)"), report = collect(source)
+  const props = { books: [book(source)], mappings: [], report, disabled: false, reviewedKey: '', onFiles() {}, onMappings() {}, onReview() {}, onReferenceOnly() {} }
+  const saved = renderToStaticMarkup(React.createElement(component.exports.default, { ...props, referenceOnly: true }))
+  assert.match(saved, /Payslip amounts retained; calculation source pending/)
+  assert.match(saved, /Recalculation and payroll setup still need the missing formula inputs/)
+  assert.doesNotMatch(saved, /<details[^>]*class="excel-workbook-source-details"[^>]* open/)
+  assert.equal((saved.match(/role="alert"/g) || []).length, 2)
+  const fresh = renderToStaticMarkup(React.createElement(component.exports.default, { ...props, referenceOnly: false }))
+  assert.match(fresh, /Some formula inputs need attention/)
+  assert.match(fresh, /<details[^>]*class="excel-workbook-source-details"[^>]* open/)
+  assert.doesNotMatch(fresh, /Payslip amounts retained; calculation source pending/)
+  checks.push('The real source-review component reopens amounts-only edits compactly and keeps fresh unresolved source imports visibly blocked')
 }
 console.log(JSON.stringify({ passed: checks.length, checks }, null, 2))

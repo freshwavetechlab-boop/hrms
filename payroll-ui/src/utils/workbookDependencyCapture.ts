@@ -28,6 +28,13 @@ function refs(formula:string) {
 // Read only supplied in-memory sheets. This collector never evaluates formulas, follows links or fetches files.
 export function collectWorkbookDependencies(root:PayslipSheet,rootKey:string,books:CapturedWorkbook[],mappings:WorkbookMapping[],columns:PayslipColumn[],headerRow:number,excludedRows:number[]=[]) {
   const issues:string[]=[],references:DependencyReference[]=[],captured=new Map<string,DependencySheet>(),visited=new Set<string>(),ranges=new Set<string>()
+  const unresolved=new Map<string,{reference:string;targetSheet:string;reason:'mapping'|'sheet';firstCell:string;cells:Set<string>}>()
+  const missingSource=(bookKey:string,sheet:string,address:string,reference:string,targetSheet:string,reason:'mapping'|'sheet')=>{
+    const key=`${bookKey}|${reference}|${lower(targetSheet)}|${reason}`,cell=`${sheet}!${address}`
+    const problem=unresolved.get(key)
+    if(problem)problem.cells.add(cell)
+    else unresolved.set(key,{reference,targetSheet,reason,firstCell:cell,cells:new Set([cell])})
+  }
   const catalog=new Map<string,{book:CapturedWorkbook;sheet:PayslipSheet}>(),bookKeys=new Set<string>()
   if(books.length>20||mappings.length>20)throw Error('Use at most 20 supplied workbook mappings.')
   for(const book of books){if(!/^[a-f0-9]{64}$/.test(book.sha256)||book.key!==`wb_${book.sha256}`)throw Error('Original workbook fingerprint is unavailable; choose the original file.');if(bookKeys.has(book.key))throw Error('Duplicate workbook content; merge its supplied sheet metadata instead of guessing a version.');bookKeys.add(book.key)
@@ -45,12 +52,12 @@ export function collectWorkbookDependencies(root:PayslipSheet,rootKey:string,boo
       let targetKey=book.key,targetSheet=ref.sheet||sheet.name,external=''
       if(targetSheet.startsWith('[')){const end=targetSheet.indexOf(']');external=targetSheet.slice(0,end+1);targetSheet=targetSheet.slice(end+1)
         const aliases=mappings.filter(m=>m.fromWorkbookKey===book.key&&m.reference===external)
-        if(aliases.length!==1||!aliases[0].reviewed){references.push({fromWorkbookKey:book.key,sheet:sheet.name,cell:address,reference:external,kind:'External',targetSheet});issues.push(`${sheet.name}!${address}: ${external} needs one reviewed supplied-workbook mapping.`);continue}
+        if(aliases.length!==1||!aliases[0].reviewed){references.push({fromWorkbookKey:book.key,sheet:sheet.name,cell:address,reference:external,kind:'External',targetSheet});missingSource(book.key,sheet.name,address,external,targetSheet,'mapping');continue}
         targetKey=aliases[0].toWorkbookKey
       }
       const target=catalog.get(id(targetKey,targetSheet))
       if(external||targetKey!==rootKey||lower(targetSheet)!==lower(root.name))references.push({fromWorkbookKey:book.key,sheet:sheet.name,cell:address,reference:external||targetSheet,kind:external?'External':'Cross-sheet',targetWorkbookKey:targetKey,targetSheet})
-      if(!target){issues.push(`${sheet.name}!${address}: referenced worksheet is not supplied. Load/map its workbook; no cached-value substitute is used.`);continue}
+      if(!target){missingSource(book.key,sheet.name,address,external||targetKey,targetSheet,'sheet');continue}
       if(id(targetKey,targetSheet)!==id(rootKey,root.name))captured.set(id(targetKey,targetSheet),{workbookKey:targetKey,sheetName:target.sheet.name,sourceHash:target.book.sha256,columnCount:target.sheet.columnCount,completeSheetCapture:true,rows:target.sheet.rows})
       const [first,last=first]=ref.range.split(':'),whole=/^\$?[A-Z]{1,3}$/i.test(first)
       const start=whole?{column:index(first),row:1}:pos(first),end=whole?{column:index(last),row:Math.max(1,...target.sheet.rows.map(r=>r.sourceRow))}:pos(last)
@@ -61,6 +68,13 @@ export function collectWorkbookDependencies(root:PayslipSheet,rootKey:string,boo
   }
   const money=new Set(columns.filter(c=>['earning','deduction','employer','netPay','grossTotal','deductionTotal'].includes(c.kind)).map(c=>c.columnIndex))
   for(const row of root.rows.filter(r=>r.sourceRow>headerRow&&!excludedRows.includes(r.sourceRow)))for(const c of money)if(row.cells[c]?.formulaText)walk(rootBook,root,`${excelColumnLetter(c)}${row.sourceRow}`)
+  for(const problem of unresolved.values()){
+    const count=problem.cells.size,source=`${problem.reference.startsWith('[')?problem.reference+' / ':''}${problem.targetSheet}`
+    const detail=problem.reason==='mapping'
+      ? 'Upload the separate source workbook, select its exact version and confirm the reviewed supplied-workbook mapping once.'
+      : 'The referenced worksheet is not supplied. Upload its workbook and map the source; no cached-value substitute is used.'
+    issues.push(`${source}: ${count} formula cell${count===1?'':'s'} need this source (first: ${problem.firstCell}). ${detail}`)
+  }
   const sheets=[...captured.values()]
   if(sheets.length>20||root.rows.reduce((n,r)=>n+r.cells.length,0)+sheets.reduce((n,s)=>n+s.rows.reduce((m,r)=>m+r.cells.length,0),0)>250000)throw Error('Captured dependencies exceed 20 sheets / 250,000 cells; use a bounded source scope.')
   const used=new Set([rootKey,...sheets.map(s=>s.workbookKey)]),workbookFiles=books.filter(b=>used.has(b.key)).map(b=>({workbookKey:b.key,fileName:b.fileName,sha256:b.sha256,originalId:b.originalId||''}))
