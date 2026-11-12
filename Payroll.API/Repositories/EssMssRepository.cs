@@ -1311,6 +1311,9 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @Table AND INDEX_NAME = @Index"
     }
 
     public async Task<AttendancePunchValidationResponse> RecordAttendancePunchAsync(int employeeId, int? clientId, ValidateAttendancePunchRequest request)
+        => await RecordAttendancePunchAsync(employeeId, clientId, request, null);
+
+    private async Task<AttendancePunchValidationResponse> RecordAttendancePunchAsync(int employeeId, int? clientId, ValidateAttendancePunchRequest request, BrowserPunchContext? browser)
     {
         await using var db = Connection();
         await db.OpenAsync();
@@ -1350,7 +1353,7 @@ LIMIT 1;", new { identity.ClientId, EmployeeId = employeeId, ClientRequestId = c
         }
 
         var capturedAt = ResolveAttendanceDateTime(request.CapturedAt);
-        var validation = await ValidateAttendancePunchAsync(db, transaction, identity.ClientId, employeeId, request, capturedAt);
+        var validation = await ValidateAttendancePunchAsync(db, transaction, identity.ClientId, employeeId, request, capturedAt, browser);
         if (!validation.Allowed || (validation.RequiresReason && string.IsNullOrWhiteSpace(request.Reason)))
         {
             if (validation.RequiresReason && string.IsNullOrWhiteSpace(request.Reason))
@@ -1395,6 +1398,10 @@ SELECT LAST_INSERT_ID();", new
         }, transaction);
 
         var state = await ProjectAcceptedPunchAsync(db, transaction, identity.ClientId, employeeId, action, capturedAt);
+        if (browser is not null)
+            await db.ExecuteAsync(@"INSERT INTO auditlogs (UserId,UserEmail,Action,Resource,Method,Path,StatusCode,IpAddress,UserAgent,DetailsJson)
+VALUES (@UserId,@Email,'attendance.browser.password-confirmed','AttendancePunch','POST','/api/ess/attendance/punch/browser',201,'','ESS browser attendance',CAST(@Details AS JSON))",
+                new { browser.UserId, browser.Email, Details = JsonSerializer.Serialize(new { PunchId = punchId, EmployeeId = employeeId, ClientId = identity.ClientId, ConfirmationMethod = "ESSPassword", BiometricConfirmed = false }) }, transaction);
         await transaction.CommitAsync();
         validation.PunchRecorded = true;
         validation.PunchId = punchId;
@@ -1405,7 +1412,7 @@ SELECT LAST_INSERT_ID();", new
         return validation;
     }
 
-    private static async Task<AttendancePunchValidationResponse> ValidateAttendancePunchAsync(MySqlConnection db, System.Data.IDbTransaction? transaction, int clientId, int employeeId, ValidateAttendancePunchRequest request, DateTime capturedAt)
+    private static async Task<AttendancePunchValidationResponse> ValidateAttendancePunchAsync(MySqlConnection db, System.Data.IDbTransaction? transaction, int clientId, int employeeId, ValidateAttendancePunchRequest request, DateTime capturedAt, BrowserPunchContext? browser = null)
     {
         var action = CleanPunchAction(request.Action);
         if (action == "")
@@ -1422,7 +1429,9 @@ SELECT LAST_INSERT_ID();", new
             return Block("AppVersionRequired", "App version is required for attendance.", "Retry");
         if (!request.CameraCaptureConfirmed)
             return Block("CameraConfirmationRequired", "Open the front camera before marking attendance.", "OpenCamera");
-        if (!request.BiometricConfirmed)
+        if (browser is not null && (browser.EmployeeId != employeeId || browser.ClientId != clientId))
+            return Block("BrowserIdentityMismatch", "The browser confirmation does not match this employee and client.", "SignInAgain");
+        if (!request.BiometricConfirmed && browser is null)
             return Block("BiometricConfirmationRequired", "Device biometric confirmation is required for attendance.", "AuthenticateBiometric");
         if (request.Latitude is < -90 or > 90 || request.Longitude is < -180 or > 180 || (request.Latitude == 0 && request.Longitude == 0))
             return Block("InvalidLocation", "Valid latitude and longitude are required.", "Retry");

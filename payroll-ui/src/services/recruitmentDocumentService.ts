@@ -1,6 +1,6 @@
 import type { WorkLocation } from '../types/payroll'
 import { rosterEditValues } from '../utils/recruitmentRosterOperations'
-import { apiRequest, deleteJson, getJsonResult, postJson, putJson, readError } from './apiClient'
+import { apiRequest, deleteJson, getJsonResult, postEmpty, postJson, putJson, readError } from './apiClient'
 
 export type DocumentInput = { key: string; label: string; type: 'text' | 'date' | 'money' | 'number' | 'percent'; required: boolean; sourceHeaders: string[]; defaultValue: string; blankText: string }
 export type DocumentImportPreset = { name: string; headerRow: number; defaults: Record<string, string> }
@@ -14,6 +14,21 @@ export type RosterSigningAsset = { available: boolean; fileName: string; content
 export type RosterImportResult = { createdProfiles: number; reusedProfiles: number; savedRows: number; errors: string[] }
 const root = '/api/recruitment/document-roster'
 export const getDocumentTemplates = (clientId: number) => getJsonResult<DocumentTemplate[]>(`${root}/templates?clientId=${clientId}`, [], { toast: false, loader: false })
+const preparingTemplates = new Map<string, ReturnType<typeof getDocumentTemplates>>()
+// Only opening the bulk workspace provisions a missing default. Do not cache
+// results: later visits must see template edits and current server permissions.
+export function prepareDocumentTemplates(clientId: number, accessScope: string) {
+  const key = JSON.stringify([accessScope, clientId])
+  const pending = preparingTemplates.get(key)
+  if (pending) return pending
+  const request = (async () => {
+    const current = await getDocumentTemplates(clientId)
+    if (!current.ok || current.data.length) return current
+    return postEmpty<DocumentTemplate[]>(`${root}/templates/ensure?clientId=${clientId}`, [], { toast: false, loader: false })
+  })().finally(() => { if (preparingTemplates.get(key) === request) preparingTemplates.delete(key) })
+  preparingTemplates.set(key, request)
+  return request
+}
 export const getDocumentRoster = (clientId: number) => getJsonResult<DocumentRosterRow[]>(`${root}/rows?clientId=${clientId}`, [], { toast: false, loader: false })
 export const getRosterWorkLocations = (clientId: number) => getJsonResult<WorkLocation[]>(`${root}/work-locations?clientId=${clientId}`, [], { toast: false, loader: false })
 export const linkRosterWorkLocation = (clientId: number, rows: DocumentRosterRow[], workLocationId: number) => postJson(`${root}/rows/work-location?clientId=${clientId}`, { ids: rows.map(row => row.id), workLocationId, revisions: Object.fromEntries(rows.map(row => [String(row.id), row.revision])) }, null, { toast: false })

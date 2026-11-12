@@ -22,6 +22,8 @@ public static class RecruitmentDocumentEndpoints
         });
         routes.MapGet("/templates", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
             Results.Ok(await repository.TemplatesAsync(clientId, currentUser(context))));
+        routes.MapPost("/templates/ensure", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
+            Results.Ok(await repository.EnsureDefaultTemplateAsync(clientId, currentUser(context))));
         routes.MapGet("/rows", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
             Results.Ok(await repository.RowsAsync(clientId, currentUser(context))));
         routes.MapPost("/mail-preview",async(RecruitmentDocumentRepository repository,int clientId,RecruitmentOfferMailRequest request,HttpContext context)=>

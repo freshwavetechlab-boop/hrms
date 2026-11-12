@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { OrganizationBrand, User } from '../types'
 import { login, organizationBrand, setToken } from '../services/essApi'
+import { PwaInstallControl } from '../components/PwaInstallControl'
 
 export function LoginPage({ onLogin }: { onLogin: (user: User) => void }) {
   const [email, setEmail] = useState(''), [password, setPassword] = useState(''), [error, setError] = useState(''), [busy, setBusy] = useState(false), [showPassword, setShowPassword] = useState(false)
@@ -27,6 +28,7 @@ export function LoginPage({ onLogin }: { onLogin: (user: User) => void }) {
           <span>Protected employee access</span>
           <small>Contact HR/payroll if your login is not active.</small>
         </div>
+        <PwaInstallControl variant="card" />
       </div>
     </section>
     <section className="login-intro" aria-label="Frevo One employee portal">

@@ -11,6 +11,41 @@ body,
   min-width: 0;
 }
 
+.dashboard-welcome .ess-home-actions { display: flex; align-items: center; gap: 9px; }
+.dashboard-welcome .ess-home-actions .ess-home-leave { background: #ffffff18; color: #fff; border: 1px solid #ffffff55; box-shadow: none; }
+@media (max-width: 760px) { .dashboard-welcome .ess-home-actions { width: 100%; flex-wrap: wrap; } .dashboard-welcome .ess-home-actions button { flex: 1 1 120px; } }
+
+/* Respect iOS display cutouts without changing ordinary browser spacing. */
+@supports (padding: env(safe-area-inset-left)) {
+  .ess-main { padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
+  .ess-login { padding-bottom: env(safe-area-inset-bottom); }
+}
+
+/* Side margins are part of each dashboard action's available card width. */
+.ess-shell .dashboard-grid .compact-card > button {
+  width: calc(100% - 28px) !important;
+}
+
+/* An expanded sidebar can leave phone-sized calendar space on wider screens. */
+.ess-shell .employee-calendar {
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.ess-shell .employee-calendar > * {
+  min-width: 0;
+}
+
+.ess-shell .employee-calendar .calendar-day small {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 980px) {
   .ess-login {
     width: 100% !important;
@@ -36,6 +71,15 @@ body,
   .ess-login .login-intro {
     order: 2 !important;
   }
+}
+
+@media (min-width: 761px) and (max-width: 980px) {
+  .ess-topbar .user-menu { min-width: 40px !important; padding: 4px !important; }
+  .ess-topbar .user-menu > div, .ess-topbar .user-menu > i { display: none !important; }
+  .ess-login { display: grid !important; place-items: center !important; padding: 24px !important; }
+  .ess-login .login-intro { display: none !important; }
+  .ess-login .login-panel { min-height: calc(100svh - 48px) !important; display: grid !important; align-content: center !important; padding: 0 !important; background: transparent !important; }
+  .ess-login .login-card { width: min(100%, 440px) !important; justify-self: center !important; padding: 26px !important; }
 }
 
 @media (max-width: 760px) {
@@ -345,6 +389,12 @@ body,
   .drawer-backdrop {
     min-width: 0 !important;
   }
+
+  /* Full-screen dialogs must cover the sticky mobile navigation rail. */
+  .ess-shell .ess-modal-backdrop,
+  .ess-shell .drawer-backdrop {
+    z-index: 50;
+  }
 }
 
 @media (max-width: 420px) {
@@ -363,5 +413,12 @@ body,
   .ess-shell.ess-nav-collapsed .ess-side-head > .ess-product-brand {
     width: 174px !important;
     flex-basis: 174px !important;
+  }
+}
+
+@supports (padding: env(safe-area-inset-left)) {
+  @media (max-width: 760px) {
+    .ess-shell .ess-main { padding-left: max(10px, env(safe-area-inset-left)) !important; padding-right: max(10px, env(safe-area-inset-right)) !important; }
+    .ess-login { padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)) !important; }
   }
 }

@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS recruitment_document_roster_audit (
     {
         Access(user, clientId); await using var db = Db(); await db.OpenAsync();
         var rows = await db.QueryAsync<RecruitmentTemplate>("SELECT * FROM recruitment_templates WHERE ClientId IN (0,@ClientId) AND IsActive=TRUE AND TemplateType='Offer Letter' ORDER BY TemplateName", new { ClientId = clientId });
-        return rows.Where(t => LayoutDocumentPdfService.IsLayout(t.BodyTemplate)).Select(t => { var layout = LayoutDocumentPdfService.Parse(t.BodyTemplate); return (object)new { t.Id, t.TemplateName, t.ClientId, Fields = layout.Inputs, layout.ImportPresets }; }).ToArray();
+        return DescribeDocumentTemplates(rows);
     }
     public async Task<List<RecruitmentDocumentRosterRow>> RowsAsync(int clientId, AuthUser user)
     {

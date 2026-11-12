@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
-import { Alert, Button, Drawer, Dropdown, Form, Input, InputNumber, Select, Space, Switch, Tag } from 'antd'
+import { Alert, Button, Drawer, Dropdown, Form, Input, InputNumber, Select, Space, Spin, Switch, Tag } from 'antd'
 import { DownloadOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons'
 import DataTable, { type Column } from './DataTable'
 import FileDropZone from './FileDropZone'
 import { PageHeaderPortal } from './layout/AppPageHeader'
-import { downloadRosterDrafts, editDocumentRoster, getDocumentRoster, getDocumentTemplates, getRosterSigningAsset, getRosterWorkLocations, linkRosterWorkLocation, releaseRosterLetters, removeRosterSigningAsset, uploadDocumentRoster, uploadRosterSigningAsset, type DocumentRosterRow, type DocumentTemplate, type RosterImportResult, type RosterImportSettings, type RosterPreview, type RosterSheet, type RosterSigningAsset } from '../services/recruitmentDocumentService'
+import { downloadRosterDrafts, editDocumentRoster, getDocumentRoster, getDocumentTemplates, getRosterSigningAsset, getRosterWorkLocations, linkRosterWorkLocation, prepareDocumentTemplates, releaseRosterLetters, removeRosterSigningAsset, uploadDocumentRoster, uploadRosterSigningAsset, type DocumentRosterRow, type DocumentTemplate, type RosterImportResult, type RosterImportSettings, type RosterPreview, type RosterSheet, type RosterSigningAsset } from '../services/recruitmentDocumentService'
 import { suggestRosterMapping } from '../utils/recruitmentDocumentLayout'
 import { filterRosterRows, rosterLocationName, rosterMasterLocationField, rosterPermissions, rosterReleaseReady, selectedRosterRows, signingAssetFileError } from '../utils/recruitmentRosterOperations'
 import { useAuthSession } from './AuthGate'
@@ -17,16 +17,40 @@ import { useRecruitmentOfferMail } from '../hooks/useRecruitmentOfferMail'
 
 export default function RecruitmentDocumentRosterLauncher({ clientId, onChanged }: { clientId: number; onChanged: () => Promise<void> }) {
   const location = useLocation()
-  const [templates, setTemplates] = useState<DocumentTemplate[]>([]), [open, setOpen] = useState(false)
+  const session = useAuthSession()
+  const permissions = rosterPermissions(session?.user.permissions || [])
+  const canOpen = permissions.canImport || permissions.canManageOffers || permissions.canRelease
+  const accessScope = JSON.stringify([session?.user.id, session?.user.clientAccessMode, session?.user.assignedClientIds, session?.user.recruitmentScopeMode, session?.user.recruitmentLocationIds])
+  const [state, setState] = useState<{ clientId: number; templates: DocumentTemplate[]; loading: boolean; error: string }>({ clientId: 0, templates: [], loading: false, error: '' })
+  const [open, setOpen] = useState(false)
+  const requestVersion = useRef(0)
+  const loadTemplates = useCallback(async (initialize: boolean) => {
+    const version = ++requestVersion.current
+    setState({ clientId, templates: [], loading: true, error: '' })
+    try {
+      const result = await (initialize ? prepareDocumentTemplates(clientId, accessScope) : getDocumentTemplates(clientId))
+      if (version !== requestVersion.current) return
+      const error = !result.ok ? result.error || 'Unable to prepare offer letters.'
+        : initialize && !result.data.length ? 'No offer template is available. Retry to prepare this client’s default template.' : ''
+      setState({ clientId, templates: result.ok ? result.data : [], loading: false, error })
+    } catch (error) {
+      if (version === requestVersion.current) setState({ clientId, templates: [], loading: false, error: error instanceof Error ? error.message : 'Unable to prepare offer letters.' })
+    }
+  }, [clientId, accessScope])
   useEffect(() => {
-    let active = true; setOpen(false); setTemplates([])
-    if (clientId > 0) void getDocumentTemplates(clientId).then(r => { if (active && r.ok) setTemplates(r.data) })
-    return () => { active = false }
-  }, [clientId])
-  useEffect(() => { if (new URLSearchParams(location.search).has('mailJobId')) setOpen(true) }, [location.search])
-  if (!clientId || !templates.length) return null
-  return <><PageHeaderPortal slot="recruitment-page-controls"><Button icon={<UploadOutlined />} onClick={() => setOpen(true)}>Employee lists &amp; offer letters</Button></PageHeaderPortal>
-    {open && <RecruitmentDocumentRoster key={clientId} clientId={clientId} templates={templates} onClose={() => setOpen(false)} onChanged={onChanged} />}</>
+    setOpen(false)
+    if (clientId > 0 && canOpen) void loadTemplates(false)
+    return () => { requestVersion.current++ }
+  }, [clientId, canOpen, loadTemplates])
+  useEffect(() => {
+    if (clientId > 0 && canOpen && new URLSearchParams(location.search).has('mailJobId')) { setOpen(true); void loadTemplates(true) }
+  }, [clientId, canOpen, location.search, loadTemplates])
+  if (!clientId || !canOpen) return null
+  const ready = state.clientId === clientId && !state.loading && state.templates.length > 0
+  return <><PageHeaderPortal slot="recruitment-page-controls"><Button icon={<UploadOutlined />} onClick={() => { setOpen(true); void loadTemplates(true) }}>Employee lists &amp; offer letters</Button></PageHeaderPortal>
+    {open && (ready ? <RecruitmentDocumentRoster key={clientId} clientId={clientId} templates={state.templates} onClose={() => setOpen(false)} onChanged={onChanged} /> : <Drawer open title="Employee lists & offer letters" width="min(1380px, 98vw)" onClose={() => setOpen(false)} footer={<Button onClick={() => setOpen(false)}>Close</Button>}>
+      {state.clientId === clientId && state.error ? <Alert type="error" showIcon message={state.error} action={<Button onClick={() => void loadTemplates(true)}>Retry</Button>} /> : <Space><Spin size="small" /><span>Preparing offer letters…</span></Space>}
+    </Drawer>)}</>
 }
 
 function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: { clientId: number; templates: DocumentTemplate[]; onClose: () => void; onChanged: () => Promise<void> }) {
@@ -211,12 +235,19 @@ function RosterReleaseDrawer({ clientId, ids, canManageAsset, canRelease, onClos
 }
 
 function RosterImportDrawer({ clientId, templates, locations, onClose, onSaved }: { clientId: number; templates: DocumentTemplate[]; locations: WorkLocation[]; onClose: () => void; onSaved: (result: RosterImportResult) => Promise<void> }) {
-  const [templateId, setTemplateId] = useState(templates[0]?.id || 0), [preset, setPreset] = useState('')
+  const initialPreset = templates[0]?.importPresets.length === 1 ? templates[0].importPresets[0] : undefined
+  const [templateId, setTemplateId] = useState(templates[0]?.id || 0), [preset, setPreset] = useState(initialPreset?.name || '')
   const [file, setFile] = useState<File | null>(null), [sheets, setSheets] = useState<RosterSheet[]>([]), [preview, setPreview] = useState<RosterPreview | null>(null), [selected, setSelected] = useState<number[]>([])
-  const [settings, setSettings] = useState<RosterImportSettings>({ clientId, templateId, workLocationId: null, sourceGroup: '', sheetName: '', headerRow: 4, mapping: {}, defaults: {}, sourceRows: [], previewToken: '' })
+  const [settings, setSettings] = useState<RosterImportSettings>({ clientId, templateId, workLocationId: null, sourceGroup: initialPreset?.name || '', sheetName: '', headerRow: initialPreset?.headerRow || 4, mapping: {}, defaults: initialPreset?.defaults || {}, sourceRows: [], previewToken: '' })
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [phase, setPhase] = useState('')
   const template = templates.find(t => t.id === templateId), sheet = sheets.find(s => s.name === settings.sheetName)
   const invalidate = (patch: Partial<RosterImportSettings>) => { setSettings(s => ({ ...s, ...patch })); setPreview(null); setSelected([]) }
+  const chooseTemplate = (id: number) => {
+    const presets = templates.find(t => t.id === id)?.importPresets || []
+    const nextPreset = presets.length === 1 ? presets[0] : undefined
+    setTemplateId(id); setPreset(nextPreset?.name || ''); setSheets([]); setFile(null)
+    invalidate({ templateId: id, mapping: {}, defaults: nextPreset?.defaults || {}, sourceGroup: nextPreset?.name || '', sheetName: '', headerRow: nextPreset?.headerRow || 4 })
+  }
   const inspect = async (upload: File, state = settings) => {
     setBusy(true); setError(''); setPreview(null); setSelected([]); setPhase('Reading worksheet columns...')
     try {
@@ -244,7 +275,7 @@ function RosterImportDrawer({ clientId, templates, locations, onClose, onSaved }
     <Alert type="info" showIcon message="Review source mapping once, then save" description="Email/phone identifies existing profiles. Re-upload updates the same source-group rows and retains completed details where the incoming source is blank. Monthly wages remain monthly document inputs; they are not treated as annual CTC. Missing tenure/designation/location can be completed later." />
     {error && <Alert type="error" showIcon message={error} />}{phase && <Alert type="info" showIcon message={phase} />}
     <Form layout="vertical" disabled={busy} className="document-roster-fields">
-      <Form.Item label="Offer document template" required><Select aria-label="Roster document template" value={templateId} options={templates.map(t => ({ value: t.id, label: t.templateName }))} onChange={value => { setTemplateId(value); setPreset(''); setSheets([]); setFile(null); invalidate({ templateId: value, mapping: {}, defaults: {}, sourceGroup: '', sheetName: '' }) }} /></Form.Item>
+      <Form.Item label="Offer document template" required><Select aria-label="Roster document template" value={templateId} options={templates.map(t => ({ value: t.id, label: t.templateName }))} onChange={chooseTemplate} /></Form.Item>
       <Form.Item label="Input preset (optional)"><Select aria-label="Roster input preset" value={preset} options={[{ value: '', label: 'Choose / enter values manually' }, ...(template?.importPresets || []).map(p => ({ value: p.name, label: p.name }))]} onChange={value => { setPreset(value); const p = template?.importPresets.find(p => p.name === value); invalidate({ sourceGroup: p?.name || '', headerRow: p?.headerRow || 4, defaults: p?.defaults || {} }); setSheets([]); setFile(null) }} /></Form.Item>
       <Form.Item label="Source group" required><Input aria-label="Roster source group" maxLength={180} value={settings.sourceGroup} onChange={e => invalidate({ sourceGroup: e.target.value })} placeholder="Institute / office / source list" /></Form.Item>
       <Form.Item label="Work location / institute (optional)"><Select aria-label="Import roster work location" allowClear showSearch optionFilterProp="label" placeholder="Choose an existing work location" value={settings.workLocationId || undefined} options={locations.map(location => ({ value: location.id, label: location.name }))} onChange={value => invalidate({ workLocationId: value || null })} /></Form.Item>

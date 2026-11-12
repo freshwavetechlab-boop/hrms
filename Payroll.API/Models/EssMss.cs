@@ -369,6 +369,23 @@ public class ValidateAttendancePunchRequest
     public AttendanceFacialVerification? Facial { get; set; }
 }
 
+public sealed class BrowserAttendancePunchRequest : ValidateAttendancePunchRequest
+{
+    private string confirmationPassword = "";
+    // Write-only in the JSON contract, so request serialization cannot leak it
+    // into responses, diagnostics or audit metadata.
+    public string ConfirmationPassword { set => confirmationPassword = value ?? ""; }
+    internal string TakeConfirmationPassword()
+    {
+        var password = confirmationPassword;
+        confirmationPassword = "";
+        return password;
+    }
+}
+
+public sealed record EssAttendancePunchLog(long Id, string Action, DateTimeOffset CapturedAt,
+    decimal Latitude, decimal Longitude, int AccuracyMeters, string ValidationStatus, string Decision);
+
 public class AttendancePunchRuleSummary
 {
     public int Id { get; set; }
@@ -379,6 +396,10 @@ public class AttendancePunchRuleSummary
 
 public class AttendancePunchValidationResponse
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? ConfirmationMethod { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? RetryAfterSeconds { get; set; }
     public bool Allowed { get; set; }
     public bool RequiresReason { get; set; }
     public bool RequiresApproval { get; set; }

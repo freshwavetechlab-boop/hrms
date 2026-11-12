@@ -1,0 +1,75 @@
+.ess-pwa-install,
+.ess-pwa-card .ess-pwa-install,
+.ess-pwa-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 40px;
+  padding: 9px 13px;
+  border: 1px solid #d8def0;
+  border-radius: 10px;
+  background: #fff;
+  color: #334a90;
+  font: inherit;
+  font-size: .8rem;
+  font-weight: 650;
+  line-height: 1.25;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: none;
+}
+.ess-pwa-install:hover,
+.ess-pwa-close:hover { background: #f2f6ff; border-color: #b7c6e8; }
+.ess-pwa-install:focus-visible,
+.ess-pwa-close:focus-visible,
+.ess-pwa-dismiss:focus-visible { outline: 3px solid #8ca8e8; outline-offset: 3px; }
+.ess-pwa-install:disabled { cursor: wait; opacity: .7; }
+.ess-pwa-install svg { flex-shrink: 0; }
+.ess-pwa-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 16px 28px 16px 14px;
+  border: 1px solid #dce5f3;
+  border-radius: 14px;
+  background: #f5f8ff;
+}
+.ess-pwa-app-icon { display: grid; place-items: center; width: 38px; height: 38px; border: 1px solid #e0e5ef; border-radius: 11px; background: #fff; }
+.ess-pwa-app-icon img { width: 29px; height: 29px; }
+.ess-pwa-card-copy { display: grid; gap: 4px; min-width: 0; }
+.ess-pwa-card-copy b { color: #263c62; font-size: .8rem; line-height: 1.4; }
+.ess-pwa-card-copy > span { color: #687b95; font-size: .73rem; line-height: 1.5; }
+.ess-pwa-card .ess-pwa-dismiss { position: absolute; top: 2px; right: 2px; display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: #78859c; font-size: 20px; line-height: 1; box-shadow: none; cursor: pointer; }
+.ess-pwa-dismiss:hover { background: #e8eef9; }
+.ess-topbar-actions { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; min-width: 0; }
+.ess-pwa-guide-brand { display: flex; align-items: center; gap: 12px; margin: 20px 0; padding: 14px; border-radius: 12px; background: #f4f7fc; }
+.ess-pwa-guide-brand > img { width: 44px; height: 44px; }
+.ess-pwa-guide-brand > div { display: grid; gap: 3px; }
+.ess-pwa-guide-brand b { color: #263c62; font-size: 15px; }
+.ess-pwa-guide-brand span { color: #687b95; font-size: 12px; }
+.ess-pwa-steps { display: grid; gap: 17px; list-style: none; padding: 0; margin: 20px 0; }
+.ess-pwa-steps li { display: flex; align-items: flex-start; gap: 12px; color: #43516b; line-height: 1.6; }
+.ess-pwa-steps li > span { display: grid; place-items: center; flex: 0 0 27px; height: 27px; border-radius: 50%; background: #ebf1ff; color: #335296; font-size: 12px; font-weight: 700; }
+.ess-pwa-steps li > div { min-width: 0; padding-top: 2px; }
+.ess-pwa-steps small { display: block; color: #708098; font-size: 12px; line-height: 1.6; margin-top: 4px; }
+.ess-pwa-share-icon { display: inline-block; vertical-align: text-bottom; color: #2563b5; }
+.ess-pwa-online-note,
+.ess-pwa-guide-note { margin: 16px 0 0; padding: 12px; background: #f5f7fa; border-radius: 10px; color: #67758c; font-size: 12px; line-height: 1.6; }
+.ess-pwa-guide-note { background: #fff8e6; color: #7c601b; }
+.ess-pwa-close { background: #335296; color: white; border-color: #335296; min-width: 82px; }
+.ess-pwa-close:hover { background: #28437d; color: white; border-color: #28437d; }
+@media (max-width: 980px) {
+  .ess-topbar-actions { gap: 7px; }
+  .ess-pwa-install-compact { width: 40px; min-width: 40px; padding: 9px; }
+  .ess-pwa-install-compact > span { display: none; }
+  .ess-pwa-card { grid-template-columns: 38px minmax(0, 1fr); }
+  .ess-pwa-card .ess-pwa-install { grid-column: 2; justify-self: start; margin-top: 2px; }
+}
+@media (max-width: 360px) {
+  .ess-pwa-card { padding-left: 10px; gap: 8px; }
+  .ess-pwa-modal .ant-modal-content { padding: 18px; }
+}

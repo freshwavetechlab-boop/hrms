@@ -5,7 +5,7 @@ using Payroll.API.Models;
 
 namespace Payroll.API.Repositories;
 
-public class AuthRepository(IConfiguration configuration)
+public partial class AuthRepository(IConfiguration configuration)
 {
     private const int TokenBytes = 32;
     private const int SaltBytes = 16;

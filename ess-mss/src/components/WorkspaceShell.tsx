@@ -4,6 +4,7 @@ import type { OrganizationBrand, ProfileData, User, View } from '../types'
 import { essApi, organizationBrand } from '../services/essApi'
 import { initials } from '../utils/ui'
 import { canMaintainTravelExpense } from '../utils/access'
+import { PwaInstallControl } from './PwaInstallControl'
 
 type Props = {
   user: User
@@ -169,9 +170,12 @@ export function WorkspaceShell({ user, view, manager, employeeSelf, onNavigate, 
           {organization?.logoDataUrl && <img className="ess-topbar-org-logo" src={organization.logoDataUrl} alt={organization.name || 'Organization logo'} />}
           <div><span className="eyebrow">{workspaceLabel} / {section}</span><h2>{title}</h2></div>
         </div>
+        <div className="ess-topbar-actions">
+        <PwaInstallControl />
         <div className={`account-menu ${accountOpen ? 'open' : ''}`} ref={accountMenuRef}>
           <button className="user-menu" type="button" title="Account menu" aria-label={`Open account menu for ${user.displayName}`} onClick={() => setAccountOpen(open => !open)} aria-haspopup="menu" aria-expanded={accountOpen}><span>{initials(user.displayName)}</span><div><b>{user.displayName}</b><small title={profile?.attendanceOffice || undefined}>{profile?.attendanceOffice || (clientAttendanceOnly ? 'Client attendance access' : manager ? 'Manager access' : 'Employee access')}</small></div><i>v</i></button>
           {accountOpen && <div className="account-dropdown" role="menu">{profile?.attendanceOffice && <div className="account-office"><span>Attendance office</span><b>{profile.attendanceOffice}</b></div>}{employeeSelf && <button role="menuitem" type="button" onClick={() => { setActiveAction(null); onNavigate('My Profile'); setAccountOpen(false) }}>My profile</button>}<button role="menuitem" type="button" onClick={() => { setAccountOpen(false); onChangePassword() }}>Change password</button><button role="menuitem" type="button" onClick={onLogout}>Logout</button></div>}
+        </div>
         </div>
       </header>
       {children}
