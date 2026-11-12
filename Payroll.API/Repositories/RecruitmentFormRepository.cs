@@ -11,7 +11,7 @@ using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
-public sealed class RecruitmentFormRepository(IConfiguration configuration, ILogger<RecruitmentFormRepository> logger, RecruitmentPipelineRepository pipelines, NotificationRepository notifications, PublicPortalUrlResolver publicPortalUrls)
+public sealed partial class RecruitmentFormRepository(IConfiguration configuration, ILogger<RecruitmentFormRepository> logger, RecruitmentPipelineRepository pipelines, NotificationRepository notifications, PublicPortalUrlResolver publicPortalUrls)
 {
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
 

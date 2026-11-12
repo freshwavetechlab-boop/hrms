@@ -7,12 +7,14 @@ import PublicCareersPage from './pages/PublicCareersPage'
 import SettingsApp from './SettingsApp'
 import { lazy, Suspense } from 'react'
 const InternalInterviewPage = lazy(() => import('./pages/InternalInterviewPage'))
+const PublicJobsBoardPage = lazy(() => import('./pages/PublicJobsBoardPage'))
 
 export default function AppRoutes() {
   return <BrowserRouter>
     <ToastProvider>
       <AppGlobalLoader />
       <Routes>
+        <Route path="/careers" element={<Suspense fallback={<p>Loading open opportunities…</p>}><PublicJobsBoardPage /></Suspense>} />
         <Route path="/careers/:slug" element={<PublicCareersPage />} />
         <Route path="/candidate-action/:token" element={<PublicCandidateActionPage />} />
         <Route path="/interview/:id" element={<Suspense fallback={<p>Loading secured interview…</p>}><InternalInterviewPage candidate /></Suspense>} />

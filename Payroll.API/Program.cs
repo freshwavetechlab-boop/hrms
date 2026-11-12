@@ -2704,6 +2704,11 @@ recruitmentOrchestration.MapPost("/applications/{applicationId:long}/candidate-a
 recruitmentOrchestration.MapPost("/candidate-actions/{id:long}/revoke", async (RecruitmentCandidateActionRepository repository, long id, HttpContext context) =>
     !HasRecruitmentManagement(context) ? Results.StatusCode(403) : await repository.RevokeAsync(id, CurrentUser(context)) ? Results.NoContent() : Results.NotFound());
 
+app.MapGet("/api/public/recruitment/jobs", async (RecruitmentFormRepository repository, HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    return Results.Ok(await repository.ListPublicJobsAsync(context.RequestAborted));
+});
 app.MapGet("/api/public/recruitment/jobs/{slug}", async (RecruitmentFormRepository repository, string slug) =>
 {
     var row = await repository.GetPublicJobAsync(slug);
