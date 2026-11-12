@@ -6,12 +6,12 @@ The employee Attendance page supports the browser punch flow on phones and compu
 
 1. Sign in to ESS and choose **Mark attendance** on the dashboard, or open **Time & leave → Attendance calendar**.
 2. Select **Punch In** or **Punch Out**, as offered by the current server attendance state.
-3. Allow location and camera access. Capture the camera frame and confirm using the current ESS password.
+3. Allow location and camera access. Capture the camera frame and confirm the punch using the existing employee login session. No second password is requested.
 4. Submit the punch while online. Review the result and the saved location link.
 
-Location is requested for the punch, not continuously in the background. A geo-fence is optional: with no applicable fence, the server records valid coordinates with `NoGeoFenceConfigured`. If a fence exists, its inside/outside and reason rules remain in force. GPS accuracy must meet the existing limit of 100 metres. A coarse computer location is not silently accepted as a precise phone location.
+Location is requested for the punch, not continuously in the background. A geo-fence is optional: with no applicable fence, a browser/PWA punch records valid coordinates and the device's reported accuracy with `NoGeoFenceConfigured`, including an approximate 241-metre reading. Approximate readings are labelled on screen. If a fence exists, the existing 100-metre accuracy requirement, radius, tolerance, inside/outside, reason and approval rules remain in force. Native Android accuracy rules are unchanged. Invalid coordinates, negative/unrepresentable accuracy, denied location access and stale readings are still blocked; coordinates are never invented to replace a missing reading.
 
-Browser confirmation is explicitly separate from the Android device biometric confirmation. The server verifies the current employee account password; the web client does not claim that a biometric check occurred. Passwords are not saved in browser preferences, punch rows or audit details. The camera frame is a local capture preview, not a retained face-verification record.
+Browser confirmation is explicitly separate from the Android device biometric confirmation. Each request uses the existing authenticated session, with expiry/revocation and current permission checks. The browser-punch verifier also rechecks active account, employee and client status, mandatory password change, employee mapping and selected-client scope against the database. The web client does not claim that a biometric check occurred. New punch payloads contain no password; legacy password input is ignored and discarded. The camera frame is a local capture preview, not a retained face-verification record.
 
 ## Connectivity and devices
 
@@ -22,7 +22,7 @@ Browser confirmation is explicitly separate from the Android device biometric co
 
 ## Install the employee app
 
-- Select **Install app** on the ESS sign-in page or in the workspace header. Supported Chrome/Edge browsers open their native installation prompt when available; otherwise the button shows browser-menu instructions.
+- Select **Install Android app** on the ESS sign-in page, or **Install app** in the workspace header. This installs the existing PWA; it is not an APK download. Supported Chrome/Edge browsers open their installation prompt when available; otherwise the button shows browser-menu instructions.
 - On iPhone/iPad, open ESS in Safari, select **Share → Add to Home Screen → Add**. Installation requires the employee's confirmation; the portal does not automatically download an APK or install itself.
 - The install control is hidden in the installed app. Dismissing the sign-in suggestion hides that card for the browser session. Sign-in and attendance still require the internet, and use the same account and API.
 - PWA updates wait for current app windows to close, so an update does not replace the worker during a punch submission. Reopen the app to pick up an update.
@@ -35,4 +35,4 @@ Repository and isolated database tests use synthetic employees and coordinates. 
 
 The attendance workspace shows the current India time, server punch status, check-in/out times, and saved location links. First-time phone users start in Card view; an existing view preference is preserved. History scrolls independently in ordinary windows. Short windows and expanded location details can scroll the workspace so no controls are clipped. Mobile card filters open in a drawer.
 
-Responsive verification on 13 November 2026 covered approximately 1366×768, 768×1024, 390×844 and 320×569 CSS pixels, including the expanded/collapsed sidebar, 30 attendance rows, the final history action, punch confirmation, login/install instructions, dashboard/calendar, profile, leave and payslip preview. Two synthetic browser punches persisted through the real repository with camera confirmation, saved GPS and no biometric claim. The 23 frontend checks, 36 isolated database checks and production frontend build passed. Actual device installation remains a separate hardware check.
+Responsive verification on 13 November 2026 covered approximately 1366×768, 768×1024, 390×844 and 320×569 CSS pixels, including the expanded/collapsed sidebar, 30 attendance rows, the final history action, punch confirmation, login/install instructions, dashboard/calendar, profile, leave and payslip preview. After the session-based update, browser checks recorded Punch In and Punch Out without any password field and reloaded both saved 241-metre accuracy readings. The Android install label fits 320/390-pixel phone widths. The 24 frontend checks, 23 .NET tests (including real expired/revoked-session lookup and guarded database cases), 36 isolated integration checks and production frontend build passed. Actual device installation remains a separate hardware check.

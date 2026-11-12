@@ -100,7 +100,7 @@ function workerHarness({ offline = false, cached = null, privateResponse = false
     match: async request => { readRequests.push(request); return cached },
     put: async (...args) => { writes.push(args); if (quotaError) throw new Error('quota full') },
   }
-  const caches = { open: async () => cache, keys: async () => ['other-app-cache', 'frevo-one-ess-v3', 'frevo-one-ess-v4'], delete: async key => deleted.push(key) }
+  const caches = { open: async () => cache, keys: async () => ['other-app-cache', 'frevo-one-ess-v3', 'frevo-one-ess-v4', 'frevo-one-ess-v5'], delete: async key => deleted.push(key) }
   const self = { location: { origin: 'https://ess.example.test' }, addEventListener: (name, handler) => { handlers[name] = handler }, skipWaiting: async () => {}, clients: { claim: async () => {} } }
   const fetch = async request => { networkRequests.push(request); if (offline) throw new Error('offline'); return new Response('app asset', { headers: privateResponse ? { 'Cache-Control': 'private, no-store' } : {} }) }
   runInNewContext(readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8'), { self, caches, fetch, URL, Response })
@@ -147,7 +147,7 @@ test('offline navigation returns this app shell, absent assets fail safely, and 
   let activation
   missing.handlers.activate({ waitUntil: value => { activation = value } })
   await activation
-  assert.deepEqual(missing.deleted, ['frevo-one-ess-v3'])
+  assert.deepEqual(missing.deleted, ['frevo-one-ess-v3', 'frevo-one-ess-v4'])
 })
 
 test('manifest has stable identity, an in-scope start, real PNG sizes and a separate maskable safe-zone icon', () => {

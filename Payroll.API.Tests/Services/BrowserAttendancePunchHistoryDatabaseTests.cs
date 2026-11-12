@@ -42,7 +42,9 @@ public sealed class BrowserAttendancePunchHistoryDatabaseTests
         Assert.Contains(employeeId, new[] { 103, 104 });
         await using var db = new MySqlConnection(connection);
         await db.OpenAsync();
-        await db.ExecuteAsync(Schema);
+        // Use the same complete isolated schema as the session-punch suite.
+        // Parallel test classes must not race to create incompatible minimal tables.
+        await db.ExecuteAsync(await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "BrowserAttendance", "session-schema.sql")));
         await CleanupAsync(db, clientId, employeeId);
         try
         {
@@ -108,15 +110,4 @@ SELECT LAST_INSERT_ID();
             new { ClientId = clientId, EmployeeId = employeeId });
     }
 
-    private const string Schema = """
-CREATE TABLE IF NOT EXISTS clients(Id INT PRIMARY KEY,Name VARCHAR(180),IsActive BOOLEAN NOT NULL DEFAULT TRUE);
-CREATE TABLE IF NOT EXISTS employees(Id INT PRIMARY KEY,ClientId INT NOT NULL,EmployeeCode VARCHAR(80),FirstName VARCHAR(100),LastName VARCHAR(100),IsActive BOOLEAN NOT NULL DEFAULT TRUE,WorkLocationId INT NOT NULL DEFAULT 0,ReportingManagerUserId INT NULL);
-CREATE TABLE IF NOT EXISTS modulesettings(client_id INT,ModuleCode VARCHAR(80),SettingsJson JSON);
-CREATE TABLE IF NOT EXISTS attendance_settings(id INT PRIMARY KEY AUTO_INCREMENT,client_id INT,shift_id INT NULL,check_in_time TIME DEFAULT '09:00:00',check_out_time TIME DEFAULT '18:00:00',working_hours_calculation VARCHAR(80) DEFAULT 'First check-in and last check-out',minimum_hours_for_half_day DECIMAL(5,2) DEFAULT 4,minimum_hours_for_full_day DECIMAL(5,2) DEFAULT 8,maximum_hours_allowed_for_full_day DECIMAL(5,2) DEFAULT 12,allow_regularization_requests BOOLEAN DEFAULT TRUE,regularization_window VARCHAR(40) DEFAULT 'Anytime',past_days_allowed INT DEFAULT 7,restrict_regularization_requests_per_month BOOLEAN DEFAULT FALSE,max_regularization_requests_per_month INT DEFAULT 3,created_at DATETIME DEFAULT CURRENT_TIMESTAMP,updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS attendance_shifts(id INT PRIMARY KEY,client_id INT,shift_code VARCHAR(50),shift_name VARCHAR(180),shift_type VARCHAR(20),start_time TIME,end_time TIME,is_overnight BOOLEAN,grace_minutes INT,break_minutes INT,minimum_full_day_hours DECIMAL(5,2),minimum_half_day_hours DECIMAL(5,2),effective_from DATE,effective_to DATE,is_active BOOLEAN,rules_json JSON,created_at DATETIME,updated_at DATETIME);
-CREATE TABLE IF NOT EXISTS attendance_groups(id INT PRIMARY KEY,client_id INT,shift_id INT,attendance_mode VARCHAR(20),allowed_shift_ids_json JSON,is_active BOOLEAN);
-CREATE TABLE IF NOT EXISTS attendance_group_employees(attendance_group_id INT,employee_id INT);
-CREATE TABLE IF NOT EXISTS attendance_shift_assignments(id INT PRIMARY KEY,client_id INT,employee_id INT,shift_id INT,effective_from DATE,effective_to DATE,week_days VARCHAR(20),reason VARCHAR(500),is_active BOOLEAN);
-CREATE TABLE IF NOT EXISTS employee_attendance_punches(id BIGINT PRIMARY KEY AUTO_INCREMENT,client_id INT,employee_id INT,client_request_id VARCHAR(100),action VARCHAR(20),captured_at DATETIME,latitude DECIMAL(10,7),longitude DECIMAL(10,7),accuracy_meters INT,validation_status VARCHAR(60),decision VARCHAR(30));
-""";
 }

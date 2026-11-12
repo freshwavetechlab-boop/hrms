@@ -10,7 +10,7 @@ namespace Payroll.API.Tests.Services;
 public sealed class BrowserAttendanceTests
 {
     [Fact]
-    public void Browser_password_is_write_only_and_removed_after_it_is_consumed()
+    public void Legacy_browser_password_input_is_write_only_and_can_be_discarded()
     {
         var json = """{"confirmationPassword":"synthetic password","action":"CheckIn","latitude":19.1234567,"biometricConfirmed":true}""";
         var request = JsonSerializer.Deserialize<BrowserAttendancePunchRequest>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
@@ -49,6 +49,7 @@ public sealed class BrowserAttendanceTests
         Assert.False(result.PunchRecorded);
         Assert.Equal("BrowserIdentityMismatch", result.Status);
         Assert.False(request.BiometricConfirmed);
+        Assert.Equal("", request.TakeConfirmationPassword());
         Assert.Null(result.ConfirmationMethod);
     }
 
@@ -84,24 +85,17 @@ public sealed class BrowserAttendanceTests
         await Assert.ThrowsAsync<UnauthorizedAccessException>(() => repository.GetOwnAttendancePunchesAsync(new AuthUser { Id = 7, IsActive = true, EmployeeId = 17 }, "2026-11-13"));
     }
 
-    [Fact]
-    public void Confirmation_password_failures_are_limited_per_user_and_expire_without_unbounded_memory()
+    [Theory]
+    [InlineData(101)]
+    [InlineData(241)]
+    [InlineData(int.MaxValue)]
+    public async Task Native_accuracy_above_one_hundred_meters_still_blocks_before_any_geofence_lookup(int accuracy)
     {
-        var limit = new BrowserAttendancePasswordThrottle();
-        var now = new DateTimeOffset(2026, 11, 13, 0, 0, 0, TimeSpan.Zero);
-        for (var i = 0; i < BrowserAttendancePasswordThrottle.AttemptLimit; i++) Assert.True(limit.TryBegin(7, now, out _));
-        Assert.False(limit.TryBegin(7, now, out var retry));
-        Assert.Equal(300, retry);
-        Assert.True(limit.TryBegin(8, now, out _));
-        Assert.True(limit.TryBegin(7, now + BrowserAttendancePasswordThrottle.Window, out _));
-        limit.Succeeded(7);
-        Assert.True(limit.TryBegin(7, now + BrowserAttendancePasswordThrottle.Window, out _));
-
-        var bounded = new BrowserAttendancePasswordThrottle();
-        for (var i = 1; i <= BrowserAttendancePasswordThrottle.MaximumUsers; i++) Assert.True(bounded.TryBegin(i, now, out _));
-        Assert.False(bounded.TryBegin(BrowserAttendancePasswordThrottle.MaximumUsers + 1, now, out _));
-        Assert.Equal(BrowserAttendancePasswordThrottle.MaximumUsers, bounded.Count);
-        Assert.True(bounded.TryBegin(BrowserAttendancePasswordThrottle.MaximumUsers + 1, now + BrowserAttendancePasswordThrottle.Window, out _));
-        Assert.Equal(1, bounded.Count);
+        var validate = typeof(EssMssRepository).GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
+            .Single(method => method.Name == "ValidateAttendancePunchAsync");
+        var request = new ValidateAttendancePunchRequest { ClientRequestId = "synthetic", DeviceId = "synthetic-device", NetworkType = "Online", AppVersion = "test", CameraCaptureConfirmed = true, BiometricConfirmed = true, Latitude = 19, Longitude = 72, AccuracyMeters = accuracy };
+        var result = await (Task<AttendancePunchValidationResponse>)validate.Invoke(null, [null, null, 1, 17, request, DateTime.UtcNow, null])!;
+        Assert.False(result.Allowed);
+        Assert.Equal("LocationAccuracyTooLow", result.Status);
     }
 }

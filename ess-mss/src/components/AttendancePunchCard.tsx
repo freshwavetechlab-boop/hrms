@@ -22,12 +22,12 @@ function AttendancePunchSession({ user, onRecorded }: { user: User; onRecorded: 
   const [open, setOpen] = useState(false), [action, setAction] = useState<PunchAction>('CheckIn'), [online, setOnline] = useState(navigator.onLine)
   const [location, setLocation] = useState<PunchLocation | null>(null), [locating, setLocating] = useState(false)
   const [photo, setPhoto] = useState(''), [cameraRunning, setCameraRunning] = useState(false), [cameraStarting, setCameraStarting] = useState(false), [cameraReady, setCameraReady] = useState(false)
-  const [password, setPassword] = useState(''), [reason, setReason] = useState(''), [needsReason, setNeedsReason] = useState(false)
+  const [reason, setReason] = useState(''), [needsReason, setNeedsReason] = useState(false)
   const [submitting, setSubmitting] = useState(false), [pendingRetry, setPendingRetry] = useState(false), [retryAfter, setRetryAfter] = useState(0), [proofError, setProofError] = useState('')
   const video = useRef<HTMLVideoElement>(null), stream = useRef<MediaStream | null>(null)
   const cameraVersion = useRef(0), gpsVersion = useRef(0), loadVersion = useRef(0), drawerOpen = useRef(false), sending = useRef(false)
-  // An uncertain result keeps only the request with an empty password in memory.
-  // Retrying uses the same id and coordinates; nothing is queued or persisted.
+  // An uncertain result retains the same request id and coordinates in memory.
+  // Nothing is queued or persisted; the existing login authenticates each call.
   const attempt = useRef<BrowserPunchRequest | null>(null)
 
   const stopCamera = useCallback(() => {
@@ -109,39 +109,37 @@ function AttendancePunchSession({ user, onRecorded }: { user: User; onRecorded: 
   const openPunch = () => {
     const next = pendingRetry && attempt.current ? attempt.current.action : today?.nextExpectedAction
     if (!permitted || !online || !['CheckIn', 'CheckOut'].includes(next || '')) return
-    setAction(next as PunchAction); setOpen(true); drawerOpen.current = true; setPassword(''); setPhoto(''); setProofError(''); setSuccess('')
+    setAction(next as PunchAction); setOpen(true); drawerOpen.current = true; setPhoto(''); setProofError(''); setSuccess('')
     if (pendingRetry && attempt.current) setLocation(attempt.current)
     else { setReason(''); setNeedsReason(false); setLocation(null); void refreshLocation() }
   }
 
   const closeProof = () => {
     if (sending.current) return
-    drawerOpen.current = false; gpsVersion.current++; stopCamera(); setOpen(false); setPassword(''); setPhoto(''); setLocation(null); setLocating(false); setProofError('')
+    drawerOpen.current = false; gpsVersion.current++; stopCamera(); setOpen(false); setPhoto(''); setLocation(null); setLocating(false); setProofError('')
     if (!pendingRetry) { attempt.current = null; setReason(''); setNeedsReason(false) }
   }
 
   const submit = async () => {
     if (sending.current || !permitted) return
     if (!navigator.onLine) { setProofError('You are offline. Reconnect before confirming attendance. Punches are not queued offline.'); return }
-    if (!photo || !password || needsReason && !reason.trim()) { setProofError(!photo ? 'Capture a photo with the camera first.' : !password ? 'Enter your ESS password to confirm attendance.' : 'Enter the reason requested for this punch.'); return }
-    const confirmationPassword = password
-    setPassword(''); setSubmitting(true); sending.current = true; setProofError('')
+    if (!photo || needsReason && !reason.trim()) { setProofError(!photo ? 'Capture a photo with the camera first.' : 'Enter the reason requested for this punch.'); return }
+    setSubmitting(true); sending.current = true; setProofError('')
     try {
       let request: BrowserPunchRequest
-      if (pendingRetry && attempt.current) request = { ...attempt.current, confirmationPassword, cameraCaptureConfirmed: true }
+      if (pendingRetry && attempt.current) request = { ...attempt.current, cameraCaptureConfirmed: true }
       else {
         // Acquire another fresh reading at the actual submit, after the user
-        // has captured their camera picture and entered the confirmation.
+        // has captured their camera picture.
         setLocating(true)
         const reading = await getFreshPunchLocation()
         setLocation(reading); setLocating(false)
         const details = getPunchDeviceDetails(scope)
-        request = buildBrowserPunch({ requestId: attempt.current?.clientRequestId || crypto.randomUUID(), action, location: reading, cameraFrameCaptured: !!photo, password: confirmationPassword, reason, ...details })
-        attempt.current = { ...request, confirmationPassword: '' }
+        request = buildBrowserPunch({ requestId: attempt.current?.clientRequestId || crypto.randomUUID(), action, location: reading, cameraFrameCaptured: !!photo, reason, ...details })
+        attempt.current = { ...request }
       }
-      const wasPending = pendingRetry
       const result = await recordBrowserPunch(request)
-      setPassword(''); setPendingRetry(wasPending && !result.punchRecorded && ['PasswordConfirmationRequired', 'PasswordConfirmationRateLimited'].includes(result.status))
+      setPendingRetry(false)
       if (result.punchRecorded) {
         attempt.current = null; drawerOpen.current = false; gpsVersion.current++; stopCamera(); setOpen(false); setPhoto(''); setLocation(null); setReason(''); setNeedsReason(false); setSuccess(`${action === 'CheckIn' ? 'Punch In' : 'Punch Out'} ${result.idempotentReplay ? 'was already recorded. The saved location is unchanged.' : 'recorded successfully.'}`)
         await refreshToday()
@@ -149,12 +147,12 @@ function AttendancePunchSession({ user, onRecorded }: { user: User; onRecorded: 
       } else {
         setNeedsReason(resultNeedsReason(result)); setProofError(result.message || 'This punch was not recorded. Review the details and retry.')
         if (result.retryAfterSeconds) setRetryAfter(Math.min(3600, Math.max(0, Math.ceil(result.retryAfterSeconds))))
-        if (!resultNeedsReason(result) && !['PasswordConfirmationRequired', 'PasswordConfirmationRateLimited'].includes(result.status)) void refreshToday()
+        if (!resultNeedsReason(result)) void refreshToday()
       }
     } catch (failure) {
       const uncertain = !!attempt.current && (pendingRetry || failure instanceof PunchRequestError && failure.uncertain)
       setPendingRetry(uncertain); setProofError(failure instanceof Error ? failure.message : 'Unable to confirm this punch.')
-    } finally { sending.current = false; setPassword(''); setSubmitting(false); setLocating(false) }
+    } finally { sending.current = false; setSubmitting(false); setLocating(false) }
   }
 
   if (!permitted) return null
@@ -170,6 +168,7 @@ function AttendancePunchSession({ user, onRecorded }: { user: User; onRecorded: 
   const displayTime = (value?: string | null) => value ? attendanceClock(/^\d{1,2}:/.test(value) ? `2000-01-01T${value}` : value) : '—'
   const lastLocation = [...punches].reverse().find(validMapLocation)
   const disablePunch = !online || loading || submitting || !pendingRetry && (!ready || awaiting)
+  const approximateLocation = !!location && location.accuracyMeters > 100
   return <>
     <section className="ess-punch-card" aria-label="Punch attendance" aria-busy={loading}>
       <div className="ess-punch-heading">
@@ -189,14 +188,14 @@ function AttendancePunchSession({ user, onRecorded }: { user: User; onRecorded: 
       {!!punches.length && <details className="ess-punch-saved"><summary>Saved punches and locations ({punches.length})</summary><ul>{punches.map(punch => <li key={punch.id}><span className={`ess-punch-log-icon ${punch.action === 'CheckOut' ? 'is-out' : ''}`}>{punch.action === 'CheckIn' ? <LoginOutlined /> : <LogoutOutlined />}</span><span><b>{punch.action === 'CheckIn' ? 'Punch In' : 'Punch Out'}</b><time>{attendanceClock(punch.capturedAt)}</time></span>{validMapLocation(punch) ? <a href={mapsLocationUrl(punch)} target="_blank" rel="noopener noreferrer"><EnvironmentOutlined /> View saved location <small>Accuracy {punch.accuracyMeters} m</small></a> : <span>Location not available</span>}</li>)}</ul></details>}
       {logError && <p className="ess-punch-note" role="status">{logError}</p>}
     </section>
-    <Drawer title={<span className="ess-punch-drawer-title">{action === 'CheckIn' ? <LoginOutlined /> : <LogoutOutlined />}{action === 'CheckIn' ? 'Punch In' : 'Punch Out'} attendance</span>} open={open} width="min(500px, 100vw)" className="ess-punch-drawer" closable={!submitting} maskClosable={!submitting} onClose={closeProof} footer={<div className="ess-punch-footer"><Button onClick={closeProof} disabled={submitting}>Cancel</Button><Button type="primary" icon={<CheckCircleFilled />} onClick={() => void submit()} loading={submitting} disabled={!online || !photo || !password || locating || retryAfter > 0 || needsReason && !reason.trim()}>{retryAfter > 0 ? `Retry in ${retryAfter}s` : pendingRetry ? 'Retry same punch' : 'Confirm attendance'}</Button></div>}>
-      <div className="ess-punch-intro"><span className="ess-punch-overline">A QUICK, SECURE CHECK</span><h3>Let’s confirm it’s you</h3><p>Verify your location, take a picture and confirm your attendance.</p></div>
+    <Drawer title={<span className="ess-punch-drawer-title">{action === 'CheckIn' ? <LoginOutlined /> : <LogoutOutlined />}{action === 'CheckIn' ? 'Punch In' : 'Punch Out'} attendance</span>} open={open} width="min(500px, 100vw)" className="ess-punch-drawer" closable={!submitting} maskClosable={!submitting} onClose={closeProof} footer={<div className="ess-punch-footer"><Button onClick={closeProof} disabled={submitting}>Cancel</Button><Button type="primary" icon={<CheckCircleFilled />} onClick={() => void submit()} loading={submitting} disabled={!online || !photo || locating || retryAfter > 0 || needsReason && !reason.trim()}>{retryAfter > 0 ? `Retry in ${retryAfter}s` : pendingRetry ? 'Retry same punch' : 'Confirm attendance'}</Button></div>}>
+      <div className="ess-punch-intro"><span className="ess-punch-overline">A QUICK, SECURE CHECK</span><h3>Let’s record your attendance</h3><p>Capture your location and take a picture to confirm your punch.</p></div>
       {proofError && <Alert type="error" showIcon message={proofError} />}
-      {pendingRetry && <Alert type="warning" showIcon message="This retries the previous submission with the same request ID and captured location. Your password is required again." />}
-      <section className="ess-punch-step"><div className="ess-punch-step-head"><span className={`ess-punch-step-number ${location ? 'is-done' : ''}`}>{location ? <CheckCircleFilled /> : '1'}</span><div><h3>Verify location</h3><p>Precise GPS from your device</p></div>{location && <span className="ess-punch-verified">Ready</span>}</div><div className={`ess-punch-gps ${location ? 'is-ready' : ''}`}><EnvironmentOutlined /><div><b>{location ? 'Location captured' : locating ? 'Finding your location…' : 'Location required'}</b><span>{location ? `GPS accuracy: ${location.accuracyMeters} m` : 'Allow precise location in your browser.'}</span></div><Button type="text" size="small" aria-label={location ? 'Refresh GPS' : 'Get GPS location'} loading={locating} disabled={submitting || pendingRetry} onClick={() => void refreshLocation()} icon={<ReloadOutlined />} /></div></section>
+      {pendingRetry && <Alert type="warning" showIcon message="This retries the previous submission with the same request ID and captured location. Take a new camera picture to continue." />}
+      <section className="ess-punch-step"><div className="ess-punch-step-head"><span className={`ess-punch-step-number ${location ? 'is-done' : ''}`}>{location ? <CheckCircleFilled /> : '1'}</span><div><h3>Capture location</h3><p>Current location from your device</p></div>{location && <span className={`ess-punch-verified ${approximateLocation ? 'is-approximate' : ''}`}>{approximateLocation ? 'Approximate' : 'Captured'}</span>}</div><div className={`ess-punch-gps ${approximateLocation ? 'is-approximate' : location ? 'is-ready' : ''}`}><EnvironmentOutlined /><div><b>{location ? 'Location captured' : locating ? 'Finding your location…' : 'Location required'}</b><span>{location ? `GPS accuracy: ${location.accuracyMeters} m` : 'Allow location access in your browser.'}</span></div><Button type="text" size="small" aria-label={location ? 'Refresh GPS' : 'Get GPS location'} loading={locating} disabled={submitting || pendingRetry} onClick={() => void refreshLocation()} icon={<ReloadOutlined />} /></div>{approximateLocation && <p className="ess-punch-note">This is an approximate reading. A configured geofence may require a more accurate location.</p>}</section>
       <section className="ess-punch-step"><div className="ess-punch-step-head"><span className={`ess-punch-step-number ${photo ? 'is-done' : ''}`}>{photo ? <CheckCircleFilled /> : '2'}</span><div><h3>Camera picture</h3><p>A fresh picture for this punch</p></div>{photo && <span className="ess-punch-verified">Ready</span>}</div><div className="ess-punch-camera">{!photo && !cameraRunning && !cameraStarting && <div className="ess-punch-camera-placeholder"><CameraOutlined /><b>A quick camera check</b><span>Keep your face in the frame</span></div>}{photo && <img src={photo} alt="Captured camera preview" />}<video ref={video} autoPlay muted playsInline aria-label="Live camera preview" hidden={!cameraRunning && !cameraStarting} onLoadedData={() => setCameraReady(!!video.current && video.current.readyState >= 2 && video.current.videoWidth > 0)} /></div><Space wrap className="ess-punch-camera-actions"><Button icon={<CameraOutlined />} onClick={() => void startCamera()} loading={cameraStarting} disabled={submitting}>{photo ? 'Retake photo' : 'Open camera'}</Button>{cameraRunning && <Button type="primary" onClick={capturePhoto} disabled={!cameraReady || submitting}>Capture photo</Button>}</Space><p className="ess-punch-note"><LockOutlined /> Your camera preview is cleared when you close this window.</p></section>
       {needsReason && <label className="ess-punch-input"><span>Reason for this punch</span><Input.TextArea aria-label="Punch reason" maxLength={1000} value={reason} onChange={event => setReason(event.target.value)} disabled={submitting} /></label>}
-      <section className="ess-punch-step"><div className="ess-punch-step-head"><span className={`ess-punch-step-number ${password ? 'is-done' : ''}`}>{password ? <CheckCircleFilled /> : '3'}</span><div><h3>Confirm it’s you</h3><p>Use your employee portal password</p></div></div><label className="ess-punch-input"><span>Confirm ESS password</span><Input.Password prefix={<LockOutlined />} placeholder="Enter your password" aria-label="Confirm ESS password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} disabled={submitting} /></label></section>
+      <p className="ess-punch-note"><LockOutlined /> Your current employee login session confirms this punch.</p>
     </Drawer>
   </>
 }

@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'frevo-one-ess-'
-const CACHE_NAME = `${CACHE_PREFIX}v4`
+const CACHE_NAME = `${CACHE_PREFIX}v5`
 const APP_SHELL = ['/', '/index.html', '/favicon.svg', '/manifest.webmanifest', '/pwa-192x192.png', '/pwa-512x512.png', '/pwa-maskable.svg', '/assets/FrevoOneLogo.png']
 
 self.addEventListener('install', event => {

@@ -4,7 +4,7 @@ export type PunchAction = 'CheckIn' | 'CheckOut'
 export type PunchLocation = { latitude: number; longitude: number; accuracyMeters: number; capturedAt: string }
 export type AttendanceToday = { attendanceDate: string; status: string; checkInTime?: string | null; checkOutTime?: string | null; nextExpectedAction: PunchAction | 'Completed' | 'Unavailable' | 'WaitForApproval'; approvalPending: boolean }
 export type SavedAttendancePunch = { id: number; action: PunchAction; capturedAt: string; latitude: number; longitude: number; accuracyMeters: number; validationStatus: string; decision: string }
-export type BrowserPunchRequest = PunchLocation & { clientRequestId: string; action: PunchAction; deviceId: string; networkType: string; appVersion: string; cameraCaptureConfirmed: boolean; biometricConfirmed: false; reason: string; confirmationPassword: string; deviceModel: string; osVersion: string }
+export type BrowserPunchRequest = PunchLocation & { clientRequestId: string; action: PunchAction; deviceId: string; networkType: string; appVersion: string; cameraCaptureConfirmed: boolean; biometricConfirmed: false; reason: string; deviceModel: string; osVersion: string }
 export type BrowserPunchResult = { allowed: boolean; punchRecorded: boolean; status: string; message: string; nextExpectedAction?: string; requiresReason: boolean; punchId?: number | null; attendanceDate?: string | null; idempotentReplay?: boolean; retryAfterSeconds?: number; confirmationMethod?: string }
 
 export const freshGpsOptions: PositionOptions = { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 }
@@ -18,7 +18,9 @@ export function locationFromPosition(position: Pick<GeolocationPosition, 'coords
   const { latitude, longitude, accuracy } = position.coords
   if (![latitude, longitude, accuracy, position.timestamp].every(Number.isFinite) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 || (latitude === 0 && longitude === 0))
     throw new Error('The device did not return a valid GPS location. Turn on location services and try again.')
-  if (accuracy < 0 || accuracy > 100) throw new Error(`GPS accuracy is ${Math.ceil(accuracy)} m. Enable precise location, move near a window or outdoors, then retry. A reading within 100 m is required.`)
+  // The API decides accuracy against the employee's applicable geofence. A
+  // valid approximate reading must still reach it when no fence is configured.
+  if (accuracy < 0 || Math.ceil(accuracy) > 2147483647) throw new Error('The device did not return a valid location accuracy. Refresh location and try again.')
   if (now - position.timestamp > 60000 || position.timestamp - now > 60000) throw new Error('The device returned an old GPS reading. Refresh location and try again.')
   return { latitude, longitude, accuracyMeters: Math.ceil(accuracy), capturedAt: new Date(now).toISOString() }
 }
@@ -43,12 +45,11 @@ export function cameraErrorMessage(error: unknown) {
   return 'The camera could not start. Close other apps using it, check camera permission, and try again. Use the secure HTTPS portal.'
 }
 
-export function buildBrowserPunch(input: { requestId: string; action: PunchAction; location: PunchLocation; deviceId: string; cameraFrameCaptured: boolean; password: string; reason: string; networkType?: string; platform?: string }): BrowserPunchRequest {
+export function buildBrowserPunch(input: { requestId: string; action: PunchAction; location: PunchLocation; deviceId: string; cameraFrameCaptured: boolean; reason: string; networkType?: string; platform?: string }): BrowserPunchRequest {
   if (!input.requestId || !input.deviceId) throw new Error('A device and request identifier are required. Close the punch window and retry.')
   if (!input.cameraFrameCaptured) throw new Error('Capture a photo with the camera before confirming attendance.')
-  if (!input.password) throw new Error('Enter your ESS password to confirm attendance.')
-  if (!validMapLocation(input.location) || !Number.isFinite(input.location.accuracyMeters) || input.location.accuracyMeters < 0 || input.location.accuracyMeters > 100 || !Number.isFinite(new Date(input.location.capturedAt).getTime())) throw new Error('Refresh the precise GPS reading before confirming attendance.')
-  return { ...input.location, clientRequestId: input.requestId, action: input.action, deviceId: input.deviceId, networkType: input.networkType?.slice(0, 40) || 'Browser', appVersion: 'ess-web/1.0', cameraCaptureConfirmed: true, biometricConfirmed: false, reason: input.reason.trim(), confirmationPassword: input.password, deviceModel: 'Browser / PWA', osVersion: input.platform?.slice(0, 80) || 'Browser' }
+  if (!validMapLocation(input.location) || !Number.isInteger(input.location.accuracyMeters) || input.location.accuracyMeters < 0 || input.location.accuracyMeters > 2147483647 || !Number.isFinite(new Date(input.location.capturedAt).getTime())) throw new Error('Refresh the GPS reading before confirming attendance.')
+  return { ...input.location, clientRequestId: input.requestId, action: input.action, deviceId: input.deviceId, networkType: input.networkType?.slice(0, 40) || 'Browser', appVersion: 'ess-web/1.1', cameraCaptureConfirmed: true, biometricConfirmed: false, reason: input.reason.trim(), deviceModel: 'Browser / PWA', osVersion: input.platform?.slice(0, 80) || 'Browser' }
 }
 
 export function browserDeviceId(storage: Pick<Storage, 'getItem' | 'setItem'>, scope: string, randomId: () => string = () => crypto.randomUUID()) {

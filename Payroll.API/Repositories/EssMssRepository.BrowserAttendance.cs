@@ -17,19 +17,16 @@ public partial class EssMssRepository
 
     private async Task<AttendancePunchValidationResponse> BrowserAttendancePunchAsync(AuthRepository auth, AuthUser user, BrowserAttendancePunchRequest request, bool record)
     {
-        // A browser never supplies a biometric proof. Password confirmation is a
-        // separately verified server context; native punch semantics stay intact.
-        var password = request.TakeConfirmationPassword();
+        // Browsers use the authenticated employee session and a camera capture,
+        // never a claimed native biometric proof. Discard the legacy password
+        // field without verifying or retaining it, for older client compatibility.
+        request.TakeConfirmationPassword();
         request.BiometricConfirmed = false;
         request.Facial = null;
-        var confirmed = await auth.ConfirmBrowserAttendancePasswordAsync(user, password);
+        var confirmed = await auth.ConfirmBrowserAttendanceSessionAsync(user);
         if (!confirmed.Allowed)
         {
-            var nextAction = confirmed.Status == "PasswordConfirmationRateLimited" ? "WaitAndRetry"
-                : confirmed.Status == "BrowserIdentityMismatch" ? "SignInAgain" : "ConfirmPassword";
-            var denied = Block(confirmed.Status, confirmed.Message, nextAction);
-            denied.RetryAfterSeconds = confirmed.RetryAfterSeconds;
-            return denied;
+            return Block(confirmed.Status, confirmed.Message, "SignInAgain");
         }
         var browser = new BrowserPunchContext(user.Id, user.Email, confirmed.EmployeeId!.Value, confirmed.ClientId!.Value);
         AttendancePunchValidationResponse result;
@@ -41,7 +38,7 @@ public partial class EssMssRepository
             result = identity is null ? Block("EmployeeOrClientInactive", "The active employee and client mapping was not found.", "ContactHR")
                 : await ValidateAttendancePunchAsync(db, null, browser.ClientId, browser.EmployeeId, request, ResolveAttendanceDateTime(request.CapturedAt), browser);
         }
-        result.ConfirmationMethod = "ESSPassword";
+        result.ConfirmationMethod = "ESSSession";
         return result;
     }
 

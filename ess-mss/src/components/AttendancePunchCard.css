@@ -69,6 +69,8 @@
 .ess-punch-gps span:not(.anticon) { font-size: 10px; }
 .ess-punch-gps.is-ready { background: #eef9f4; color: #14805b; }
 .ess-punch-gps.is-ready b { color: #14805b; }
+.ess-punch-gps.is-approximate { background: #fff7e9; color: #9b6a19; }
+.ess-punch-gps.is-approximate b, .ess-punch-verified.is-approximate { color: #9b6a19; }
 .ess-punch-camera { min-width: 0; border-radius: 10px; overflow: hidden; background: #f8f6fc; border: 1px dashed #e2d9f3; }
 .ess-punch-camera-placeholder { min-height: 145px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 16px; }
 .ess-punch-camera-placeholder .anticon { font-size: 28px; color: #a591c4; margin-bottom: 6px; }

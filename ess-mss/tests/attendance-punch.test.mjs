@@ -12,7 +12,7 @@ function load(relative, imports = {}) {
 const util = load('../src/utils/attendancePunch.ts')
 const device = load('../src/services/attendancePunchDevice.ts', { '../utils/attendancePunch': util })
 const location = { latitude: 19.076, longitude: 72.8777, accuracyMeters: 12, capturedAt: '2026-11-13T04:30:00.000Z' }
-const request = () => util.buildBrowserPunch({ requestId: 'same-request-id', action: 'CheckIn', location, deviceId: 'web-device-id', cameraFrameCaptured: true, password: 'synthetic-password', reason: '', platform: 'Synthetic OS' })
+const request = () => util.buildBrowserPunch({ requestId: 'same-request-id', action: 'CheckIn', location, deviceId: 'web-device-id', cameraFrameCaptured: true, reason: '', platform: 'Synthetic OS' })
 
 test('marking attendance requires the actual self and mark grants and a linked employee', () => {
   const user = { employeeId: 7, mustChangePassword: false, permissions: ['ESS.SELF', 'ess.attendance.mark'] }
@@ -30,12 +30,31 @@ test('GPS requests high accuracy, zero cached age and a bounded timeout', async 
   assert.ok(Date.now() - new Date(reading.capturedAt).getTime() < 1000)
 })
 
-test('GPS rejects imprecise, non-finite, invalid and cached readings instead of guessing', () => {
+test('GPS rejects non-finite, invalid, unrepresentable and cached readings instead of guessing', () => {
   const now = Date.now(), position = { coords: { latitude: 19.076, longitude: 72.8777, accuracy: 10 }, timestamp: now }
-  for (const coords of [{ accuracy: 100.1 }, { accuracy: -1 }, { accuracy: NaN }, { latitude: 91 }, { longitude: -181 }, { latitude: 0, longitude: 0 }]) assert.throws(() => util.locationFromPosition({ ...position, coords: { ...position.coords, ...coords } }, now))
+  for (const coords of [{ accuracy: 2147483647.1 }, { accuracy: -1 }, { accuracy: NaN }, { latitude: 91 }, { longitude: -181 }, { latitude: 0, longitude: 0 }]) assert.throws(() => util.locationFromPosition({ ...position, coords: { ...position.coords, ...coords } }, now))
   assert.throws(() => util.locationFromPosition({ ...position, timestamp: now - 60001 }, now), /old GPS/)
   assert.throws(() => util.locationFromPosition({ ...position, timestamp: now + 60001 }, now), /old GPS/)
   assert.equal(util.locationFromPosition({ ...position, coords: { ...position.coords, longitude: 0 } }, now).longitude, 0)
+})
+
+test('a fresh 241-metre reading reaches server policy unchanged rather than being rejected locally', async () => {
+  const now = Date.now()
+  const reading = util.locationFromPosition({ coords: { latitude: 19.076, longitude: 72.8777, accuracy: 241 }, timestamp: now }, now)
+  const dto = util.buildBrowserPunch({ requestId: 'coarse-reading', action: 'CheckIn', location: reading, deviceId: 'web-device-id', cameraFrameCaptured: true, reason: '' })
+  assert.equal(dto.accuracyMeters, 241)
+  assert.equal(dto.latitude, 19.076)
+  assert.equal(dto.longitude, 72.8777)
+  let sent
+  const api = load('../src/services/attendancePunchService.ts', { './essApi': { essFetch: async (_path, options) => {
+    sent = JSON.parse(options.body)
+    return new Response(JSON.stringify({ allowed: false, punchRecorded: false, status: 'LocationAccuracyTooLow', message: 'Configured geofence requires a precise reading.', requiresReason: false }), { status: 400 })
+  } } })
+  const result = await api.recordBrowserPunch(dto)
+  assert.equal(sent.accuracyMeters, 241)
+  assert.equal('confirmationPassword' in sent, false)
+  assert.equal(result.punchRecorded, false)
+  assert.equal(result.status, 'LocationAccuracyTooLow', 'the configured fence remains authoritative')
 })
 
 test('denied GPS and timeouts surface actionable device messages', async () => {
@@ -70,18 +89,19 @@ test('camera cleanup stops every track, including after a disconnected device', 
   device.stopPunchCamera(null)
 })
 
-test('browser payload requires camera and password and never claims biometric confirmation', () => {
-  const base = { requestId: 'id', action: 'CheckIn', location, deviceId: 'web-device-id', cameraFrameCaptured: true, password: 'test-password', reason: '  approved duty  ' }
+test('browser payload requires camera, uses the existing session and never carries a password or biometric claim', () => {
+  const base = { requestId: 'id', action: 'CheckIn', location, deviceId: 'web-device-id', cameraFrameCaptured: true, reason: '  approved duty  ' }
   const dto = util.buildBrowserPunch(base)
   assert.equal(dto.biometricConfirmed, false)
   assert.equal(dto.cameraCaptureConfirmed, true)
-  assert.equal(dto.confirmationPassword, 'test-password')
+  assert.equal('confirmationPassword' in dto, false)
+  assert.equal('password' in dto, false)
   assert.equal(dto.networkType, 'Browser')
   assert.equal(dto.reason, 'approved duty')
   assert.equal(dto.capturedAt, location.capturedAt)
   assert.throws(() => util.buildBrowserPunch({ ...base, cameraFrameCaptured: false }), /camera/)
-  assert.throws(() => util.buildBrowserPunch({ ...base, password: '' }), /password/)
   assert.throws(() => util.buildBrowserPunch({ ...base, location: { ...location, latitude: Infinity } }), /GPS/)
+  for (const accuracyMeters of [-1, NaN, Infinity, 241.5, 2147483648]) assert.throws(() => util.buildBrowserPunch({ ...base, location: { ...location, accuracyMeters } }), /GPS/)
 })
 
 test('the persisted browser identifier contains only random technical IDs and is scoped by account and client', () => {
@@ -100,11 +120,11 @@ test('saved GPS map links use only valid coordinates and hardware placeholder co
   assert.equal(util.mapsLocationUrl(location), 'https://www.google.com/maps/search/?api=1&query=19.076%2C72.8777')
 })
 
-test('outside-fence reason and password rate-limit responses remain structured', async () => {
+test('outside-fence reason and server retry hints remain structured', async () => {
   const api = load('../src/services/attendancePunchService.ts', { './essApi': { essFetch: async () => new Response(JSON.stringify({ allowed: false, punchRecorded: false, status: 'ReasonRequired', message: 'Enter a reason', requiresReason: true }), { status: 400 }) } })
   const reason = await api.recordBrowserPunch(request())
   assert.equal(util.resultNeedsReason(reason), true)
-  const limited = load('../src/services/attendancePunchService.ts', { './essApi': { essFetch: async () => new Response(JSON.stringify({ allowed: false, punchRecorded: false, status: 'PasswordConfirmationRateLimited', message: 'Retry later', requiresReason: false }), { status: 429, headers: { 'Retry-After': '30' } }) } })
+  const limited = load('../src/services/attendancePunchService.ts', { './essApi': { essFetch: async () => new Response(JSON.stringify({ allowed: false, punchRecorded: false, status: 'RateLimited', message: 'Retry later', requiresReason: false }), { status: 429, headers: { 'Retry-After': '30' } }) } })
   assert.equal((await limited.recordBrowserPunch(request())).retryAfterSeconds, 30)
 })
 
@@ -118,6 +138,7 @@ test('network failures do not automatically resend; explicit retry retains reque
   assert.equal(calls[0].options.body, calls[1].options.body)
   assert.equal(calls[1].path, '/api/ess/attendance/punch/browser')
   assert.equal(JSON.parse(calls[1].options.body).biometricConfirmed, false)
+  assert.equal('confirmationPassword' in JSON.parse(calls[1].options.body), false)
 })
 
 test('server errors and unreadable success are uncertain while permission denials are explicit', async () => {

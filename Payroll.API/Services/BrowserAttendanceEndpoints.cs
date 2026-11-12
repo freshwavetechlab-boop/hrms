@@ -28,8 +28,7 @@ public static class BrowserAttendanceEndpoints
             if (!CanPunch(user)) return Results.StatusCode(403);
             context.Response.Headers.CacheControl = "no-store";
             var result = await repository.ValidateBrowserAttendancePunchAsync(auth, user, request);
-            if (result.RetryAfterSeconds is int seconds) context.Response.Headers.RetryAfter = seconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            return result.Status == "PasswordConfirmationRateLimited" ? Results.Json(result, statusCode: 429) : Results.Ok(result);
+            return Results.Ok(result);
         }).WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(32768));
         app.MapPost("/api/ess/attendance/punch/browser", async (BrowserAttendancePunchRequest request, EssMssRepository repository, AuthRepository auth, HttpContext context) =>
         {
@@ -37,9 +36,7 @@ public static class BrowserAttendanceEndpoints
             if (!CanPunch(user)) return Results.StatusCode(403);
             context.Response.Headers.CacheControl = "no-store";
             var result = await repository.RecordBrowserAttendancePunchAsync(auth, user, request);
-            if (result.RetryAfterSeconds is int seconds) context.Response.Headers.RetryAfter = seconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            return result.Status == "PasswordConfirmationRateLimited" ? Results.Json(result, statusCode: 429)
-                : result.PunchRecorded ? Results.Created($"/api/ess/attendance/punch/{result.PunchId}", result) : Results.BadRequest(result);
+            return result.PunchRecorded ? Results.Created($"/api/ess/attendance/punch/{result.PunchId}", result) : Results.BadRequest(result);
         }).WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(32768));
     }
 }

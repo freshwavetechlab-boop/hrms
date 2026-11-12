@@ -1400,8 +1400,8 @@ SELECT LAST_INSERT_ID();", new
         var state = await ProjectAcceptedPunchAsync(db, transaction, identity.ClientId, employeeId, action, capturedAt);
         if (browser is not null)
             await db.ExecuteAsync(@"INSERT INTO auditlogs (UserId,UserEmail,Action,Resource,Method,Path,StatusCode,IpAddress,UserAgent,DetailsJson)
-VALUES (@UserId,@Email,'attendance.browser.password-confirmed','AttendancePunch','POST','/api/ess/attendance/punch/browser',201,'','ESS browser attendance',CAST(@Details AS JSON))",
-                new { browser.UserId, browser.Email, Details = JsonSerializer.Serialize(new { PunchId = punchId, EmployeeId = employeeId, ClientId = identity.ClientId, ConfirmationMethod = "ESSPassword", BiometricConfirmed = false }) }, transaction);
+VALUES (@UserId,@Email,'attendance.browser.session-confirmed','AttendancePunch','POST','/api/ess/attendance/punch/browser',201,'','ESS browser attendance',CAST(@Details AS JSON))",
+                new { browser.UserId, browser.Email, Details = JsonSerializer.Serialize(new { PunchId = punchId, EmployeeId = employeeId, ClientId = identity.ClientId, ConfirmationMethod = "ESSSession", BiometricConfirmed = false }) }, transaction);
         await transaction.CommitAsync();
         validation.PunchRecorded = true;
         validation.PunchId = punchId;
@@ -1435,7 +1435,7 @@ VALUES (@UserId,@Email,'attendance.browser.password-confirmed','AttendancePunch'
             return Block("BiometricConfirmationRequired", "Device biometric confirmation is required for attendance.", "AuthenticateBiometric");
         if (request.Latitude is < -90 or > 90 || request.Longitude is < -180 or > 180 || (request.Latitude == 0 && request.Longitude == 0))
             return Block("InvalidLocation", "Valid latitude and longitude are required.", "Retry");
-        if (request.AccuracyMeters is < 0 or > 100)
+        if (request.AccuracyMeters < 0 || browser is null && request.AccuracyMeters > 100)
             return Block("LocationAccuracyTooLow", "A precise GPS reading within 100 meters is required.", "RetryLocation");
         if (capturedAt > AttendanceNow().AddMinutes(10))
             return Block("InvalidCapturedAt", "The device attendance time is ahead of the server time.", "CorrectDeviceTime");
@@ -1463,6 +1463,11 @@ VALUES (@UserId,@Email,'attendance.browser.password-confirmed','AttendancePunch'
             return Block("AlreadyCheckedOut", "Punch Out is already complete for this date.", "RefreshAttendance");
 
         var rules = await GetApplicableGeoFenceRulesAsync(db, transaction, employeeId, clientId, capturedAt);
+        // A browser without an applicable fence records the device's reported
+        // uncertainty as-is. Configured fences retain the existing precise-GPS
+        // requirement, so a coarse reading cannot enlarge the permitted area.
+        if (browser is not null && rules.Count > 0 && request.AccuracyMeters > 100)
+            return Block("LocationAccuracyTooLow", "A precise GPS reading within 100 meters is required for this attendance geofence.", "RetryLocation");
         if (rules.Count == 0)
             return new AttendancePunchValidationResponse
             {

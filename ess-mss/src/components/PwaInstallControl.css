@@ -29,7 +29,7 @@
 .ess-pwa-card {
   position: relative;
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) auto;
+  grid-template-columns: 38px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   min-width: 0;
@@ -43,6 +43,7 @@
 .ess-pwa-card-copy { display: grid; gap: 4px; min-width: 0; }
 .ess-pwa-card-copy b { color: #263c62; font-size: .8rem; line-height: 1.4; }
 .ess-pwa-card-copy > span { color: #687b95; font-size: .73rem; line-height: 1.5; }
+.ess-pwa-card .ess-pwa-install { grid-column: 2; justify-self: start; max-width: 100%; }
 .ess-pwa-card .ess-pwa-dismiss { position: absolute; top: 2px; right: 2px; display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: #78859c; font-size: 20px; line-height: 1; box-shadow: none; cursor: pointer; }
 .ess-pwa-dismiss:hover { background: #e8eef9; }
 .ess-topbar-actions { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; min-width: 0; }
@@ -67,7 +68,7 @@
   .ess-pwa-install-compact { width: 40px; min-width: 40px; padding: 9px; }
   .ess-pwa-install-compact > span { display: none; }
   .ess-pwa-card { grid-template-columns: 38px minmax(0, 1fr); }
-  .ess-pwa-card .ess-pwa-install { grid-column: 2; justify-self: start; margin-top: 2px; }
+  .ess-pwa-card .ess-pwa-install { grid-column: 1 / -1; justify-self: stretch; margin-top: 2px; }
 }
 @media (max-width: 360px) {
   .ess-pwa-card { padding-left: 10px; gap: 8px; }

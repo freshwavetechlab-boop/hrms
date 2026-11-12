@@ -38,7 +38,7 @@ export function PwaInstallControl({ variant = 'compact' }: { variant?: 'compact'
     {variant === 'card' ? <section className="ess-pwa-card" aria-label="Install employee app">
       <span className="ess-pwa-app-icon" aria-hidden="true"><img src="/favicon.svg" alt="" /></span>
       <div className="ess-pwa-card-copy"><b>Your workspace, one tap away</b><span>Install the app for attendance, leave and payslips.</span></div>
-      <button type="button" className="ess-pwa-install" onClick={() => void install()} disabled={state.pending}><InstallIcon /><span>{state.pending ? 'Opening…' : 'Install app'}</span></button>
+      <button type="button" className="ess-pwa-install" onClick={() => void install()} disabled={state.pending}><InstallIcon /><span>{state.pending ? 'Opening…' : 'Install Android app'}</span></button>
       <button type="button" className="ess-pwa-dismiss" onClick={dismiss} aria-label="Dismiss install suggestion for this session" title="Not now">×</button>
     </section> : <button type="button" className="ess-pwa-install ess-pwa-install-compact" onClick={() => void install()} disabled={state.pending} title="Install employee app" aria-label={state.pending ? 'Opening app installation' : 'Install employee app'}><InstallIcon /><span>{state.pending ? 'Opening…' : 'Install app'}</span></button>}
     <Modal open={open} onCancel={() => setOpen(false)} title="Install Frevo One HR" width={460} footer={<button type="button" className="ess-pwa-close" onClick={() => setOpen(false)}>Got it</button>} className="ess-pwa-modal">

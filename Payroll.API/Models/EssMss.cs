@@ -372,8 +372,9 @@ public class ValidateAttendancePunchRequest
 public sealed class BrowserAttendancePunchRequest : ValidateAttendancePunchRequest
 {
     private string confirmationPassword = "";
-    // Write-only in the JSON contract, so request serialization cannot leak it
-    // into responses, diagnostics or audit metadata.
+    // Accepted only for compatibility with older web clients and discarded.
+    // Current browser punches use the authenticated session, not a password.
+    // Write-only so legacy input cannot leak into diagnostics or audit metadata.
     public string ConfirmationPassword { set => confirmationPassword = value ?? ""; }
     internal string TakeConfirmationPassword()
     {
