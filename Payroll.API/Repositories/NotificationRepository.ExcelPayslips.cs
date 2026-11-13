@@ -24,6 +24,8 @@ public partial class NotificationRepository
     // Earlier workers on a shared database must not render the old PDF or send data-URL logos.
     internal const string ExcelPayslipPendingStatus = "ExcelPending";
     internal const string ExcelPayslipRetryStatus = "ExcelRetry";
+    internal const string ExcelPayslipCorrectedPendingStatus = "ExcelCorrectedPending";
+    internal const string ExcelPayslipCorrectedRetryStatus = "ExcelCorrectedRetry";
     private const int ExcelPayslipMaximumPdfBytes = 10 * 1024 * 1024;
 
     internal static async Task<NotificationTemplate> ReadExcelPayslipTemplateAsync(MySqlConnection db, MySqlTransaction tx, string code = ExcelPayslipTemplateCode)
@@ -147,7 +149,11 @@ SELECT LAST_INSERT_ID();", new
         if (documents.Count == 0) return;
         if (documents.Count > 1000 || documents.Any(document => document.ClientId != batch.ClientId || document.BatchId != batch.Id))
             throw new InvalidOperationException("The queued payslip documents do not match this batch.");
-        var parameters = new DynamicParameters(new { batch.ClientId, EventCode = ExcelPayslipEvent, Status = ExcelPayslipPendingStatus });
+        var corrected = documents.All(IsCorrectedExcelDocument);
+        if (!corrected && documents.Any(IsCorrectedExcelDocument))
+            throw new InvalidOperationException("Normal and corrected payslip deliveries cannot share a queue action.");
+        var parameters = new DynamicParameters(new { batch.ClientId, EventCode = ExcelPayslipEvent,
+            Status = corrected ? ExcelPayslipCorrectedPendingStatus : ExcelPayslipPendingStatus });
         var values = new List<string>();
         for (var index = 0; index < documents.Count; index++)
         {
@@ -179,17 +185,28 @@ CAST(send_state_json AS CHAR) AS SendStateJson FROM excel_payslip_batches WHERE 
         var state = stored is null ? null : JsonSerializer.Deserialize<ExcelPayslipSendState>(stored.SendStateJson, ExcelPayslipRepository.JsonOptions);
         if (batch is null || state?.Deliveries is null || !state.Deliveries.TryGetValue(ids[1], out var document) || document is null)
             throw new InvalidOperationException("The queued Excel payslip batch or delivery information is unavailable.");
-        var source = batch.SimpleLayout ? await ExcelPayslipRepository.ReadCalculationSourceAsync(db, clientId, batch.Id) : null;
+        var source = batch.SimpleLayout || IsCorrectedExcelDocument(document)
+            ? await ExcelPayslipRepository.ReadCalculationSourceAsync(db, clientId, batch.Id) : null;
+        if (IsCorrectedExcelDocument(document))
+        {
+            if (!state.Requests.TryGetValue(ExcelPayslipRepository.CorrectionSnapshotPrefix + document.RequestId, out var snapshotJson))
+                throw new InvalidOperationException("The frozen corrected payslip snapshot is unavailable. No email was sent.");
+            var correction = snapshotJson.Deserialize<ExcelPayslipCorrectionSnapshot>(ExcelPayslipRepository.JsonOptions)
+                ?? throw new InvalidOperationException("The frozen corrected payslip snapshot is invalid.");
+            AttachExcelPayslipPdf(builder, row, document, batch, source, correction);
+            return;
+        }
         await ExcelPayslipRepository.AnnotateEmploymentAsync(db, batch, configuration:configuration);
         AttachExcelPayslipPdf(builder, row, document, batch, source);
     }
 
     internal static void AttachExcelPayslipPdf(BodyBuilder builder, NotificationQueueItem row, ExcelPayslipMailDocument document, ExcelPayslipBatch batch,
-        ExcelPayslipCalculationSource? calculationSource = null)
-        => AttachVerifiedExcelPayslipPdf(builder, row, document, batch, calculationSource, ExcelPayslipEvent, "ExcelPayslipBatch", batch.Id + ":" + document.Id);
+        ExcelPayslipCalculationSource? calculationSource = null, ExcelPayslipCorrectionSnapshot? correction = null)
+        => AttachVerifiedExcelPayslipPdf(builder, row, document, batch, calculationSource, ExcelPayslipEvent, "ExcelPayslipBatch", batch.Id + ":" + document.Id, correction);
 
     private static void AttachVerifiedExcelPayslipPdf(BodyBuilder builder, NotificationQueueItem row, ExcelPayslipMailDocument document,
-        ExcelPayslipBatch batch, ExcelPayslipCalculationSource? calculationSource, string expectedEvent, string expectedType, string expectedResource)
+        ExcelPayslipBatch batch, ExcelPayslipCalculationSource? calculationSource, string expectedEvent, string expectedType, string expectedResource,
+        ExcelPayslipCorrectionSnapshot? correction = null)
     {
         var recipients = ReadEmailArray(row.ToJson);
         if (row.EventCode != expectedEvent || row.ResourceType != expectedType || document.QueueId != row.Id || document.ClientId != row.ClientId
@@ -197,13 +214,47 @@ CAST(send_state_json AS CHAR) AS SendStateJson FROM excel_payslip_batches WHERE 
             || !ExcelPayslipRepository.TryEmail(document.Email, out _) || recipients.Count != 1 || !string.Equals(recipients[0], document.Email, StringComparison.OrdinalIgnoreCase)
             || ReadEmailArray(row.CcJson).Count != 0 || ReadEmailArray(row.BccJson).Count != 0)
             throw new InvalidOperationException("The queued Excel payslip recipient or source does not match its saved delivery information.");
-        if (!ExcelPayslipBatchHash(batch).Equals(document.BatchSha256, StringComparison.Ordinal)) throw new InvalidOperationException("The saved payslip batch failed its integrity check.");
+        if (IsCorrectedExcelDocument(document))
+        {
+            if (correction is null || correction.Id != document.RequestId || correction.Id.Length != 32
+                || document.RowIds.Count != 1 || document.BatchSha256 != "corrected:" + correction.RenderSha256)
+                throw new InvalidOperationException("The corrected payslip delivery does not match its frozen snapshot.");
+            ExcelPayslipRepository.ValidateCorrectionSnapshot(correction, batch, calculationSource);
+            var frozenRow = correction.Batch.Rows.SingleOrDefault(r => r.Id == document.RowIds[0]);
+            if (frozenRow is null || !string.Equals(frozenRow.Email, document.Email, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("The corrected payslip recipient does not match the reviewed snapshot.");
+            batch = correction.Batch;
+            // ValidateCorrectionSnapshot proved this durable source is exactly
+            // the source reviewed at submission. It is never recalculated here.
+        }
+        else if (correction is not null || !ExcelPayslipBatchHash(batch).Equals(document.BatchSha256, StringComparison.Ordinal))
+            throw new InvalidOperationException("The saved payslip batch failed its integrity check.");
         var (selected, selectionError) = ExcelPayslipRepository.SelectRows(batch, new() { RowIds = document.RowIds, AmountDecimalPlaces = document.AmountDecimalPlaces, AcknowledgeWarnings = true });
         if (selectionError is not null) throw new InvalidOperationException(selectionError);
         var pdf = new ExcelPayslipPdfService().Create(batch, selected, document.IncludeSeal, document.AmountDecimalPlaces, calculationSource);
         if (ValidateExcelPayslipPdf(pdf) is string error) throw new InvalidOperationException(error);
         builder.Attachments.Add(document.FileName, pdf, new ContentType("application", "pdf"));
         EmbedExcelPayslipImages(builder);
+    }
+
+    internal static bool IsCorrectedExcelDocument(ExcelPayslipMailDocument document) =>
+        document.BatchSha256.StartsWith("corrected:", StringComparison.Ordinal);
+
+    private static async Task<bool> IsCorrectedExcelDeliveryAsync(MySqlConnection db, long queueId)
+    {
+        // Optional Excel storage must not become a dependency of offer, ESS or
+        // other notification retries. Inspect this queue's event before joining it.
+        if (!await db.ExecuteScalarAsync<bool>(@"SELECT EXISTS(SELECT 1 FROM notification_queue
+WHERE Id=@QueueId AND EventCode=@EventCode AND ResourceType='ExcelPayslipBatch')",
+            new { QueueId = queueId, EventCode = ExcelPayslipEvent })) return false;
+        if (!await db.ExecuteScalarAsync<bool>(@"SELECT EXISTS(SELECT 1 FROM information_schema.tables
+WHERE table_schema=DATABASE() AND table_name='excel_payslip_batches')")) return false;
+        return await db.ExecuteScalarAsync<bool>(@"
+SELECT EXISTS(SELECT 1 FROM notification_queue q
+JOIN excel_payslip_batches b ON b.client_id=q.ClientId AND b.id=SUBSTRING_INDEX(q.ResourceId,':',1)
+WHERE q.Id=@QueueId AND q.EventCode=@EventCode AND q.ResourceType='ExcelPayslipBatch'
+AND JSON_UNQUOTE(JSON_EXTRACT(b.send_state_json,CONCAT('$.deliveries.""',SUBSTRING_INDEX(q.ResourceId,':',-1),'"".batchSha256'))) LIKE 'corrected:%')",
+        new { QueueId = queueId, EventCode = ExcelPayslipEvent });
     }
 
     internal static void EmbedExcelPayslipImages(BodyBuilder builder)

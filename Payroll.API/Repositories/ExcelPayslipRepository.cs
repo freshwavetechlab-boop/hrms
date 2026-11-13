@@ -49,7 +49,7 @@ public sealed partial class ExcelPayslipRepository(IConfiguration configuration,
         var clients = await db.QueryAsync<PayslipClientPresence>(@"SELECT c.Id,c.Name,c.Code,c.IsActive,
 EXISTS(SELECT 1 FROM excel_payslip_batches b WHERE b.client_id=c.Id) AS HasSavedBatch
 FROM clients c WHERE c.IsActive=TRUE AND (@ClientId IS NULL OR c.Id=@ClientId) ORDER BY c.Name", new { ClientId = scopedClientId });
-        return clients.Where(IsSupportedClient).Select(c => new ExcelPayslipClient { Id = c.Id, Name = c.Name, HasSavedBatch = c.HasSavedBatch, LocationBatchesSupported = true, AtomicMappingSaveSupported = true }).ToArray();
+        return clients.Where(IsSupportedClient).Select(c => new ExcelPayslipClient { Id = c.Id, Name = c.Name, HasSavedBatch = c.HasSavedBatch, LocationBatchesSupported = true, AtomicMappingSaveSupported = true, CorrectedResendSupported = true }).ToArray();
     }
 
     public async Task<IReadOnlyList<ExcelPayslipTemplate>> GetTemplatesAsync(int clientId)
@@ -518,6 +518,7 @@ WHERE l.client_id=@ClientId AND l.batch_id=@Id",new{ClientId=clientId,existing.I
 
     public async Task<(ExcelPayslipDeliveryResult? Item, string? Error)> SendAsync(int clientId, string batchId, SendExcelPayslipsRequest request, string actor)
     {
+        if (request.ResendCorrected || request.AcknowledgeResend) return (null, "Use the corrected payslip resend action to review and queue corrected copies.");
         if (ValidateSendRequest(batchId, request, 25) is string requestError) return (null, requestError);
         var requestGuid = Guid.Parse(request.RequestId);
         await using var db = Db(); await db.OpenAsync(); await using var tx = await db.BeginTransactionAsync();
@@ -584,7 +585,9 @@ WHERE l.client_id=@ClientId AND l.batch_id=@Id",new{ClientId=clientId,existing.I
         return (previous.Result, null);
     }
 
-    internal static string SendFingerprint(string batchId, SendExcelPayslipsRequest request) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+    internal static string SendFingerprint(string batchId, SendExcelPayslipsRequest request) => request.ResendCorrected
+        ? CorrectionRequestFingerprint(batchId, request)
+        : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
     {
         BatchId = batchId, request.Mode, request.IncludeSeal, request.AmountDecimalPlaces,
         RowIds = request.RowIds.OrderBy(id => id, StringComparer.Ordinal),

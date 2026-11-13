@@ -83,6 +83,8 @@ public class EssClientSetting
     public int ClientId { get; set; }
     public string ClientName { get; set; } = string.Empty;
     public bool AllowProfileEdit { get; set; }
+    // Omitted by older callers: preserve the existing client login policy.
+    public bool? AllowPhoneLogin { get; set; }
     public string InitialPasswordMode { get; set; } = "App Default";
     public string FixedPassword { get; set; } = string.Empty;
     public bool IsActive { get; set; } = true;

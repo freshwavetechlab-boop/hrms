@@ -5,6 +5,10 @@ using Payroll.API.Tests.Fixtures;
 
 namespace Payroll.API.Tests.Services;
 
+[CollectionDefinition("EssPayslipFlow",DisableParallelization=true)]
+public sealed class EssPayslipFlowCollection { }
+
+[Collection("EssPayslipFlow")]
 public sealed class EssPayslipFlowDatabaseTests
 {
     private sealed class IsolatedFactAttribute:FactAttribute

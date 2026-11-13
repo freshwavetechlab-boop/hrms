@@ -16,7 +16,7 @@ public sealed partial class ExcelPayslipRepository
         ExcelPayrollSetupRequest Request,ExcelPayrollSetupResult Result,ExcelPayslipBatch Owner,ExcelPayslipCalculationSource? Source);
 
     private static async Task AnnotateCurrentMasterAsync(MySqlConnection db,MySqlTransaction tx,ExcelPayslipBatch batch,
-        ExcelPayslipCalculationSource? source,IConfiguration? configuration)
+        ExcelPayslipCalculationSource? source,IConfiguration? configuration,bool profileOnly=false)
     {
         if(!await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='excel_payroll_setup_imports')",transaction:tx))return;
         var saved=(await db.QueryAsync<MasterSyncReceipt>(@"SELECT i.batch_id BatchId,i.updated_at UpdatedAt,CAST(i.request_json AS CHAR) RequestJson,CAST(i.result_json AS CHAR) ResultJson
@@ -55,6 +55,16 @@ WHERE i.client_id=@ClientId AND i.status='Applied' AND JSON_UNQUOTE(JSON_EXTRACT
 WHERE e.ClientId=@ClientId AND e.Id IN @Ids",new{batch.ClientId,batch.Month,Ids=ids},tx)).ToDictionary(e=>e.Id);
         await PayrollDataTableStore.ApplyEmployeeTablesAsync(db,employees.Values,tx);
         await EmployeeRepository.ApplyEmploymentStatusAsync(db,employees.Values.ToList(),tx);
+        if(profileOnly)
+        {
+            foreach(var binding in selected)
+            {
+                if(!employees.TryGetValue(binding.Link.EmployeeId,out var employee))continue;
+                binding.Row.MasterDetails=ExcelPayslipMasterSynchronization.Details(employee,employee.WorkLocation,true) with {ProfileOnly=true};
+                binding.Row.Employment=new(employee.Id,employee.EmployeeCode,employee.EmploymentStatus,employee.LastWorkingDate,!employee.Eligible,false);
+            }
+            return;
+        }
         var setup=await PayrollDataTableStore.GetSetupJsonAsync(db,tx);
         var setupDocument=JsonNode.Parse(setup) as JsonObject??new();
         var changed=new List<(ExcelPayslipRow Row,ExcelPayslipMasterLink Link,Employee Employee)>();

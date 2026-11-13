@@ -10,6 +10,16 @@ Employee Master keeps Table view as the default. In Card view, Missing informati
 - The client-specific template `EMPLOYEE_MISSING_INFORMATION` is saved when Manage or the first reminder preview is opened. Existing versions are reused without overwriting edits. A disabled template blocks sending. It also appears in the existing Mail templates settings.
 - The saved `essUrl` placeholder defaults to **https://gad-ess.frevo.co.in/**. Employee name/code, client and sender placeholders resolve through the existing communication service. Employees use their existing ESS credentials.
 
+## ESS login and initial passwords
+
+Employee code and existing login IDs continue to work. Under **Security → App settings → ESS Settings**, a client can opt into **Allow phone number login**. The default is OFF. This reuses the `EmployeePhoneLogin` client resource state and requires an active ESS client policy; it adds no schema migration or second factor.
+
+Phone aliases apply only to ESS/Employee portal sign-in. A unique, valid Indian mobile number in current Employee Master personal details resolves to one active same-client linked ESS account. `+91`, `91` and `0091` prefixes and ordinary spacing are accepted. Shared numbers across active clients, missing numbers, inactive mappings and users without `ess.self` fail with the existing generic login error. Existing exact code/email IDs retain precedence, including numeric IDs; a failed password never falls through to a different phone owner. Current physical personal details take precedence over an older JSON or auth-user phone, including an explicitly cleared phone.
+
+The opt-in **Aadhaar — first 8 digits (temporary)** mode is separate from the existing full-Aadhaar mode. When no explicit bulk temporary-password override is supplied, it derives the initial password only from a complete 12-digit current Master Aadhaar and requires a first-login password change. Missing, masked or malformed Aadhaar stops that account's creation with a review message instead of silently choosing another password. A new password must differ from the current one. Format checks do not establish Aadhaar or phone ownership.
+
+Saving a client policy never resets existing passwords. Bulk **Import Employees** skips existing logins. Any reset of an existing employee's initial credential requires an explicit administrative reset; preserve employees who have already logged in or changed their password when preparing a first-access rollout.
+
 ## ESS editing and approvals
 
 **My profile** includes Gender and the core UAN/ESIC numbers alongside the existing name, contact, date of birth, PAN/Aadhaar, address and bank details. UAN and ESIC remain text identifiers (12 and 10 digits respectively), including leading zeroes. They may be blank if not allotted. Changed nonblank identifiers are checked for format; this is not verification of ownership. Unchanged legacy values and omitted new fields from older ESS clients are preserved.
@@ -51,3 +61,5 @@ No schema migration is introduced. This reuses form definitions/versions, employ
 Build the API, payroll-ui and ess-mss, then restart/deploy the updated API and both UIs together. There is no need to run a migration for this feature. Existing employees with an ESS save audit are treated as having used their initial save.
 
 Automated checks cover initial/approved/consumed access, missing bank/document data, API permission and cross-client denials, and browser interactions with mocked APIs. Browser checks do not send real email or mutate production employee records. Actual mail delivery and database workflow execution require a deployment smoke check with an authorised test employee.
+
+`EssLoginPolicyDatabaseTests` exercises actual login, initial provisioning, password change and client policy persistence. It requires `FREVO_ESS_LOGIN_POLICY_TEST_DB` explicitly targeting `127.0.0.1:33330/attendance_location_test`. Its synthetic schema reset must never run against an application database. Phone/password helper tests do not require a database.

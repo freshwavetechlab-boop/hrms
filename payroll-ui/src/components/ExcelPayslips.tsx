@@ -26,7 +26,7 @@ import ExcelPayslipBulkAmountEditor from './ExcelPayslipBulkAmountEditor'
 import ExcelPayslipEmailUpdates from './ExcelPayslipEmailUpdates'
 import { isPayslipEmailList, payslipEmailExport, readPayslipEmailUpdates } from '../utils/excelPayslipEmailUpdates'
 import { downloadXlsx } from '../utils/xlsx'
-import { canQueuePayslipEmail, payslipSentCopyLabel } from '../utils/excelPayslipDelivery'
+import { canQueuePayslipEmail, canQueueCorrectedPayslipEmail, correctedPayslipResendBlockReason, payslipSentCopyLabel } from '../utils/excelPayslipDelivery'
 import { buildEditablePayslipSheet, downloadExcelPayslipTemplate } from '../utils/excelPayslipTemplate'
 import { getExcelPayslipBatch, getExcelPayslipCalculation, getExcelPayslipClients, getExcelPayslipHistory, getExcelPayslipPdf, getExcelPayslipProfile, getExcelPayslipTemplates, startExcelPayslipMailJob, requestExcelPayslipEmailIds, type ExcelPayslipBatch, type ExcelPayslipCalculationSource, type ExcelPayslipDelivery, type ExcelPayslipMailJob, type ExcelPayslipRow, type PayslipIdentityMatch, type ExcelPayslipSendRequest, type ExcelPayslipSummary, type ExcelPayslipTemplate } from '../services/excelPayslipService'
 import { useAuthSession } from './AuthGate'
@@ -53,7 +53,7 @@ import './ExcelPayslips.css'
 import { currentPayslip, mergePayslipMasterDetails, payslipDesignation } from '../utils/excelPayslipPresentation'
 import { fillMissingPayslipLocations, workLocationColumns } from '../utils/excelPayslipLocation'
 
-type Action = { kind: 'preview' | 'download' | 'send'; rowIds: string[] }
+type Action = { kind: 'preview' | 'download' | 'send' | 'resend-corrected'; rowIds: string[] }
 type MailTab = 'All' | 'Pending' | 'Queued' | 'Sent' | 'Attention' | 'Missing'
 const mailLabels = { Missing: 'Email missing', All: 'All', Pending: 'Not sent', Queued: 'Queued', Sent: 'Employee SMTP accepted / delivered', Bounced: 'Not delivered', Deferred: 'Delayed', Delivered: 'Delivered', Attention: 'Needs attention', Failed: 'Failed', Unknown: 'Needs attention' }
 const mailColors = { Pending: 'default', Queued: 'processing', Sent: 'success', Failed: 'error', Unknown: 'warning', Bounced: 'error', Deferred: 'warning', Delivered: 'success' }
@@ -86,6 +86,7 @@ export default function ExcelPayslips() {
   const clientId = clients.find(client => client.id === requestedClientId)?.id || 0
   const clientName = clients.find(client => client.id === clientId)?.name || ''
   const supportsLocationBatches = clients.find(client => client.id === clientId)?.locationBatchesSupported === true
+  const supportsCorrectedResend = clients.find(client => client.id === clientId)?.correctedResendSupported === true
   const [view, setView] = useSessionPreference<'Table' | 'Cards'>(`excel-payslips:${session?.user.id}:${clientId}:view`, 'Table')
   const [lastBatchId, setLastBatchId] = useSessionPreference(`excel-payslips:${session?.user.id}:${clientId}:batch`, '')
   const [selectedIds, setSelectedIds] = useSessionPreference<string[]>(`excel-payslips:${session?.user.id}:${clientId}:${lastBatchId}:selection`, [])
@@ -142,6 +143,14 @@ export default function ExcelPayslips() {
   const [warningsOpen, setWarningsOpen] = useState(false)
   const [correction, setCorrection] = useState<{ sheet: PayslipSheet; columns: PayslipColumn[]; sourceRow: number; sourceRows?: number[]; clientId: number } | null>(null)
   const [action, setAction] = useState<Action | null>(null), [acknowledgeWarnings, setAcknowledgeWarnings] = useState(false)
+  const resendingCorrected = action?.kind === 'resend-corrected'
+  const emailing = action?.kind === 'send' || resendingCorrected
+  const [acknowledgedResendKey, setAcknowledgedResendKey] = useState('')
+  const [resendFilteredIds, setResendFilteredIds] = useState<string[] | null>(null)
+  const captureResendFilteredRows = useCallback((filtered: ExcelPayslipRow[]) => {
+    const ids = filtered.map(row => row.id)
+    setResendFilteredIds(current => current?.length === ids.length && current.every((id, index) => id === ids[index]) ? current : ids)
+  }, [])
   const [amountDecimalPlaces, setAmountDecimalPlaces] = useState<0 | 2>(0)
   const [sendMode, setSendMode] = useState<'Individual' | 'Combined'>('Combined'), [combinedEmail, setCombinedEmail] = useState(''), [emailOverrides, setEmailOverrides] = useState<Record<string, string>>({})
   const [excludedRecipientIds, setExcludedRecipientIds] = useState<string[]>([]), [excludeMissingRecipients, setExcludeMissingRecipients] = useState(true)
@@ -247,17 +256,24 @@ export default function ExcelPayslips() {
     ? [...new Map(exitCandidates.map(row => [row.employment!.employeeId!, { id: row.employment!.employeeId!, employeeCode: row.employment!.employeeCode, name: row.employeeName }])).values()] : []
   const canEmailRow = (id: string, mode: 'Individual' | 'Combined' = 'Individual', recipient = '') => {
     const row = rows.find(row => row.id === id)
-    return !row?.employment?.blockedForMonth && emailStatus.ready && canQueuePayslipEmail(emailStatus.statuses.get(id), mode, mode === 'Individual' ? emailOverrides[id] ?? row?.email ?? '' : recipient)
+    const email = mode === 'Individual' ? resendingCorrected ? row?.email ?? '' : emailOverrides[id] ?? row?.email ?? '' : recipient
+    return !row?.employment?.blockedForMonth && emailStatus.ready && (resendingCorrected
+      ? supportsCorrectedResend && !row?.employment?.identityReviewRequired && mode === 'Individual' && emailValid(email.trim()) && canQueueCorrectedPayslipEmail(emailStatus.statuses.get(id))
+      : canQueuePayslipEmail(emailStatus.statuses.get(id), mode, email))
   }
   const emailTargets = (validSelection.length ? validSelection : visibleRows.map(row => row.id)).filter(id => !rows.find(row => row.id === id)?.employment?.blockedForMonth && emailStatus.ready)
   const tabCounts = { All: rows.length, Pending: 0, Queued: 0, Sent: 0, Attention: 0, Missing: rows.filter(row => !emailValid(row.email.trim())).length }
   for (const row of rows) { const status = emailStatus.statuses.get(row.id)?.status; if (status) tabCounts[['Failed', 'Unknown', 'Bounced', 'Deferred'].includes(status) ? 'Attention' : status === 'Delivered' ? 'Sent' : status as 'Pending' | 'Queued' | 'Sent']++ }
   const actionRows = action ? rows.filter(row => action.rowIds.includes(row.id)) : []
   const selectedMailRows = actionRows.filter(row => !excludedRecipientIds.includes(row.id) && (sendMode !== 'Individual' || canEmailRow(row.id) && (!excludeMissingRecipients || emailValid((emailOverrides[row.id] ?? row.email).trim()))))
+  const resendReviewRows = resendingCorrected && pendingSendIds.length ? actionRows.filter(row => pendingSendIds.includes(row.id)) : selectedMailRows
+  const resendReviewKey = JSON.stringify([clientId, batch?.id, batch?.month, amountDecimalPlaces, resendReviewRows.map(row => [row.id, row.email])])
+  const acknowledgeResend = resendingCorrected && acknowledgedResendKey === resendReviewKey
+  const setAcknowledgeResend = (value: boolean) => setAcknowledgedResendKey(value ? resendReviewKey : '')
   const missingEmailRows = actionRows.filter(row => !emailValid((emailOverrides[row.id] ?? row.email).trim()))
   const emailRequestRows = actionRows.filter(row => !emailValid(row.email.trim()) && (!emailValid(combinedEmail) || canEmailRow(row.id, 'Combined', combinedEmail)))
-  const requestingEmailIds = sendMode === 'Combined' && requestMissingEmails
-  const warningRows = (requestingEmailIds ? attachRequestPayslips ? emailRequestRows : [] : action?.kind === 'send' ? selectedMailRows : actionRows).filter(row => row.warnings.length)
+  const requestingEmailIds = !resendingCorrected && sendMode === 'Combined' && requestMissingEmails
+  const warningRows = (requestingEmailIds ? attachRequestPayslips ? emailRequestRows : [] : emailing ? selectedMailRows : actionRows).filter(row => row.warnings.length)
   const needsAck = warningRows.length > 0 && !acknowledgeWarnings
   useEffect(() => { currentClient.current = clientId }, [clientId])
 
@@ -649,6 +665,11 @@ export default function ExcelPayslips() {
       if (updated.changed) await saveBatch(updated.sheet)
     } catch (failure) { setImportError(failure instanceof Error ? failure.message : 'Unable to save corrected amounts.') }
   }
+  const initializeAction = (kind: Action['kind'], rowIds: string[], initialEmailMode: 'Individual' | 'Combined') => {
+    setNextEmailMode(null); setActionMailJob(null)
+    setExcludedRecipientIds([]); setExcludeMissingRecipients(true); setResendFilteredIds(null); setAcknowledgeResend(false)
+    setAction({ kind, rowIds }); setAcknowledgeWarnings(false); setAmountDecimalPlaces(0); setSendMode(initialEmailMode); setRequestMissingEmails(false); setAttachRequestPayslips(false); pendingEmailRequest.current = null; setCombinedEmail(''); setEmailOverrides({}); setActionError(''); setPdfUrl(''); setDelivery([]); setSendProgress(''); setPendingSendIds([]); pendingJobRequest.current = null
+  }
   const beginAction = (kind: Action['kind'], rowIds: string[]) => {
     if (!batch || !rowIds.length || busy) return
     rowIds = rowIds.filter(id => eligibleRows.some(row => row.id === id))
@@ -656,9 +677,28 @@ export default function ExcelPayslips() {
     if (kind === 'send' && (!canManage || !emailStatus.ready)) return
     const hasCoordinatorCopy = rowIds.some(id => emailStatus.statuses.get(id)?.recipientDeliveries?.some(item => item.mode === 'Combined'))
     const initialEmailMode = nextEmailMode ?? (hasCoordinatorCopy ? 'Individual' : 'Combined')
-    setNextEmailMode(null); setActionMailJob(null)
-    setExcludedRecipientIds([]); setExcludeMissingRecipients(true)
-    setAction({ kind, rowIds }); setAcknowledgeWarnings(false); setAmountDecimalPlaces(0); setSendMode(initialEmailMode); setRequestMissingEmails(false); setAttachRequestPayslips(false); pendingEmailRequest.current = null; setCombinedEmail(''); setEmailOverrides({}); setActionError(''); setPdfUrl(''); setDelivery([]); setSendProgress(''); setPendingSendIds([]); pendingJobRequest.current = null
+    initializeAction(kind, rowIds, initialEmailMode)
+  }
+  const beginCorrectedResend = async () => {
+    if (!canManage || !supportsCorrectedResend || !batch || batch.clientId !== clientId || busy || loading || inFlight.current) return
+    const requestedClient = clientId, requestedBatch = batch.id, requestScope = scope.current
+    const initiallySelected = new Set(validSelection.length ? validSelection : visibleRows.map(row => row.id))
+    inFlight.current = true; setBusy(true); setError('')
+    try {
+      const fresh = await getExcelPayslipBatch(requestedClient, requestedBatch, true)
+      if (requestScope !== scope.current || currentClient.current !== requestedClient) return
+      if (!fresh.ok || !fresh.data || fresh.data.clientId !== requestedClient || fresh.data.id !== requestedBatch)
+        return setError(fresh.error || 'Unable to refresh Employee Master details. Reopen the saved batch before resending.')
+      const ids = fresh.data.rows.filter(row => !row.employment?.blockedForMonth).map(row => row.id)
+      if (!ids.length) return setError('No employees in this batch are eligible for a corrected payslip.')
+      setBatch(fresh.data)
+      initializeAction('resend-corrected', ids, 'Individual')
+      setExcludedRecipientIds(ids.filter(id => !initiallySelected.has(id)))
+      emailStatus.refresh()
+    } finally {
+      inFlight.current = false
+      if (requestScope === scope.current) setBusy(false)
+    }
   }
   const downloadBlob = (blob: Blob) => {
     const url = URL.createObjectURL(blob), anchor = document.createElement('a')
@@ -694,27 +734,31 @@ export default function ExcelPayslips() {
       } finally { inFlight.current = false; if (requestScope === scope.current) setBusy(false) }
       return
     }
-    if (!canManage || !batch || !action || needsAck || inFlight.current || !selectedMailRows.length) return
+    if (!canManage || !batch || !action || needsAck || inFlight.current || !selectedMailRows.length && !(resendingCorrected && pendingJobRequest.current)) return
+    if (resendingCorrected && !supportsCorrectedResend) return setActionError('Update the API before resending corrected payslips. No email was queued.')
+    if (resendingCorrected && (!acknowledgeResend && !pendingJobRequest.current?.acknowledgeResend || sendMode !== 'Individual')) return setActionError('Acknowledge the corrected individual-payslip resend before sending.')
     if (sendMode === 'Combined' && !emailValid(combinedEmail.trim())) return setActionError('Enter a valid recipient email for the combined PDF.')
     if (sendMode === 'Individual' && actionRows.length === 1 && missingEmailRows.length) return setActionError('Enter a valid email before sending this payslip. PDF preview and download remain available.')
     const handledIds = new Set(delivery.filter(item => item.status !== 'Error').map(item => item.rowId))
     const eligibleIds = selectedMailRows.map(row => row.id).filter(id => !handledIds.has(id) && canEmailRow(id, sendMode, combinedEmail))
-    if (!eligibleIds.length && !pendingJobRequest.current) return setActionError('No unsent payslips remain in this selection. Refresh email status to check delivery progress.')
+    if (!eligibleIds.length && !pendingJobRequest.current) return setActionError(resendingCorrected ? 'No recipients are currently eligible for a corrected resend. Refresh email status and review the blocked rows.' : 'No unsent payslips remain in this selection. Refresh email status to check delivery progress.')
     const request = pendingJobRequest.current || {
       rowIds: eligibleIds, includeSeal: false, acknowledgeWarnings, amountDecimalPlaces, mode: sendMode, email: combinedEmail.trim(),
-      emailOverrides: Object.fromEntries(Object.entries(emailOverrides).filter(([id]) => eligibleIds.includes(id)).map(([id, value]) => [id, value.trim()])),
+      emailOverrides: resendingCorrected ? {} : Object.fromEntries(Object.entries(emailOverrides).filter(([id]) => eligibleIds.includes(id)).map(([id, value]) => [id, value.trim()])),
       requestId: crypto.randomUUID(),
+      ...(resendingCorrected ? { resendCorrected: true, acknowledgeResend: true } : {}),
     }
     const requestScope = scope.current
     pendingJobRequest.current = request
     inFlight.current = true; setBusy(true); setActionError(''); setSendProgress('Queuing payslips...')
     try {
       const result = await startExcelPayslipMailJob(clientId, batch.id, request)
-      if (result.ok && result.data) window.dispatchEvent(new Event('hrms:actions-changed'))
+      const purposeVerified = !request.resendCorrected || result.data?.job.resendCorrected === true
+      if (result.ok && result.data && purposeVerified) window.dispatchEvent(new Event('hrms:actions-changed'))
       if (requestScope !== scope.current) return
-      if (!result.ok || !result.data) {
+      if (!result.ok || !result.data || !purposeVerified) {
         setPendingSendIds(request.rowIds)
-        setActionError(`${result.error || 'The email job could not be confirmed.'} Retry keeps the same request reference. If it was already accepted, the saved job is returned without queuing duplicate mail.`)
+        setActionError(`${!purposeVerified && result.data ? 'The corrected resend purpose could not be confirmed.' : result.error || 'The email job could not be confirmed.'} Retry keeps the same request reference. If it was already accepted, the saved job is returned without queuing duplicate mail.`)
         return
       }
       pendingJobRequest.current = null; setPendingSendIds([])
@@ -747,6 +791,7 @@ export default function ExcelPayslips() {
       {canManage && <Tooltip title={validSelection.length ? `Email selected (${emailTargets.length})` : `Email batch (${emailTargets.length})`}><Button aria-label={validSelection.length ? `Email selected (${emailTargets.length})` : `Email batch (${emailTargets.length})`} icon={<SendOutlined />} disabled={!emailTargets.length || busy} onClick={() => beginAction('send', emailTargets)}><span className="excel-payslip-action-label">{validSelection.length ? `Email selected (${emailTargets.length})` : `Email batch (${emailTargets.length})`}</span></Button></Tooltip>}
       {batch?.clientId === clientId && <Dropdown menu={{ items: [
         ...(canManage ? [{ key: 'email-updates', label: 'Import email updates', icon: <UploadOutlined />, disabled: busy || loading, onClick: () => { setEmailUpdatesDraft(undefined); setEmailUpdatesBatch(batch.id) } }] : []),
+        ...(canManage ? [{ key: 'resend-corrected', label: supportsCorrectedResend ? 'Resend corrected payslips' : 'Resend corrected payslips (update API)', icon: <SendOutlined />, disabled: !supportsCorrectedResend || busy || loading || !rows.length || !emailStatus.ready, onClick: () => void beginCorrectedResend() }] : []),
         { key: 'export-template', label: 'Export salary template', icon: <DownloadOutlined />, disabled: busy || loading, onClick: () => void exportTemplate() },
         ...(hasReviewedSourceParts ? [{ key: 'source-reconciliation', label: showingEmployeeSummary ? 'Back to payslips' : 'Source reconciliation', disabled: busy || loading, onClick: () => { setEmployeeRowsView(showingEmployeeSummary ? 'Payslips' : 'Source reconciliation'); setSelectedIds([]) } }] : []),
         ...(canManage ? [{ key: 'edit-mapping', label: 'Edit mapping', icon: <EditOutlined />, disabled: busy || loading, onClick: () => void editMapping() },
@@ -904,12 +949,38 @@ export default function ExcelPayslips() {
     {correction?.clientId === clientId && correction.sourceRows && <ExcelPayslipBulkAmountEditor key={`bulk:${clientId}:${editingBatchId}`} sheet={correction.sheet} columns={correction.columns} sourceRows={correction.sourceRows} busy={busy} ready={templatesReady && !mappingBusy} error={importError} onClose={() => setCorrection(null)} onSave={(edits, calculated) => { if (!canManage || busy || !templatesReady || mappingBusy) return; try { if (calculated) { void saveBatch(calculated); return } const changed = correctPayslipBatchAmounts(correction.sheet, correction.columns, edits); if (changed.changed) void saveBatch(changed.sheet) } catch (failure) { setImportError(failure instanceof Error ? failure.message : 'Unable to save corrections.') } }} />}
     {correction?.clientId === clientId && !correction.sourceRows && <ExcelPayslipAmountEditor key={`${clientId}:${editingBatchId}:${correction.sourceRow}`} sheet={correction.sheet} columns={correction.columns} sourceRow={correction.sourceRow} busy={busy} ready={templatesReady && !mappingBusy} error={importError} onClose={() => setCorrection(null)} onSave={(edits, calculated) => { void saveCorrection(edits, calculated) }} />}
 
-    <Drawer title={action?.kind === 'send' ? 'Email imported payslips' : 'Payslip PDF'} open={!!action} width="min(960px, 98vw)" onClose={() => { if (!busy) { setAction(null); setPdfUrl('') } }} closable={!busy} maskClosable={!busy} className="excel-payslip-action" footer={<Space wrap className="excel-payslip-footer"><Button disabled={busy} onClick={() => { setAction(null); setPdfUrl('') }}>Close</Button>{pdfUrl && <><Button onClick={() => iframe.current?.contentWindow?.print()}>Print PDF</Button><Button href={pdfUrl} download={`payslips-${batch?.month}.pdf`}>Download PDF</Button></>}{action?.kind === 'send' ? <Button type="primary" loading={busy} disabled={!canManage || sendMode === 'Combined' && !emailValid(combinedEmail.trim()) || (requestingEmailIds ? !emailRequestRows.length || needsAck : needsAck) || (!pendingSendIds.length && !selectedMailRows.some(row => canEmailRow(row.id, sendMode, combinedEmail) && !delivery.some(item => item.rowId === row.id && item.status !== 'Error')))} onClick={() => void send()}>{sendProgress || (requestingEmailIds ? attachRequestPayslips ? 'Request IDs & send combined PDF' : 'Request email IDs' : pendingSendIds.length ? 'Retry / check email request' : delivery.length ? 'Send remaining emails' : 'Send email')}</Button> : <Button type="primary" loading={busy} disabled={needsAck || !actionRows.length} onClick={() => void createPdf()}>{action?.kind === 'download' ? 'Generate & download PDF' : 'Generate preview'}</Button>}</Space>}>
+    <Drawer title={resendingCorrected ? 'Resend corrected payslips' : emailing ? 'Email imported payslips' : 'Payslip PDF'} open={!!action} width={resendingCorrected ? 960 : 'min(960px, 98vw)'} rootClassName={resendingCorrected ? 'excel-payslip-corrected-resend-root' : undefined} contentWrapperStyle={resendingCorrected ? { width: 'min(960px, 100vw)', maxWidth: '100vw' } : undefined} style={resendingCorrected ? { width: '100%', maxWidth: '100%', minWidth: 0 } : undefined} onClose={() => { if (!busy) { setAction(null); setPdfUrl('') } }} closable={!busy} maskClosable={!busy} className="excel-payslip-action" footer={<Space wrap className="excel-payslip-footer"><Button disabled={busy} onClick={() => { setAction(null); setPdfUrl('') }}>Close</Button>{pdfUrl && <><Button onClick={() => iframe.current?.contentWindow?.print()}>Print PDF</Button><Button href={pdfUrl} download={`payslips-${batch?.month}.pdf`}>Download PDF</Button></>}{emailing ? <Button type="primary" loading={busy} disabled={!canManage || resendingCorrected && (!supportsCorrectedResend || !acknowledgeResend && !pendingSendIds.length) || sendMode === 'Combined' && !emailValid(combinedEmail.trim()) || (requestingEmailIds ? !emailRequestRows.length || needsAck : needsAck) || (!pendingSendIds.length && !selectedMailRows.some(row => canEmailRow(row.id, sendMode, combinedEmail) && !delivery.some(item => item.rowId === row.id && item.status !== 'Error')))} onClick={() => void send()}>{sendProgress || (requestingEmailIds ? attachRequestPayslips ? 'Request IDs & send combined PDF' : 'Request email IDs' : pendingSendIds.length ? 'Retry / check email request' : resendingCorrected ? 'Resend corrected payslips' : delivery.length ? 'Send remaining emails' : 'Send email')}</Button> : <Button type="primary" loading={busy} disabled={needsAck || !actionRows.length} onClick={() => void createPdf()}>{action?.kind === 'download' ? 'Generate & download PDF' : 'Generate preview'}</Button>}</Space>}>
       <Space wrap><Tag>{actionRows.length} payslips</Tag><Tag>{batch?.month}</Tag></Space>
-      <Form.Item label="Amount display" style={{ marginTop: 16 }}><Select aria-label="Payslip amount display" value={amountDecimalPlaces} disabled={busy || pendingSendIds.length > 0 || !!pendingEmailRequest.current} options={[{ value: 0, label: 'Whole rupees' }, { value: 2, label: '2 decimal places' }]} onChange={value => { setAmountDecimalPlaces(value); setPdfUrl('') }} style={{ width: 210 }} /></Form.Item>
+      {resendingCorrected && <><Descriptions size="small" column={compactActions ? 1 : 2}><Descriptions.Item label="Client">{clientName}</Descriptions.Item><Descriptions.Item label="Salary month">{batch?.month}</Descriptions.Item><Descriptions.Item label="Selected recipients">{resendReviewRows.length}</Descriptions.Item><Descriptions.Item label="Saved batch">{batch?.sourceFileName}</Descriptions.Item></Descriptions><Alert type="warning" showIcon message="These employees can receive another email for the same salary month." description="Corrected PDFs use current linked Employee Master profile, contact and bank details with the saved Excel salary amounts. Salary is not recalculated. Queued, delayed or uncertain deliveries must finish or be resolved first." /><Checkbox checked={acknowledgeResend} disabled={busy || pendingSendIds.length > 0 || !emailStatus.ready || !selectedMailRows.length} onChange={event => setAcknowledgeResend(event.target.checked)}>I confirm these {resendReviewRows.length} employees should receive corrected {batch?.month} payslips again.</Checkbox></>}
+      <Form.Item label="Amount display" style={{ marginTop: 16 }}><Select aria-label="Payslip amount display" value={amountDecimalPlaces} disabled={busy || pendingSendIds.length > 0 || !!pendingEmailRequest.current} options={[{ value: 0, label: 'Whole rupees' }, { value: 2, label: '2 decimal places' }]} onChange={value => { setAmountDecimalPlaces(value); setPdfUrl(''); if (resendingCorrected) setAcknowledgeResend(false) }} style={{ width: 210 }} /></Form.Item>
       {actionError && <Alert type="error" showIcon message={actionError} />}
-      {action?.kind === 'send' && currentActionMailJob && <ExcelPayslipMailProgress jobs={[currentActionMailJob]} selectedId={currentActionMailJob.id} onSelect={chooseMailJob} loading={mailJobs.loading} error={mailJobs.error} onRefresh={mailJobs.refresh} />}
+      {emailing && currentActionMailJob && <ExcelPayslipMailProgress jobs={[currentActionMailJob]} selectedId={currentActionMailJob.id} onSelect={chooseMailJob} loading={mailJobs.loading} error={mailJobs.error} onRefresh={mailJobs.refresh} />}
       {(!requestingEmailIds || attachRequestPayslips) && !!warningRows.length && <><Alert type="warning" showIcon message={`${warningRows.length} payslips have financial review warnings. The imported net pay remains unchanged.`} /><DataTable rows={warningRows} getRowId={row => row.id} exportDisabled columns={[{ key: 'sourceRow', label: 'Source row' }, { key: 'employeeName', label: 'Employee' }, { key: 'warnings', label: 'Warnings', value: row => row.warnings.join('; '), wrap: true }]} /><Checkbox checked={acknowledgeWarnings} disabled={busy} onChange={event => setAcknowledgeWarnings(event.target.checked)}>I reviewed these warnings and want to use the imported amounts.</Checkbox></>}
+      {resendingCorrected && <>
+        <Alert type="info" showIcon message="Individual corrected PDF to each selected employee" description="Choose employees below. Select filtered uses this list's search and column filters. After you confirm, progress continues here and in Notifications." />
+        {emailStatus.error && <Alert type="error" showIcon message={emailStatus.error} action={<Button onClick={emailStatus.refresh}>Retry status</Button>} />}
+        {missingEmailRows.length > 0 && <Alert type="warning" showIcon message={`${missingEmailRows.length} employees need a valid email before they can be selected.`} />}
+        <Form component="div" layout="vertical" disabled={busy}>
+          <Space wrap className="excel-corrected-recipient-controls" style={{ marginBottom: 12 }}>
+            <Button disabled={busy || pendingSendIds.length > 0 || !emailStatus.ready} onClick={() => { setExcludedRecipientIds([]); setExcludeMissingRecipients(true); setAcknowledgeResend(false); setAcknowledgeWarnings(false) }}>Select all with email</Button>
+            <Button disabled={busy || pendingSendIds.length > 0 || !emailStatus.ready || resendFilteredIds === null} onClick={() => { const visible = new Set(resendFilteredIds || []); setExcludedRecipientIds(actionRows.filter(row => !visible.has(row.id)).map(row => row.id)); setAcknowledgeResend(false); setAcknowledgeWarnings(false) }}>Select filtered with email</Button>
+            <Button disabled={busy || pendingSendIds.length > 0} onClick={() => { setExcludedRecipientIds(actionRows.map(row => row.id)); setAcknowledgeResend(false); setAcknowledgeWarnings(false) }}>Clear recipient selection</Button>
+            <Tag>{selectedMailRows.length} selected</Tag>
+          </Space>
+          <DataTable rows={actionRows} getRowId={row => row.id} title="Recipients for corrected resend" exportDisabled onVisibleRowsChange={captureResendFilteredRows}
+            rowSelection={{ selectedRowKeys: selectedMailRows.map(row => row.id), onChange: keys => { setExcludedRecipientIds(actionRows.filter(row => !keys.includes(row.id)).map(row => row.id)); setAcknowledgeResend(false); setAcknowledgeWarnings(false) }, getCheckboxProps: row => ({ disabled: busy || pendingSendIds.length > 0 || !canEmailRow(row.id) }) }}
+            columns={[
+              { key: 'sourceRow', label: 'Source row' },
+              { key: 'employeeCode', label: 'Employee code' },
+              { key: 'employeeName', label: 'Employee' },
+              { key: 'previousDelivery', label: 'Previous delivery', value: row => mailLabels[emailStatus.statuses.get(row.id)?.status || 'Unknown'] },
+              { key: 'resendEligibility', label: 'Resend review', wrap: true, value: row => row.employment?.identityReviewRequired ? 'Review employee matching before resending.' : correctedPayslipResendBlockReason(emailStatus.statuses.get(row.id)) || (emailValid(row.email.trim()) ? 'Ready for corrected resend' : 'Valid employee email required') },
+              { key: 'email', label: 'Recipient email', value: row => row.email || 'Missing employee email' },
+            ]} />
+        </Form>
+        <p className="excel-payslip-muted">Recipients come from current linked Employee Master details or the saved source. Update an incorrect or missing employee email before resending. Saved salary amounts are unchanged.</p>
+        {!!delivery.length && <DataTable rows={delivery} getRowId={(row, index) => `${row.rowId}:${index}`} title="Corrected email results" columns={[{ key: 'employeeName', label: 'Employee' }, { key: 'email', label: 'Recipient' }, { key: 'status', label: 'Status' }, { key: 'message', label: 'Details', wrap: true }]} />}
+      </>}
       {action?.kind === 'send' && <><Alert type="info" showIcon message="Only unsent payslips are included. You can also request missing email IDs without sending their payslips." description={requestingEmailIds ? attachRequestPayslips ? 'The employee details and one combined salary PDF for employees missing email IDs will go to the recipient below. Personal employee email delivery remains unsent.' : 'The request contains employee codes, names and work locations. No salary PDF is attached, and payslips remain unsent.' : `After saving the email job, delivery continues in the background. Track progress here or in Notifications.${sendMode === 'Combined' ? ' Combined delivery sends ONE coordinator email. It does not send employee emails or mark them as sent.' : ''}`} />{emailStatus.error && <Alert type="error" showIcon message={emailStatus.error} action={<Button onClick={emailStatus.refresh}>Retry status</Button>} />}{sendMode === 'Individual' && missingEmailRows.length > 0 && <Alert type="warning" showIcon message={`${missingEmailRows.length} recipients need an email. Bulk sending queues valid recipients and reports missing or invalid emails per row.`} />}<Divider /><Form component="div" layout="vertical" disabled={busy}><Form.Item label="Email delivery"><Select aria-label="Payslip email delivery" disabled={pendingSendIds.length > 0 || !!pendingEmailRequest.current} value={sendMode} options={[{ value: 'Individual', label: 'Individual PDF to each employee' }, { value: 'Combined', label: 'Combined PDF to one email address' }]} onChange={value => { setSendMode(value); setActionMailJob(null); setActionError(''); setDelivery([]); setExcludedRecipientIds([]) }} /></Form.Item>{sendMode === 'Combined' ? <><Form.Item label="Recipient email" required><Input aria-label="Combined payslip recipient" disabled={pendingSendIds.length > 0 || !!pendingEmailRequest.current} type="email" value={combinedEmail} onChange={event => setCombinedEmail(event.target.value)} /></Form.Item>{!!emailRequestRows.length && <Checkbox checked={requestMissingEmails} disabled={pendingSendIds.length > 0 || !!pendingEmailRequest.current} onChange={event => setRequestMissingEmails(event.target.checked)}>Request missing email IDs</Checkbox>}{requestingEmailIds && <><p><Checkbox checked={attachRequestPayslips} disabled={pendingSendIds.length > 0 || !!pendingEmailRequest.current} onChange={event => { setAttachRequestPayslips(event.target.checked); setAcknowledgeWarnings(false) }}>Attach their salary slips as one combined PDF</Checkbox></p><DataTable rows={emailRequestRows} getRowId={row => row.id} exportDisabled title="Employees needing email IDs" columns={[{ key: 'employeeCode', label: 'Employee Code' }, { key: 'employeeName', label: 'Employee Name' }, { key: 'location', label: 'Work Location', value: row => row.information.find(item => /location|tehsil/i.test(item.label))?.value || '' }]} /></>}</> : <><Space wrap style={{ marginBottom: 12 }}><Checkbox checked={excludeMissingRecipients} disabled={busy || pendingSendIds.length > 0} onChange={event => setExcludeMissingRecipients(event.target.checked)}>Exclude missing / invalid email</Checkbox><Button disabled={busy || pendingSendIds.length > 0} onClick={() => { setExcludedRecipientIds([]); setExcludeMissingRecipients(true) }}>Select all with email</Button><Button disabled={busy || pendingSendIds.length > 0} onClick={() => setExcludedRecipientIds(actionRows.map(row => row.id))}>Clear recipient selection</Button><Tag>{selectedMailRows.length} selected; {missingEmailRows.length} email missing / invalid</Tag></Space><DataTable rows={actionRows} getRowId={row => row.id} title="Recipients for this send" exportDisabled rowSelection={{ selectedRowKeys: selectedMailRows.map(row => row.id), onChange: keys => setExcludedRecipientIds(actionRows.filter(row => !keys.includes(row.id)).map(row => row.id)), getCheckboxProps: row => ({ disabled: busy || pendingSendIds.length > 0 || !canEmailRow(row.id) || excludeMissingRecipients && !emailValid((emailOverrides[row.id] ?? row.email).trim()) }) }} columns={[{ key: 'sourceRow', label: 'Source row' }, { key: 'employeeName', label: 'Employee' }, { key: 'email', label: 'Email override', render: row => <Input aria-label={`Email for source row ${row.sourceRow}`} disabled={pendingSendIds.includes(row.id) || delivery.some(item => item.rowId === row.id && item.status !== 'Error')} value={emailOverrides[row.id] ?? row.email} placeholder="Email required only for sending" onChange={event => setEmailOverrides(current => ({ ...current, [row.id]: event.target.value }))} /> }]} /></>}</Form><p className="excel-payslip-muted">Email overrides apply to this send. They do not edit the saved batch or employee records.</p>{!!delivery.length && <DataTable rows={delivery} getRowId={(row, index) => `${row.rowId}:${index}`} title="Email results" columns={[{ key: 'employeeName', label: 'Employee' }, { key: 'email', label: 'Recipient' }, { key: 'status', label: 'Status' }, { key: 'message', label: 'Details', wrap: true }]} />}</>}
       {pdfUrl && <iframe ref={iframe} title="Imported payslip PDF preview" src={pdfUrl} className="excel-payslip-pdf" />}
     </Drawer>

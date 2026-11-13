@@ -9,6 +9,7 @@ public sealed class ExcelPayslipClient
     public bool HasSavedBatch { get; set; }
     public bool LocationBatchesSupported { get; set; }
     public bool AtomicMappingSaveSupported { get; set; }
+    public bool CorrectedResendSupported { get; set; }
 }
 
 public sealed record ExcelPayslipCodeGeneration(bool Enabled, int Digits);
@@ -188,6 +189,8 @@ public class ExcelPayslipSelection
 
 public sealed class SendExcelPayslipsRequest : ExcelPayslipSelection
 {
+    public bool ResendCorrected { get; set; }
+    public bool AcknowledgeResend { get; set; }
     public string Mode { get; set; } = "Individual";
     public string Email { get; set; } = "";
     public Dictionary<string, string> EmailOverrides { get; set; } = [];

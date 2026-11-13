@@ -1217,7 +1217,8 @@ app.MapPost("/api/ess-admin/settings", async (EssMssRepository repository, EssCl
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (setting.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
     if (!CanAccessClient(context, setting.ClientId)) return Results.StatusCode(403);
-    return Results.Ok(await repository.SaveEssClientSettingAsync(setting, CurrentUser(context).Id));
+    try { return Results.Ok(await repository.SaveEssClientSettingAsync(setting, CurrentUser(context).Id)); }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
 })
 .WithName("SaveEssClientSetting")
 .WithOpenApi();

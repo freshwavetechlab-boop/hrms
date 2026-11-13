@@ -24,6 +24,7 @@ internal sealed class ExcelPayslipMailJobRecord
     public List<ExcelPayslipMailJobDelivery> Deliveries { get; set; } = [];
     public string Mode { get; set; } = "";
     public string Recipient { get; set; } = "";
+    public bool ResendCorrected { get; set; }
 }
 
 internal sealed class ExcelPayslipMailJobDelivery
@@ -46,7 +47,8 @@ public sealed partial class ExcelPayslipRepository
         // Old /send and this entire-job path use the same locks and delivery history.
         await db.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@ClientId FOR UPDATE", new { ClientId = clientId }, tx);
         var stateJson = await db.ExecuteScalarAsync<string?>("SELECT CAST(send_state_json AS CHAR) FROM excel_payslip_batches WHERE client_id=@ClientId AND id=@Id FOR UPDATE", new { ClientId = clientId, Id = batchId }, tx);
-        var batch = await ReadBatchAsync(db, clientId, batchId, tx);
+        var batch = request.ResendCorrected ? await ReadRawCorrectionSourceAsync(db, clientId, batchId, tx)
+            : await ReadBatchAsync(db, clientId, batchId, tx);
         if (batch is null) return (null, "The saved batch was not found for this client.");
         var state = JsonSerializer.Deserialize<ExcelPayslipSendState>(stateJson!, JsonOptions) ?? new();
         var (selected, error) = SelectRows(batch, request); if (error is not null) return (null, error);
@@ -65,31 +67,62 @@ public sealed partial class ExcelPayslipRepository
                 return (null, "This request ID is already in use. Refresh delivery status before starting another send action.");
             return (new() { Job = BuildMailJobSummary(previous, await ReadJobQueuesAsync(db, [previous], tx)), Items = existing.Item.Items }, null);
         }
+        ExcelPayslipCorrectionSnapshot? correction = null;
+        if (request.ResendCorrected)
+        {
+            batch = await ReadCorrectionBatchAsync(db, clientId, batchId, tx);
+            if (batch is null) return (null, "The saved batch was not found for this client.");
+            (selected, error) = SelectRows(batch, request);
+            if (error is not null) return (null, error);
+        }
         var statuses = BuildDeliveryStatuses(batch, state, await ReadDeliveryQueueAsync(db, clientId, state, tx));
-        var reviewed = ReviewDeliverySelection(selected, request, statuses);
+        var reviewed = request.ResendCorrected ? ReviewCorrectedDeliverySelection(selected, request, statuses)
+            : ReviewDeliverySelection(selected, request, statuses);
         if (reviewed.Items.Any(item => item.Status == "Ready") && await notifications.ExcelPayslipDeliveryReadyAsync(db, tx) is string readyError)
             return (null, readyError);
         var mailTemplate = reviewed.Items.Any(item => item.Status == "Ready")
             ? await NotificationRepository.ReadExcelPayslipTemplateAsync(db, tx) : null;
         // PDF rendering is deliberately absent from submission; the existing durable worker performs it.
-        var documents = PrepareMailJobDocuments(batch, selected, request, reviewed, requestId, actor, mailTemplate);
+        if (request.ResendCorrected && reviewed.Items.Any(item => item.Status == "Ready"))
+        {
+            var raw = await ReadRawCorrectionSourceAsync(db, clientId, batchId, tx);
+            var source = await ReadCalculationSourceAsync(db, clientId, batchId, tx);
+            correction = CreateCorrectionSnapshot(raw!, batch, source,
+                reviewed.Items.Where(item => item.Status == "Ready").Select(item => item.RowId).ToArray(), requestId, actor);
+        }
+        var documents = PrepareMailJobDocuments(batch, selected, request, reviewed, requestId, actor, mailTemplate, correction);
         await NotificationRepository.QueueExcelPayslipDocumentsAsync(db, tx, batch, documents);
         foreach (var document in documents) state.Deliveries.Add(document.Id, document);
         foreach (var item in reviewed.Items.Where(item => item.Status == "Ready"))
         {
             item.Status = "Queued";
-            item.Message = request.Mode == "Combined" ? "Combined PDF queued to the specified recipient." : "Individual PDF queued to this recipient.";
+            item.Message = request.ResendCorrected ? "Corrected individual PDF queued. The previous email history is retained."
+                : request.Mode == "Combined" ? "Combined PDF queued to the specified recipient." : "Individual PDF queued to this recipient.";
         }
         var job = CreateMailJobRecord(batch, requestId, actorUserId, actor, selected, reviewed, documents, request.Mode, request.Email);
+        job.ResendCorrected = request.ResendCorrected;
         state.Jobs.Add(requestId, job);
+        // JsonElement request entries survive older API read/write cycles. Older workers
+        // also retain the legacy BatchSha256 sentinel and fail closed on these copies.
+        if (correction is not null)
+            state.Requests.Add(CorrectionSnapshotPrefix + requestId, JsonSerializer.SerializeToElement(correction, JsonOptions));
         state.Requests.Add(requestId, JsonSerializer.SerializeToElement(new SendManifest
             { Fingerprint = fingerprint, CreatedBy = Limit(actor, 190), CreatedAtUtc = job.CreatedAtUtc, Result = reviewed }, JsonOptions));
+        var nextStateJson = JsonSerializer.Serialize(state, JsonOptions);
+        if (request.ResendCorrected && System.Text.Encoding.UTF8.GetByteCount(nextStateJson) > 32 * 1024 * 1024)
+            return (null, "The retained mail history and corrected snapshot exceed the delivery storage limit. Select fewer employees.");
         await db.ExecuteAsync("UPDATE excel_payslip_batches SET send_state_json=CAST(@Json AS JSON) WHERE client_id=@ClientId AND id=@Id",
-            new { ClientId = clientId, Id = batchId, Json = JsonSerializer.Serialize(state, JsonOptions) }, tx);
+            new { ClientId = clientId, Id = batchId, Json = nextStateJson }, tx);
+        if (request.ResendCorrected)
+            await db.ExecuteAsync(@"INSERT INTO auditlogs(UserId,UserEmail,Action,Resource,Method,Path,StatusCode,DetailsJson)
+VALUES(@ActorUserId,@Actor,'excel-payslips.corrected-resend',@BatchId,'POST','/api/excel-payslips/batches/resend-corrected-job',200,CAST(@Details AS JSON))",
+                new { ActorUserId = actorUserId, Actor = actor, BatchId = batchId,
+                    Details = JsonSerializer.Serialize(new { clientId, batchId, requestId, queued = documents.Count,
+                        skipped = reviewed.Items.Count(item => item.Status == "Skipped"), salaryAmountsUnchanged = true }, JsonOptions) }, tx);
         await tx.CommitAsync();
         var queued = documents.Select(document => new ExcelPayslipQueueStatus { Id = document.QueueId, ClientId = clientId,
             EventCode = NotificationRepository.ExcelPayslipEvent, ResourceType = "ExcelPayslipBatch", ResourceId = batchId + ":" + document.Id,
-            Status = NotificationRepository.ExcelPayslipPendingStatus, CreatedAt = job.CreatedAtUtc });
+            Status = request.ResendCorrected ? NotificationRepository.ExcelPayslipCorrectedPendingStatus : NotificationRepository.ExcelPayslipPendingStatus, CreatedAt = job.CreatedAtUtc });
         return (new() { Job = BuildMailJobSummary(job, queued), Items = reviewed.Items }, null);
     }
 
@@ -98,22 +131,29 @@ public sealed partial class ExcelPayslipRepository
         if (!Guid.TryParse(request.RequestId, out _)) return "Supply a unique request ID for this send action.";
         if (request.Mode is not ("Individual" or "Combined")) return "Choose individual or combined delivery.";
         if (request.EmailOverrides is null || request.EmailOverrides.Count > 1000) return "Email overrides are invalid.";
+        if (request.ResendCorrected && (!request.AcknowledgeResend || request.Mode != "Individual" || request.EmailOverrides.Count != 0 || !string.IsNullOrWhiteSpace(request.Email)))
+            return "Acknowledge corrected individual delivery using each employee's current saved email address.";
+        if (!request.ResendCorrected && request.AcknowledgeResend) return "Choose the corrected resend action before acknowledging a resend.";
         if (!TextValid(request.Email ?? "", 254) || request.EmailOverrides.Values.Any(v => !TextValid(v ?? "", 254))) return "Recipient emails exceed their allowed lengths.";
         if (request.Mode == "Individual" && request.RowIds?.Count > maximumIndividualRows) return $"Send individual payslips in groups of up to {maximumIndividualRows} rows.";
         return !Guid.TryParseExact(batchId, "N", out _) ? "The saved batch was not found." : null;
     }
 
     internal static List<NotificationRepository.ExcelPayslipMailDocument> PrepareMailJobDocuments(ExcelPayslipBatch batch,
-        IReadOnlyList<ExcelPayslipRow> selected, SendExcelPayslipsRequest request, ExcelPayslipDeliveryResult reviewed, string requestId, string actor, NotificationTemplate? template)
+        IReadOnlyList<ExcelPayslipRow> selected, SendExcelPayslipsRequest request, ExcelPayslipDeliveryResult reviewed, string requestId, string actor, NotificationTemplate? template,
+        ExcelPayslipCorrectionSnapshot? correction = null)
     {
         var ready = reviewed.Items.Where(item => item.Status == "Ready").ToDictionary(item => item.RowId, StringComparer.Ordinal);
-        var pending = selected.Where(row => ready.ContainsKey(row.Id)).ToArray();
+        var pending = (correction?.Batch.Rows ?? selected).Where(row => ready.ContainsKey(row.Id)).ToArray();
         if (pending.Length == 0) return [];
-        var hash = NotificationRepository.ExcelPayslipBatchHash(batch);
+        var renderingBatch = correction?.Batch ?? batch;
+        var hash = correction is null ? NotificationRepository.ExcelPayslipBatchHash(batch) : "corrected:" + correction.RenderSha256;
         var groups = request.Mode == "Combined" ? new[] { pending } : pending.Select(row => new[] { row });
-        return groups.Select(rows => { var document = NotificationRepository.PrepareExcelPayslipMailMetadata(batch, rows,
+        return groups.Select(rows => { var document = NotificationRepository.PrepareExcelPayslipMailMetadata(renderingBatch, rows,
             request.Mode == "Combined" ? request.Email : ready[rows[0].Id].Email, requestId, actor,
-            request.IncludeSeal, request.AmountDecimalPlaces, template!, hash); document.DeliveryMode = request.Mode; return document; }).ToList();
+            request.IncludeSeal, request.AmountDecimalPlaces, template!, hash); document.DeliveryMode = request.Mode;
+            if (correction is not null) document.Subject = "Corrected: " + document.Subject;
+            return document; }).ToList();
     }
 
     internal static ExcelPayslipMailJobRecord CreateMailJobRecord(ExcelPayslipBatch batch, string id, int actorUserId, string actor,
@@ -140,7 +180,8 @@ public sealed partial class ExcelPayslipRepository
             BatchId = job.BatchId, Month = job.Month, SourceFileName = job.SourceFileName, CreatedAtUtc = job.CreatedAtUtc,
             CreatedBy = job.CreatedBy, Total = job.RowIds.Count, MissingEmail = job.MissingEmail, Skipped = job.Skipped, DismissedAtUtc = job.DismissedAtUtc,
             TotalEmails = job.Deliveries.Count, Mode = job.Mode.Length > 0 ? job.Mode : job.Deliveries.Count == 1 && job.Deliveries[0].RowCount > 1 ? "Combined" : "Individual",
-            Recipient = job.Recipient.Length > 0 ? job.Recipient : job.Deliveries.Count == 1 ? queues.GetValueOrDefault(job.Deliveries[0].QueueId)?.Recipient ?? "" : "" };
+            Recipient = job.Recipient.Length > 0 ? job.Recipient : job.Deliveries.Count == 1 ? queues.GetValueOrDefault(job.Deliveries[0].QueueId)?.Recipient ?? "" : "",
+            ResendCorrected = job.ResendCorrected };
         var processing = false; var needsReview = false;
         foreach (var delivery in job.Deliveries)
         {
@@ -160,7 +201,7 @@ public sealed partial class ExcelPayslipRepository
             if (accepted) { summary.Sent += delivery.RowCount; continue; }
             switch (queue.Status.ToUpperInvariant())
             {
-                case "PENDING": case "RETRY": case "EXCELPENDING": case "EXCELRETRY": summary.Queued += delivery.RowCount; break;
+                case "PENDING": case "RETRY": case "EXCELPENDING": case "EXCELRETRY": case "EXCELCORRECTEDPENDING": case "EXCELCORRECTEDRETRY": summary.Queued += delivery.RowCount; break;
                 case "PROCESSING": case "SENDING":
                     summary.Queued += delivery.RowCount; processing = true;
                     // There is no processing lease timestamp. This is a review signal, never permission to resend.

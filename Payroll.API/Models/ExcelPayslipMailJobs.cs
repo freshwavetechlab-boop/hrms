@@ -15,6 +15,7 @@ public sealed class ExcelPayslipMailJobSummary
     public int Sent { get; set; }
     public string Mode { get; set; } = "";
     public string Recipient { get; set; } = "";
+    public bool ResendCorrected { get; set; }
     public int TotalEmails { get; set; }
     public int AcceptedEmails { get; set; }
     public int SentCopySavedEmails { get; set; }

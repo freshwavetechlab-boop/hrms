@@ -97,7 +97,7 @@ FROM notification_queue queue WHERE queue.ClientId IN @ClientIds AND queue.Id IN
                 || queue.Recipient.Length > 0 && !queue.Recipient.Equals(document.Email, StringComparison.OrdinalIgnoreCase))) queue = null;
             var status = queue is null ? "Unknown" : queue.DeliveryStatus is "Bounced" or "Deferred" or "Delivered" ? queue.DeliveryStatus
                 : queue.Status.Equals("Sent", StringComparison.OrdinalIgnoreCase) || queue.SentAt.HasValue || queue.LastSentAt.HasValue ? "Sent"
-                : queue.Status.ToUpperInvariant() switch { "PENDING" or "RETRY" or "EXCELPENDING" or "EXCELRETRY" or "PROCESSING" or "SENDING" => "Queued", "FAILED" => "Failed", _ => "Unknown" };
+                : queue.Status.ToUpperInvariant() switch { "PENDING" or "RETRY" or "EXCELPENDING" or "EXCELRETRY" or "EXCELCORRECTEDPENDING" or "EXCELCORRECTEDRETRY" or "PROCESSING" or "SENDING" => "Queued", "FAILED" => "Failed", _ => "Unknown" };
             var message = status switch
             {
                 "Sent" => "SMTP accepted the message. Recipient delivery is not confirmed; no delivery report has been received.",
@@ -167,6 +167,29 @@ FROM notification_queue queue WHERE queue.ClientId IN @ClientIds AND queue.Id IN
         (mode != "Individual" || previous.CanSend)
         && !previous.RecipientDeliveries.Any(x => x.Mode == "Unknown" || x.Status == "Unknown" || x.Email.Equals(email.Trim(), StringComparison.OrdinalIgnoreCase))
         && (previous.RecipientDeliveries.Count > 0 || previous.CanSend);
+
+    internal static ExcelPayslipDeliveryResult ReviewCorrectedDeliverySelection(IReadOnlyList<ExcelPayslipRow> selected,
+        SendExcelPayslipsRequest request, ExcelPayslipDeliveryStatuses statuses)
+    {
+        var result = ReviewIndividualRecipients(selected.Select(MetadataOnlyCurrent).ToArray(), new Dictionary<string, string>());
+        var previous = statuses.Items.ToDictionary(item => item.RowId, StringComparer.Ordinal);
+        foreach (var item in result.Items)
+        {
+            if (item.Status == "Error") continue;
+            var row = selected.Single(r => r.Id == item.RowId);
+            var reason = !request.ResendCorrected || !request.AcknowledgeResend || request.Mode != "Individual"
+                ? "Explicitly acknowledge the corrected individual payslip resend before sending."
+                : row.Employment?.IdentityReviewRequired == true ? "Review this employee's identity before sending a corrected payslip."
+                : !previous.TryGetValue(item.RowId, out var history) ? "Refresh delivery status before sending a corrected payslip."
+                : history.RecipientDeliveries.Any(delivery => delivery.Mode == "Unknown" || delivery.Status == "Unknown"
+                    || delivery.Mode != "Combined" && (delivery.Status is "Queued" or "Processing" or "Sending" or "Deferred"))
+                    || history.Status is "Unknown" or "Queued" or "Processing" or "Sending" or "Deferred"
+                    ? "An earlier employee delivery is active or cannot be verified. Review it before sending another copy."
+                    : null;
+            if (reason is not null) { item.Status = "Skipped"; item.Message = reason; }
+        }
+        return result;
+    }
 
     internal static ExcelPayslipDeliveryResult ReviewDeliverySelection(IReadOnlyList<ExcelPayslipRow> selected,
         SendExcelPayslipsRequest request, ExcelPayslipDeliveryStatuses statuses)

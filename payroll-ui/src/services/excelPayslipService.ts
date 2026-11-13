@@ -4,7 +4,7 @@ import type { PayslipColumn, PayslipSourceRow } from '../utils/excelPayslipImpor
 import type { PayslipMappingEvidence } from '../utils/excelPayslipMapping'
 
 export type ExcelPayslipText = { label: string; value: string }
-export type ExcelPayslipClient = { id: number; name: string; hasSavedBatch?: boolean; locationBatchesSupported?: boolean; atomicMappingSaveSupported?: boolean }
+export type ExcelPayslipClient = { id: number; name: string; hasSavedBatch?: boolean; locationBatchesSupported?: boolean; atomicMappingSaveSupported?: boolean; correctedResendSupported?: boolean }
 export type ExcelPayslipAmount = { label: string; amount: number }
 export type ExcelPayslipRow = {
   id: string; sourceRow: number; employeeCode: string; employeeName: string; email: string
@@ -32,7 +32,7 @@ export type ExcelPayslipMappingSuggestion = { columns: PayslipColumn[]; method: 
 export const suggestExcelPayslipMapping = (clientId: number, request: { salaryTemplateId: string; columns: PayslipMappingEvidence[] }, signal: AbortSignal) => postJson<typeof request, ExcelPayslipMappingSuggestion | null>(`/api/excel-payslips/suggest-mapping?clientId=${clientId}`, request, null, { signal, loader: false, toast: false, timeoutMs: 70000 })
 export type ExcelPayslipTemplate = { id: string; name: string; components: { id: string; code: string; name: string; category: 'Earning' | 'Deduction' | 'Employer' | 'Information' }[] }
 export type ExcelPayslipPdfRequest = { rowIds: string[]; includeSeal: boolean; acknowledgeWarnings: boolean; amountDecimalPlaces: 0 | 2 }
-export type ExcelPayslipSendRequest = ExcelPayslipPdfRequest & { mode: 'Individual' | 'Combined'; email: string; emailOverrides: Record<string, string>; requestId: string }
+export type ExcelPayslipSendRequest = ExcelPayslipPdfRequest & { mode: 'Individual' | 'Combined'; email: string; emailOverrides: Record<string, string>; requestId: string; resendCorrected?: boolean; acknowledgeResend?: boolean }
 export type ExcelPayslipEmailRequest = { rowIds: string[]; email: string; requestId: string; attachPayslips?: boolean; includeSeal?: boolean; amountDecimalPlaces?: 0 | 2; acknowledgeWarnings?: boolean }
 export type ExcelPayslipEmailUpdate = { rowId: string; employeeCode: string; employeeName: string; location: string; previousEmail: string; email: string }
 export const updateExcelPayslipEmails = (clientId: number, id: string, request: { month: string; sourceFileName: string; updates: ExcelPayslipEmailUpdate[] }) => postJson<typeof request, ExcelPayslipBatch | null>(`${batchPath(id)}/email-updates?clientId=${clientId}`, request, null, { toast: false })
@@ -46,6 +46,7 @@ export type ExcelPayslipMailJob = {
   total: number; sent: number; queued: number; failed: number; missingEmail: number; skipped: number; unknown: number
   completed: number; percentComplete: number; isComplete: boolean; message: string; dismissedAtUtc: string | null
   mode?: string; recipient?: string; totalEmails?: number; acceptedEmails?: number; sentCopySavedEmails?: number; sentCopyUnverifiedEmails?: number; deliveredEmails?: number
+  resendCorrected?: boolean
 }
 export type ExcelPayslipMailJobResult = { job: ExcelPayslipMailJob; items: ExcelPayslipDelivery[] }
 export type ExcelPayslipCalculationSource = Partial<WorkbookCaptureFields> & { sheetName: string; headerRow: number; columnCount: number; dateSystem?: string; columns: PayslipColumn[]; rows: PayslipSourceRow[]; excludedSourceRows: number[]; sourceBatchId?: string; attendanceColumnIndex?: number | null; monthDaysCell?: string | null }
@@ -75,7 +76,7 @@ export const reviewExcelPayslipWarnings = (clientId: number, id: string, rows: {
 export const getExcelPayslipDeliveryStatus = (clientId: number, id: string) => getJsonResult<{ items: ExcelPayslipEmailStatus[] }>(`${batchPath(id)}/delivery-status?clientId=${clientId}`, { items: [] })
 export const getExcelPayslipMailJobs = () => getJsonResult<{ items: ExcelPayslipMailJob[] }>(`${root}/mail-jobs`, { items: [] }, { loader: false, toast: false })
 export const getExcelPayslipBatchMailJobs = (clientId: number, id: string) => getJsonResult<{ items: ExcelPayslipMailJob[] }>(`${batchPath(id)}/mail-jobs?clientId=${clientId}`, { items: [] }, { loader: false, toast: false })
-export const startExcelPayslipMailJob = (clientId: number, id: string, request: ExcelPayslipSendRequest) => postJson<ExcelPayslipSendRequest, ExcelPayslipMailJobResult | null>(`${batchPath(id)}/send-job?clientId=${clientId}`, request, null, { toast: false, timeoutMs: 120000 })
+export const startExcelPayslipMailJob = (clientId: number, id: string, request: ExcelPayslipSendRequest) => postJson<ExcelPayslipSendRequest, ExcelPayslipMailJobResult | null>(`${batchPath(id)}/${request.resendCorrected ? 'resend-corrected-job' : 'send-job'}?clientId=${clientId}`, request, null, { toast: false, timeoutMs: 120000 })
 export const dismissExcelPayslipMailJob = (clientId: number, id: string, jobId: string) => postJson<Record<string, never>, { ok: boolean }>(`${batchPath(id)}/mail-jobs/${encodeURIComponent(jobId)}/dismiss?clientId=${clientId}`, {}, { ok: false }, { loader: false, toast: false })
 export const getExcelPayslipCalculation = (clientId: number, id: string) => getJsonResult<ExcelPayslipCalculationSource | null>(`${batchPath(id)}/calculation?clientId=${clientId}`, null)
 export const calculateExcelPayslips = (clientId: number, id: string, request: ExcelPayslipCalculateRequest) => postJson<ExcelPayslipCalculateRequest, ExcelPayslipBatch | null>(`${batchPath(id)}/calculate?clientId=${clientId}`, request, null, { toast: false, timeoutMs: 120000 })

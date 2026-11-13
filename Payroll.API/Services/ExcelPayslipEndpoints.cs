@@ -100,10 +100,24 @@ public static class ExcelPayslipEndpoints
         routes.MapPost("/batches/{id}/send-job", async (ExcelPayslipRepository repository, int clientId, string id,
             SendExcelPayslipsRequest request, HttpContext context) =>
         {
+            if (request.ResendCorrected || request.AcknowledgeResend)
+                return Results.BadRequest(new { error = "Use the corrected payslip resend action for a corrected copy." });
             var user = currentUser(context);
             var (item, error) = await repository.SubmitMailJobAsync(clientId, id, request, user.Id, user.Email);
             return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
         }).WithName("QueueExcelPayslipMailJob").WithOpenApi();
+
+        // A distinct route also fails closed against an older deployed API, rather
+        // than silently treating the new purpose as an ordinary send request.
+        routes.MapPost("/batches/{id}/resend-corrected-job", async (ExcelPayslipRepository repository, int clientId, string id,
+            SendExcelPayslipsRequest request, HttpContext context) =>
+        {
+            if (!request.ResendCorrected || !request.AcknowledgeResend)
+                return Results.BadRequest(new { error = "Review and explicitly acknowledge the corrected payslip resend." });
+            var user = currentUser(context);
+            var (item, error) = await repository.SubmitMailJobAsync(clientId, id, request, user.Id, user.Email);
+            return item is null ? Results.BadRequest(new { error }) : Results.Ok(item);
+        }).WithName("QueueCorrectedExcelPayslipMailJob").WithOpenApi();
 
         routes.MapPost("/batches/{id}/email-request", async (ExcelPayslipRepository repository, int clientId, string id,
             ExcelPayslipEmailRequest request, HttpContext context) =>

@@ -5,7 +5,8 @@ import { useToast } from './ToastProvider'
 import { getEssClientSettings, saveEssClientSetting } from '../services/settingsService'
 import type { EssClientSetting } from '../types/payroll'
 
-const initialPasswordModeOptions = ['App Default', 'Random', 'Aadhaar', 'EmployeeCode', 'Fixed']
+const initialPasswordModeOptions = ['App Default', 'Random', 'Aadhaar', 'AadhaarFirst8', 'EmployeeCode', 'Fixed']
+const initialPasswordModeLabel = (value: string) => value === 'EmployeeCode' ? 'Employee code' : value === 'AadhaarFirst8' ? 'Aadhaar — first 8 digits (temporary)' : value
 
 export default function EssSettings() {
   const notify = useToast()
@@ -59,7 +60,8 @@ export default function EssSettings() {
       <DataTable rows={settings} columns={[
         { key: 'clientName', label: 'Client' },
         { key: 'allowProfileEdit', label: 'First profile save', render: row => row.allowProfileEdit ? 'Allowed' : 'Blocked' },
-        { key: 'initialPasswordMode', label: 'Initial password', render: row => row.initialPasswordMode || 'App Default' },
+        { key: 'allowPhoneLogin', label: 'Phone login', render: row => row.allowPhoneLogin ? 'Allowed' : 'Blocked' },
+        { key: 'initialPasswordMode', label: 'Initial password', render: row => initialPasswordModeLabel(row.initialPasswordMode || 'App Default') },
         { key: 'isActive', label: 'Status', render: row => row.isActive ? 'Active' : 'Inactive' }
       ]} actions={row => <Button size="small" type="primary" onClick={() => edit(row)}>Configure</Button>} />
       <Drawer className="settings-master-drawer ess-settings-drawer" title={<div className="settings-drawer-title"><span>ESS Client Policy</span><h3>{draft?.clientName || 'Client settings'}</h3><p>Changes are saved only when you click Save policy.</p></div>} open={drawerOpen} width={720} onClose={close} destroyOnClose>
@@ -67,9 +69,10 @@ export default function EssSettings() {
           <Form.Item label="Client"><Input value={draft.clientName} disabled /></Form.Item>
           <Form.Item label="ESS setting status"><Checkbox checked={draft.isActive} onChange={event => patch({ isActive: event.target.checked })}>Active for this client</Checkbox></Form.Item>
           <Form.Item label="First-time profile edit"><Checkbox checked={draft.allowProfileEdit} onChange={event => patch({ allowProfileEdit: event.target.checked })}>Allow the first profile save without approval. After saving, each further edit requires approval in My Tasks.</Checkbox></Form.Item>
-          <Form.Item label="Initial password mode" required><Select value={draft.initialPasswordMode || 'App Default'} options={initialPasswordModeOptions.map(value => ({ value, label: value === 'EmployeeCode' ? 'Employee code' : value }))} onChange={value => patch({ initialPasswordMode: value, fixedPassword: value === 'Fixed' ? draft.fixedPassword : '' })} /></Form.Item>
+          <Form.Item label="Phone number login" help="Employee code remains available. Only a unique, valid mobile number registered in Employee Master can be used; shared numbers must use employee code."><Checkbox checked={draft.allowPhoneLogin === true} onChange={event => patch({ allowPhoneLogin: event.target.checked })}>Allow phone number login</Checkbox></Form.Item>
+          <Form.Item label="Initial password mode" required><Select value={draft.initialPasswordMode || 'App Default'} options={initialPasswordModeOptions.map(value => ({ value, label: initialPasswordModeLabel(value) }))} onChange={value => patch({ initialPasswordMode: value, fixedPassword: value === 'Fixed' ? draft.fixedPassword : '' })} /></Form.Item>
           {(draft.initialPasswordMode || 'App Default') === 'Fixed' && <Form.Item label="Fixed initial password" required><Input.Password value={draft.fixedPassword || ''} onChange={event => patch({ fixedPassword: event.target.value })} placeholder="Enter fixed initial password" /></Form.Item>}
-          <div className="ess-settings-note"><b>Login rule</b><span>Username remains employee code. Welcome email is queued only when a valid work email exists. If Aadhaar mode is selected and Aadhaar is missing, the system falls back to a generated temporary password.</span></div>
+          <div className="ess-settings-note"><b>Login rule</b><span>Employee code remains the login ID; phone login is optional for this client. Welcome email is queued only when a valid work email exists. {draft.initialPasswordMode === 'AadhaarFirst8' ? 'A complete, valid Aadhaar number is required for the first 8 digits mode. Password change on first login is mandatory. Existing passwords are not changed by saving this policy.' : 'If Aadhaar mode is selected and Aadhaar is missing, the system falls back to a generated temporary password.'}</span></div>
           <Divider />
           <Row justify="end"><Space><Button onClick={close}>Cancel</Button><Button type="primary" loading={saving} onClick={() => void save()}>Save policy</Button></Space></Row>
         </Form>}

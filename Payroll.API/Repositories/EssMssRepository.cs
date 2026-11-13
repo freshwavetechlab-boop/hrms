@@ -191,8 +191,11 @@ VALUES (@EmployeeId,@ClientId,@ChangedBy,@OldValue,@NewValue)", new { EmployeeId
         await db.ExecuteAsync(@"INSERT INTO ess_client_settings (ClientId,AllowProfileEdit,InitialPasswordMode,FixedPassword,IsActive)
 SELECT Id,TRUE,'App Default','',TRUE FROM clients WHERE IsActive=TRUE AND (@ClientId IS NULL OR Id=@ClientId)
 ON DUPLICATE KEY UPDATE ClientId=ClientId", new { ClientId = clientId });
-        return await db.QueryAsync<EssClientSetting>(@"SELECT s.Id,s.ClientId,s.InitialPasswordMode,s.FixedPassword,s.IsActive,COALESCE(policy.CurrentState,'Enabled')<>'Disabled' AllowProfileEdit,COALESCE(c.Name,'') ClientName
-FROM ess_client_settings s JOIN clients c ON c.Id=s.ClientId LEFT JOIN ResourceStates policy ON policy.ResourceType='EmployeeProfileFirstEdit' AND policy.ResourceId=CAST(s.ClientId AS CHAR) WHERE (@ClientId IS NULL OR s.ClientId=@ClientId) ORDER BY c.Name", new { ClientId = clientId });
+        return await db.QueryAsync<EssClientSetting>(@"SELECT s.Id,s.ClientId,s.InitialPasswordMode,s.FixedPassword,s.IsActive,COALESCE(policy.CurrentState,'Enabled')<>'Disabled' AllowProfileEdit,COALESCE(phonePolicy.CurrentState,'Disabled')='Enabled' AllowPhoneLogin,COALESCE(c.Name,'') ClientName
+FROM ess_client_settings s JOIN clients c ON c.Id=s.ClientId
+LEFT JOIN ResourceStates policy ON policy.ResourceType='EmployeeProfileFirstEdit' AND policy.ResourceId=CAST(s.ClientId AS CHAR)
+LEFT JOIN ResourceStates phonePolicy ON phonePolicy.ResourceType='EmployeePhoneLogin' AND phonePolicy.ResourceId=CAST(s.ClientId AS CHAR)
+WHERE (@ClientId IS NULL OR s.ClientId=@ClientId) ORDER BY c.Name", new { ClientId = clientId });
     }
 
     public async Task<EssClientSetting> SaveEssClientSettingAsync(EssClientSetting setting, int actor = 0)
@@ -200,12 +203,32 @@ FROM ess_client_settings s JOIN clients c ON c.Id=s.ClientId LEFT JOIN ResourceS
         await using var db = Connection();
         await db.OpenAsync();
         await EnsureProfileTablesAsync(db);
+        await using var tx = await db.BeginTransactionAsync();
+        if (setting.Id > 0)
+        {
+            var ownerClientId = await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM ess_client_settings WHERE Id=@Id FOR UPDATE", new { setting.Id }, tx);
+            if (ownerClientId.HasValue && ownerClientId.Value != setting.ClientId)
+                throw new InvalidOperationException("The ESS policy does not belong to the selected client.");
+        }
         var id = await db.ExecuteScalarAsync<int>(@"INSERT INTO ess_client_settings (Id,ClientId,AllowProfileEdit,InitialPasswordMode,FixedPassword,IsActive)
 VALUES (@Id,@ClientId,@AllowProfileEdit,@InitialPasswordMode,@FixedPassword,@IsActive)
 ON DUPLICATE KEY UPDATE Id=LAST_INSERT_ID(Id),AllowProfileEdit=VALUES(AllowProfileEdit),InitialPasswordMode=VALUES(InitialPasswordMode),FixedPassword=VALUES(FixedPassword),IsActive=VALUES(IsActive),UpdatedAt=CURRENT_TIMESTAMP;
-SELECT LAST_INSERT_ID();", setting);
-        await SetFirstProfileEditAsync(setting.ClientId, setting.AllowProfileEdit, actor);
-        return await db.QueryFirstAsync<EssClientSetting>(@"SELECT s.*,COALESCE(c.Name,'') ClientName FROM ess_client_settings s JOIN clients c ON c.Id=s.ClientId WHERE s.Id=@Id", new { Id = id });
+SELECT LAST_INSERT_ID();", setting, tx);
+        await db.ExecuteAsync(@"INSERT INTO ResourceStates (ResourceType,ResourceId,CurrentState,CreatedBy,ModifiedBy)
+VALUES ('EmployeeProfileFirstEdit',@ClientId,@State,@Actor,@Actor)
+ON DUPLICATE KEY UPDATE CurrentState=@State,ModifiedBy=@Actor,ModifiedOn=UTC_TIMESTAMP()",
+            new { ClientId = setting.ClientId.ToString(), State = setting.AllowProfileEdit ? "Enabled" : "Disabled", Actor = actor }, tx);
+        if (setting.AllowPhoneLogin.HasValue)
+            await db.ExecuteAsync(@"INSERT INTO ResourceStates (ResourceType,ResourceId,CurrentState,CreatedBy,ModifiedBy)
+VALUES ('EmployeePhoneLogin',@ClientId,@State,@Actor,@Actor)
+ON DUPLICATE KEY UPDATE CurrentState=@State,ModifiedBy=@Actor,ModifiedOn=UTC_TIMESTAMP()",
+                new { ClientId = setting.ClientId.ToString(), State = setting.AllowPhoneLogin.Value ? "Enabled" : "Disabled", Actor = actor }, tx);
+        var saved = await db.QueryFirstAsync<EssClientSetting>(@"SELECT s.*,COALESCE(phonePolicy.CurrentState,'Disabled')='Enabled' AllowPhoneLogin,COALESCE(c.Name,'') ClientName
+FROM ess_client_settings s JOIN clients c ON c.Id=s.ClientId
+LEFT JOIN ResourceStates phonePolicy ON phonePolicy.ResourceType='EmployeePhoneLogin' AND phonePolicy.ResourceId=CAST(s.ClientId AS CHAR)
+WHERE s.Id=@Id", new { Id = id }, tx);
+        await tx.CommitAsync();
+        return saved;
     }
 
     public async Task<(EssLeaveRequest? Request, string? Error)> CreateLeaveRequestAsync(int employeeId, int? clientId, CreateEssLeaveRequest request, WorkflowRepository? workflows = null, int? requestorUserId = null)

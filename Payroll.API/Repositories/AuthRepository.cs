@@ -153,10 +153,18 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         var row = await connection.QueryFirstOrDefaultAsync<AuthUserRecord>("SELECT * FROM authusers WHERE Email = @Email", new { Email = NormalizeEmail(request.Email) });
+        // An existing login ID always keeps its original meaning, including a numeric
+        // employee code. A wrong password must never fall through to another user's phone.
+        var phoneLogin = row is null && IsEmployeePhoneLoginPortal(request.Portal);
+        if (phoneLogin)
+            row = await FindEmployeePhoneLoginAsync(connection, request.Email);
         if (row is null || !row.IsActive || !VerifyPassword(request.Password, row.PasswordHash))
             return null;
 
         var user = await BuildUserAsync(connection, row.Id) ?? new AuthUser();
+        if (phoneLogin && (!user.IsActive || user.EmployeeId is null ||
+            !user.Permissions.Contains("ess.self", StringComparer.OrdinalIgnoreCase)))
+            return null;
         if (request.Portal.Equals("Admin", StringComparison.OrdinalIgnoreCase) && !HasBackofficeAccess(user))
             return null;
 
@@ -522,7 +530,15 @@ ORDER BY c.Name, e.FirstName, e.LastName, e.EmployeeCode;", new { EmployeeIds = 
             }
 
             var displayName = string.IsNullOrWhiteSpace(employee.EmployeeName) ? employee.EmployeeCode : employee.EmployeeName;
-            var temporaryPassword = await ResolveInitialPasswordAsync(connection, employee, fixedTemporaryPassword, transaction);
+            InitialEmployeePassword initialPassword;
+            try { initialPassword = await ResolveInitialPasswordAsync(connection, employee, fixedTemporaryPassword, transaction); }
+            catch (InvalidOperationException ex)
+            {
+                result.Status = "Skipped";
+                result.Message = ex.Message;
+                response.Results.Add(result);
+                continue;
+            }
             var userId = (int)await connection.ExecuteScalarAsync<long>(@"
 INSERT INTO authusers (Email, DisplayName, PasswordHash, ClientId, EmployeeId, IsActive, MustChangePassword)
 VALUES (@Email, @DisplayName, @PasswordHash, @ClientId, @EmployeeId, TRUE, @MustChangePassword);
@@ -530,10 +546,10 @@ SELECT LAST_INSERT_ID();", new
             {
                 Email = result.Email,
                 DisplayName = displayName,
-                PasswordHash = HashPassword(temporaryPassword),
+                PasswordHash = HashPassword(initialPassword.Value),
                 employee.ClientId,
                 employee.EmployeeId,
-                request.MustChangePassword
+                MustChangePassword = request.MustChangePassword || initialPassword.RequireChange
             }, transaction);
 
             await connection.ExecuteAsync(@"
@@ -615,11 +631,22 @@ WHERE e.Id=@EmployeeId AND e.IsActive=TRUE;", new { EmployeeId = employeeId }, t
         }
 
         var displayName = string.IsNullOrWhiteSpace(employee.EmployeeName) ? employee.EmployeeCode : employee.EmployeeName;
-        var temporaryPassword = await ResolveInitialPasswordAsync(connection, employee, transaction: transaction);
         var existingUser = await connection.QueryFirstOrDefaultAsync<(int Id, int? EmployeeId)>(
             "SELECT Id, EmployeeId FROM authusers WHERE LOWER(TRIM(Email)) = LOWER(TRIM(@Email)) OR EmployeeId = @EmployeeId LIMIT 1",
             new { Email = result.Email, employee.EmployeeId },
             transaction);
+        InitialEmployeePassword? initialPassword = null;
+        if (existingUser.Id == 0 || resetExistingPassword)
+        {
+            try { initialPassword = await ResolveInitialPasswordAsync(connection, employee, transaction: transaction); }
+            catch (InvalidOperationException ex)
+            {
+                result.Status = "Skipped";
+                result.Message = ex.Message;
+                await transaction.CommitAsync();
+                return result;
+            }
+        }
         if (existingUser.Id > 0)
         {
             result.UserId = existingUser.Id;
@@ -627,10 +654,10 @@ WHERE e.Id=@EmployeeId AND e.IsActive=TRUE;", new { EmployeeId = employeeId }, t
             {
                 await connection.ExecuteAsync(@"UPDATE authusers
 SET Email=@Email, DisplayName=@DisplayName, ClientId=@ClientId, EmployeeId=@EmployeeId, IsActive=TRUE, PasswordHash=@PasswordHash, MustChangePassword=TRUE
-WHERE Id=@Id", new { Id = existingUser.Id, Email = result.Email, DisplayName = displayName, employee.ClientId, employee.EmployeeId, PasswordHash = HashPassword(temporaryPassword) }, transaction);
+WHERE Id=@Id", new { Id = existingUser.Id, Email = result.Email, DisplayName = displayName, employee.ClientId, employee.EmployeeId, PasswordHash = HashPassword(initialPassword!.Value) }, transaction);
                 result.Status = "Reset";
                 result.Message = "Existing login reset.";
-                result.TemporaryPassword = temporaryPassword;
+                result.TemporaryPassword = initialPassword!.Value;
             }
             else
             {
@@ -650,14 +677,14 @@ SELECT LAST_INSERT_ID();", new
             {
                 Email = result.Email,
                 DisplayName = displayName,
-                PasswordHash = HashPassword(temporaryPassword),
+                PasswordHash = HashPassword(initialPassword!.Value),
                 employee.ClientId,
                 employee.EmployeeId
             }, transaction);
             result.UserId = userId;
             result.Status = "Created";
             result.Message = "Login created.";
-            result.TemporaryPassword = temporaryPassword;
+            result.TemporaryPassword = initialPassword!.Value;
         }
 
         if (result.UserId is not null)
@@ -672,6 +699,8 @@ SELECT @UserId, Id FROM authroles WHERE Code = 'employee';", new { UserId = resu
     {
         if (string.IsNullOrWhiteSpace(newPassword) || newPassword.Trim().Length < 8)
             return (null, "New password must be at least 8 characters.");
+        if (string.Equals(newPassword.Trim(), currentPassword, StringComparison.Ordinal))
+            return (null, "Choose a new password different from your current password.");
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         var row = await connection.QueryFirstOrDefaultAsync<AuthUserRecord>("SELECT * FROM authusers WHERE Id=@UserId AND IsActive=TRUE", new { UserId = userId });
@@ -1297,10 +1326,10 @@ WHERE CONSTRAINT_SCHEMA = DATABASE()
     private static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();
     private static string NormalizeLoginId(string value) => value.Trim().ToLowerInvariant();
 
-    private async Task<string> ResolveInitialPasswordAsync(MySqlConnection connection, EmployeeLoginProvisionPreview employee, string fixedPassword = "", System.Data.IDbTransaction? transaction = null)
+    private async Task<InitialEmployeePassword> ResolveInitialPasswordAsync(MySqlConnection connection, EmployeeLoginProvisionPreview employee, string fixedPassword = "", System.Data.IDbTransaction? transaction = null)
     {
         if (!string.IsNullOrWhiteSpace(fixedPassword))
-            return fixedPassword.Trim();
+            return new InitialEmployeePassword(fixedPassword.Trim());
 
         var clientSetting = await connection.QueryFirstOrDefaultAsync<ClientPasswordSetting>(@"
 SELECT InitialPasswordMode, FixedPassword
@@ -1316,6 +1345,19 @@ LIMIT 1;", new { employee.ClientId }, transaction);
             clientFixedPassword = configuration["EmployeeLogin:FixedPassword"]?.Trim() ?? "";
         }
 
+        if (IsAadhaarFirstEightPasswordMode(mode))
+        {
+            // ESS writes the current personal-data table. A present but empty
+            // row is authoritative; an old JSON copy must not restore a value
+            // that the employee or HR has cleared.
+            var currentAadhaar = await connection.ExecuteScalarAsync<string?>(@"SELECT
+CASE WHEN p.EmployeeId IS NOT NULL THEN COALESCE(p.AadhaarNumber,'')
+ELSE COALESCE(JSON_UNQUOTE(JSON_EXTRACT(e.PersonalJson,'$.aadhaarNumber')),JSON_UNQUOTE(JSON_EXTRACT(e.PersonalJson,'$.AadhaarNumber')),'') END
+FROM employees e LEFT JOIN employeepersonaldetails p ON p.EmployeeId=e.Id
+WHERE e.Id=@EmployeeId AND e.ClientId=@ClientId", new { employee.EmployeeId, employee.ClientId }, transaction);
+            return new InitialEmployeePassword(AadhaarFirstEightTemporaryPassword(currentAadhaar), RequireChange: true);
+        }
+
         var configured = mode.ToLowerInvariant() switch
         {
             "aadhaar" or "aadhar" => CleanPasswordValue(employee.AadhaarNumber),
@@ -1324,7 +1366,7 @@ LIMIT 1;", new { employee.ClientId }, transaction);
             _ => ""
         };
 
-        return configured.Length >= 8 ? configured : GenerateTemporaryPassword();
+        return new InitialEmployeePassword(configured.Length >= 8 ? configured : GenerateTemporaryPassword());
     }
 
     private static string CleanMode(string? value)
