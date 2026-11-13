@@ -82,9 +82,7 @@ WHERE e.ClientId=@ClientId AND e.Id IN @Ids",new{batch.ClientId,batch.Month,Ids=
             // Raw source identity warnings do not invalidate a separately proven
             // Applied receipt. Eligibility always comes from the current master.
             row.Employment=new(employee.Id,employee.EmployeeCode,employee.EmploymentStatus,employee.LastWorkingDate,!employee.Eligible,false);
-            var unchanged=binding.Link.SalaryHash.Length>0
-                ? binding.Link.SalaryHash==ExcelPayslipMasterSynchronization.SalaryHash(employee,setup,setupDocument)
-                : ExcelPayrollSetupRepository.MasterSalaryMatchesReceipt(employee,setup,binding.Owner,binding.Source,binding.Request,binding.Result,binding.Link.RowId,binding.Link.SourceHash,setupDocument);
+            var unchanged=MasterSalaryUnchanged(employee,setup,binding,setupDocument);
             if(!unchanged)changed.Add((row,binding.Link,employee));
         }
         if(changed.Count>0)
@@ -96,6 +94,13 @@ WHERE e.ClientId=@ClientId AND e.Id IN @Ids",new{batch.ClientId,batch.Month,Ids=
     }
 
     internal static ExcelPayslipCurrentSalary SyncReview(string message)=>new("Review required",message,[],[],[],null,null,null);
+
+    internal static bool MasterSalaryUnchanged(Employee employee,string setup,MasterSyncBinding binding,JsonObject? setupDocument=null) =>
+        binding.Link.SalaryHash.Length > 0 && binding.Link.SalaryHash == ExcelPayslipMasterSynchronization.SalaryHash(employee,setup,setupDocument)
+        // A newly filled UAN or another profile-only correction can change the
+        // broad historical fingerprint. Independently prove unchanged salary
+        // configuration/inputs from its Applied receipt before recalculating.
+        || ExcelPayrollSetupRepository.MasterSalaryMatchesReceipt(employee,setup,binding.Owner,binding.Source,binding.Request,binding.Result,binding.Link.RowId,binding.Link.SourceHash,setupDocument);
 
     internal static IReadOnlyList<MasterSyncBinding> MasterBindings(ExcelPayslipBatch batch,ExcelPayslipCalculationSource? source,
         ExcelPayslipBatch owner,ExcelPayslipCalculationSource? ownedSource,ExcelPayrollSetupRequest request,ExcelPayrollSetupResult result)

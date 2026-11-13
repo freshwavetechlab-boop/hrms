@@ -8,6 +8,88 @@ namespace Payroll.API.Tests.Services;
 public sealed class ExcelPayslipMappingTests
 {
     [Fact]
+    public void Legacy_profile_sync_lesson_is_retrieved_without_turning_identity_metadata_into_pay()
+    {
+        var request = new ExcelPayslipMappingRequest { Columns = [
+            new() { ColumnIndex=0, SourceHeader="Employee Code", Kind="employeeCode" },
+            new() { ColumnIndex=1, SourceHeader="PAN", Kind="info" },
+            new() { ColumnIndex=2, SourceHeader="UAN", Kind="ignore" },
+            new() { ColumnIndex=3, SourceHeader="ESIC", Kind="info" },
+            new() { ColumnIndex=4, SourceHeader="Email", Kind="email" },
+            new() { ColumnIndex=5, SourceHeader="Phone", Kind="info" },
+            new() { ColumnIndex=6, SourceHeader="Bank", Kind="info" },
+            new() { ColumnIndex=7, SourceHeader="CTC", Kind="info" },
+            new() { ColumnIndex=8, SourceHeader="Basic", Kind="earning", HasNumbers=true },
+            new() { ColumnIndex=9, SourceHeader="Net Pay", Kind="netPay", HasFormula=true, FormulaDependencies=[8] }
+        ] };
+        var path = Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md");
+        var references = ExcelPayslipMappingService.Retrieve(request.Columns,File.ReadAllText(path),[]);
+        var lesson = Assert.Single(references,item=>item.Title.StartsWith("Email Phone CTC Bank:"));
+        Assert.True(lesson.Content.Length<2600);
+        Assert.Contains("separate profile-only link",lesson.Content);
+        Assert.Contains("source identity witness",lesson.Content);
+        Assert.Contains("partial UAN, conflicting identifiers or ambiguous candidates",lesson.Content);
+        Assert.Contains("Mapping suggestions classify headers; they cannot approve identity links",lesson.Content);
+        Assert.Contains("recalculate earnings/deductions/net",lesson.Content);
+        Assert.Contains("blank Master email/information value retains a populated source value",lesson.Content);
+        Assert.Contains("populated salary-period source location",lesson.Content);
+        using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,references));
+        var supplied = prompt.RootElement.GetProperty("references").EnumerateArray()
+            .Single(item=>item.GetProperty("title").GetString()==lesson.Title).GetProperty("content").GetString();
+        Assert.Equal(lesson.Content,supplied);
+
+        var before = JsonSerializer.Serialize(request);
+        using var monetary = JsonDocument.Parse("""{"columns":[{"columnIndex":2,"kind":"earning","confidence":1},{"columnIndex":4,"kind":"deduction","confidence":1},{"columnIndex":7,"kind":"earning","confidence":1}]}""");
+        var result = ExcelPayslipMappingService.ApplyResponse(request,null,references,monetary.RootElement,"synthetic-model");
+        Assert.Equal("ignore",result.Columns[2].Kind);
+        Assert.Equal("email",result.Columns[4].Kind);
+        Assert.Equal("info",result.Columns[7].Kind);
+        Assert.Equal("earning",result.Columns[8].Kind);
+        Assert.Equal("netPay",result.Columns[9].Kind);
+        Assert.Equal(before,JsonSerializer.Serialize(request));
+        Assert.Contains(2,result.ReviewColumnIndexes);
+        Assert.Contains(4,result.ReviewColumnIndexes);
+        Assert.Contains(7,result.ReviewColumnIndexes);
+    }
+
+    [Fact]
+    public void Repeated_identifier_alias_review_is_retrieved_from_headers_and_does_not_reclassify_pay()
+    {
+        var request = new ExcelPayslipMappingRequest { Columns = [
+            new() { ColumnIndex=0, SourceHeader="Employee Code", Kind="employeeCode" },
+            new() { ColumnIndex=1, SourceHeader="Employee Name", Kind="employeeName" },
+            new() { ColumnIndex=2, SourceHeader="UAN", Kind="info" },
+            new() { ColumnIndex=3, SourceHeader="UAN NO.", Kind="ignore", HasNumbers=true },
+            new() { ColumnIndex=4, SourceHeader="PAN", Kind="info" },
+            new() { ColumnIndex=5, SourceHeader="Basic", Kind="earning", HasNumbers=true },
+            new() { ColumnIndex=6, SourceHeader="Net paid", Kind="netPay", HasFormula=true, FormulaDependencies=[5] }
+        ] };
+        var path = Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md");
+        var references = ExcelPayslipMappingService.Retrieve(request.Columns,File.ReadAllText(path),[]);
+        var lesson = Assert.Single(references, item=>item.Title.StartsWith("UAN UAN NO Employee Code PAN:"));
+        Assert.True(lesson.Content.Length<2600);
+        Assert.Contains("including ignored columns",lesson.Content);
+        Assert.Contains("conflicting populated aliases",lesson.Content);
+        Assert.Contains("matching suffix or numeric length cannot reconstruct",lesson.Content);
+        Assert.Contains("not an identity-link approval",lesson.Content);
+        Assert.Contains("monetary values/formulas",lesson.Content);
+
+        var before = JsonSerializer.Serialize(request);
+        var response = JsonDocument.Parse("""{"columns":[{"columnIndex":3,"kind":"info","confidence":0.99}]}""").RootElement;
+        var result = ExcelPayslipMappingService.ApplyResponse(request,null,references,response,"synthetic-model");
+        Assert.Equal("info",result.Columns[2].Kind);
+        Assert.Equal("info",result.Columns[3].Kind);
+        Assert.Contains(3,result.ReviewColumnIndexes);
+        Assert.Equal("earning",result.Columns[5].Kind);
+        Assert.Equal("netPay",result.Columns[6].Kind);
+        Assert.Equal(before,JsonSerializer.Serialize(request));
+        var invalidMoney = JsonDocument.Parse("""{"columns":[{"columnIndex":3,"kind":"earning","confidence":1}]}""").RootElement;
+        var protectedResult = ExcelPayslipMappingService.ApplyResponse(request,null,references,invalidMoney,"synthetic-model");
+        Assert.Equal("ignore",protectedResult.Columns[3].Kind);
+        Assert.Contains(3,protectedResult.ReviewColumnIndexes);
+    }
+
+    [Fact]
     public void AttendantNetPaymentAndRecoveryRetrieveWorksheetSelectionWithoutClientData()
     {
         var columns = new[] { "Name of Attendant", "Name of the Officers", "Net Payment", "Basic", "Working Days", "UAN", "Recovery worksheet" }
@@ -61,7 +143,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("identity review", lesson.Content); Assert.True(lesson.Content.Length < 2600);
         Assert.Contains("explicitly fill literal blanks", lesson.Content);
         Assert.Contains("Mixed-location files require row-specific evidence", lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v23", ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Equal("excel-payroll-mapping-v25", ExcelPayslipMappingService.KnowledgeVersion);
     }
     [Fact]
     public void SplitWagePeriodLessonIsRetrievedFromAnonymousStructuralHeadings()
@@ -144,7 +226,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("display formatting only",lesson.Content);
         Assert.Contains("Literal scientific text",lesson.Content);
         Assert.Contains("identity-review evidence",lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v23",ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Equal("excel-payroll-mapping-v25",ExcelPayslipMappingService.KnowledgeVersion);
     }
     [Fact]
     public void EmployeeInputsAndEmployerCostLessonIsRetrievedFromAnonymousSalaryDayHeaders()
@@ -202,7 +284,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.True(lesson.Content.Length<2600);
         Assert.Contains("differing literal alone does not establish a new salary rule",lesson.Content);
         Assert.Contains("never freeze formula caches",lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v23",ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Equal("excel-payroll-mapping-v25",ExcelPayslipMappingService.KnowledgeVersion);
     }
     private static ExcelPayslipMappingRequest Request() => new() { Columns = [
         new() { ColumnIndex = 0, SourceHeader = "Employee name", Label = "Employee name", Kind = "employeeName" },
@@ -436,7 +518,7 @@ public sealed class ExcelPayslipMappingTests
         var references = ExcelPayslipMappingService.Retrieve(request.Columns, File.ReadAllText(path), []);
         var pattern = Assert.Single(references, item => item.Title.StartsWith("TMT pattern:"));
         using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, references));
-        Assert.Equal("excel-payroll-mapping-v23", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v25", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         var supplied = prompt.RootElement.GetProperty("references").EnumerateArray()
             .Single(item => item.GetProperty("title").GetString() == pattern.Title).GetProperty("content").GetString()!;
         Assert.Equal(pattern.Content, supplied); // The critical case must fit without prompt truncation.

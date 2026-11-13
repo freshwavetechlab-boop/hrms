@@ -84,11 +84,16 @@ export function ProfilePage({ user }: { user: User }) {
       <section className="profile-form-section"><h4>Basic and contact details</h4><div className="travel-form-grid profile-form-grid">
         <label><span>First name</span><input value={form.firstName} onChange={event => set('firstName', event.target.value)} /></label>
         <label><span>Last name</span><input value={form.lastName} onChange={event => set('lastName', event.target.value)} /></label>
+        <label><span>Gender</span><select value={form.gender} onChange={event => set('gender', event.target.value)}><option value="">Select</option>{form.gender && !['Male', 'Female', 'Other'].includes(form.gender) && <option value={form.gender}>{form.gender}</option>}<option>Male</option><option>Female</option><option>Other</option></select></label>
         <label><span>Work email</span><input type="email" value={form.workEmail} onChange={event => set('workEmail', event.target.value)} /></label>
         <label><span>Date of birth</span><input type="date" value={dateInput(form.dateOfBirth)} onChange={event => set('dateOfBirth', event.target.value)} /></label>
         <label><span>Mobile</span><input value={form.mobile} onChange={event => set('mobile', event.target.value)} /></label>
+      </div></section>
+      <section className="profile-form-section"><h4>Identity and statutory details</h4><div className="travel-form-grid profile-form-grid">
         <label><span>PAN</span><input value={form.panNumber} onChange={event => set('panNumber', event.target.value)} /></label>
-        <label><span>Aadhaar</span><input value={form.aadhaarNumber} onChange={event => set('aadhaarNumber', event.target.value)} /></label>
+        <label><span>Aadhaar</span><input inputMode="numeric" value={form.aadhaarNumber} onChange={event => set('aadhaarNumber', event.target.value)} /></label>
+        <label><span id="profile-uan-label">UAN</span><input inputMode="numeric" maxLength={12} aria-labelledby="profile-uan-label" aria-describedby="profile-uan-help" value={form.uanNumber} onChange={event => set('uanNumber', event.target.value)} /><small id="profile-uan-help">12 digits, if allotted. Check your EPFO record before saving.</small></label>
+        <label><span id="profile-esic-label">ESIC number</span><input inputMode="numeric" maxLength={10} aria-labelledby="profile-esic-label" aria-describedby="profile-esic-help" value={form.esicNumber} onChange={event => set('esicNumber', event.target.value)} /><small id="profile-esic-help">10 digits, if allotted.</small></label>
       </div></section>
       <section className="profile-form-section"><h4>Address</h4><div className="travel-form-grid profile-form-grid">
         <label className="wide"><span>Current address</span><textarea value={form.address} onChange={event => set('address', event.target.value)} /></label>
@@ -116,11 +121,14 @@ function toForm(profile: ProfileData): SaveProfileData {
     additionalFields: Object.entries(Object.values(profile.additionalInformation?.values || {})[0] || {}).map(([code, value]) => ({ code, value })),
     firstName: profile.firstName || '',
     lastName: profile.lastName || '',
+    gender: profile.gender || '',
     workEmail: profile.workEmail || '',
     dateOfBirth: dateInput(profile.dateOfBirth),
     mobile: profile.mobile || '',
     panNumber: profile.panNumber || '',
     aadhaarNumber: profile.aadhaarNumber || '',
+    uanNumber: profile.uanNumber || '',
+    esicNumber: profile.esicNumber || '',
     address: profile.address || '',
     correspondenceAddress: profile.correspondenceAddress || '',
     permanentAddress: profile.permanentAddress || '',

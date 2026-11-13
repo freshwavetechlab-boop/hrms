@@ -9,7 +9,7 @@ export type ExcelPayslipAmount = { label: string; amount: number }
 export type ExcelPayslipRow = {
   id: string; sourceRow: number; employeeCode: string; employeeName: string; email: string
   employment?: { employeeId: number | null; employeeCode: string; status: string; lastWorkingDate: string | null; blockedForMonth: boolean; identityReviewRequired: boolean } | null
-  masterDetails?: { employeeId: number; designation: string; linked?: boolean; employeeCode?: string; employeeName?: string; email?: string; annualCtc?: number; salaryStructureId?: string; fields?: Record<string,string>; salaryInputs?: Record<string,number>;
+  masterDetails?: { employeeId: number; designation: string; linked?: boolean; profileOnly?: boolean; employeeCode?: string; employeeName?: string; email?: string; annualCtc?: number; salaryStructureId?: string; fields?: Record<string,string>; salaryInputs?: Record<string,number>;
     salary?: {status:string;message:string;earnings:ExcelPayslipAmount[];deductions:ExcelPayslipAmount[];employerContributions:ExcelPayslipAmount[];gross:number|null;totalDeductions:number|null;netPay:number|null}|null } | null
   information: ExcelPayslipText[]; earnings: ExcelPayslipAmount[]; deductions: ExcelPayslipAmount[]; employerContributions: ExcelPayslipAmount[]
   netPay: number; declaredGross: number | null; declaredDeductions: number | null; warnings: string[]

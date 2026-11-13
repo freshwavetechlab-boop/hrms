@@ -12,6 +12,29 @@ public static class ExcelPayslipMasterSynchronization
     private static readonly JsonSerializerOptions Json=new(JsonSerializerDefaults.Web);
     private static string Hash(object value)=>Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(value,Json)))).ToLowerInvariant();
     public static string IdentityHash(ExcelPayslipRow row)=>Hash(new{row.SourceRow,row.EmployeeCode,row.EmployeeName});
+    internal static string ProfileIdentityKey(string label) => ExcelPayslipPresentation.Key(label) switch
+    {
+        "pan" or "panno" or "pannumber" => "pan",
+        "aadhaar" or "aadhar" or "aadhaarno" or "aadharno" or "aadhaarnumber" or "aadharnumber" => "aadhaar",
+        "uan" or "uanno" or "uannumber" => "uan",
+        "employeecode" or "employeeno" or "idno" or "code" => "code",
+        "employeename" or "name" or "conductorname" => "name",
+        _ => ""
+    };
+    // Captured identity, not mutable Master data or salary/formula amounts. This
+    // proof remains stable after an ESS name/UAN correction on the linked Master.
+    public static string ProfileIdentityHash(ExcelPayslipBatch batch, ExcelPayslipRow row, ExcelPayslipCalculationSource? source)
+    {
+        var identityColumns = source?.Columns.Where(c => ProfileIdentityKey(c.SourceHeader).Length > 0
+            || ProfileIdentityKey(c.Label).Length > 0).OrderBy(c => c.ColumnIndex).ToArray() ?? [];
+        return Hash(new { BatchId=batch.Id, batch.ClientId, batch.Month, RowId=row.Id, row.SourceRow, row.EmployeeCode, row.EmployeeName,
+            Information = row.Information.Where(i => ProfileIdentityKey(i.Label).Length > 0).Select(i => new { i.Label, i.Value }).ToArray(),
+            SourceSheet = source?.SheetName, SourceHeader = source?.HeaderRow,
+            SourceIdentity = source?.Rows.Where(r => r.SourceRow == row.SourceRow).Select(r => identityColumns.Select(c => new {
+                c.ColumnIndex, c.SourceHeader, c.Label, c.Kind,
+                Cell = c.ColumnIndex >= 0 && c.ColumnIndex < r.Cells.Count ? r.Cells[c.ColumnIndex] : null
+            }).ToArray()).ToArray() });
+    }
     public static string SalaryHash(Employee employee,string setupJson,JsonObject? setupDocument=null)
     {
         var setup=setupDocument??JsonNode.Parse(setupJson) as JsonObject ?? new();

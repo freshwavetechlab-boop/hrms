@@ -12,6 +12,10 @@ Employee Master keeps Table view as the default. In Card view, Missing informati
 
 ## ESS editing and approvals
 
+**My profile** includes Gender and the core UAN/ESIC numbers alongside the existing name, contact, date of birth, PAN/Aadhaar, address and bank details. UAN and ESIC remain text identifiers (12 and 10 digits respectively), including leading zeroes. They may be blank if not allotted. Changed nonblank identifiers are checked for format; this is not verification of ownership. Unchanged legacy values and omitted new fields from older ESS clients are preserved.
+
+These fields save to Employee Master's existing core records and personal-details infotype, within the same one-time save transaction. They are not custom fields. Salary/CTC, designation, joining date and client/work-location assignments remain HR-managed. Excel payslips refresh current profile details for verified Master links, including separate profile-only links for legacy batches. Saved rows are not rewritten: the existing focus/30-second refresh and each new PDF read use the current Master projection. Profile-only sync retains source amounts/formulas, populated source fields when Master is blank, and any supplied salary-period location. Existing downloaded or sent PDFs remain historical documents. An unmatched or ambiguous legacy identity still needs verified matching before it can receive Master details.
+
 Employee Master **Manage → Configure fields** shows a field list for the selected client. Choose an Info Type, then **Add field**, **Edit** or **Delete**. **Save** makes changes available immediately; there are no manual draft/publish steps. Core fields stay unchanged. Existing form storage and employee submissions retain history internally. Saved field codes and types remain stable when labels are renamed; deleting a field hides it from forms/templates while retaining earlier values.
 
 Configured data fields appear in the matching Employee Master tab, employee list/report columns, bulk mapping and generated templates. For a new employee, save the core record first, then complete additional fields from its Info Type tabs. Employee Master's Excel export produces the importable **Employees** worksheet with core fields, salary component JSON and configured values. Keep the `[CUSTOM:InfoType:FormCode:FieldCode]` header markers. Use **Add new + update existing** for mixed uploads; leave Employee ID blank for new employees. Blank update cells preserve existing values. Document files continue through the existing Documents upload.
@@ -35,7 +39,7 @@ The first-time toggle applies only to employees who have never saved their ESS p
 | Preview/send reminders | Above plus `employee.communication.send`; every selected employee must belong to the requested client |
 | Manage first-time access / initialise fixed template | `employees.manage`; permitted client only |
 | Edit the mail template | `settings.manage`; existing mail-template endpoint and client checks |
-| Edit/request own ESS profile | `ess.self` and the logged-in user's linked employee |
+| Edit/request own ESS profile | Active account, `ess.self` and the logged-in user's linked employee |
 | Approve/reject a request | Existing workflow task assignment; other users cannot action that task |
 
 Custom roles use these existing permissions; no new roles or permissions are required. Configure an alternative approver under Workflow Setup > Employees > Employee profile edit access. The feature does not use the generic workflow-start endpoint.

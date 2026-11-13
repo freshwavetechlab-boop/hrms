@@ -21,7 +21,7 @@ public sealed partial class ExcelPayslipRepository
         if (json is null) return (null, "The saved batch was not found for this client.");
         var current=JsonSerializer.Deserialize<ExcelPayslipBatch>(json,JsonOptions)!;
         await AnnotateEmploymentAsync(db,current,tx,configuration);
-        if(request.Updates?.Any(update=>current.Rows.Any(row=>row.Id==update.RowId&&Services.ExcelPayslipPresentation.Linked(row)&&row.MasterDetails!.Email!=update.Email))==true)
+        if(request.Updates?.Any(update=>current.Rows.Any(row=>row.Id==update.RowId&&!CanUpdateSourceEmail(row,update.Email)))==true)
             return (null,"These employees are linked to Employee Master. Change their email in Employee Master; Excel Payslips refreshes it automatically. No source-only email change was saved.");
         var source = await db.ExecuteScalarAsync<string?>("SELECT CAST(source_json AS CHAR) FROM excel_payslip_calculation_sources WHERE client_id=@ClientId AND batch_id=@Id FOR UPDATE", new { ClientId = clientId, Id = id }, tx);
         var patched = PatchEmailDocuments(json, source, clientId, id, request, actor, DateTime.UtcNow);
@@ -36,6 +36,10 @@ public sealed partial class ExcelPayslipRepository
         await tx.CommitAsync();
         return (batch, null);
     }
+
+    internal static bool CanUpdateSourceEmail(ExcelPayslipRow row,string email) => !Services.ExcelPayslipPresentation.Linked(row)
+        || row.MasterDetails is {ProfileOnly:true} details && string.IsNullOrWhiteSpace(details.Email)
+        || row.MasterDetails!.Email == email;
 
     // Patch raw documents, not a typed salary round-trip: preserve unknown fields and exact monetary literals.
     internal static (string BatchJson, string? SourceJson, int Changed) PatchEmailDocuments(string batchJson,

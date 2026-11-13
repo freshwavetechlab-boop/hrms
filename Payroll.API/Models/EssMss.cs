@@ -16,11 +16,14 @@ public class EssProfile
     public string EmployeeCode { get; set; } = string.Empty;
     public string FirstName { get; set; } = string.Empty;
     public string LastName { get; set; } = string.Empty;
+    public string Gender { get; set; } = string.Empty;
     public string WorkEmail { get; set; } = string.Empty;
     public string DateOfBirth { get; set; } = string.Empty;
     public string Mobile { get; set; } = string.Empty;
     public string PanNumber { get; set; } = string.Empty;
     public string AadhaarNumber { get; set; } = string.Empty;
+    public string UanNumber { get; set; } = string.Empty;
+    public string EsicNumber { get; set; } = string.Empty;
     public string Address { get; set; } = string.Empty;
     public string CorrespondenceAddress { get; set; } = string.Empty;
     public string PermanentAddress { get; set; } = string.Empty;
@@ -53,11 +56,15 @@ public class SaveEssProfileRequest
     public List<EmployeeFieldInput> AdditionalFields { get; set; } = [];
     public string FirstName { get; set; } = string.Empty;
     public string LastName { get; set; } = string.Empty;
+    // Nullable additions preserve core values when an older ESS client omits them.
+    public string? Gender { get; set; }
     public string WorkEmail { get; set; } = string.Empty;
     public string DateOfBirth { get; set; } = string.Empty;
     public string Mobile { get; set; } = string.Empty;
     public string PanNumber { get; set; } = string.Empty;
     public string AadhaarNumber { get; set; } = string.Empty;
+    public string? UanNumber { get; set; }
+    public string? EsicNumber { get; set; }
     public string Address { get; set; } = string.Empty;
     public string CorrespondenceAddress { get; set; } = string.Empty;
     public string PermanentAddress { get; set; } = string.Empty;

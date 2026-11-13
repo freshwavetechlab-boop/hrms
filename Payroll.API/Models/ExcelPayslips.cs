@@ -79,6 +79,8 @@ public sealed class ExcelPayslipRow
 public sealed record ExcelPayslipMasterDetails(int EmployeeId, string Designation)
 {
     public bool Linked { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ProfileOnly { get; init; }
     public string EmployeeCode { get; init; } = "";
     public string EmployeeName { get; init; } = "";
     public string Email { get; init; } = "";
@@ -98,6 +100,9 @@ public sealed record ExcelPayslipMasterLink(string RowId,int EmployeeId,int Sour
     public string ImportId {get;init;}="";
 }
 
+// A reviewed profile association is independent of salary setup/import receipts.
+public sealed record ExcelPayslipProfileLink(string RowId, int SourceRow, int EmployeeId, string SourceIdentityHash);
+
 public sealed record ExcelPayslipNegativeAmountReview(string AmountsHash, string ReviewedBy, DateTime ReviewedAtUtc);
 public sealed record ExcelPayslipNegativeAmountReviewRequest(string RowId);
 public sealed record ExcelPayslipWarningsReview(string AmountsHash, string ReviewedBy, DateTime ReviewedAtUtc, List<string> Warnings);
@@ -113,6 +118,9 @@ public sealed record ExcelPayslipEmployment(int? EmployeeId, string EmployeeCode
 // Independent source snapshot: these identifiers never reference employee or pay-run records.
 public sealed class ExcelPayslipBatch
 {
+    // Server-owned. Public imports cannot nominate an EmployeeId through this field.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<ExcelPayslipProfileLink>? ProfileLinks { get; set; }
     // Accepted only on save; the preset is persisted in the batch transaction, not in its snapshot.
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public System.Text.Json.JsonElement? MappingProfile { get; set; }

@@ -9,6 +9,7 @@ public static class ExcelPayslipPresentation
     public static string Key(string label)=>Regex.Replace(Regex.Replace(label.Trim(),@"\s*\([A-Za-z]{1,3}\)\s*$",""),"[^a-zA-Z0-9]","").ToLowerInvariant();
     public static string SourceKey(string label)=>Regex.Replace(label,"[^a-zA-Z0-9]","").ToLowerInvariant();
     private static readonly Dictionary<string,string> Aliases=new(StringComparer.OrdinalIgnoreCase){
+        ["contactnumber"]="phone",["universalaccountnumber"]="uan",["universalaccountnumberuan"]="uan",["esino"]="esic",["esinumber"]="esic",
         ["designationmanpowercategory"]="designation",["manpowercategory"]="designation",["mobileno"]="phone",["mobilenumber"]="phone",["mobile"]="phone",["phoneno"]="phone",["phonenumber"]="phone",["contactno"]="phone",
         ["emailid"]="email",["workemail"]="email",["emailaddress"]="email",["uanno"]="uan",["uannumber"]="uan",["panno"]="pan",["pannumber"]="pan",["aadhar"]="aadhaar",["aadhaarno"]="aadhaar",["aadhaarnumber"]="aadhaar",
         ["esicno"]="esic",["esicnumber"]="esic",["bank"]="bankname",["accountnumber"]="accountno",["bankaccountno"]="accountno",["bankaccountnumber"]="accountno",["acno"]="accountno",["ifsccode"]="ifsc",
@@ -21,6 +22,11 @@ public static class ExcelPayslipPresentation
         {
             var linkedDetails=row.MasterDetails!;
             var fields=new Dictionary<string,string>(linkedDetails.Fields,StringComparer.OrdinalIgnoreCase){["employeecode"]=linkedDetails.EmployeeCode,["employeename"]=linkedDetails.EmployeeName};
+            if(linkedDetails.ProfileOnly)
+            {
+                var hasPeriodLocation=row.Information.Any(field=>Aliases.GetValueOrDefault(Key(field.Label),Key(field.Label))=="worklocation"&&!string.IsNullOrWhiteSpace(field.Value));
+                foreach(var key in fields.Keys.Where(key=>string.IsNullOrWhiteSpace(fields[key])||key is "annualctc" or "monthlyctc"||key.StartsWith("source:",StringComparison.OrdinalIgnoreCase)||key=="worklocation"&&hasPeriodLocation).ToArray())fields.Remove(key);
+            }
             var currentInformation=row.Information.Select(field=>{
                 var key=Key(field.Label);var canonical=Aliases.GetValueOrDefault(key,key);
                 return new ExcelPayslipText{Label=field.Label,Value=fields.GetValueOrDefault("source:"+SourceKey(field.Label),fields.GetValueOrDefault(canonical,field.Value))};
@@ -46,8 +52,8 @@ public static class ExcelPayslipPresentation
     public static ExcelPayslipRow Current(ExcelPayslipRow row)
     {
         if(!Linked(row))return row;
-        var d=row.MasterDetails!;var salary=d.Salary is {Status:"Updated",NetPay:not null} s?s:null;
-        return new(){Id=row.Id,SourceRow=row.SourceRow,EmployeeCode=d.EmployeeCode,EmployeeName=d.EmployeeName,Email=d.Email,
+        var d=row.MasterDetails!;var salary=!d.ProfileOnly&&d.Salary is {Status:"Updated",NetPay:not null} s?s:null;
+        return new(){Id=row.Id,SourceRow=row.SourceRow,EmployeeCode=d.ProfileOnly&&string.IsNullOrWhiteSpace(d.EmployeeCode)?row.EmployeeCode:d.EmployeeCode,EmployeeName=d.ProfileOnly&&string.IsNullOrWhiteSpace(d.EmployeeName)?row.EmployeeName:d.EmployeeName,Email=d.ProfileOnly&&string.IsNullOrWhiteSpace(d.Email)?row.Email:d.Email,
             Employment=row.Employment,MasterDetails=d,Information=Information(row).ToList(),Earnings=salary?.Earnings??row.Earnings,
             Deductions=salary?.Deductions??row.Deductions,EmployerContributions=salary?.EmployerContributions??row.EmployerContributions,
             NetPay=salary?.NetPay??row.NetPay,DeclaredGross=salary?.Gross??row.DeclaredGross,DeclaredDeductions=salary?.TotalDeductions??row.DeclaredDeductions,
@@ -55,7 +61,7 @@ public static class ExcelPayslipPresentation
     }
     public static void RequireCurrentSalary(IEnumerable<ExcelPayslipRow> rows)
     {
-        var blocked=rows.FirstOrDefault(r=>Linked(r)&&r.MasterDetails!.Salary is {Status:"Review required"});
+        var blocked=rows.FirstOrDefault(r=>Linked(r)&&!r.MasterDetails!.ProfileOnly&&r.MasterDetails.Salary is {Status:"Review required"});
         if(blocked is not null)throw new InvalidOperationException($"{blocked.MasterDetails!.EmployeeCode}: Master salary needs review. {blocked.MasterDetails.Salary!.Message}");
     }
 }

@@ -53,6 +53,9 @@ public class EmployeeProfileCompletionAccessTests
         user.Permissions = ["ess.self"];
         user.EmployeeId = null;
         await Denied(HttpMethod.Post, "/api/ess/profile/edit-request", 20);
+        user.EmployeeId = 10;
+        user.IsActive = false;
+        await Denied(HttpMethod.Post, "/api/ess/profile/edit-request", 20);
 
         async Task Denied(HttpMethod method, string route, int clientId)
         {

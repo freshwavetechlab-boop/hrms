@@ -59,7 +59,7 @@ public static class EmployeeProfileCompletionEndpoints
         app.MapPost("/api/ess/profile/edit-request", async (WorkflowActionRequest request, EssMssRepository ess, WorkflowRepository workflows, HttpContext context) =>
         {
             var user = User(context);
-            if (!Has(user, "ess.self") || !user.EmployeeId.HasValue) return Results.StatusCode(403);
+            if (!EssProfileEndpoints.CanAccess(user)) return Results.StatusCode(403);
             var (instance, error) = await ess.RequestProfileEditAsync(user, request.Comment, workflows);
             return instance is null ? Results.BadRequest(new { error }) : Results.Ok(await ess.GetProfileAsync(user.EmployeeId.Value, user.ClientId));
         });

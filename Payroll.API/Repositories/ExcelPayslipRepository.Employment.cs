@@ -18,12 +18,7 @@ public sealed partial class ExcelPayslipRepository
             await snapshot.RollbackAsync();
             return;
         }
-        var masters = (await db.QueryAsync<EmploymentMaster>(@"SELECT e.Id,e.ClientId,e.EmployeeCode,e.FirstName,e.LastName,e.IsActive,e.WorkLocationId,
-COALESCE(p.PanNumber,'') Pan,COALESCE(p.AadhaarNumber,'') Aadhaar,COALESCE(p.UanNumber,'') Uan,
-COALESCE(w.Name,'') WorkLocation,COALESCE(w.City,'') LocationCity,COALESCE(e.Designation,'') Designation," + EmployeeEmploymentRules.EligibleInMonth("e", "@Month") + @" Eligible
-FROM employees e LEFT JOIN employeepersonaldetails p ON p.EmployeeId=e.Id
-LEFT JOIN worklocations w ON w.Id=e.WorkLocationId AND w.ClientId=e.ClientId WHERE e.ClientId=@ClientId",
-            new { batch.ClientId, batch.Month }, tx)).ToList();
+        var masters = await ReadProfileMastersAsync(db,tx,batch.ClientId,batch.Month);
         await EmployeeRepository.ApplyEmploymentStatusAsync(db, masters, tx);
         var source = await ReadCalculationSourceAsync(db, batch.ClientId, batch.Id, tx);
         var reviews = new List<AppliedEmploymentReview>();
@@ -44,6 +39,8 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@Id AND 
         }
         AnnotateEmployment(batch, source, masters, reviews);
         if (!annotateMasterDetails) return;
+        await PayrollDataTableStore.ApplyEmployeeTablesAsync(db,masters,tx);
+        AnnotateCurrentProfiles(batch,source,masters);
         await AnnotateCurrentMasterAsync(db,tx,batch,source,configuration);
         AnnotateWarningReviews(batch);
     }
@@ -104,8 +101,14 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@Id AND 
         }
     }
 
-    internal static string EmploymentSourceHash(ExcelPayslipBatch batch, ExcelPayslipCalculationSource? source) =>
-        ExcelPayrollSetupRepository.Hash(JsonSerializer.Serialize(new { Batch=batch, Source=source }, JsonOptions));
+    internal static string EmploymentSourceHash(ExcelPayslipBatch batch, ExcelPayslipCalculationSource? source)
+    {
+        // Profile-only links are server metadata, not a change to the captured
+        // salary source reviewed by existing payroll setup receipts.
+        var snapshot=JsonSerializer.SerializeToNode(batch,JsonOptions)!.AsObject();
+        snapshot.Remove("profileLinks");
+        return ExcelPayrollSetupRepository.Hash(JsonSerializer.Serialize(new { Batch=snapshot, Source=source }, JsonOptions));
+    }
 
     private static bool ReviewedEmploymentBinding(ExcelPayslipBatch batch, ExcelPayslipRow row, string hash, AppliedEmploymentReview review)
     {

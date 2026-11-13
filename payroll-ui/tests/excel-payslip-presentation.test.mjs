@@ -41,3 +41,26 @@ test('Master refresh never copies new financials, another client or changed sour
  assert.equal(mergePayslipMasterDetails(current,{...fresh,clientId:10}),current)
  fresh.rows[0].employeeCode='SYN-2';assert.equal(payslipDesignation(mergePayslipMasterDetails(current,fresh).rows[0]),'Supervisor')
 })
+
+test('profile-only refresh updates UAN/contact/bank while preserving every source financial even if a salary overlay is supplied',()=>{
+ const item=row();item.email='old@example.test';item.declaredGross=1500.1234;item.declaredDeductions=300.0004
+ item.deductions=[{label:'PF',amount:300.0004}];item.employerContributions=[{label:'Employer PF',amount:200.1234}]
+ item.information.push({label:'UAN',value:''},{label:'Contact Number',value:'old'},{label:'ESI Number',value:''},{label:'Account No',value:'old-bank'},{label:'CTC',value:'original monthly base'},{label:'Basic (E)',value:'original base'})
+ item.masterDetails={employeeId:7,designation:'Analyst',linked:true,profileOnly:true,employeeCode:'SYN-1',employeeName:'Current name',email:'current@example.test',
+  fields:{uan:'001234567890',phone:'9000000001',esic:'0012345678',accountno:'0012345678901',annualctc:'900000',monthlyctc:'75000','source:basice':'99999'},
+  salary:{status:'Updated',netPay:99999,gross:99999,totalDeductions:0,earnings:[],deductions:[],employerContributions:[]}}
+ const before=JSON.stringify(item),current=currentPayslip(item)
+ assert.equal(current.employeeName,'Current name');assert.equal(current.email,'current@example.test')
+ for(const [label,value]of [['UAN','001234567890'],['Contact Number','9000000001'],['ESI Number','0012345678'],['Account No','0012345678901'],['CTC','original monthly base'],['Basic (E)','original base']])assert.equal(current.information.find(f=>f.label===label).value,value)
+ for(const key of ['earnings','deductions','employerContributions','netPay','declaredGross','declaredDeductions'])assert.deepEqual(current[key],item[key])
+ assert.equal(JSON.stringify(item),before)
+})
+
+test('legacy profile sync retains supplied email and identity data when Master is blank, plus the salary-period location',()=>{
+ const item=row();item.email='source@example.test';item.information.push({label:'UAN',value:'001234567890'},{label:'Email',value:'source@example.test'},{label:'ESIC',value:'0012345678'},{label:'Work Location',value:'Salary-period site'})
+ item.masterDetails={employeeId:7,designation:'Analyst',linked:true,profileOnly:true,employeeCode:'',employeeName:'',email:'',fields:{uan:'',email:'',esic:'',worklocation:'Current Master site'}}
+ const current=currentPayslip(item)
+ assert.equal(current.email,item.email);assert.equal(current.employeeName,item.employeeName);assert.equal(current.employeeCode,item.employeeCode)
+ for(const [label,value]of [['UAN','001234567890'],['Email','source@example.test'],['ESIC','0012345678'],['Work Location','Salary-period site']])assert.equal(current.information.find(f=>f.label===label).value,value)
+ assert.equal(payslipCurrentMasterFields(item).find(f=>f.label==='Work location').value,'Current Master site')
+})

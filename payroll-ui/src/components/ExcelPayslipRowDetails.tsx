@@ -25,7 +25,7 @@ export default function ExcelPayslipRowDetails(p: { clientId: number; row: Excel
   const snapshot=state.key===requestKey?state.data:null,error=state.key===requestKey?state.error:''
   const lines=payslipMasterComparisonLines(p.row,snapshot)
   return <section aria-label={p.row.masterDetails?.linked&&!p.importOpen?'Current employee details':'Source employee details'}>
-    {!p.importOpen&&p.row.masterDetails?.linked&&<Alert type={p.row.masterDetails.salary?.status==='Review required'?'warning':'info'} showIcon message="Linked to Employee Master" description={p.row.masterDetails.salary?.message||'Current profile, contact, bank, CTC and salary inputs come from Employee Master. Original Excel amounts are retained.'} />}
+    {!p.importOpen&&p.row.masterDetails?.linked&&<Alert type={p.row.masterDetails.salary?.status==='Review required'?'warning':'info'} showIcon message="Linked to Employee Master" description={p.row.masterDetails.profileOnly?'Current profile, contact and bank details come from Employee Master. Saved Excel salary amounts and formulas remain unchanged.':p.row.masterDetails.salary?.message||'Current profile, contact, bank, CTC and salary inputs come from Employee Master. Original Excel amounts are retained.'} />}
     <Descriptions bordered column={1} size="small">{[
       {key:'source',label:'Source row',children:p.row.sourceRow},
       ...(!compare?[{key:'email',label:'Email',children:p.row.email||'Not supplied'}]:[]),

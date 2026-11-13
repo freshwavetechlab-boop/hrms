@@ -190,6 +190,7 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
         if (ValidateBatchMappingProfile(request) is { } mappingError) return (null, mappingError);
         // Clone before normalizing warnings/metadata so callers cannot modify an accepted snapshot in memory.
         var batch = JsonSerializer.Deserialize<ExcelPayslipBatch>(JsonSerializer.Serialize(request, JsonOptions), JsonOptions)!;
+        batch.ProfileLinks = null;
         var mappingProfile = batch.MappingProfile;
         batch.MappingProfile = null;
         foreach (var row in batch.Rows)
@@ -316,6 +317,7 @@ WHERE l.client_id=@ClientId AND l.batch_id=@Id",new{ClientId=clientId,existing.I
         }
         try { pdfService.ValidateLayout(batch, batch.Rows); }
         catch (InvalidOperationException layoutError) { return (null, layoutError.Message); }
+        await RetainProfileLinksAsync(db,tx,batch,calculationSource,existing);
         var json = JsonSerializer.Serialize(batch, JsonOptions);
         if (Encoding.UTF8.GetByteCount(json) > MaximumBatchBytes) return (null, "The batch is too large. Save a smaller selection of source rows (maximum 8 MiB).");
         await db.ExecuteAsync(existing is null

@@ -1190,27 +1190,7 @@ app.MapGet("/api/ess/leave/balances", async (EssMssRepository repository, HttpCo
 app.MapEmployeeProfileCompletion();
 app.MapEmployeeFields();
 
-app.MapGet("/api/ess/profile", async (EssMssRepository repository, HttpContext context) =>
-{
-    var user = CurrentUser(context);
-    if (!user.Permissions.Contains("ess.self", StringComparer.OrdinalIgnoreCase) || user.EmployeeId is null)
-        return Results.StatusCode(StatusCodes.Status403Forbidden);
-    var profile = await repository.GetProfileAsync(user.EmployeeId.Value, user.ClientId);
-    return profile is null ? Results.NotFound() : Results.Ok(profile);
-})
-.WithName("GetEssProfile")
-.WithOpenApi();
-
-app.MapPost("/api/ess/profile", async (EssMssRepository repository, SaveEssProfileRequest request, HttpContext context) =>
-{
-    var user = CurrentUser(context);
-    if (!user.Permissions.Contains("ess.self", StringComparer.OrdinalIgnoreCase) || user.EmployeeId is null)
-        return Results.StatusCode(StatusCodes.Status403Forbidden);
-    var (profile, error) = await repository.SaveProfileAsync(user.EmployeeId.Value, user.ClientId, request, user.Email);
-    return profile is null ? Results.BadRequest(new { error }) : Results.Ok(profile);
-})
-.WithName("SaveEssProfile")
-.WithOpenApi();
+app.MapEssProfile(CurrentUser);
 
 app.MapGet("/api/ess/features", async (EssMssRepository repository, HttpContext context) =>
 {

@@ -96,8 +96,9 @@ ORDER BY lt.Name", new { EmployeeId = employeeId, ClientId = clientId });
         await using var db = Connection();
         await db.OpenAsync();
         await EnsureProfileTablesAsync(db);
-        var profile = await db.QueryFirstOrDefaultAsync<EssProfile>(@"SELECT e.ClientId,e.EmployeeCode,e.FirstName,e.LastName,e.WorkEmail,e.Department,e.Designation,e.DateOfJoining,
+        var profile = await db.QueryFirstOrDefaultAsync<EssProfile>(@"SELECT e.ClientId,e.EmployeeCode,e.FirstName,e.LastName,e.Gender,e.WorkEmail,e.Department,e.Designation,e.DateOfJoining,
 COALESCE(p.DateOfBirth,'') DateOfBirth,COALESCE(p.Mobile,'') Mobile,COALESCE(p.PanNumber,'') PanNumber,COALESCE(p.AadhaarNumber,'') AadhaarNumber,
+COALESCE(p.UanNumber,'') UanNumber,COALESCE(p.EsicNumber,'') EsicNumber,
 COALESCE(p.Address,'') Address,COALESCE(p.CorrespondenceAddress,'') CorrespondenceAddress,COALESCE(p.PermanentAddress,'') PermanentAddress,
 COALESCE(p.City,'') City,COALESCE(p.District,'') District,COALESCE(p.State,'') State,
 COALESCE(pay.BankName,'') BankName,COALESCE(pay.BankAccountNo,'') BankAccountNo,COALESCE(pay.IfscCode,'') IfscCode,COALESCE(pay.PaymentMode,'') PaymentMode,
@@ -144,6 +145,9 @@ WHERE e.Id=@EmployeeId AND (@ClientId IS NULL OR e.ClientId=@ClientId)", new { E
         var employee = await db.QueryFirstOrDefaultAsync<Employee>("SELECT * FROM employees WHERE Id=@EmployeeId AND IsActive=TRUE AND (@ClientId IS NULL OR ClientId=@ClientId) FOR UPDATE", new { EmployeeId = employeeId, ClientId = clientId }, tx);
         if (employee is null) return (null, "Employee profile was not found.");
         if (!(await ProfileEditAccessAsync(db, employeeId, tx)).CanEdit) return (null, "Your profile is locked. Request edit access and wait for approval.");
+        var personal = await db.QueryFirstOrDefaultAsync<EmployeePersonalDetails>("SELECT * FROM employeepersonaldetails WHERE EmployeeId=@EmployeeId", new { EmployeeId = employeeId }, tx) ?? new();
+        var identifiersError = NormalizeProfileCoreFields(request, employee, personal);
+        if (identifiersError.Length > 0) return (null, identifiersError);
         var forms = await EmployeeAttributeRepository.ExchangeFormsAsync(db, employee.ClientId, tx);
         request.AdditionalFields ??= [];
         var additionalError = await EmployeeAttributeRepository.SaveExchangeAsync(db, tx, employeeId, employee.ClientId, forms, request.AdditionalFields, "ESS_PROFILE", employeeId.ToString(), 0);
@@ -159,17 +163,17 @@ WHERE e.Id=@EmployeeId AND (@ClientId IS NULL OR e.ClientId=@ClientId)", new { E
         var email = request.WorkEmail.Trim();
         if (!string.IsNullOrWhiteSpace(email) && !System.Text.RegularExpressions.Regex.IsMatch(email, @"^[^@\s]+@[^@\s]+\.[^@\s]+$")) return (null, "Enter a valid email address.");
         await db.ExecuteAsync(@"UPDATE employees
-SET FirstName=@FirstName,LastName=@LastName,WorkEmail=@WorkEmail
-WHERE Id=@EmployeeId", new { EmployeeId = employeeId, FirstName = Clean(request.FirstName), LastName = Clean(request.LastName), WorkEmail = email }, tx);
+SET FirstName=@FirstName,LastName=@LastName,Gender=@Gender,WorkEmail=@WorkEmail
+WHERE Id=@EmployeeId", new { EmployeeId = employeeId, FirstName = Clean(request.FirstName), LastName = Clean(request.LastName), request.Gender, WorkEmail = email }, tx);
         await db.ExecuteAsync(@"INSERT INTO employeepersonaldetails (EmployeeId,DateOfBirth,Mobile,PanNumber,AadhaarNumber,UanNumber,EsicNumber,Address,CorrespondenceAddress,PermanentAddress,Source,SourceLocation,City,District,State,RawDesignation,OriginalEmployeeCode,DuplicateResolution,ExcelRow,EsicEmployee,PtLwfWorkmenComp,Tds,Recovery)
-VALUES (@EmployeeId,@DateOfBirth,@Mobile,@PanNumber,@AadhaarNumber,'','',@Address,@CorrespondenceAddress,@PermanentAddress,'','',@City,@District,@State,'','', '',0,0,0,0,0)
-ON DUPLICATE KEY UPDATE DateOfBirth=@DateOfBirth,Mobile=@Mobile,PanNumber=@PanNumber,AadhaarNumber=@AadhaarNumber,Address=@Address,CorrespondenceAddress=@CorrespondenceAddress,PermanentAddress=@PermanentAddress,City=@City,District=@District,State=@State", new { EmployeeId = employeeId, DateOfBirth = Clean(request.DateOfBirth), Mobile = Clean(request.Mobile), PanNumber = pan, AadhaarNumber = Clean(request.AadhaarNumber), Address = Clean(request.Address), CorrespondenceAddress = Clean(request.CorrespondenceAddress), PermanentAddress = Clean(request.PermanentAddress), City = Clean(request.City), District = Clean(request.District), State = Clean(request.State) }, tx);
+VALUES (@EmployeeId,@DateOfBirth,@Mobile,@PanNumber,@AadhaarNumber,@UanNumber,@EsicNumber,@Address,@CorrespondenceAddress,@PermanentAddress,'','',@City,@District,@State,'','', '',0,0,0,0,0)
+ON DUPLICATE KEY UPDATE DateOfBirth=@DateOfBirth,Mobile=@Mobile,PanNumber=@PanNumber,AadhaarNumber=@AadhaarNumber,UanNumber=@UanNumber,EsicNumber=@EsicNumber,Address=@Address,CorrespondenceAddress=@CorrespondenceAddress,PermanentAddress=@PermanentAddress,City=@City,District=@District,State=@State", new { EmployeeId = employeeId, DateOfBirth = Clean(request.DateOfBirth), Mobile = Clean(request.Mobile), PanNumber = pan, AadhaarNumber = Clean(request.AadhaarNumber), request.UanNumber, request.EsicNumber, Address = Clean(request.Address), CorrespondenceAddress = Clean(request.CorrespondenceAddress), PermanentAddress = Clean(request.PermanentAddress), City = Clean(request.City), District = Clean(request.District), State = Clean(request.State) }, tx);
         await db.ExecuteAsync(@"INSERT INTO employeepaymentdetails (EmployeeId,BankName,BankAccountNo,IfscCode,PaymentMode)
 VALUES (@EmployeeId,@BankName,@BankAccountNo,@IfscCode,@PaymentMode)
 ON DUPLICATE KEY UPDATE BankName=@BankName,BankAccountNo=@BankAccountNo,IfscCode=@IfscCode,PaymentMode=@PaymentMode", new { EmployeeId = employeeId, BankName = Clean(request.BankName), BankAccountNo = Clean(request.BankAccountNo), IfscCode = ifsc, PaymentMode = Clean(request.PaymentMode) }, tx);
         await db.ExecuteAsync(@"INSERT INTO ess_profile_update_audit (EmployeeId,ClientId,ChangedBy,OldValueJson,NewValueJson)
 VALUES (@EmployeeId,@ClientId,@ChangedBy,@OldValue,@NewValue)", new { EmployeeId = employeeId, employee.ClientId, ChangedBy = changedBy, OldValue = JsonSerializer.Serialize(before), NewValue = JsonSerializer.Serialize(request) }, tx);
-        employee.FirstName = Clean(request.FirstName); employee.LastName = Clean(request.LastName); employee.WorkEmail = email;
+        employee.FirstName = Clean(request.FirstName); employee.LastName = Clean(request.LastName); employee.Gender = request.Gender!; employee.WorkEmail = email;
         employee.PersonalDetails = await db.QuerySingleAsync<EmployeePersonalDetails>("SELECT * FROM employeepersonaldetails WHERE EmployeeId=@EmployeeId", new { EmployeeId = employeeId }, tx);
         employee.PaymentDetails = new EmployeePaymentDetails { BankName = Clean(request.BankName), BankAccountNo = Clean(request.BankAccountNo), IfscCode = ifsc, PaymentMode = Clean(request.PaymentMode) };
         foreach (var code in new[] { "0002", "0006", "0009" })
