@@ -4,7 +4,7 @@ import type { PayslipColumn, PayslipSourceRow } from '../utils/excelPayslipImpor
 import type { PayslipMappingEvidence } from '../utils/excelPayslipMapping'
 
 export type ExcelPayslipText = { label: string; value: string }
-export type ExcelPayslipClient = { id: number; name: string; hasSavedBatch?: boolean; locationBatchesSupported?: boolean; atomicMappingSaveSupported?: boolean; correctedResendSupported?: boolean }
+export type ExcelPayslipClient = { id: number; name: string; hasSavedBatch?: boolean; locationBatchesSupported?: boolean; atomicMappingSaveSupported?: boolean; correctedResendSupported?: boolean; bulkUpdateSupported?: boolean }
 export type ExcelPayslipAmount = { label: string; amount: number }
 export type ExcelPayslipRow = {
   id: string; sourceRow: number; employeeCode: string; employeeName: string; email: string

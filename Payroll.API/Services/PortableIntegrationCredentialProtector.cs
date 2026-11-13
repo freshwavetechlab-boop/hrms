@@ -62,6 +62,10 @@ public sealed class PortableIntegrationCredentialProtector
     // Reuse the existing portable key, with an isolated authenticated purpose.
     // Query memory never accepts credential ciphertext or legacy key-ring payloads.
     internal string ProtectVerifiedPlan(string value) => Protect(value, PlanPrefix, PlanPurpose);
+    internal string ProtectExcelPayslipUpdate(string value) => Protect(value, "excel-payslip-update:v1:", Encoding.UTF8.GetBytes("Payroll.API.ExcelPayslipUpdateReviews.v1"));
+    internal string? UnprotectExcelPayslipUpdate(string value) =>
+        IsPortable(value, "excel-payslip-update:v1:") && TryUnprotect(value, "excel-payslip-update:v1:", Encoding.UTF8.GetBytes("Payroll.API.ExcelPayslipUpdateReviews.v1"), legacyAiProtector, out var plaintext)
+            ? plaintext : null;
     internal string? UnprotectVerifiedPlan(string value) =>
         IsPortable(value, PlanPrefix) && TryUnprotect(value, PlanPrefix, PlanPurpose, legacyAiProtector, out var plaintext)
             ? plaintext : null;

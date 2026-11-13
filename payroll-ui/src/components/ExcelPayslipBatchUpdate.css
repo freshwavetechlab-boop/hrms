@@ -1,0 +1,18 @@
+.excel-payslip-batch-update-root .ant-drawer-content-wrapper { width: min(1180px, 100vw) !important; max-width: 100vw !important; }
+.excel-payslip-batch-update { width: 100%; min-width: 0; }
+.excel-payslip-batch-update .ant-drawer-body, .excel-payslip-batch-update .ant-smart-table { min-width: 0; max-width: 100%; }
+.excel-payslip-batch-update .ant-alert, .excel-batch-update-controls { margin-block: 12px; }
+.excel-payslip-batch-update .ant-descriptions-item-content { overflow-wrap: anywhere; }
+.excel-batch-update-fields { display: grid; grid-template-columns: minmax(0, 1fr) 150px minmax(0, 1fr); gap: 12px; margin-block: 16px; }
+.excel-batch-update-fields > label { display: grid; gap: 6px; min-width: 0; }
+.excel-batch-update-fields .ant-input-number { width: 100%; }
+.excel-payslip-batch-update .ant-checkbox-wrapper { display: flex; align-items: flex-start; margin: 14px 0; max-width: 100%; }
+.excel-payslip-batch-update .ant-checkbox-wrapper > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.excel-payslip-batch-update .ant-drawer-footer { flex-shrink: 0; }
+@media (max-width: 720px) {
+  .excel-batch-update-fields { grid-template-columns: minmax(0, 1fr); }
+  .excel-batch-update-controls, .excel-batch-update-footer { display: grid !important; grid-template-columns: minmax(0, 1fr); width: 100%; }
+  .excel-batch-update-controls > .ant-space-item, .excel-batch-update-footer > .ant-space-item { min-width: 0; width: 100%; }
+  .excel-batch-update-controls .ant-btn, .excel-batch-update-footer .ant-btn { width: 100%; min-height: 36px; height: auto; white-space: normal; padding-block: 7px; }
+  .excel-payslip-batch-update .ant-drawer-body { padding: 16px 12px; }
+}

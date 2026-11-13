@@ -143,7 +143,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("identity review", lesson.Content); Assert.True(lesson.Content.Length < 2600);
         Assert.Contains("explicitly fill literal blanks", lesson.Content);
         Assert.Contains("Mixed-location files require row-specific evidence", lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v25", ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Equal("excel-payroll-mapping-v26", ExcelPayslipMappingService.KnowledgeVersion);
     }
     [Fact]
     public void SplitWagePeriodLessonIsRetrievedFromAnonymousStructuralHeadings()
@@ -226,7 +226,9 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("display formatting only",lesson.Content);
         Assert.Contains("Literal scientific text",lesson.Content);
         Assert.Contains("identity-review evidence",lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v25",ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Contains("Aadhaar Number and Aadhar Number as the same canonical Master field",lesson.Content);
+        Assert.Contains("requires an existing verified same-client Master link",lesson.Content);
+        Assert.Equal("excel-payroll-mapping-v26",ExcelPayslipMappingService.KnowledgeVersion);
     }
     [Fact]
     public void EmployeeInputsAndEmployerCostLessonIsRetrievedFromAnonymousSalaryDayHeaders()
@@ -284,7 +286,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.True(lesson.Content.Length<2600);
         Assert.Contains("differing literal alone does not establish a new salary rule",lesson.Content);
         Assert.Contains("never freeze formula caches",lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v25",ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Equal("excel-payroll-mapping-v26",ExcelPayslipMappingService.KnowledgeVersion);
     }
     private static ExcelPayslipMappingRequest Request() => new() { Columns = [
         new() { ColumnIndex = 0, SourceHeader = "Employee name", Label = "Employee name", Kind = "employeeName" },
@@ -518,7 +520,7 @@ public sealed class ExcelPayslipMappingTests
         var references = ExcelPayslipMappingService.Retrieve(request.Columns, File.ReadAllText(path), []);
         var pattern = Assert.Single(references, item => item.Title.StartsWith("TMT pattern:"));
         using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, references));
-        Assert.Equal("excel-payroll-mapping-v25", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v26", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         var supplied = prompt.RootElement.GetProperty("references").EnumerateArray()
             .Single(item => item.GetProperty("title").GetString() == pattern.Title).GetProperty("content").GetString()!;
         Assert.Equal(pattern.Content, supplied); // The critical case must fit without prompt truncation.

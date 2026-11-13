@@ -38,6 +38,9 @@ public static class ExcelPayslipEndpoints
             if (!canRead(context)) return Results.StatusCode(403);
             if (context.GetEndpoint()?.Metadata.GetMetadata<MasterComparisonReadAccess>() is not null && !CanReadMasterComparison(currentUser(context)))
                 return Results.StatusCode(403);
+            if (context.GetEndpoint()?.Metadata.GetMetadata<BulkUpdateMasterAccess>() is not null
+                && (!canManage(context) || !currentUser(context).Permissions.Contains("employees.manage", StringComparer.OrdinalIgnoreCase)))
+                return Results.StatusCode(403);
             if (context.GetEndpoint()?.Metadata.GetMetadata<OriginalWorkbookAccess>() is not null && !canManage(context))
                 return Results.StatusCode(403);
             if (context.GetEndpoint()?.Metadata.GetMetadata<DeleteBatchAccess>() is not null && !CanDelete(context))
@@ -67,6 +70,20 @@ public static class ExcelPayslipEndpoints
             Results.Ok((await repository.ListClientsAsync(currentUser(context).ClientId))
                 .Where(client => canAccessClient(context, client.Id))))
             .WithName("GetExcelPayslipClients").WithOpenApi();
+
+        routes.MapGet("/batches/{id}/update-catalog", async (ExcelPayslipRepository repository, int clientId, string id, HttpContext context) =>
+            Results.Ok(await repository.GetBulkUpdateCatalogAsync(clientId, id, currentUser(context))))
+            .WithMetadata(new BulkUpdateMasterAccess()).WithName("GetExcelPayslipUpdateCatalog");
+        routes.MapPost("/batches/{id}/update-preview", async (ExcelPayslipRepository repository, int clientId, string id,
+            ExcelPayslipUpdatePreviewRequest request, HttpContext context) =>
+            Results.Ok(await repository.PreviewBulkUpdateAsync(clientId, id, request, currentUser(context))))
+            .WithMetadata(new BulkUpdateMasterAccess(), new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(4 * 1024 * 1024))
+            .WithName("PreviewExcelPayslipUpdate");
+        routes.MapPost("/batches/{id}/update-apply", async (ExcelPayslipRepository repository, int clientId, string id,
+            ExcelPayslipUpdateApplyRequest request, HttpContext context) =>
+            Results.Ok(await repository.ApplyBulkUpdateAsync(clientId, id, request, currentUser(context))))
+            .WithMetadata(new BulkUpdateMasterAccess(), new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(1024 * 1024))
+            .WithName("ApplyExcelPayslipUpdate");
 
         routes.MapGet("/mail-jobs", async (ExcelPayslipRepository repository, HttpContext context) =>
         {
@@ -322,4 +339,5 @@ public static class ExcelPayslipEndpoints
     private sealed record OverviewReadAccess;
     private sealed record CodePreviewReadAccess;
     private sealed record MasterComparisonReadAccess;
+    private sealed record BulkUpdateMasterAccess;
 }

@@ -24,6 +24,7 @@ import ExcelPayslipMonthTools from './ExcelPayslipMonthTools'
 import ExcelPayslipMailProgress from './ExcelPayslipMailProgress'
 import ExcelPayslipBulkAmountEditor from './ExcelPayslipBulkAmountEditor'
 import ExcelPayslipEmailUpdates from './ExcelPayslipEmailUpdates'
+import ExcelPayslipBatchUpdate from './ExcelPayslipBatchUpdate'
 import { isPayslipEmailList, payslipEmailExport, readPayslipEmailUpdates } from '../utils/excelPayslipEmailUpdates'
 import { downloadXlsx } from '../utils/xlsx'
 import { canQueuePayslipEmail, canQueueCorrectedPayslipEmail, correctedPayslipResendBlockReason, payslipSentCopyLabel } from '../utils/excelPayslipDelivery'
@@ -87,6 +88,7 @@ export default function ExcelPayslips() {
   const clientName = clients.find(client => client.id === clientId)?.name || ''
   const supportsLocationBatches = clients.find(client => client.id === clientId)?.locationBatchesSupported === true
   const supportsCorrectedResend = clients.find(client => client.id === clientId)?.correctedResendSupported === true
+  const supportsBulkUpdate = clients.find(client => client.id === clientId)?.bulkUpdateSupported === true
   const [view, setView] = useSessionPreference<'Table' | 'Cards'>(`excel-payslips:${session?.user.id}:${clientId}:view`, 'Table')
   const [lastBatchId, setLastBatchId] = useSessionPreference(`excel-payslips:${session?.user.id}:${clientId}:batch`, '')
   const [selectedIds, setSelectedIds] = useSessionPreference<string[]>(`excel-payslips:${session?.user.id}:${clientId}:${lastBatchId}:selection`, [])
@@ -124,6 +126,7 @@ export default function ExcelPayslips() {
   const [locationFileQueue, setLocationFileQueue] = useState<File[]>([])
   const [separateLocationFiles, setSeparateLocationFiles] = useState(true)
   const [emailUpdatesBatch, setEmailUpdatesBatch] = useState('')
+  const [bulkUpdateBatch, setBulkUpdateBatch] = useState('')
   const [emailUpdatesDraft, setEmailUpdatesDraft] = useState<{ batchId: string; fileName: string; preview: ReturnType<typeof readPayslipEmailUpdates> }>()
   const [monthTools, setMonthTools] = useState<'calculate' | 'variance' | null>(null)
   const [sheets, setSheets] = useState<PayslipSheet[]>([]), [sheetName, setSheetName] = useState(''), [fileName, setFileName] = useState('')
@@ -169,7 +172,7 @@ export default function ExcelPayslips() {
   const [masterRefreshing, setMasterRefreshing] = useState(false)
   const masterRefreshPending = useRef(false)
   const refreshMasterDetails = useCallback(async (reportError = false) => {
-    if (!batch || batch.clientId !== clientId || busy || loading || importOpen || setupRows || action || correction || monthTools || masterRefreshPending.current) return
+    if (!batch || batch.clientId !== clientId || busy || loading || importOpen || setupRows || action || correction || monthTools || bulkUpdateBatch || masterRefreshPending.current) return
     const requestedScope = scope.current, requestedBatch = batch.id
     masterRefreshPending.current = true; setMasterRefreshing(true)
     try {
@@ -183,7 +186,7 @@ export default function ExcelPayslips() {
         return current && latest ? {...current,...currentPayslip(latest)} : current
       })
     } finally { masterRefreshPending.current = false; setMasterRefreshing(false) }
-  }, [clientId, batch, busy, loading, importOpen, setupRows, action, correction, monthTools])
+  }, [clientId, batch, busy, loading, importOpen, setupRows, action, correction, monthTools, bulkUpdateBatch])
   useEffect(() => {
     const refresh = () => { if (document.visibilityState === 'visible') void refreshMasterDetails() }
     window.addEventListener('focus', refresh); document.addEventListener('visibilitychange', refresh)
@@ -790,6 +793,7 @@ export default function ExcelPayslips() {
       <Tooltip title={validSelection.length ? `PDF selected (${validSelection.length})` : 'PDF all'}><Button aria-label={validSelection.length ? `PDF selected (${validSelection.length})` : 'PDF all'} icon={<FilePdfOutlined />} disabled={busy || !(validSelection.length ? eligibleRows.some(row => validSelection.includes(row.id)) : eligibleRows.length)} onClick={() => beginAction('download', validSelection.length ? validSelection : eligibleRows.map(row => row.id))}><span className="excel-payslip-action-label">{validSelection.length ? `PDF selected (${validSelection.length})` : 'PDF all'}</span></Button></Tooltip>
       {canManage && <Tooltip title={validSelection.length ? `Email selected (${emailTargets.length})` : `Email batch (${emailTargets.length})`}><Button aria-label={validSelection.length ? `Email selected (${emailTargets.length})` : `Email batch (${emailTargets.length})`} icon={<SendOutlined />} disabled={!emailTargets.length || busy} onClick={() => beginAction('send', emailTargets)}><span className="excel-payslip-action-label">{validSelection.length ? `Email selected (${emailTargets.length})` : `Email batch (${emailTargets.length})`}</span></Button></Tooltip>}
       {batch?.clientId === clientId && <Dropdown menu={{ items: [
+        ...(canManage ? [{ key: 'bulk-update', label: supportsBulkUpdate ? 'Update from Excel' : 'Update from Excel (update API)', icon: <UploadOutlined />, disabled: !supportsBulkUpdate || busy || loading || !rows.length, onClick: () => { if (supportsBulkUpdate) { setError(''); setBulkUpdateBatch(batch.id) } } }] : []),
         ...(canManage ? [{ key: 'email-updates', label: 'Import email updates', icon: <UploadOutlined />, disabled: busy || loading, onClick: () => { setEmailUpdatesDraft(undefined); setEmailUpdatesBatch(batch.id) } }] : []),
         ...(canManage ? [{ key: 'resend-corrected', label: supportsCorrectedResend ? 'Resend corrected payslips' : 'Resend corrected payslips (update API)', icon: <SendOutlined />, disabled: !supportsCorrectedResend || busy || loading || !rows.length || !emailStatus.ready, onClick: () => void beginCorrectedResend() }] : []),
         { key: 'export-template', label: 'Export salary template', icon: <DownloadOutlined />, disabled: busy || loading, onClick: () => void exportTemplate() },
@@ -803,6 +807,9 @@ export default function ExcelPayslips() {
     {!!clientId && !supportsLocationBatches && <Alert type="info" showIcon message="Update the API to import separate location batches. Saved payslips remain available." />}
     {!clientsLoading && hasLinkedClient && !clientId && <Alert type="error" showIcon message="This batch's client is not available in your access scope." action={<Button onClick={() => chooseClient(undefined)}>Choose a client</Button>} />}
     {notice && <Alert type="success" showIcon closable message={notice} />}
+    {canManage && supportsBulkUpdate && batch?.clientId === clientId && bulkUpdateBatch === batch.id && <ExcelPayslipBatchUpdate key={`update:${clientId}:${batch.id}`} batch={batch} onClose={() => setBulkUpdateBatch('')} onBusy={setBusy} onSaved={result => {
+      setBatch(result.batch); setHistory(current => current.map(item => item.id === result.batch.id ? batchSummary(result.batch) : item)); setBulkUpdateBatch(''); emailStatus.refresh(); setNotice(`${result.appliedChanges} reviewed changes saved in this batch; ${result.updatedEmployees} Employee Master records updated. No email was sent.`)
+    }} />}
     {canManage && batch?.clientId === clientId && emailUpdatesBatch === batch.id && <ExcelPayslipEmailUpdates key={`${clientId}:${batch.id}`} batch={batch} initial={emailUpdatesDraft?.batchId === batch.id ? emailUpdatesDraft : undefined} onClose={() => setEmailUpdatesBatch('')} onBusy={setBusy} onSaved={(saved, changed) => {
       setBatch(saved); setEmailUpdatesBatch(''); emailStatus.refresh(); setNotice(`${changed} email(s) saved in this batch. Salary and existing delivery history are unchanged. No mail was sent.`)
     }} />}

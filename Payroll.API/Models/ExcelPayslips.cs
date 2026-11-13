@@ -10,6 +10,7 @@ public sealed class ExcelPayslipClient
     public bool LocationBatchesSupported { get; set; }
     public bool AtomicMappingSaveSupported { get; set; }
     public bool CorrectedResendSupported { get; set; }
+    public bool BulkUpdateSupported { get; set; }
 }
 
 public sealed record ExcelPayslipCodeGeneration(bool Enabled, int Digits);

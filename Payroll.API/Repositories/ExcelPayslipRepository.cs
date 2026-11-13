@@ -12,7 +12,8 @@ using Payroll.API.Services;
 namespace Payroll.API.Repositories;
 
 // Excel amounts never use employee/pay-run data or salary formulas. Templates provide display mapping presets only.
-public sealed partial class ExcelPayslipRepository(IConfiguration configuration, NotificationRepository notifications, ExcelPayslipPdfService pdfService)
+public sealed partial class ExcelPayslipRepository(IConfiguration configuration, NotificationRepository notifications, ExcelPayslipPdfService pdfService,
+    PortableIntegrationCredentialProtector? updateReviewProtector = null)
 {
     internal static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     internal const string BatchPrefix = "excel_payslip:";
@@ -49,7 +50,7 @@ public sealed partial class ExcelPayslipRepository(IConfiguration configuration,
         var clients = await db.QueryAsync<PayslipClientPresence>(@"SELECT c.Id,c.Name,c.Code,c.IsActive,
 EXISTS(SELECT 1 FROM excel_payslip_batches b WHERE b.client_id=c.Id) AS HasSavedBatch
 FROM clients c WHERE c.IsActive=TRUE AND (@ClientId IS NULL OR c.Id=@ClientId) ORDER BY c.Name", new { ClientId = scopedClientId });
-        return clients.Where(IsSupportedClient).Select(c => new ExcelPayslipClient { Id = c.Id, Name = c.Name, HasSavedBatch = c.HasSavedBatch, LocationBatchesSupported = true, AtomicMappingSaveSupported = true, CorrectedResendSupported = true }).ToArray();
+        return clients.Where(IsSupportedClient).Select(c => new ExcelPayslipClient { Id = c.Id, Name = c.Name, HasSavedBatch = c.HasSavedBatch, LocationBatchesSupported = true, AtomicMappingSaveSupported = true, CorrectedResendSupported = true, BulkUpdateSupported = true }).ToArray();
     }
 
     public async Task<IReadOnlyList<ExcelPayslipTemplate>> GetTemplatesAsync(int clientId)
