@@ -1,4 +1,16 @@
-# Excel payroll mapping knowledge v67
+# Excel payroll mapping knowledge v69
+
+## Professional Tax P.Tax deduction: configured fee and automatic policy
+Recognition: a Professional Tax / P.Tax source deduction can be an explicit period formula, including a conditional zero. Preserve that deduction and its complete dependency graph. If ordinary native payroll adds a second PT line, inspect both the configured component's statutory meaning and the automatic policy path before changing source amounts or adding a balancing entry.
+
+A source-verified Professional Tax component retains statutory type Professional Tax even when its component code is custom. Its explicit calculated fee must not be followed by another automatic PT policy charge. Keep unrelated deductions, genuine separate approved charges, other months and current Master values unchanged. A label alone is not authority to suppress tax: verify source identity, actual native lines and component/total parity; a normal deduction with statutory type None remains separate from automatic PT. Never force a PT-zero control to hide duplicate mapping, rename an unrelated deduction to PT, change global slabs, or treat the monetary tolerance as permission to ignore a real second charge.
+
+## Old Basic New Basic Net Working Days: reported source snapshot validation
+Recognition: split salary periods have independent old/new monthly bases and reported Net Working Days. A saved source can also contain server-owned employee profile-link metadata. If reported template preview says the source changed while the captured workbook, amounts and row mapping are unchanged, compare the hash contracts before changing any salary role or reimporting.
+
+Reported template review, typed period operands, closed salary assignments and their native readers must bind the same complete typed source snapshot. Employment synchronization has a separate hash that intentionally omits profile links; substituting that employment hash in reported template validation rejects a valid full-snapshot review when links are retained, even as an empty list. Keep the established reported hash and reader/receipt format; this is a validation-layer correction, not new payroll arithmetic.
+
+An actual change in source cells, financial roles, row identity, original workbook or retained metadata still needs a fresh exact review. Never strip stored metadata, fabricate a profile link, waive ownership, skip raw source hashes, certify unavailable attendance lookups, or alter salary/attendance/mail to make hashes agree. Unknown actual presence and both reviewed period quantities retain their separate contracts.
 
 ## Current CTC Last Month Salary Basic Payable Days Bonus: closed source reference
 Recognition: Current CTC and Last Month Salary are separate Information dependencies. A captured Basic formula can use the prior salary divided by payroll days, multiplied by payable days, then subtract a separately mapped literal Bonus. Equal current/prior values do not prove that either reference can replace the other. Keep the current monthly earnings budget and its annual target independent; only the earned Basic and Bonus enter earnings.

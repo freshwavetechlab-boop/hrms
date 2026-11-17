@@ -33,7 +33,9 @@ public partial class PayRunRepository
     }
 
     private static string HistoricalAssignmentHash(HistoricalSalarySimulationAssignment assignment) =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(assignment))));
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(assignment.ReportedAttendanceSeed is null
+            ?JsonSerializer.Serialize(assignment)
+            :JsonSerializer.Serialize(new{Assignment=assignment,ReportedAttendanceSeed=assignment.ReportedAttendanceSeed}))));
 
     internal async Task<HistoricalSimulationContext> CreateHistoricalSimulationContextAsync(MySqlConnection db,MySqlTransaction tx,
         int clientId,string period,IReadOnlyList<int> employeeIds,IReadOnlyList<HistoricalSalarySimulationAssignment>? assignments=null,
@@ -116,6 +118,7 @@ WHERE e.ClientId=@ClientId AND e.Id IN @Ids AND "+EmployeeEmploymentRules.Eligib
         employee.SalaryComponents=assignment.SalaryInputs.ToDictionary(p=>p.Key,p=>p.Value,StringComparer.OrdinalIgnoreCase);
         employee.SalaryJson=JsonSerializer.Serialize(employee.SalaryComponents);
         employee.NamedInputs=assignment.NamedInputs;
+        employee.ReportedPendingSeed=assignment.ReportedAttendanceSeed;
     }
 
     private static FormulaWorkbookContext? UseHistoricalSimulationContext(MySqlConnection db,MySqlTransaction tx,PayrollSimulationRequest request,

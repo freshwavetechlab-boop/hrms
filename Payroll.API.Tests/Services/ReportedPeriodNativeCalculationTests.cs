@@ -10,6 +10,22 @@ namespace Payroll.API.Tests.Services;
 
 public sealed partial class ReportedPeriodInputV2Tests
 {
+    [Fact]
+    public void ReportedSnapshotWithRetainedProfileMetadataClosesCashAndRejectsStaleMetadata()
+    {
+        var f=Fixture.Create();
+        f.Batch.ProfileLinks=[];
+        PopulateRow(f); f.RefreshHashes();
+        var snapshot=ReportedPeriodInputProof.SourceHash(f.Batch,f.Source);
+        Assert.NotEqual(snapshot,ExcelPayslipRepository.EmploymentSourceHash(f.Batch,f.Source));
+        var bound=f.Bind(); var closure=f.Close(bound); var packet=TemplatePacket(f,closure);
+        var result=ExcelPayrollSetupRepository.PrepareReportedTemplateArithmetic(packet.Request,f.Batch,f.Source,f.Row,packet.Template,packet.Masters,f.Profile,bound,600000);
+        Assert.Equal(12,result.Arithmetic.Preview.Lines.Count);
+        Assert.Equal(snapshot,ReportedPeriodInputProof.SourceHash(f.Batch,f.Source));
+        f.Batch.ProfileLinks=null;
+        Assert.Throws<InvalidOperationException>(()=>f.Bind());
+    }
+
     [Theory]
     [InlineData(0,0)] [InlineData(5,25)] [InlineData(4.5,24)] [InlineData(1,23)]
     public void NativeCalculatorUsesExactIndependentValuesAndBothReportedDayInputs(decimal oldDays,decimal newDays)

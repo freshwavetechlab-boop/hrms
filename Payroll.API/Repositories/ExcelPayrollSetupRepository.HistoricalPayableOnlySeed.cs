@@ -23,7 +23,13 @@ public sealed partial class ExcelPayrollSetupRepository
         HistoricalPayableSeedAbsence Before, NativePayrollAttendanceInput PendingNativeInput, string PlanHash);
     internal sealed record HistoricalPayableSeedMonthly(long Id, int ClientId, int EmployeeId, string Month,
         decimal WorkingDays, decimal? PresentDays, decimal PayableDays, decimal LopDays,
-        string SourceType, string Remarks);
+        string SourceType, string Remarks)
+    {
+        // Existing installations use both INT and BIGINT monthly row IDs.
+        // Property materialization preserves the long witness without requiring
+        // an exact database constructor signature or changing stored IDs.
+        public HistoricalPayableSeedMonthly():this(0,0,0,"",0,null,0,0,"","") { }
+    }
     internal sealed record HistoricalPayableSeedSaved(HistoricalPayableOnlySeedPlan Plan,
         HistoricalPayableSeedMonthly MonthlyWitness, NativePayrollAttendanceInput NativeInput, string ProvenanceHash);
     private sealed class HistoricalSeedCount

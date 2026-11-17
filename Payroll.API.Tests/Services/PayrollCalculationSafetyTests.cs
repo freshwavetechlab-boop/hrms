@@ -10,7 +10,7 @@ public class PayrollCalculationSafetyTests
     private static object Component(string id, string code, string formula, string category = "Earning", int priority = 10, bool prorata = false, bool taxable = true, string statutory = "None", string calculation = "Formula") =>
         new { id, code, name = code, formula, value = formula, category, priority, proRata = prorata, taxable, statutoryType = statutory, calculationType = calculation, active = true, payType = "Fixed Pay" };
 
-    private static PayRunEmployee Calculate(object[] components, decimal days = 30, Dictionary<string, decimal>? overrides = null, decimal tds = -1, decimal seedTds = 0, PayrollAdjustment[]? adjustments = null, string client = "11", decimal annualCtc = 360000m, int payrollDays = 30, PfPolicyPeriod? pfPeriod = null, string salaryStructureId = "1")
+    private static PayRunEmployee Calculate(object[] components, decimal days = 30, Dictionary<string, decimal>? overrides = null, decimal tds = -1, decimal seedTds = 0, PayrollAdjustment[]? adjustments = null, string client = "11", decimal annualCtc = 360000m, int payrollDays = 30, PfPolicyPeriod? pfPeriod = null, string salaryStructureId = "1", object? statutory = null)
     {
         var repo = typeof(PayRunRepository);
         var type = repo.GetNestedType("PayRunSourceEmployee", BindingFlags.NonPublic)!;
@@ -20,7 +20,7 @@ public class PayrollCalculationSafetyTests
         if (pfPeriod is not null) Set("PfPolicyPeriod", pfPeriod);
         Set("SalaryComponents", overrides ?? []); Set("HasPersonalDetails", true); Set("Tds", seedTds);
         var lines = components.Select(component => new { componentId = component.GetType().GetProperty("id")!.GetValue(component) });
-        var json = JsonSerializer.Serialize(new { salaryComponents = components, salaryStructures = new[] { new { id = "1", clientId = client, active = true, lines } } });
+        var json = JsonSerializer.Serialize(new { salaryComponents = components, salaryStructures = new[] { new { id = "1", clientId = client, active = true, lines } },statutory });
         try { return (PayRunEmployee)repo.GetMethod("BuildEmployee", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [1, employee, json, "2026-09", payrollDays, days, days, adjustments ?? [], 0m, 0m, tds, false, "TDS"])!; }
         catch (TargetInvocationException exception) { throw exception.InnerException!; }
     }
@@ -29,6 +29,19 @@ public class PayrollCalculationSafetyTests
     {
         using var doc = JsonDocument.Parse(row.DetailsJson);
         return doc.RootElement.EnumerateArray().Where(line => line.GetProperty("Id").GetString() == code).Sum(line => line.GetProperty("amount").GetDecimal());
+    }
+
+    [Theory]
+    [InlineData("208", "Professional Tax", 208)]
+    [InlineData("0", "Professional Tax", 0)]
+    [InlineData("208", "None", 408)]
+    public void ExplicitProfessionalTaxTypePreventsASecondAutomaticPolicyCharge(string formula,string statutoryType,decimal expected)
+    {
+        var policy=new{pt=true,ptState="Synthetic state",ptStateSlabs=new[]{new{state="Synthetic state",salaryFrom="0",salaryTo="9999999",deductionAmount="200",active=true}}};
+        var row=Calculate([Component("1","WAGE","30000"),Component("2","CUSTOM_CHARGE",formula,"Deduction",statutory:statutoryType)],tds:0,statutory:policy);
+        Assert.Equal(expected,row.StatutoryDeductions);
+        Assert.Equal(30000-expected,row.NetPay);
+        Assert.Equal(statutoryType=="Professional Tax"?0:200,Amount(row,"PT"));
     }
 
     [Fact]

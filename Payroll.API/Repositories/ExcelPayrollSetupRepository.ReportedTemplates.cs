@@ -40,7 +40,9 @@ public sealed partial class ExcelPayrollSetupRepository
         var (batch, source) = await ReadSourceAsync(db,tx,request.ClientId,q.BatchId);
         if (ExcelPayslipCalculationService.ValidateSource(source,batch) is { } sourceError) throw new InvalidOperationException(sourceError);
         await ExcelPayslipRepository.RequireCurrentConsolidationSourceAsync(db,tx,request.ClientId,batch.Id);
-        var sourceHash = ExcelPayslipRepository.EmploymentSourceHash(batch,source);
+        // Reported operands and their native reader bind the complete typed snapshot,
+        // including retained server profile links, rather than the employment-only hash.
+        var sourceHash = ReportedPeriodInputProof.SourceHash(batch,source);
         if (request.SourceHash != sourceHash || review.SourceHash != sourceHash) throw new InvalidOperationException("The reported template source changed.");
         var row = batch.Rows.Single(r=>r.Id==request.SourceRowId);
         var employeeId = q.EmployeeDecisions[0].MatchedEmployeeId!.Value;

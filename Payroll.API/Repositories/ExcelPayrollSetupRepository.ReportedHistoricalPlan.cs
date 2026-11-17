@@ -105,6 +105,27 @@ public sealed partial class ExcelPayrollSetupRepository
         var runs=(await db.QueryAsync<HistoricalRunState>("SELECT Id,Status,CAST(RequestJson AS CHAR) RequestJson FROM payruns WHERE ClientId=@Client AND PayPeriod=@Month AND RunType='Regular'",new{Client=clientId,Month=batch.Month},tx)).ToArray();
         if(runs.Any(r=>r.Status is "AwaitingProcessing" or "Queued" or "Processing"))Block("A regular run is already pending or processing for this client/month.");
         var simulations=new List<object>();
+        // Reuse transaction-owned inputs for the exact proposed cohort. Each
+        // employee still receives an independent clone and the existing native
+        // calculation/amount proof; no cache survives this read/write phase.
+        PayRunRepository.HistoricalSimulationContext? proposedContext=null;
+        if(configuration.GetValue<bool>("Payroll:HistoricalBatchProofEnabled")&&preview.Blockers.Count==0)
+        {
+            var proposed=new List<HistoricalSalarySimulationAssignment>();
+            foreach(var assignment in request.Assignments)
+            {
+                if(!seeds.TryGetValue(assignment.EmployeeId,out var seed)||!boundRows.TryGetValue(assignment.EmployeeId,out var bound))continue;
+                try
+                {
+                    var basis=EmployeeRepository.RequireClosedSalaryBasis(state,assignment.EmployeeId,from,to);
+                    proposed.Add(new(clientId,assignment.EmployeeId,batch.Month,templateId,basis.AnnualCtc,new Dictionary<string,decimal>(),
+                        NamedInputs:ReportedPeriodCalculationContext.FromBound(profile,bound,nativeAttendance:seed.PendingNativeInput)){ReportedAttendanceSeed=seed});
+                }
+                catch(InvalidOperationException){ /* The normal row check retains its exact diagnostic below. */ }
+            }
+            if(proposed.Count>0)proposedContext=await HistoricalRuns.CreateHistoricalSimulationContextAsync(db,tx,clientId,batch.Month,
+                proposed.Select(a=>a.EmployeeId).ToArray(),proposed,exactSetupJson:setupText);
+        }
         foreach(var assignment in request.Assignments)
         {
             var row=selected.SingleOrDefault(r=>r.Id==assignment.RowId);var result=new HistoricalPeriodSalaryPreviewRow{RowId=assignment.RowId,EmployeeId=assignment.EmployeeId,TemplateId=assignment.TemplateId,SourceRow=row?.SourceRow??0};preview.Rows.Add(result);
@@ -129,7 +150,7 @@ public sealed partial class ExcelPayrollSetupRepository
                 var context=ReportedPeriodCalculationContext.FromBound(profile,arithmetic.Bound,nativeAttendance:seed.PendingNativeInput);
                 result.NamedInputs=context;
                 var hypothetical=await HistoricalRuns.SimulateHistoricalSalaryInTransactionAsync(db,tx,new(){Mode="Employee",ClientId=clientId,EmployeeId=assignment.EmployeeId,PayPeriod=batch.Month},
-                    new HistoricalSalarySimulationAssignment(clientId,assignment.EmployeeId,batch.Month,templateId,basis.AnnualCtc,new Dictionary<string,decimal>(),NamedInputs:context){ReportedAttendanceSeed=seed});
+                    new HistoricalSalarySimulationAssignment(clientId,assignment.EmployeeId,batch.Month,templateId,basis.AnnualCtc,new Dictionary<string,decimal>(),NamedInputs:context){ReportedAttendanceSeed=seed},context:proposedContext);
                 foreach(var issue in hypothetical.Simulation.Issues.Where(i=>i.Severity=="Error"))RowBlock(issue.Message);
                 if(!hypothetical.Simulation.Complete||hypothetical.InputFingerprint.Length!=64)throw new InvalidOperationException("Complete hypothetical Employee proof with the reviewed pending seed is required before insertion.");
                 var master=await EmployeeRepository.LoadRecruitmentEmployeeAsync(db,assignment.EmployeeId,tx)??throw new InvalidOperationException("The exact current Master is unavailable.");
@@ -137,7 +158,8 @@ public sealed partial class ExcelPayrollSetupRepository
                 foreach(var scopeError in TemplateScopeIssues(q,[planned]))RowBlock(scopeError);
                 foreach(var mismatch in CompareHistoricalNative(planned,row,hypothetical.Simulation))RowBlock(mismatch);
                 var codes=resolved.Select(c=>c.Definition.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                if(hypothetical.Simulation.Lines.Any(l=>l.Earned!=0&&!codes.Contains(l.Code)))RowBlock("Native payroll adds an unmapped nonzero component or adjustment.");
+                var unmapped=hypothetical.Simulation.Lines.Where(l=>l.Earned!=0&&!codes.Contains(l.Code)).ToArray();
+                if(unmapped.Length>0)RowBlock("Native payroll adds an unmapped nonzero component or adjustment: "+string.Join(", ",unmapped.Select(l=>l.Code+"="+l.Earned.ToString(CultureInfo.InvariantCulture)))+".");
                 result.Formulas=resolved.Select(c=>{var cell=arithmetic.Closure.Cells.Single(x=>x.ColumnIndex==c.Definition.ExpectedColumnIndex);return new ExcelPayrollTransferFormula(row.Id,c.Definition.Code,row.SourceRow,c.Definition.ExpectedColumnIndex,ReviewedNamedFormulaInputs.Hash(cell),string.IsNullOrWhiteSpace(cell.OriginalFormula)?"Reviewed fixed source":"Exact supported translation","Complete original cash AST closes only at the declared reported Days and independent operands; lookup verification is not claimed.");}).ToList();
                 var amountPlan=new Plan{Batch=batch,Source=source};amountPlan.Components.AddRange(resolved);
                 var amounts=ClassifyTransferAmounts(amountPlan,planned,q,hash,result.Formulas,context);

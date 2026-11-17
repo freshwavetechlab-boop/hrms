@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Data;
+using Dapper;
 using Payroll.API.Models;
 using Payroll.API.Repositories;
 using Payroll.API.Services;
@@ -11,6 +13,16 @@ namespace Payroll.API.Tests.Services;
 // These are pure seam tests; no native save/end-to-end result is claimed.
 public sealed partial class ReportedPeriodInputV2Tests
 {
+    [Theory]
+    [InlineData(false,false)] [InlineData(true,false)] [InlineData(false,true)] [InlineData(true,true)]
+    public void SavedMonthlyWitnessReadsExistingIntAndBigIntIdsWithoutInventingPresence(bool bigInt,bool suppliedPresence)
+    {
+        using var table=new DataTable();
+        foreach(var(name,type)in new[]{("Id",bigInt?typeof(long):typeof(int)),("ClientId",typeof(int)),("EmployeeId",typeof(int)),("Month",typeof(string)),("WorkingDays",typeof(decimal)),("PresentDays",typeof(decimal)),("PayableDays",typeof(decimal)),("LopDays",typeof(decimal)),("SourceType",typeof(string)),("Remarks",typeof(string))})table.Columns.Add(name,type);
+        table.Rows.Add(bigInt?(object)4000000001L:41,7,97962,"2026-10",30m,suppliedPresence?(object)19.5m:DBNull.Value,19.5m,10.5m,"SourcePayable","Preserved synthetic provenance");
+        using var reader=table.CreateDataReader();var parse=reader.GetRowParser<ExcelPayrollSetupRepository.HistoricalPayableSeedMonthly>();Assert.True(reader.Read());var row=parse(reader);
+        Assert.Equal(bigInt?4000000001L:41,row.Id);Assert.Equal(suppliedPresence?19.5m:(decimal?)null,row.PresentDays);Assert.Equal(19.5m,row.PayableDays);Assert.Equal(10.5m,row.LopDays);Assert.Equal("Preserved synthetic provenance",row.Remarks);
+    }
     private static ExcelPayrollSetupRepository.HistoricalPayableSeedGroup SeedGroup() =>
         new(97962, 7, 97962, 26, 25, "Monthly", "existing-policy", "Sunday off");
     private static ExcelPayrollSetupRepository.HistoricalPayableSeedAbsence EmptySeedState() =>

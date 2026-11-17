@@ -934,7 +934,7 @@ AND NOT EXISTS (
                 monthlyAmount = periodAmount, amount = periodAmount, ProRata = false, reviewedProfessionalTax = reviewedPt });
             AddNativeScalarCurrencyStage(nativeTrace, "PT", "Professional Tax", "Deduction", periodAmount, periodAmount, "Native reviewed period Professional Tax");
         }
-        var hasProfessionalTaxLine = reviewedPt is not null || combinedLevy is not null || salaryDeductionCodes.Contains("PT") || salaryDeductionCodes.Contains("PT_LWF_WC") || seededDeductions.Any(row => row.Code.Equals("PT", StringComparison.OrdinalIgnoreCase) || row.Code.Equals("PT_LWF_WC", StringComparison.OrdinalIgnoreCase))
+        var hasProfessionalTaxLine = configuredPt || reviewedPt is not null || combinedLevy is not null || salaryDeductionCodes.Contains("PT") || salaryDeductionCodes.Contains("PT_LWF_WC") || seededDeductions.Any(row => row.Code.Equals("PT", StringComparison.OrdinalIgnoreCase) || row.Code.Equals("PT_LWF_WC", StringComparison.OrdinalIgnoreCase))
             || employee.LocationParts is not null && salary.Any(row=>IsDeductionCategory(row.Component.Category)
                 && (row.Component.StatutoryType.Equals("Professional Tax",StringComparison.OrdinalIgnoreCase)||row.Component.Code is "PT" or "PT_LWF_WC"));
         if(employee.LocationParts is not null&&setup.ProfessionalTax.Enabled&&!hasProfessionalTaxLine

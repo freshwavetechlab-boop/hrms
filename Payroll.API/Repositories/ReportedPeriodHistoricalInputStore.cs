@@ -35,9 +35,7 @@ internal static class ReportedPeriodHistoricalInputStore
         var h=await db.QuerySingleAsync<History>(@"SELECT Id,EmployeeId,ClientId,ActionType,EffectiveFrom,EffectiveTo,Status,SalaryStructureId,AnnualCtc,
 CAST(SalaryJson AS CHAR) SalaryJson,SHA2(CAST(SalaryJson AS CHAR),256) SalaryHash FROM employee_it0008_basic_pay WHERE Id=@Id",new{Id=historyId},tx);
         RequireHistory(h,profile.ClientId,employeeId,bound.PayPeriod,profile.TemplateId);
-        var raw=await db.QuerySingleAsync<Raw>(@"SELECT CAST(b.batch_json AS CHAR) Batch,CAST(s.source_json AS CHAR) Source,
-SHA2(CAST(b.batch_json AS CHAR),256) BatchHash,SHA2(CAST(s.source_json AS CHAR),256) SourceHash
-FROM excel_payslip_batches b JOIN excel_payslip_calculation_sources s ON s.client_id=b.client_id AND s.batch_id=b.id WHERE b.client_id=@Client AND b.id=@Batch",new{Client=bound.ClientId,Batch=bound.BatchId},tx);
+        var raw=await ReadRawAsync(db,tx,bound.ClientId,bound.BatchId);
         if(raw.BatchHash!=bound.RawBatchHash||raw.SourceHash!=bound.RawSourceHash||Canonical(raw)!=bound.SourceHash)
             throw new InvalidOperationException("Source changed before the atomic v2 assignment insert.");
         var manifest=new ReportedPeriodInputManifestV2(2,bound.ClientId,employeeId,bound.PayPeriod,historyId,profile.TemplateId,
@@ -132,8 +130,7 @@ FROM attendance_groups g JOIN attendance_group_employees m ON m.attendance_group
             throw new InvalidOperationException("The managed reported template client or monetary rules changed.");
         if(!cache.Sources.TryGetValue(m.BoundInputs.BatchId,out var raw))
         {
-            raw=await cache.Db.QuerySingleAsync<Raw>(@"SELECT CAST(b.batch_json AS CHAR) Batch,CAST(s.source_json AS CHAR) Source,SHA2(CAST(b.batch_json AS CHAR),256) BatchHash,SHA2(CAST(s.source_json AS CHAR),256) SourceHash
-FROM excel_payslip_batches b JOIN excel_payslip_calculation_sources s ON s.client_id=b.client_id AND s.batch_id=b.id WHERE b.client_id=@Client AND b.id=@Batch",new{Client=cache.ClientId,Batch=m.BoundInputs.BatchId},cache.Tx);cache.Sources.Add(m.BoundInputs.BatchId,raw);
+            raw=await ReadRawAsync(cache.Db,cache.Tx,cache.ClientId,m.BoundInputs.BatchId);cache.Sources.Add(m.BoundInputs.BatchId,raw);
         }
         var batch=raw.ParsedBatch??=JsonSerializer.Deserialize<ExcelPayslipBatch>(raw.Batch,Json)!;var source=raw.ParsedSource??=JsonSerializer.Deserialize<ExcelPayslipCalculationSource>(raw.Source,Json)!;
         if(batch.ClientId!=cache.ClientId||batch.Month!=cache.Month||batch.Id!=m.BoundInputs.BatchId||Canonical(raw)!=m.BoundInputs.SourceHash
@@ -195,6 +192,14 @@ FROM excel_payslip_batches b JOIN excel_payslip_calculation_sources s ON s.clien
         return ReportedPeriodCalculationContext.FromBound(profile,bound,m.ManifestHash,native);
     }
 
+    private sealed record CompressedRaw(byte[] Batch,byte[] Source,string BatchHash,string SourceHash);
+    private static async Task<Raw> ReadRawAsync(MySqlConnection db,MySqlTransaction tx,int clientId,string batchId)
+    {
+        var raw=await db.QuerySingleAsync<CompressedRaw>(@"SELECT COMPRESS(CAST(b.batch_json AS CHAR)) Batch,COMPRESS(CAST(s.source_json AS CHAR)) Source,
+SHA2(CAST(b.batch_json AS CHAR),256) BatchHash,SHA2(CAST(s.source_json AS CHAR),256) SourceHash
+FROM excel_payslip_batches b JOIN excel_payslip_calculation_sources s ON s.client_id=b.client_id AND s.batch_id=b.id WHERE b.client_id=@Client AND b.id=@Batch",new{Client=clientId,Batch=batchId},tx);
+        return new(){Batch=ExcelPayslipConsolidationCatalog.DecodeSnapshot(raw.Batch,false)!,Source=ExcelPayslipConsolidationCatalog.DecodeSnapshot(raw.Source,false)!,BatchHash=raw.BatchHash,SourceHash=raw.SourceHash};
+    }
     private static string Canonical(Raw raw)=>ReportedPeriodInputProof.SourceHash(JsonSerializer.Deserialize<ExcelPayslipBatch>(raw.Batch,Json)!,JsonSerializer.Deserialize<ExcelPayslipCalculationSource>(raw.Source,Json)!);
     private static string Date(DateTime value)=>value.ToString("yyyy-MM-dd",CultureInfo.InvariantCulture);
     private static void RequireHistory(History h,int client,int employee,string month,string template)

@@ -229,7 +229,8 @@ public partial class PayRunRepository
         var attendance = shared is not null ? shared.Attendance.GetValueOrDefault(employee.Id) : (await GetPayRunAttendanceAsync(db, tx, request.ClientId, request.PayPeriod, employee.Id)).FirstOrDefault(a => a.EmployeeId == employee.Id);
         if(historicalAssignment?.ReportedAttendanceSeed is { } reportedSeed)
         {
-            if(shared is not null || reportedSeed.ClientId!=request.ClientId || reportedSeed.EmployeeId!=employee.Id
+            if(shared is not null&&(historicalData is null||historicalContext!.Mode!="Proposed"||attendance is not null)
+                || reportedSeed.ClientId!=request.ClientId || reportedSeed.EmployeeId!=employee.Id
                 || reportedSeed.PayPeriod!=request.PayPeriod || reportedSeed.TemplateId!=employee.SalaryStructureId
                 || reportedSeed.PendingNativeInput.ProofKind!=ExcelPayrollSetupRepository.HistoricalPayableSeedPendingKind)
                 throw new InvalidOperationException("A proposed closed-source attendance seed requires its exact isolated hypothetical Employee assignment.");

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Dapper;
 using MySqlConnector;
 using Payroll.API.Models;
+using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
@@ -17,7 +18,8 @@ public sealed partial class ExcelPayslipRepository
 
     internal static async Task<ExcelPayslipCalculationSource?> ReadCalculationSourceAsync(MySqlConnection db, int clientId, string batchId, MySqlTransaction? tx = null)
     {
-        var json = await db.ExecuteScalarAsync<string?>("SELECT CAST(source_json AS CHAR) FROM excel_payslip_calculation_sources WHERE client_id=@ClientId AND batch_id=@Id", new { ClientId = clientId, Id = batchId }, tx);
+        var payload = await db.ExecuteScalarAsync<byte[]?>("SELECT COMPRESS(CAST(source_json AS CHAR)) FROM excel_payslip_calculation_sources WHERE client_id=@ClientId AND batch_id=@Id", new { ClientId = clientId, Id = batchId }, tx);
+        var json = ExcelPayslipConsolidationCatalog.DecodeSnapshot(payload,true);
         return string.IsNullOrWhiteSpace(json) ? null : JsonSerializer.Deserialize<ExcelPayslipCalculationSource>(json, JsonOptions);
     }
 }

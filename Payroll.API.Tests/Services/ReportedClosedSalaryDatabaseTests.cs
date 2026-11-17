@@ -130,7 +130,9 @@ DELETE FROM salarycomponents WHERE Id BETWEEN 9796101 AND 9796112;DELETE FROM wo
                 Deductions=source.Columns.Where(c=>c.Kind=="deduction").Select(c=>new ExcelPayslipAmount{Label=c.Label,Amount=Amount(c.ColumnIndex)}).ToList(),
                 EmployerContributions=source.Columns.Where(c=>c.Kind=="employer").Select(c=>new ExcelPayslipAmount{Label=c.Label,Amount=Amount(c.ColumnIndex)}).ToList(),DeclaredGross=Amount(32),NetPay=Amount(37)});
         }
-        batch=new(){Id=BatchId,ClientId=Client,Month="2026-10",SheetName=source.SheetName,HeaderRow=6,SourceFileName="synthetic.xlsx",Rows=rows};source.SourceBatchId="";
+        // Even an empty retained profile-link list distinguishes the full reported
+        // snapshot from the employment-only hash; exercise the real template loader.
+        batch=new(){Id=BatchId,ClientId=Client,Month="2026-10",SheetName=source.SheetName,HeaderRow=6,SourceFileName="synthetic.xlsx",Rows=rows,ProfileLinks=[]};source.SourceBatchId="";
         definitions=first.Profile.Definitions;review=first.Review;review.ClientId=Client;review.BatchId=BatchId;review.Rows=[];review.SourceHash=ReportedPeriodInputProof.SourceHash(batch,source);
         foreach(var row in rows)
         {
@@ -139,7 +141,7 @@ DELETE FROM salarycomponents WHERE Id BETWEEN 9796101 AND 9796112;DELETE FROM wo
         }
         var cash=source.Columns.Where(c=>c.Kind is "earning" or "deduction" or "employer").ToArray();
         components=cash.Select((c,i)=>new ExcelPayrollSetupComponent{Key="reported-"+c.ColumnIndex,ExistingComponentId=(9796101+i).ToString(CultureInfo.InvariantCulture),Code="RP"+c.ColumnIndex,Name="Synthetic cash "+c.ColumnIndex,
-            Category=c.Kind switch{"earning"=>"Earning","deduction"=>"Deduction",_=>"Benefit"},ComponentRole=c.Kind switch{"earning"=>"Regular Earning","deduction"=>"Regular Deduction",_=>"Employer Benefit"},StatutoryType="None",CalculationType=c.ColumnIndex==36?"Manual / Variable":"Formula",Value="0",Formula="1000",ProRata=false,Taxable=c.Kind=="earning",Priority=c.ColumnIndex,PayType=c.ColumnIndex==36?"Variable Pay":"Fixed Pay",ExpectedColumnIndex=c.ColumnIndex}).ToList();
+            Category=c.Kind switch{"earning"=>"Earning","deduction"=>"Deduction",_=>"Benefit"},ComponentRole=c.ColumnIndex==35?"Statutory Deduction":c.Kind switch{"earning"=>"Regular Earning","deduction"=>"Regular Deduction",_=>"Employer Benefit"},StatutoryType=c.ColumnIndex==35?"Professional Tax":"None",CalculationType=c.ColumnIndex==36?"Manual / Variable":"Formula",Value="0",Formula="1000",ProRata=false,Taxable=c.Kind=="earning",Priority=c.ColumnIndex,PayType=c.ColumnIndex==36?"Variable Pay":"Fixed Pay",ExpectedColumnIndex=c.ColumnIndex}).ToList();
         Assert.Null(ExcelPayslipCalculationService.ValidateSource(source,batch));
     }
 
@@ -188,9 +190,21 @@ DELETE FROM salarycomponents WHERE Id BETWEEN 9796101 AND 9796112;DELETE FROM wo
     public async Task Genuine_closed_seed_history_receipt_native_reader_replay_tamper_and_rollback_preserve_future_and_source()
     {
         var request=await ConfigureAsync();var preserved=await PreservedAsync();
+        await using(var sourceDb=await F.OpenAsync())
+        {
+            var captured=await ExcelPayslipRepository.ReadCalculationSourceAsync(sourceDb,Client,BatchId);
+            Assert.Equal(JsonSerializer.Serialize(source,Json),JsonSerializer.Serialize(captured,Json));
+            Assert.Null(await ExcelPayslipRepository.ReadCalculationSourceAsync(sourceDb,Client+1,BatchId));
+            Assert.Null(await ExcelPayslipRepository.ReadCalculationSourceAsync(sourceDb,Client,Guid.NewGuid().ToString("N")));
+        }
         var futureBefore=await F.Runs.SimulateEmployeeAsync(new(){Mode="Employee",ClientId=Client,EmployeeId=One,PayPeriod="2026-12"},default);
         Assert.True(futureBefore.Complete,string.Join(";",futureBefore.Issues.Select(i=>i.Message)));
-        var ready=await ReadyAsync(request);Assert.All(ready.Rows,r=>{Assert.Empty(r.SourceMonthlyInputs);Assert.NotNull(r.NamedInputs);Assert.Equal(600000,r.RetainedAnnualSalaryTarget);});
+        var sequential=await ReadyAsync(request);
+        F.Config["Payroll:HistoricalBatchProofEnabled"]="true";
+        var ready=await ReadyAsync(request);
+        Assert.Equal(sequential.Fingerprint,ready.Fingerprint);
+        Assert.Equal(JsonSerializer.Serialize(sequential.Rows,Json),JsonSerializer.Serialize(ready.Rows,Json));
+        Assert.All(ready.Rows,r=>{Assert.Empty(r.SourceMonthlyInputs);Assert.NotNull(r.NamedInputs);Assert.Equal(600000,r.RetainedAnnualSalaryTarget);});
         await using var db=await F.OpenAsync();Assert.Equal(0,await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employee_monthly_attendance WHERE client_id=97961 AND attendance_month='2026-10'"));
         var command=new HistoricalPeriodSalaryApplyRequest{ReviewToken=ready.ReviewToken,RequestId=Guid.NewGuid().ToString("N"),Acknowledged=true};
         // A late failure after seed/history/sidecar insertion must roll back all.
