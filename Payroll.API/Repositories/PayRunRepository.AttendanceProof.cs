@@ -11,7 +11,7 @@ public partial class PayRunRepository
     internal static (string Start,string End) NativeAttendanceCycle(string month,int start,int end) {
         var range=CycleRangeFor(month,start,end);return(range.Start.ToString("yyyy-MM-dd",CultureInfo.InvariantCulture),range.End.ToString("yyyy-MM-dd",CultureInfo.InvariantCulture));
     }
-    private sealed class MonthlySalaryProofGroup {public int Id {get;set;} public int StartDay {get;set;} public int EndDay {get;set;} public string Mode {get;set;}="";public string PolicyBatchId {get;set;}="";}
+    private sealed class MonthlySalaryProofGroup {public int Id {get;set;} public int ClientId {get;set;} public int EmployeeId {get;set;} public int StartDay {get;set;} public int EndDay {get;set;} public string Mode {get;set;}="";public string PolicyBatchId {get;set;}="";}
     internal static bool CanUseRecordedMonthlySalaryInput(bool explicitCorrection,PayRunAttendance row,int memberships,string mode)=>
         explicitCorrection&&memberships==1&&mode=="Monthly"&&row.InputSource=="Monthly snapshot"&&row.SourceType=="Monthly"
         &&string.IsNullOrEmpty(row.PolicyError)&&row.WorkingDays is >=1 and <=31&&row.WorkingDays==decimal.Truncate(row.WorkingDays);
@@ -30,19 +30,31 @@ public partial class PayRunRepository
             if(employmentError is not null)error=employmentError;
             string? cycleStart=snapshot?.PeriodStart.ToString("yyyy-MM-dd",CultureInfo.InvariantCulture),cycleEnd=snapshot?.PeriodEnd.ToString("yyyy-MM-dd",CultureInfo.InvariantCulture);
             MonthlySalaryProofGroup? monthlyGroup=null;
+            LegacyAttendanceProofResult? legacyDated=null;
             if(snapshot is null&&string.IsNullOrEmpty(error)&&allowRecordedMonthlyForSalaryCorrection&&memberships==1)
             {
-                monthlyGroup=await db.QuerySingleOrDefaultAsync<MonthlySalaryProofGroup>(@"SELECT g.id Id,g.attendance_cycle_start_day StartDay,g.attendance_cycle_end_day EndDay,
+                monthlyGroup=await db.QuerySingleOrDefaultAsync<MonthlySalaryProofGroup>(@"SELECT g.id Id,g.client_id ClientId,m.employee_id EmployeeId,g.attendance_cycle_start_day StartDay,g.attendance_cycle_end_day EndDay,
 g.attendance_mode Mode,COALESCE(g.policy_batch_id,'') PolicyBatchId FROM attendance_groups g JOIN attendance_group_employees m ON m.attendance_group_id=g.id
 WHERE m.employee_id=@Id AND g.client_id=@ClientId AND g.is_active=TRUE",new{Id=id,ClientId=clientId},tx);
                 if(monthlyGroup is not null&&monthlyGroup.StartDay is >=1 and <=31&&monthlyGroup.EndDay is >=1 and <=31
                     &&CanUseRecordedMonthlySalaryInput(true,row,memberships,monthlyGroup.Mode))
                     (cycleStart,cycleEnd)=NativeAttendanceCycle(month,monthlyGroup.StartDay,monthlyGroup.EndDay);
+                else if(monthlyGroup is {Mode:"Legacy",StartDay:>=1 and <=31,EndDay:>=1 and <=31} && row.SourceType=="Date-wise")
+                {
+                    legacyDated=await ReadRecordedLegacyAttendanceProofAsync(db,tx,clientId,month,id,memberships,monthlyGroup,row);
+                    (cycleStart,cycleEnd)=(legacyDated.Start,legacyDated.End);error=legacyDated.Error;
+                }
             }
             if(snapshot is null&&cycleStart is null&&string.IsNullOrEmpty(error))error="Native monthly/daily totals have no dated cycle snapshot. Complete/review native dated attendance before claiming same-cycle proof, or use reviewed source-seed mode with native verification pending.";
-            var hash=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new {clientId,month,id,row.WorkingDays,row.PresentDays,row.PayableDays,row.InputSource,row.SourceType,snapshot,monthlyGroup,cycleStart,cycleEnd,error}))));
+            // Keep the pre-existing evidence shape/hash for every other proof
+            // branch; only the explicit Legacy dated branch adds its raw rows.
+            object? monthlyWitness=monthlyGroup is null?null:new{monthlyGroup.Id,monthlyGroup.StartDay,monthlyGroup.EndDay,monthlyGroup.Mode,monthlyGroup.PolicyBatchId};
+            var proofJson=legacyDated is null
+                ?JsonSerializer.Serialize(new {clientId,month,id,row.WorkingDays,row.PresentDays,row.PayableDays,row.InputSource,row.SourceType,snapshot,monthlyGroup=monthlyWitness,cycleStart,cycleEnd,error})
+                :JsonSerializer.Serialize(new {clientId,month,id,row.WorkingDays,row.PresentDays,row.PayableDays,row.InputSource,row.SourceType,snapshot,monthlyGroup=monthlyWitness,legacyDated,cycleStart,cycleEnd,error});
+            var hash=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(proofJson)));
             result[id]=new(id,clientId,month,row.WorkingDays>=1&&row.WorkingDays<=31&&decimal.Truncate(row.WorkingDays)==row.WorkingDays?(int)row.WorkingDays:null,row.PresentDays,row.PayableDays,
-                cycleStart,cycleEnd,hash,error);
+                cycleStart,cycleEnd,hash,error){ProofKind=legacyDated is {Error:""}?RecordedLegacyAttendanceProof.Kind:null};
         }
         return result;
     }

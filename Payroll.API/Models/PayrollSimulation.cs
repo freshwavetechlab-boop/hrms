@@ -18,6 +18,8 @@ public sealed class PayrollSimulationRequest
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool ReviewedExtraDutyUnits { get; set; }
     public Dictionary<string, decimal> AmountOverrides { get; set; } = [];
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public NamedFormulaInputContext? NamedInputs { get; set; }
 }
 public sealed record PayrollSimulationInput(string Name, decimal? Value, string Source, string Unit);
 public sealed record PayrollAttendanceInputEvidence(string SourceKind, string PayPeriod, decimal? WorkingDays,
@@ -37,6 +39,10 @@ public sealed record PayrollSimulationLine(string Code, string Name, string Cate
     public decimal? DailyRate { get; init; }
     public bool AmountOverride { get; init; }
     public decimal? MonthlyTarget { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public NamedFormulaInputContext? NamedOperands { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string,NamedFormulaInputContext>? NamedOperandParts {get;init;}
 }
 public sealed record PayrollFormulaWorkbookRequest(int ClientId, string PayPeriod, List<int> EmployeeIds)
 {
@@ -49,6 +55,8 @@ public sealed record PayrollFormulaWorkbookRequest(int ClientId, string PayPerio
 public sealed record PayrollFormulaWorkbookEmployee(int EmployeeId,string EmployeeCode,string EmployeeName,PayrollSimulationResult Calculation,bool ReviewedExtraDutyUnits=false)
 {
     public PayrollFormulaWorkbookLocation? Location { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public NamedFormulaInputContext? NamedInputs { get; init; }
 }
 public sealed record PayrollFormulaWorkbookLocation(string Key, string AssignmentId, int WorkLocationId, string WorkLocationName,
     string RulesHash, string ContextVersion, string InputVersion);

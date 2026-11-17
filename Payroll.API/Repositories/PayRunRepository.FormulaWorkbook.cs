@@ -11,6 +11,16 @@ public partial class PayRunRepository
     private sealed record FormulaWorkbookContext(Dictionary<int,PayRunSourceEmployee> Employees,string SetupJson,
         Dictionary<int,PayRunAttendance> Attendance,List<PayrollAdjustment> Adjustments,TdsProjectionAvailability TaxAvailability);
 
+    internal static void RequireExcelNamedOperands(NamedFormulaInputContext? context)
+    {
+        if(context is null)return;
+        ReviewedNamedFormulaInputs.ValidateContext(context,[]);
+        foreach(var value in context.Values)
+            if(value.Value.ToString("0.############################",System.Globalization.CultureInfo.InvariantCulture)
+                .Replace(".","",StringComparison.Ordinal).TrimStart('0').TrimEnd('0').Length>15)
+                throw new InvalidOperationException(value.Key+": this reviewed operand exceeds Excel's 15-digit numeric precision. Use online payroll calculation; no input was rounded or frozen.");
+    }
+
     internal sealed record FormulaWorkbookPolicyGroup(int Id,int ClientId,string PolicyBatchId);
     internal static void ValidateFormulaWorkbookRequest(PayrollFormulaWorkbookRequest request)
     {
@@ -91,10 +101,17 @@ WHERE e.ClientId=@ClientId AND e.Id IN @Ids AND "+EmployeeEmploymentRules.Eligib
                 || line.Source.StartsWith("Projected TDS",StringComparison.OrdinalIgnoreCase)))
                 throw new InvalidOperationException($"{employee.EmployeeCode}: dated PF/projected TDS needs the online payroll calculator. Offline formulas are not exported as frozen policy results.");
             var setup=ReadPayrollSetup(json);
+            if (employee.ReviewedProfessionalTax is not null)
+                throw new InvalidOperationException($"{employee.EmployeeCode}: reviewed period Professional Tax is bound to this exact online source and month. Offline attendance formulas cannot carry that reviewed control; use Employee simulation or the saved core draft.");
             if(ApplicableProfessionalTaxSlabs(employee,setup,request.PayPeriod).Any() && !calculation.Lines.Any(line=>(line.Code is "PT" or "PT_LWF_WC") && line.CalculationType.Length>0)
                 && !ReadSeededPayrollDeductions(employee).Any(line=>line.Code is "PT" or "PT_LWF_WC"))
                 throw new InvalidOperationException($"{employee.EmployeeCode}: professional tax uses live policy slabs. Configure an explicit template rule before relying on offline attendance changes.");
             var regular=new PayrollFormulaWorkbookEmployee(employee.Id,employee.EmployeeCode,($"{employee.FirstName} {employee.LastName}").Trim(),calculation,attendance[employee.Id].PayableOnlyEvidence?.ReviewedExtraDutyUnits==true);
+            if(employee.NamedInputs is not null)
+            {
+                RequireExcelNamedOperands(employee.NamedInputs);
+                regular=regular with{NamedInputs=employee.NamedInputs};
+            }
             if(request.IncludeLocationParts)
             {
                 var rowAttendance=attendance[employee.Id]; var key="employee:"+employee.Id;
@@ -120,6 +137,7 @@ WHERE e.ClientId=@ClientId AND e.Id IN @Ids AND "+EmployeeEmploymentRules.Eligib
         var setup=ReadPayrollSetup(json);var output=new List<PayrollFormulaWorkbookEmployee>();
         foreach(var part in employee.LocationParts!.Parts)
         {
+            RequireExcelNamedOperands(part.NamedInputs);
             if(part.ComponentScopes.Values.Any(scope=>scope!="SourceFormulaPerPart"))
                 throw new InvalidOperationException($"{employee.EmployeeCode}: monthly-only location components require the online employee calculation; they cannot be repeated on offline part rows.");
             var calculation=new PayrollSimulationResult{ClientId=request.ClientId,EmployeeId=employee.Id,PayPeriod=request.PayPeriod,
@@ -134,10 +152,11 @@ WHERE e.ClientId=@ClientId AND e.Id IN @Ids AND "+EmployeeEmploymentRules.Eligib
             calculation.Benefits=calculation.Lines.Where(line=>line.Category=="Benefit").Sum(line=>line.Earned);
             calculation.Net=calculation.Gross-calculation.Deductions;
             var rulesHash=ExcelPayrollSetupRepository.LocationSettingsRulesHash(rawTemplates[part.SalaryStructureId],rawMasters);
+            if(part.NamedInputs is not null)rulesHash=ReviewedNamedFormulaInputs.RulesHash(rulesHash,part.NamedInputs.DeclarationHash);
             var key=part.PartKey.StartsWith("native:",StringComparison.Ordinal)?part.PartKey
                 :"native:"+PayrollLocationAttendancePlan.Hash(part.AssignmentId+":"+part.PartKey)[..32];
             output.Add(new(employee.Id,employee.EmployeeCode,($"{employee.FirstName} {employee.LastName}").Trim(),calculation)
-                {Location=new(key,part.AssignmentId,part.WorkLocationId,locations.GetValueOrDefault(part.WorkLocationId)??"",rulesHash,request.AttendanceContextVersion,
+                {NamedInputs=part.NamedInputs,Location=new(key,part.AssignmentId,part.WorkLocationId,locations.GetValueOrDefault(part.WorkLocationId)??"",rulesHash,request.AttendanceContextVersion,
                     PayrollLocationAttendancePlan.InputVersion(key,part.PayrollDays,part.PresentDays,part.PayableDays))});
         }
         if(output.Sum(row=>row.Calculation.Gross)!=aggregate.Gross||output.Sum(row=>row.Calculation.Deductions)!=aggregate.Deductions

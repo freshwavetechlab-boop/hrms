@@ -175,22 +175,33 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
         return await ReadBatchAsync(db, clientId, id);
     }
 
-    private async Task<ExcelPayslipBatch?> ReadBatchAsync(MySqlConnection db, int clientId, string id, MySqlTransaction? tx = null)
+    internal async Task<ExcelPayslipBatch?> GetForSelectedRowsAsync(int clientId,string id,IReadOnlySet<string> salaryDetailRowIds)
+    {
+        if (!Guid.TryParseExact(id,"N",out _) || salaryDetailRowIds.Count is <1 or >1000) return null;
+        await using var db=Db(); await db.OpenAsync();
+        if (!await SupportedAsync(db,clientId)) return null;
+        return await ReadBatchAsync(db,clientId,id,salaryDetailRowIds:salaryDetailRowIds);
+    }
+
+    private async Task<ExcelPayslipBatch?> ReadBatchAsync(MySqlConnection db, int clientId, string id, MySqlTransaction? tx = null,
+        IReadOnlySet<string>? salaryDetailRowIds = null)
     {
         var json = await db.ExecuteScalarAsync<string?>("SELECT CAST(batch_json AS CHAR) FROM excel_payslip_batches WHERE client_id=@ClientId AND id=@Id", new { ClientId = clientId, Id = id }, tx);
         var batch = string.IsNullOrWhiteSpace(json) ? null : JsonSerializer.Deserialize<ExcelPayslipBatch>(json, JsonOptions);
         if (batch?.ClientId != clientId || batch.Id != id) return null;
-        await AnnotateEmploymentAsync(db, batch, tx, configuration);
+        await AnnotateEmploymentAsync(db, batch, tx, configuration, salaryDetailRowIds:salaryDetailRowIds);
         return batch;
     }
 
     public async Task<(ExcelPayslipBatch? Item, string? Error)> SaveAsync(int clientId, ExcelPayslipBatch request, string actor)
     {
+        if(ValidateExpectedSaveSnapshot(request) is{} snapshotError)return(null,snapshotError);
         var error = ValidateBatch(request);
         if (error is not null) return (null, error);
         if (ValidateBatchMappingProfile(request) is { } mappingError) return (null, mappingError);
         // Clone before normalizing warnings/metadata so callers cannot modify an accepted snapshot in memory.
         var batch = JsonSerializer.Deserialize<ExcelPayslipBatch>(JsonSerializer.Serialize(request, JsonOptions), JsonOptions)!;
+        batch.ExpectedSaveSnapshotHash=null;
         batch.ProfileLinks = null;
         var mappingProfile = batch.MappingProfile;
         batch.MappingProfile = null;
@@ -225,6 +236,19 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
         var client = await db.QueryFirstOrDefaultAsync<Client>("SELECT Id,Name,Code,IsActive FROM clients WHERE Id=@ClientId FOR UPDATE", new { ClientId = clientId }, tx);
         if (client is null || !IsSupportedClient(client)) return (null, "Select an active client.");
         var existing = await CurrentSaveTargetAsync(db, tx, clientId, request);
+        if(request.ExpectedSaveSnapshotHash is{} expectedHash)
+        {
+            if(existing is null||existing.Id!=request.Id)return(null,"The reviewed saved batch is no longer the current same-ID target. Reopen it before saving.");
+            var hashes=await db.QuerySingleAsync<SaveSnapshotHashes>(@"SELECT SHA2(CAST(b.batch_json AS CHAR),256) BatchHash,
+COALESCE(SHA2(CAST(s.source_json AS CHAR),256),'') SourceHash,SHA2(CAST(b.send_state_json AS CHAR),256) MailHash,
+COALESCE(SHA2(CAST(m.SettingsJson AS CHAR),256),'') MappingHash
+FROM excel_payslip_batches b LEFT JOIN excel_payslip_calculation_sources s ON s.client_id=b.client_id AND s.batch_id=b.id
+LEFT JOIN modulesettings m ON m.client_id=b.client_id AND m.ModuleCode=@MappingCode
+WHERE b.client_id=@ClientId AND b.id=@Id FOR UPDATE",new{ClientId=clientId,Id=existing.Id,MappingCode=MappingProfileStorageCode(clientId)},tx);
+            if(!ExpectedSaveSnapshotMatches(expectedHash,hashes.BatchHash,hashes.SourceHash,hashes.MailHash,
+                mappingProfile is null?"":hashes.MappingHash))
+                return(null,"The saved Excel batch, source, mail history or supplied mapping preset changed after this review. Reopen and review the current data before saving; no changes were saved.");
+        }
         if (request.CreateLocationBatch && existing is not null)
         {
             if (mappingProfile is { } retryProfile && await SaveProfileInTransactionAsync(db, tx, clientId, retryProfile) is { } retryError)
@@ -236,7 +260,10 @@ ORDER BY created_at DESC,id DESC", new { ClientId = clientId })).ToArray();
         {
             await RequireCurrentConsolidationSourceAsync(db,tx,clientId,existing.Id);
             await RequireIdlePayslipUpdateAsync(db,tx,clientId,existing.Id);
-            ReusePayslipIdentity(batch,existing);
+            // The conditional hash was checked under the client/source locks.
+            // Keep the matched employee row while its changed cash fingerprint
+            // invalidates old reviews/PDFs; immutable delivery history remains.
+            ReusePayslipIdentity(batch,existing,request.ExpectedSaveSnapshotHash is not null);
             if(calculationSource is not null && await ReadCalculationSourceAsync(db,clientId,existing.Id,tx) is { } previousSource)
                 RetainCalculationDecimalCaches(calculationSource,previousSource);
         }
@@ -486,8 +513,7 @@ WHERE l.client_id=@ClientId AND l.batch_id=@Id",new{ClientId=clientId,existing.I
 
     public static (IReadOnlyList<ExcelPayslipRow> Rows, string? Error) SelectRows(ExcelPayslipBatch batch, ExcelPayslipSelection request)
     {
-        if (request.AmountDecimalPlaces is not (0 or 2)) return ([], "Choose whole rupees or two decimal places for amount display.");
-        if (request.RowIds is null || request.RowIds.Count is < 1 or > 1000 || request.RowIds.Any(string.IsNullOrWhiteSpace) || request.RowIds.Distinct(StringComparer.Ordinal).Count() != request.RowIds.Count) return ([], "Select one or more distinct saved source rows.");
+        if (SelectionError(request) is { } selectionError) return ([],selectionError);
         var selectedIds = request.RowIds.ToHashSet(StringComparer.Ordinal);
         var selected = batch.Rows.Where(r => selectedIds.Contains(r.Id)).ToArray();
         if (selected.Length != selectedIds.Count) return ([], "A selected row does not belong to this saved batch.");
@@ -497,6 +523,12 @@ WHERE l.client_id=@ClientId AND l.batch_id=@Id",new{ClientId=clientId,existing.I
         if (!request.AcknowledgeWarnings && selected.Any(r => RowWarnings(r).Count > 0)) return ([], "Review and acknowledge the selected source-row warnings before export or sending.");
         return (selected.Select(ExcelPayslipPresentation.Current).ToArray(), null);
     }
+
+    internal static string? SelectionError(ExcelPayslipSelection request) => request.AmountDecimalPlaces is not (0 or 2)
+        ? "Choose whole rupees or two decimal places for amount display."
+        : request.RowIds is null || request.RowIds.Count is <1 or >1000 || request.RowIds.Any(string.IsNullOrWhiteSpace)
+            || request.RowIds.Distinct(StringComparer.Ordinal).Count()!=request.RowIds.Count
+            ? "Select one or more distinct saved source rows." : null;
 
     internal static bool TryEmail(string? input, out string email)
     {

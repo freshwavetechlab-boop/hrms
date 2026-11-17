@@ -174,7 +174,15 @@ VALUES(@ActorId,@Actor,'excel-payslips.reviewed-update',@BatchId,'POST','/api/ex
             Fingerprint = fingerprint, AppliedChanges = count, UpdatedEmployees = plan.MasterChanges.Count,
             SourceFileName = review.Request.SourceFileName, AppliedAtUtc = DateTime.UtcNow, Changes = plan.Changes }, null);
         await db.ExecuteAsync("DELETE FROM modulesettings WHERE client_id=@ClientId AND ModuleCode=@Code", new { ClientId = clientId, Code = reviewCode }, tx);
-        var resultBatch = await ReadCorrectionBatchAsync(db, clientId, id, tx) ?? throw new InvalidOperationException("The updated batch could not be verified.");
+        // Source rows remain locked by this transaction. A Master-only update
+        // can refresh its projection from the same verified source documents;
+        // source-changing updates retain the existing fresh database read.
+        var unchangedSource = JsonNode.DeepEquals(JsonNode.Parse(context.BatchJson), JsonNode.Parse(plan.BatchJson))
+            && JsonNode.DeepEquals(string.IsNullOrWhiteSpace(context.SourceJson) ? null : JsonNode.Parse(context.SourceJson),
+                string.IsNullOrWhiteSpace(plan.SourceJson) ? null : JsonNode.Parse(plan.SourceJson));
+        var resultBatch = await ReadCorrectionBatchAsync(db, clientId, id, tx, unchangedSource
+            ? new CorrectionReadSnapshot(db, tx, clientId, id, context.Raw, context.Source) : null)
+            ?? throw new InvalidOperationException("The updated batch could not be verified.");
         await tx.CommitAsync();
         return new() { Batch = resultBatch, AppliedChanges = count, UpdatedEmployees = plan.MasterChanges.Count };
     }

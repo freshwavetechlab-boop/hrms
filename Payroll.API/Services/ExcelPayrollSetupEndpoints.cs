@@ -34,7 +34,7 @@ public static class ExcelPayrollSetupEndpoints
         group.MapPost("/draft", async (int clientId,ExcelPayrollSetupDraftRequest request,ExcelPayrollSetupRepository repository,HttpContext context) =>
             Results.Ok(await repository.SaveDraftAsync(clientId,request,((AuthUser)context.Items["User"]!).Email)));
         group.MapPost("/apply", async (int clientId,ExcelPayrollSetupApplyRequest request,ExcelPayrollSetupRepository repository,HttpContext context) =>
-            Results.Ok(await repository.ApplyAsync(clientId,request,((AuthUser)context.Items["User"]!).Email)));
+            Results.Ok(await repository.ApplyAsync(clientId,request,((AuthUser)context.Items["User"]!).Email,((AuthUser)context.Items["User"]!).Id)));
         group.MapPost("/defaults-draft", async (int clientId,ExcelPayrollDefaultsDraftRequest request,ExcelPayrollSetupRepository repository,HttpContext context) =>
             Results.Ok(await repository.SaveDefaultsDraftAsync(clientId,request,((AuthUser)context.Items["User"]!).Email)));
     }

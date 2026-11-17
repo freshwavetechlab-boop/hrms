@@ -19,7 +19,8 @@ public sealed partial class ExcelPayrollSetupRepository
         // Combined captures can normalize their displayed header to row 1 while
         // retaining a literal source-block divisor at (for example) K6. Prove it
         // against the ENTIRE saved batch, never just the selected employee subset.
-        if(ProtectedRole(originalRole)||ProtectedRole(reviewedRole)||(allSavedRows??selected).Any(r=>r.SourceRow==line)
+        var isolatedReviewedConstant=IsReviewedIsolatedPayrollDivisor(request,source,selected,allSavedRows,column,line);
+        if(ProtectedRole(originalRole)||ProtectedRole(reviewedRole)||((allSavedRows??selected).Any(r=>r.SourceRow==line)&&!isolatedReviewedConstant)
             ||allSavedRows is not null&&selected.Any(row=>!allSavedRows.Any(saved=>saved.Id==row.Id&&saved.SourceRow==row.SourceRow))
             ||outsideNormalizedHeader&&allSavedRows is null
             ||cell is null||!string.IsNullOrWhiteSpace(cell.FormulaText)||cell.Error is not null||cell.CalculationError is not null||cell.MissingCachedValue

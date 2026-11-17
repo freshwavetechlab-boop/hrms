@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Dapper;
 using MySqlConnector;
 using Payroll.API.Models;
+using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
@@ -12,7 +13,7 @@ public partial class PayRunRepository
     // A period allocation deliberately references its immutable assignment version.
     // Its payroll period may precede the import/configuration audit date; this is
     // not a fabricated dated employee transfer and must not use a "latest" row.
-    private static async Task LoadLocationPartPeriodsAsync(MySqlConnection connection,
+    private async Task LoadLocationPartPeriodsAsync(MySqlConnection connection,
         MySqlTransaction transaction, List<PayRunSourceEmployee> employees, string payPeriod)
     {
         if (employees.Count == 0) return;
@@ -40,20 +41,63 @@ ORDER BY a.employee_id,a.source_part_key", new { EmployeeIds = employeeIds, PayP
         }
         var assignmentIds = allocations.Select(row => row.AssignmentId).Distinct(StringComparer.Ordinal).ToArray();
         var periodEnd = requestedPeriodStart.AddMonths(1).AddDays(-1);
-        var assignments = (await connection.QueryAsync<LocationPartAssignmentStoreRow>(@"
-SELECT id AssignmentId,client_id ClientId,employee_id EmployeeId,
-       work_location_id WorkLocationId,work_state WorkState,salary_structure_id SalaryStructureId,
-       annual_ctc AnnualCtc,CAST(salary_inputs_json AS CHAR) SalaryInputsJson,
-       CAST(component_scopes_json AS CHAR) ComponentScopesJson,rules_hash RulesHash,
-       source_hash SourceHash,setup_import_id ImportId,source_batch_id BatchId,
-       source_row_id RowId,status Status,DATE_FORMAT(configuration_effective_from,'%Y-%m-%d') ConfigurationEffectiveFrom
-FROM employee_payroll_location_assignments
-WHERE id IN @AssignmentIds
-   OR (employee_id IN @EmployeeIds AND status='Active' AND configuration_effective_from<=@PeriodEnd)",
+        var hasSources = await TableExistsAsync(connection, transaction, "excel_payslip_batches");
+        var correctionPeriod = hasSources ? "COALESCE(JSON_UNQUOTE(JSON_EXTRACT(b.batch_json,'$.month')),'')" : "''";
+        var sourceJoin = hasSources ? "LEFT JOIN excel_payslip_batches b ON b.client_id=a.client_id AND b.id=a.source_batch_id" : "";
+        var assignments = (await connection.QueryAsync<LocationPartAssignmentStoreRow>($@"
+SELECT a.id AssignmentId,a.client_id ClientId,a.employee_id EmployeeId,
+       a.work_location_id WorkLocationId,a.work_state WorkState,a.salary_structure_id SalaryStructureId,
+       a.annual_ctc AnnualCtc,CAST(a.salary_inputs_json AS CHAR) SalaryInputsJson,
+       CAST(a.component_scopes_json AS CHAR) ComponentScopesJson,a.rules_hash RulesHash,
+       a.source_hash SourceHash,a.setup_import_id ImportId,a.source_batch_id BatchId,
+       a.source_row_id RowId,a.status Status,DATE_FORMAT(a.configuration_effective_from,'%Y-%m-%d') ConfigurationEffectiveFrom,
+       {correctionPeriod} CorrectionPayPeriod
+FROM employee_payroll_location_assignments a {sourceJoin}
+WHERE a.id IN @AssignmentIds
+   OR (a.employee_id IN @EmployeeIds AND a.status='Active' AND a.configuration_effective_from<=@PeriodEnd)",
             new { AssignmentIds = assignmentIds, EmployeeIds = employeeIds, PeriodEnd = periodEnd }, transaction)).ToList();
+        var corrections=assignments.Where(assignment=>assignment.Status==ReviewedLocationCorrectionOrigins.Status&&assignmentIds.Contains(assignment.AssignmentId,StringComparer.Ordinal)).ToArray();
+        var correctionSourceHashes=new Dictionary<(int ClientId,string BatchId),string>();
+        foreach(var client in corrections.GroupBy(assignment=>assignment.ClientId))
+        {
+            var origins=await ReviewedLocationCorrectionOrigins.ReadAsync(connection,transaction,configuration,client.Key,client.Select(assignment=>assignment.AssignmentId).ToArray());
+            foreach(var assignment in client)
+            {
+                var origin=origins[assignment.AssignmentId];
+                if(origin.EmployeeId!=assignment.EmployeeId||origin.Month!=payPeriod||origin.Month!=assignment.CorrectionPayPeriod||origin.SourceHash!=assignment.SourceHash)
+                    throw LocationPartStoreError("The current period correction origin does not authenticate this employee/source/month.");
+                var sourceKey=(assignment.ClientId,assignment.BatchId);
+                if(!correctionSourceHashes.TryGetValue(sourceKey,out var currentSourceHash))
+                {
+                    var batchJson=await connection.ExecuteScalarAsync<string?>("SELECT CAST(batch_json AS CHAR) FROM excel_payslip_batches WHERE client_id=@ClientId AND id=@BatchId",
+                        new{assignment.ClientId,assignment.BatchId},transaction);
+                    var batch=batchJson is null?null:JsonSerializer.Deserialize<ExcelPayslipBatch>(batchJson,new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                    var source=await ExcelPayslipRepository.ReadCalculationSourceAsync(connection,assignment.ClientId,assignment.BatchId,transaction);
+                    currentSourceHash=batch is null||source is null?"":ExcelPayslipRepository.EmploymentSourceHash(batch,source);
+                    correctionSourceHashes[sourceKey]=currentSourceHash;
+                }
+                if(currentSourceHash!=origin.SourceHash)
+                    throw LocationPartStoreError("The saved source changed after the period correction review. Refresh its explicit source-bound correction; no old rule is silently reused.");
+                assignment.CorrectionEvidenceVerified=true;
+            }
+        }
         var periods = ReadLocationPartPeriods(allocations, assignments,
             employees.ToDictionary(employee => employee.Id, employee => employee.ClientId), payPeriod);
         if (periods.Count == 0) return;
+        if(await TableExistsAsync(connection,transaction,"modulesettings"))
+        {
+            var used=periods.Values.SelectMany(period=>period.Parts).ToArray();
+            var keys=used.SelectMany(part=>new[]{ReviewedNamedFormulaInputs.ProfileKey(part.SalaryStructureId),ReviewedNamedFormulaInputs.AssignmentKey(part.AssignmentId)}).Distinct().ToArray();
+            var present=(await connection.QueryAsync<(int ClientId,string Code)>("SELECT client_id ClientId,ModuleCode Code FROM modulesettings WHERE client_id IN @Clients AND ModuleCode IN @Keys",new{Clients=employees.Select(e=>e.ClientId).Distinct().ToArray(),Keys=keys},transaction)).ToHashSet();
+            foreach(var period in periods.Values)foreach(var part in period.Parts)
+                if(present.Contains((period.ClientId,ReviewedNamedFormulaInputs.ProfileKey(part.SalaryStructureId)))||present.Contains((period.ClientId,ReviewedNamedFormulaInputs.AssignmentKey(part.AssignmentId))))
+                {
+                    var a=assignments.Single(a=>a.AssignmentId==part.AssignmentId);
+                    part.NamedInputs=await NamedFormulaInputStore.LoadApprovedAsync(connection,transaction,configuration,period.ClientId,period.EmployeeId,payPeriod,part.SalaryStructureId,part.AssignmentId,part.WorkLocationId,part.PartKey,a.BatchId,a.RowId,a.SourceHash,
+                        period.Parts.Select(p=>p.PartKey).ToArray(),period.ReferenceAssignmentId,part.ComponentScopes);
+                    a.NamedInputs=part.NamedInputs;
+                }
+        }
         ValidateLocationAssignmentRules(assignments.Where(assignment => assignmentIds.Contains(assignment.AssignmentId, StringComparer.Ordinal)).ToList(),
             await PayrollDataTableStore.GetSetupJsonAsync(connection, transaction));
         foreach (var employee in employees)
@@ -95,6 +139,9 @@ WHERE id IN @AssignmentIds
         public string RowId { get; set; } = "";
         public string Status { get; set; } = "";
         public string ConfigurationEffectiveFrom { get; set; } = "";
+        public string CorrectionPayPeriod { get; set; } = "";
+        public bool CorrectionEvidenceVerified { get; set; }
+        public NamedFormulaInputContext? NamedInputs {get;set;}
     }
 
     internal static IReadOnlyDictionary<int, PayrollLocationPartPeriod> ReadLocationPartPeriods(
@@ -149,7 +196,11 @@ WHERE id IN @AssignmentIds
                 if (!IsStoreId(row.AssignmentId) || !assignments.TryGetValue(row.AssignmentId, out var assignment) ||
                     assignment.ClientId != clientId || assignment.EmployeeId != group.Key)
                     throw LocationPartStoreError("A period allocation references a missing or differently scoped salary assignment.");
-                if (assignment.Status != "Active" || assignment.WorkLocationId <= 0 ||
+                var periodCorrection = assignment.Status == ReviewedLocationCorrectionOrigins.Status;
+                if (periodCorrection && (!assignment.CorrectionEvidenceVerified||assignment.CorrectionPayPeriod != payPeriod || assignment.BatchId != row.AllocationBatchId
+                    || assignment.RowId != row.AllocationRowId || assignment.SourceHash != row.AllocationSourceHash))
+                    throw LocationPartStoreError("A period-only correction cannot become another month or source part's salary assignment.");
+                if (assignment.Status != "Active" && !periodCorrection || assignment.WorkLocationId <= 0 ||
                     string.IsNullOrWhiteSpace(assignment.SalaryStructureId) || assignment.SalaryStructureId.Length > 40 ||
                     assignment.AnnualCtc is < 0 or > 1000000000m || !IsStoreHash(assignment.RulesHash) ||
                     !IsStoreHash(assignment.SourceHash) || !IsStoreId(assignment.ImportId) ||
@@ -196,7 +247,8 @@ WHERE id IN @AssignmentIds
                     .Any(value => value.Split(':')[0].Trim() == assignment.ClientId.ToString(CultureInfo.InvariantCulture)))
                 throw LocationPartStoreError("A referenced Settings salary template is inactive or belongs to another client.");
             string currentHash;
-            try { currentHash = ExcelPayrollSetupRepository.LocationSettingsRulesHash(template, masters); }
+            try { currentHash = ExcelPayrollSetupRepository.LocationSettingsRulesHash(template, masters);
+                if(assignment.NamedInputs is not null)currentHash=ReviewedNamedFormulaInputs.RulesHash(currentHash,assignment.NamedInputs.DeclarationHash); }
             catch (InvalidOperationException)
             {
                 throw LocationPartStoreError("A Settings template component is missing or duplicated. Review its assignment before calculating payroll.");

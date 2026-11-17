@@ -128,6 +128,7 @@ builder.Services.AddSingleton<ExcelPayslipRepository>();
 builder.Services.AddSingleton<ExcelPayslipMappingService>();
 builder.Services.AddSingleton<ExcelPayrollSetupRepository>();
 builder.Services.AddSingleton<ExcelPayslipPdfService>();
+builder.Services.AddScoped<PayslipDesignRepository>();
 builder.Services.AddSingleton<AuthRepository>();
 builder.Services.AddSingleton<LeaveAttendanceRepository>();
 builder.Services.AddSingleton<AttendanceIntegrationRepository>();
@@ -3783,6 +3784,12 @@ app.MapLocalLlmRecovery();
 app.MapAttendanceApiAdapters();
 app.MapPayrollAdvisor();
 app.MapPayrollCalculation();
+app.MapReviewedProfessionalTax();
+app.MapPayslipDesigns();
+app.MapPayrollReferenceInformation();
+app.MapNativeCurrencyRecapture();
+app.MapExcelHistoricalSalary();
+app.MapExcelPayrollLocationCorrections();
 app.MapGet("/api/integrations/ai", async (RecruitmentAiScoringService service, HttpContext context) =>
     HasPermission(context, "settings.manage") ? Results.Ok(await service.GetGlobalPoolAsync(CurrentUser(context))) : Results.StatusCode(403));
 app.MapPost("/api/integrations/ai", async (RecruitmentAiScoringService service, SaveRecruitmentAiScoringSettings request, HttpContext context) =>

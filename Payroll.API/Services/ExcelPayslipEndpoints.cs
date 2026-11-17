@@ -316,7 +316,8 @@ public static class ExcelPayslipEndpoints
         routes.MapPost("/batches/{id}/pdf", async (ExcelPayslipRepository repository, ExcelPayslipPdfService pdf,
             int clientId, string id, ExcelPayslipSelection request) =>
         {
-            var batch = await repository.GetAsync(clientId, id);
+            if (ExcelPayslipRepository.SelectionError(request) is { } selectionError) return Results.BadRequest(new { error=selectionError });
+            var batch = await repository.GetForSelectedRowsAsync(clientId, id, request.RowIds.ToHashSet(StringComparer.Ordinal));
             if (batch is null) return Results.NotFound(new { error = "Payslip batch not found." });
             var (rows, error) = ExcelPayslipRepository.SelectRows(batch, request);
             if (error is not null) return Results.BadRequest(new { error });

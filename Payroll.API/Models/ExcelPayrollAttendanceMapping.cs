@@ -18,4 +18,5 @@ public sealed class ExcelPayrollAttendanceReview
 public sealed record ExcelPayrollAttendanceProof(string RowId,int SourceRow,string Mode,string Status,string Reason,string SourceHash,
     string InputHash,int PayrollDays,decimal? PresentDays,decimal PayableDays,decimal? SourceLwp,string? NativeHash,NativePayrollAttendanceInput? NativeInput);
 public sealed record NativePayrollAttendanceInput(int EmployeeId,int ClientId,string Month,int? PayrollDays,decimal? PresentDays,decimal PayableDays,
-    string? CycleStart,string? CycleEnd,string SnapshotHash,string Error);
+    string? CycleStart,string? CycleEnd,string SnapshotHash,string Error)
+{ [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] public string? ProofKind { get; init; } }

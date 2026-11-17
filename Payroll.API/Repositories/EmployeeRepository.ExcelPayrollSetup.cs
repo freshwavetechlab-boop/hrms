@@ -36,8 +36,12 @@ public partial class EmployeeRepository
             || row.ChangeReason.StartsWith(reference + ";", StringComparison.Ordinal));
 
     internal static DateTime[] ExcelSalaryHistoryMarkers(IEnumerable<ExcelPayrollSalaryHistory> history, DateTime effectiveFrom,
-        string? correctionOfReference = null)
+        string? correctionOfReference = null, decimal? reviewedInitialBudgetAnnual = null)
     {
+        if(reviewedInitialBudgetAnnual.HasValue && (correctionOfReference is not null
+            || reviewedInitialBudgetAnnual is <=0 or >1_000_000_000m
+            || decimal.Round(reviewedInitialBudgetAnnual.Value,2)!=reviewedInitialBudgetAnnual.Value))
+            throw new InvalidOperationException("An initial budget marker needs a positive exact reviewed annual target and cannot authorize salary correction.");
         if (correctionOfReference is not null)
         {
             if (string.IsNullOrWhiteSpace(correctionOfReference))
@@ -53,12 +57,24 @@ public partial class EmployeeRepository
                 .Select(row => row.EffectiveFrom.Date).Distinct().Order().ToArray();
         }
         var later = history.Where(row => row.EffectiveFrom.Date > effectiveFrom.Date).ToList();
-        if (later.Any(row => !IsUnconfiguredExcelSalaryHistory(row)))
+        if (later.Any(row => !IsUnconfiguredExcelSalaryHistory(row)
+            && !(reviewedInitialBudgetAnnual.HasValue && IsReviewedInitialBudgetMarker(row,reviewedInitialBudgetAnnual.Value))))
             throw new InvalidOperationException("A later configured basic-pay record exists. Review salary history before importing an earlier salary setup.");
         // An initial empty master snapshot must not override the imported salary later
         // in the month. Retain it and append an actual salary version at each marker.
         return later.Select(row => row.EffectiveFrom.Date).Distinct().Order().ToArray();
     }
+
+    internal static bool IsExactEmptyInitialSalaryInputs(string? value)
+    {
+        if(string.IsNullOrWhiteSpace(value))return false;
+        try {using var json=JsonDocument.Parse(value);return json.RootElement.ValueKind==JsonValueKind.Object&&!json.RootElement.EnumerateObject().Any();}
+        catch(JsonException){return false;}
+    }
+
+    private static bool IsReviewedInitialBudgetMarker(ExcelPayrollSalaryHistory row,decimal annual) =>
+        row.Status is "Active" or "Historical" && string.IsNullOrWhiteSpace(row.SalaryStructureId)
+        && row.AnnualCtc==annual && IsExactEmptyInitialSalaryInputs(row.SalaryJson);
 
     internal sealed class ExcelPayrollPolicyCohort
     {
@@ -99,15 +115,27 @@ GROUP BY receipt.id,receipt.client_id,assignment.GroupId", new { ClientIds = cli
     // The caller owns the transaction, client lock, reviewed identity and source snapshot.
     // This deliberately does not provision logins, publish notifications or remap other policies.
     internal static async Task<int> SaveExcelPayrollSetupEmployeeAsync(MySqlConnection db, MySqlTransaction tx,
-        Employee employee, DateTime effectiveFrom, string actor, string reference, string? correctionOfReference = null)
+        Employee employee, DateTime effectiveFrom, string actor, string reference, string? correctionOfReference = null,
+        decimal? reviewedInitialBudgetAnnual = null)
     {
         if (employee.ClientId <= 0 || string.IsNullOrWhiteSpace(employee.EmployeeCode) || string.IsNullOrWhiteSpace(employee.FirstName))
             throw new InvalidOperationException("A reviewed client, employee code and name are required.");
         if (employee.Id > 0 && await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM employees WHERE Id=@Id FOR UPDATE", new { employee.Id }, tx) != employee.ClientId)
             throw new InvalidOperationException("The reviewed employee does not belong to this client.");
-        var history = employee.Id <= 0 ? [] : (await db.QueryAsync<ExcelPayrollSalaryHistory>(@"SELECT Id,EffectiveFrom,Status,SalaryStructureId,AnnualCtc,CAST(SalaryJson AS CHAR) SalaryJson,COALESCE(ChangeReason,'') ChangeReason
+        if(reviewedInitialBudgetAnnual.HasValue)
+        {
+            var current=employee.Id<=0?null:await db.QuerySingleOrDefaultAsync<Employee>(@"SELECT Id,ClientId,SalaryStructureId,AnnualCtc,COALESCE(CAST(SalaryJson AS CHAR),'null') SalaryJson
+FROM employees WHERE Id=@Id AND ClientId=@ClientId FOR UPDATE",new{employee.Id,employee.ClientId},tx);
+            var physicalInputs=current is null?1:await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employeesalarycomponents WHERE EmployeeId=@Id",new{employee.Id},tx);
+            if(correctionOfReference is not null||current is null||!string.IsNullOrWhiteSpace(current.SalaryStructureId)
+                ||current.AnnualCtc!=reviewedInitialBudgetAnnual.Value||employee.AnnualCtc!=reviewedInitialBudgetAnnual.Value
+                ||!IsExactEmptyInitialSalaryInputs(current.SalaryJson)||physicalInputs!=0)
+                throw new InvalidOperationException("The reviewed initial salary budget no longer belongs to an unconfigured current Master. Refresh the source setup; no history was replaced.");
+        }
+        var salaryProjection=reviewedInitialBudgetAnnual.HasValue?"COALESCE(CAST(SalaryJson AS CHAR),'null')":"CAST(SalaryJson AS CHAR)";
+        var history = employee.Id <= 0 ? [] : (await db.QueryAsync<ExcelPayrollSalaryHistory>($@"SELECT Id,EffectiveFrom,Status,SalaryStructureId,AnnualCtc,{salaryProjection} SalaryJson,COALESCE(ChangeReason,'') ChangeReason
 FROM employee_it0008_basic_pay WHERE EmployeeId=@Id ORDER BY EffectiveFrom,Id FOR UPDATE", new { employee.Id }, tx)).ToList();
-        var markers = ExcelSalaryHistoryMarkers(history, effectiveFrom, correctionOfReference);
+        var markers = ExcelSalaryHistoryMarkers(history, effectiveFrom, correctionOfReference,reviewedInitialBudgetAnnual);
         var superseded = history.Where(row => row.Status == "Active" && row.EffectiveFrom.Date >= effectiveFrom.Date).Select(row => row.Id).ToArray();
         if (superseded.Length > 0)
         {
@@ -121,7 +149,9 @@ WHERE EmployeeId=@EmployeeId AND Id IN @Ids AND Status='Active'", new { Employee
         foreach (var marker in markers)
             await WritePhysicalInfotypeAsync(db, employee, "0008", "Master Update", marker,
                 correctionOfReference is null
-                    ? $"{reference}; initial salary effective {effectiveFrom:yyyy-MM-dd}; retained empty setup marker {marker:yyyy-MM-dd}."
+                    ? reviewedInitialBudgetAnnual.HasValue
+                        ? $"{reference}; initial salary effective {effectiveFrom:yyyy-MM-dd}; retained initial budget marker {marker:yyyy-MM-dd}."
+                        : $"{reference}; initial salary effective {effectiveFrom:yyyy-MM-dd}; retained empty setup marker {marker:yyyy-MM-dd}."
                     : $"{reference}; correction of {correctionOfReference}; retained source effective date {marker:yyyy-MM-dd}.", actor, tx);
         return id;
     }

@@ -9,7 +9,7 @@ using Payroll.API.Models;
 
 namespace Payroll.API.Repositories;
 
-public static class PayrollDataTableStore
+public static partial class PayrollDataTableStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS salarycomponents (
     PayType VARCHAR(60) NOT NULL DEFAULT 'Fixed Pay',
     CalculationType VARCHAR(80) NOT NULL DEFAULT 'Fixed Amount',
     ValueText VARCHAR(500) NOT NULL DEFAULT '',
-    Formula VARCHAR(1000) NOT NULL DEFAULT '',
+    Formula VARCHAR(4096) NOT NULL DEFAULT '',
     BaseComponent VARCHAR(80) NOT NULL DEFAULT '',
     Taxable BOOLEAN NOT NULL DEFAULT TRUE,
     Ctc BOOLEAN NOT NULL DEFAULT TRUE,
@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS salarystructurelines (
     ComponentId VARCHAR(80) NOT NULL,
     ValueText VARCHAR(1000) NOT NULL DEFAULT '',
     CalculationType VARCHAR(80) NOT NULL DEFAULT '',
-    Formula VARCHAR(1000) NOT NULL DEFAULT '',
+    Formula VARCHAR(4096) NOT NULL DEFAULT '',
     BaseComponent VARCHAR(80) NOT NULL DEFAULT '',
     ProRataOverride VARCHAR(20) NOT NULL DEFAULT '',
     RoundingMode VARCHAR(40) NOT NULL DEFAULT '',
@@ -178,7 +178,7 @@ CREATE TABLE IF NOT EXISTS payrunemployeelines (
         await EnsureColumnAsync(connection, "salarycomponents", "InvestmentType", "VARCHAR(120) NOT NULL DEFAULT '' AFTER Scheduled");
         await EnsureColumnAsync(connection, "salarycomponents", "CorrectionOf", "VARCHAR(120) NOT NULL DEFAULT '' AFTER InvestmentType");
         await EnsureColumnAsync(connection, "salarystructurelines", "CalculationType", "VARCHAR(80) NOT NULL DEFAULT '' AFTER ValueText");
-        await EnsureColumnAsync(connection, "salarystructurelines", "Formula", "VARCHAR(1000) NOT NULL DEFAULT '' AFTER CalculationType");
+        await EnsureColumnAsync(connection, "salarystructurelines", "Formula", "VARCHAR(4096) NOT NULL DEFAULT '' AFTER CalculationType");
         await EnsureColumnAsync(connection, "salarystructurelines", "BaseComponent", "VARCHAR(80) NOT NULL DEFAULT '' AFTER Formula");
         await EnsureColumnAsync(connection, "salarystructurelines", "ProRataOverride", "VARCHAR(20) NOT NULL DEFAULT '' AFTER BaseComponent");
         await EnsureColumnAsync(connection, "salarystructurelines", "RoundingMode", "VARCHAR(40) NOT NULL DEFAULT '' AFTER ProRataOverride");
@@ -215,11 +215,17 @@ CREATE TABLE IF NOT EXISTS payrunemployeelines (
         return root.ToJsonString(JsonOptions);
     }
 
-    internal static async Task SaveSelectedClientSetupJsonAsync(MySqlConnection connection, MySqlTransaction transaction, int clientId, JsonObject before, JsonObject after)
+    internal static async Task SaveSelectedClientSetupJsonAsync(MySqlConnection connection, MySqlTransaction transaction, int clientId, JsonObject before, JsonObject after,bool singleStructureAppendOnly=false)
     {
+        await PayrollFormulaStorage.RequireAsync(connection,transaction,PayrollFormulaStorage.SetupJsonFormulas(after));
+        if(singleStructureAppendOnly)RequireSingleSalaryStructureAppend(before,after,clientId);
+        var namedReservations=await ReadNamedTemplateReservationsAsync(connection,transaction);
         var oldStructures = (before["salaryStructures"] as JsonArray ?? []).OfType<JsonObject>().Where(row => SettingsRepository.IsPureClientRow(row, clientId)).ToDictionary(SettingsRepository.ReadRowId);
         var structures = (after["salaryStructures"] as JsonArray ?? []).OfType<JsonObject>().Where(row => SettingsRepository.IsPureClientRow(row, clientId)).ToArray();
-        var removedStructures = oldStructures.Keys.Except(structures.Select(SettingsRepository.ReadRowId)).Where(id => id > 0).ToArray();
+        foreach(var row in structures)
+            if(RetainNamedTemplate(namedReservations,SettingsRepository.ReadRowId(row),row["clientId"]?.ToString()??"")&&singleStructureAppendOnly&&!oldStructures.ContainsKey(SettingsRepository.ReadRowId(row)))
+                throw new InvalidOperationException("The proposed new salary template ID is reserved by an existing managed declaration.");
+        var removedStructures = oldStructures.Keys.Except(structures.Select(SettingsRepository.ReadRowId)).Where(id => id > 0&&!namedReservations.ContainsKey(id)).ToArray();
         if (removedStructures.Length > 0)
         {
             await connection.ExecuteAsync("DELETE FROM salarystructurelines WHERE StructureId IN @Ids", new { Ids = removedStructures }, transaction);
@@ -227,27 +233,23 @@ CREATE TABLE IF NOT EXISTS payrunemployeelines (
         }
         foreach (var node in structures.Where(node => !oldStructures.TryGetValue(SettingsRepository.ReadRowId(node), out var old) || !JsonNode.DeepEquals(old, node)))
         {
+            if(RetainNamedTemplate(namedReservations,SettingsRepository.ReadRowId(node),node["clientId"]?.ToString()??""))continue;
             var row = node.Deserialize<StructureDto>(JsonOptions) ?? throw new InvalidOperationException("Submit a valid salary structure.");
-            await connection.ExecuteAsync(@"INSERT INTO salarystructures (Id,ClientId,ClientRef,Name,AnnualCtc,Active)
+            var insert=@"INSERT INTO salarystructures (Id,ClientId,ClientRef,Name,AnnualCtc,Active)
 VALUES (@Id,@ClientId,@ClientRef,@Name,@AnnualCtc,@Active)
-ON DUPLICATE KEY UPDATE ClientId=@ClientId,ClientRef=@ClientRef,Name=@Name,AnnualCtc=@AnnualCtc,Active=@Active", new { row.Id, ClientId = clientId, ClientRef = row.ClientId ?? "", row.Name, AnnualCtc = ToDecimal(row.AnnualCtc), row.Active }, transaction);
+";
+            if(!singleStructureAppendOnly)insert+="ON DUPLICATE KEY UPDATE ClientId=@ClientId,ClientRef=@ClientRef,Name=@Name,AnnualCtc=@AnnualCtc,Active=@Active";
+            await connection.ExecuteAsync(insert, new { row.Id, ClientId = clientId, ClientRef = row.ClientId ?? "", row.Name, AnnualCtc = ToDecimal(row.AnnualCtc), row.Active }, transaction);
             await connection.ExecuteAsync("DELETE FROM salarystructurelines WHERE StructureId=@Id", new { row.Id }, transaction);
             var index = 0;
             foreach (var line in row.Lines)
                 await connection.ExecuteAsync(@"INSERT INTO salarystructurelines (StructureId,ComponentId,ValueText,CalculationType,Formula,BaseComponent,ProRataOverride,RoundingMode,SortOrder)
 VALUES (@StructureId,@ComponentId,@ValueText,@CalculationType,@Formula,@BaseComponent,@ProRataOverride,@RoundingMode,@SortOrder)", new { StructureId = row.Id, line.ComponentId, ValueText = line.Value ?? "", line.CalculationType, line.Formula, line.BaseComponent, line.ProRataOverride, line.RoundingMode, SortOrder = index++ }, transaction);
         }
-        var oldTemplates = (before["payslipTemplates"] as JsonArray ?? []).OfType<JsonObject>().Where(row => SettingsRepository.IsPureClientRow(row, clientId)).ToDictionary(SettingsRepository.ReadRowId);
-        var templates = (after["payslipTemplates"] as JsonArray ?? []).OfType<JsonObject>().Where(row => SettingsRepository.IsPureClientRow(row, clientId)).ToArray();
-        var removedTemplates = oldTemplates.Keys.Except(templates.Select(SettingsRepository.ReadRowId)).Where(id => id > 0).ToArray();
-        if (removedTemplates.Length > 0) await connection.ExecuteAsync("DELETE FROM paysliptemplates WHERE Id IN @Ids", new { Ids = removedTemplates }, transaction);
-        foreach (var node in templates.Where(node => !oldTemplates.TryGetValue(SettingsRepository.ReadRowId(node), out var old) || !JsonNode.DeepEquals(old, node)))
-        {
-            var row = node.Deserialize<PayslipTemplateDto>(JsonOptions) ?? throw new InvalidOperationException("Submit a valid payslip template.");
-            await connection.ExecuteAsync(@"INSERT INTO paysliptemplates (Id,ClientId,ClientRef,Name,Theme,ShowLogo,ShowClient,ShowYtd,ShowBank,Note,Active)
-VALUES (@Id,@ClientId,@ClientRef,@Name,@Theme,@ShowLogo,@ShowClient,@ShowYtd,@ShowBank,@Note,@Active)
-ON DUPLICATE KEY UPDATE ClientId=@ClientId,ClientRef=@ClientRef,Name=@Name,Theme=@Theme,ShowLogo=@ShowLogo,ShowClient=@ShowClient,ShowYtd=@ShowYtd,ShowBank=@ShowBank,Note=@Note,Active=@Active", new { row.Id, ClientId = clientId, ClientRef = row.ClientId ?? "", row.Name, row.Theme, row.ShowLogo, row.ShowClient, row.ShowYtd, row.ShowBank, row.Note, row.Active }, transaction);
-        }
+        var templates = (after["payslipTemplates"] as JsonArray ?? []).OfType<JsonObject>()
+            .Where(row => SettingsRepository.IsPureClientRow(row, clientId))
+            .Select(node => node.Deserialize<PayslipTemplateDto>(JsonOptions) ?? throw new InvalidOperationException("Submit a valid payslip template.")).ToArray();
+        if(!singleStructureAppendOnly)await SaveLegacyPayslipTemplatesInTransactionAsync(connection, transaction, templates, clientId);
         if (!JsonNode.DeepEquals(before["tax"], after["tax"]))
         {
             var saved = await connection.QueryFirstOrDefaultAsync<(int Id, string SetupJson)>("SELECT Id,SetupJson FROM payrollsetups ORDER BY Id LIMIT 1", transaction: transaction);
@@ -261,6 +263,7 @@ ON DUPLICATE KEY UPDATE ClientId=@ClientId,ClientRef=@ClientRef,Name=@Name,Theme
     public static async Task SaveSetupJsonAsync(MySqlConnection connection, string json)
     {
         var root = ParseRoot(json);
+        await PayrollFormulaStorage.RequireAsync(connection,null,PayrollFormulaStorage.SetupJsonFormulas(root));
 
         if (TryRead(root["salaryComponents"], out List<ComponentDto>? components))
             await SaveComponentsAsync(connection, components ?? []);
@@ -482,30 +485,35 @@ ON DUPLICATE KEY UPDATE Code=@Code,ComponentType=@ComponentType,ComponentRole=@C
 
     private static async Task SaveStructuresAsync(MySqlConnection connection, List<StructureDto> rows)
     {
-        var ids = rows.Where(x => x.Id > 0).Select(x => x.Id).Distinct().ToArray();
-        if (ids.Length > 0) await connection.ExecuteAsync("DELETE FROM salarystructures WHERE Id NOT IN @ids", new { ids }); else await connection.ExecuteAsync("DELETE FROM salarystructures");
-        await connection.ExecuteAsync("DELETE FROM salarystructurelines WHERE StructureId NOT IN (SELECT Id FROM salarystructures)");
-        foreach (var row in rows.Where(x => x.Id > 0))
+        await using var tx=await connection.BeginTransactionAsync();
+        await connection.QueryAsync<long>("SELECT Id FROM salarystructures ORDER BY Id FOR UPDATE",transaction:tx);
+        var protectedIds=await ReadNamedTemplateReservationsAsync(connection,tx);
+        foreach(var row in rows)RetainNamedTemplate(protectedIds,row.Id,row.ClientId??"");
+        var ids = rows.Where(x => x.Id > 0).Select(x => x.Id).Concat(protectedIds.Keys).Distinct().ToArray();
+        if (ids.Length > 0) await connection.ExecuteAsync("DELETE FROM salarystructures WHERE Id NOT IN @ids", new { ids },tx); else await connection.ExecuteAsync("DELETE FROM salarystructures",transaction:tx);
+        await connection.ExecuteAsync("DELETE FROM salarystructurelines WHERE StructureId NOT IN (SELECT Id FROM salarystructures)",transaction:tx);
+        foreach (var row in rows.Where(x => x.Id > 0 && !protectedIds.ContainsKey(x.Id)))
         {
             await connection.ExecuteAsync(@"INSERT INTO salarystructures (Id,ClientId,ClientRef,Name,AnnualCtc,Active)
 VALUES (@Id,@ClientId,@ClientRef,@Name,@AnnualCtc,@Active)
-ON DUPLICATE KEY UPDATE ClientId=@ClientId,ClientRef=@ClientRef,Name=@Name,AnnualCtc=@AnnualCtc,Active=@Active", new { row.Id, ClientId = RefId(row.ClientId), ClientRef = row.ClientId ?? "", row.Name, AnnualCtc = ToDecimal(row.AnnualCtc), row.Active });
-            await connection.ExecuteAsync("DELETE FROM salarystructurelines WHERE StructureId=@Id", new { row.Id });
+ON DUPLICATE KEY UPDATE ClientId=@ClientId,ClientRef=@ClientRef,Name=@Name,AnnualCtc=@AnnualCtc,Active=@Active", new { row.Id, ClientId = RefId(row.ClientId), ClientRef = row.ClientId ?? "", row.Name, AnnualCtc = ToDecimal(row.AnnualCtc), row.Active },tx);
+            await connection.ExecuteAsync("DELETE FROM salarystructurelines WHERE StructureId=@Id", new { row.Id },tx);
             var index = 0;
             foreach (var line in row.Lines)
                 await connection.ExecuteAsync(@"INSERT INTO salarystructurelines (StructureId,ComponentId,ValueText,CalculationType,Formula,BaseComponent,ProRataOverride,RoundingMode,SortOrder)
-VALUES (@StructureId,@ComponentId,@ValueText,@CalculationType,@Formula,@BaseComponent,@ProRataOverride,@RoundingMode,@SortOrder)", new { StructureId = row.Id, line.ComponentId, ValueText = line.Value ?? "", line.CalculationType, line.Formula, line.BaseComponent, line.ProRataOverride, line.RoundingMode, SortOrder = index++ });
+VALUES (@StructureId,@ComponentId,@ValueText,@CalculationType,@Formula,@BaseComponent,@ProRataOverride,@RoundingMode,@SortOrder)", new { StructureId = row.Id, line.ComponentId, ValueText = line.Value ?? "", line.CalculationType, line.Formula, line.BaseComponent, line.ProRataOverride, line.RoundingMode, SortOrder = index++ },tx);
         }
+        await tx.CommitAsync();
     }
 
     private static async Task SavePayslipTemplatesAsync(MySqlConnection connection, List<PayslipTemplateDto> rows)
     {
-        var ids = rows.Where(x => x.Id > 0).Select(x => x.Id).Distinct().ToArray();
-        if (ids.Length > 0) await connection.ExecuteAsync("DELETE FROM paysliptemplates WHERE Id NOT IN @ids", new { ids }); else await connection.ExecuteAsync("DELETE FROM paysliptemplates");
-        foreach (var row in rows.Where(x => x.Id > 0))
-            await connection.ExecuteAsync(@"INSERT INTO paysliptemplates (Id,ClientId,ClientRef,Name,Theme,ShowLogo,ShowClient,ShowYtd,ShowBank,Note,Active)
-VALUES (@Id,@ClientId,@ClientRef,@Name,@Theme,@ShowLogo,@ShowClient,@ShowYtd,@ShowBank,@Note,@Active)
-ON DUPLICATE KEY UPDATE ClientId=@ClientId,ClientRef=@ClientRef,Name=@Name,Theme=@Theme,ShowLogo=@ShowLogo,ShowClient=@ShowClient,ShowYtd=@ShowYtd,ShowBank=@ShowBank,Note=@Note,Active=@Active", new { row.Id, ClientId = RefId(row.ClientId), ClientRef = row.ClientId ?? "", row.Name, row.Theme, row.ShowLogo, row.ShowClient, row.ShowYtd, row.ShowBank, row.Note, row.Active });
+        // This transaction covers presentation templates only. In particular it
+        // never takes client/source locks after the template locks, preserving
+        // the atomic designer's client -> source -> template lock order.
+        await using var transaction = await connection.BeginTransactionAsync();
+        await SaveLegacyPayslipTemplatesInTransactionAsync(connection, transaction, rows, null);
+        await transaction.CommitAsync();
     }
 
     private static async Task SaveProfessionalTaxSlabsAsync(MySqlConnection connection, List<ProfessionalTaxSlabDto> rows)

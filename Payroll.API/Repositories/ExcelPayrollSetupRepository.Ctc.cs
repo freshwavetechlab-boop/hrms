@@ -23,7 +23,7 @@ public sealed partial class ExcelPayrollSetupRepository
         if (!string.IsNullOrWhiteSpace(cell.FormulaText))
         {
             // Validate the actual monthly dependencies; a cached earned output or lookup is not a CTC basis.
-            var translation = TranslateTransferFormulaWithEvidence(cell.FormulaText, request, source, row);
+            var translation = TranslateTransferFormulaWithEvidence(cell.FormulaText, request, source, row,bindReviewedMonthlyCtc:false);
             if (System.Text.RegularExpressions.Regex.IsMatch(translation.Formula,
                 @"\b(?:[A-Z][A-Z0-9_]*_EARNED|PAYROLL_DAYS|PAYABLE_DAYS|PRESENT_DAYS|LOP_DAYS)\b",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase))

@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions; using Dapper; using MySqlConnector; using Payroll.API.Models;
+using System.Text.RegularExpressions; using Dapper; using MySqlConnector; using Payroll.API.Models; using Payroll.API.Services;
 namespace Payroll.API.Repositories;
 public class WorkflowRepository(IConfiguration configuration)
 {
@@ -163,6 +163,32 @@ LIMIT 1",new{ClientId=clientId});
     public async Task<DepartmentHeadAssignment> SaveDepartmentHeadAsync(SaveDepartmentHeadAssignmentRequest request){await using var db=Db();await db.OpenAsync();await db.ExecuteAsync("INSERT INTO departmentheadassignments (ClientId,Department,UserId) VALUES (@ClientId,@Department,@UserId) ON DUPLICATE KEY UPDATE UserId=VALUES(UserId)",request);return await db.QuerySingleAsync<DepartmentHeadAssignment>("SELECT a.Id,a.ClientId,a.Department,a.UserId,u.DisplayName UserName FROM departmentheadassignments a JOIN authusers u ON u.Id=a.UserId WHERE a.ClientId=@ClientId AND a.Department=@Department",request);}
     public async Task<int?> GetDefaultIdAsync(string resourceType,int? clientId){await using var db=Db();await db.OpenAsync();return await db.ExecuteScalarAsync<int?>("SELECT Id FROM workflowmasters WHERE ResourceType=@ResourceType AND IsActive=TRUE AND (ClientId=@ClientId OR ClientId IS NULL) ORDER BY ClientId IS NULL, Id LIMIT 1",new{ResourceType=resourceType,ClientId=clientId});}
     public async Task<int?> GetDefaultIdForActivityAsync(string activityCode,int? clientId){await using var db=Db();await db.OpenAsync();return await db.ExecuteScalarAsync<int?>("SELECT Id FROM workflowmasters WHERE Code=@ActivityCode AND IsActive=TRUE AND (ClientId=@ClientId OR ClientId IS NULL) ORDER BY ClientId IS NULL, Id LIMIT 1",new{ActivityCode=activityCode,ClientId=clientId});}
+    internal async Task<WorkflowActionResolution> ResolveActionWorkflowAsync(WorkflowActionRule rule, int? clientId,
+        string resourceType, string resourceId)
+    {
+        await using var db = Db(); await db.OpenAsync();
+        var owner = await ReadPayrollWorkflowOwnerAsync(db, null, resourceType, resourceId);
+        var actualClient = WorkflowClientScope.ResolveClient(clientId, owner.Known, owner.ClientId);
+        var candidates = (await db.QueryAsync<WorkflowMaster>(
+            "SELECT * FROM workflowmasters WHERE Id=@ExplicitId OR Code=@Activity",
+            new { ExplicitId = rule.WorkflowId, Activity = rule.ActivityCode })).ToArray();
+        return new(WorkflowClientScope.Select(rule, actualClient, candidates), actualClient);
+    }
+
+    private static async Task<(bool Known, int? ClientId)> ReadPayrollWorkflowOwnerAsync(MySqlConnection db,
+        MySqlTransaction? tx, string resourceType, string resourceId)
+    {
+        // Payroll ownership comes from its persisted row, never request/payload
+        // metadata. Use the caller's transaction so uncommitted resource inserts
+        // remain visible; other existing direct-start resource contracts stay intact.
+        if (!resourceType.Equals("PayRun", StringComparison.OrdinalIgnoreCase)
+            && !resourceType.Equals("PayrollRun", StringComparison.OrdinalIgnoreCase)) return (false, null);
+        if (!long.TryParse(resourceId, System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out var id) || id <= 0) return (true, null);
+        var owner = await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM payruns WHERE Id=@Id"
+            + (tx is null ? "" : " FOR UPDATE"), new { Id = id }, tx);
+        return (true, owner);
+    }
     public async Task<ResourceState?> GetResourceStateAsync(string resourceType,string resourceId){await using var db=Db();await db.OpenAsync();return await db.QueryFirstOrDefaultAsync<ResourceState>("SELECT * FROM ResourceStates WHERE ResourceType=@ResourceType AND ResourceId=@ResourceId",new{ResourceType=resourceType,ResourceId=resourceId});}
     public async Task<int?> ResolveClientIdAsync(string sql,Dictionary<string,string> routeValues){if(string.IsNullOrWhiteSpace(sql))return null;await using var db=Db();await db.OpenAsync();var parameters=new DynamicParameters();foreach(var item in routeValues)parameters.Add(item.Key,item.Value);return await db.ExecuteScalarAsync<int?>(sql,parameters);}
     public async Task<int?> ResolveClientIdFromLookupAsync(string tableName,string keyColumn,string clientColumn,string resourceId){if(string.IsNullOrWhiteSpace(tableName)||string.IsNullOrWhiteSpace(keyColumn)||string.IsNullOrWhiteSpace(clientColumn)||string.IsNullOrWhiteSpace(resourceId))return null;if(!IsSafeIdentifier(tableName)||!IsSafeIdentifier(keyColumn)||!IsSafeIdentifier(clientColumn))return null;await using var db=Db();await db.OpenAsync();return await db.ExecuteScalarAsync<int?>($"SELECT `{clientColumn}` FROM `{tableName}` WHERE `{keyColumn}`=@ResourceId LIMIT 1",new{ResourceId=resourceId});}
@@ -201,19 +227,22 @@ SELECT Id FROM workflow_action_rules WHERE ActivityCode=@ActivityCode AND HttpMe
         }
         await tx.CommitAsync();return((await GetAsync()).First(x=>x.Id==id),"");
     }
-    public async Task<WorkflowInstance?> StartAsync(StartWorkflowRequest r,int requestor)
+    public async Task<WorkflowInstance?> StartAsync(StartWorkflowRequest r,int requestor,int? expectedClientId=null)
     {
         await using var db=Db(); await db.OpenAsync(); await using var tx=await db.BeginTransactionAsync();
-        var instance=await StartInTransactionAsync(db,tx,r,requestor);
+        var instance=await StartInTransactionAsync(db,tx,r,requestor,expectedClientId);
         if(instance is not null) await tx.CommitAsync();
         return instance;
     }
 
-    internal async Task<WorkflowInstance?> StartInTransactionAsync(MySqlConnection db,MySqlTransaction tx,StartWorkflowRequest r,int requestor)
+    internal async Task<WorkflowInstance?> StartInTransactionAsync(MySqlConnection db,MySqlTransaction tx,StartWorkflowRequest r,int requestor,int? expectedClientId=null)
     {
         // Paired with SaveAsync's master-row lock; keep it until every start record is committed.
         var master=await db.QueryFirstOrDefaultAsync<WorkflowMaster>("SELECT * FROM workflowmasters WHERE Id=@WorkflowId AND IsActive=TRUE FOR UPDATE",r,tx);
         if(master is null){return null;}
+        var owner = await ReadPayrollWorkflowOwnerAsync(db, tx, r.ResourceType, r.ResourceId);
+        try { WorkflowClientScope.RequireStartScope(master, expectedClientId, owner.Known, owner.ClientId); }
+        catch (InvalidOperationException) { return null; }
         var stage=await db.QueryFirstOrDefaultAsync<WorkflowStage>("SELECT * FROM workflowstages WHERE WorkflowId=@WorkflowId ORDER BY StageOrder LIMIT 1",r,tx);
         if(stage is null){return null;}
         var approver=await ResolveAsync(db,stage,requestor,tx);

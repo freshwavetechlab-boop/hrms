@@ -43,9 +43,19 @@ public sealed partial class ExcelPayslipRepository
             Overrides = request.EmailOverrides.OrderBy(p => p.Key, StringComparer.Ordinal)
                 .Select(p => new { p.Key, Value = p.Value?.Trim().ToLowerInvariant() }) });
 
-    private async Task<ExcelPayslipBatch?> ReadCorrectionBatchAsync(MySqlConnection db, int clientId, string batchId, MySqlTransaction tx)
+    // A private server-read snapshot can be reused only inside the same caller's
+    // connection/transaction and source scope. It never comes from an API body.
+    private sealed record CorrectionReadSnapshot(MySqlConnection Database, MySqlTransaction Transaction,
+        int ClientId, string BatchId, ExcelPayslipBatch Batch, ExcelPayslipCalculationSource? Source);
+
+    private async Task<ExcelPayslipBatch?> ReadCorrectionBatchAsync(MySqlConnection db, int clientId, string batchId, MySqlTransaction tx,
+        CorrectionReadSnapshot? captured = null)
     {
-        var raw = await ReadRawCorrectionSourceAsync(db, clientId, batchId, tx);
+        if (captured is not null && (!ReferenceEquals(captured.Database, db) || !ReferenceEquals(captured.Transaction, tx)
+            || !ReferenceEquals(tx.Connection, db) || captured.ClientId != clientId || captured.BatchId != batchId
+            || captured.Batch.ClientId != clientId || captured.Batch.Id != batchId))
+            throw new InvalidOperationException("The saved source snapshot belongs to another database transaction or client/batch.");
+        var raw = captured?.Batch ?? await ReadRawCorrectionSourceAsync(db, clientId, batchId, tx);
         if (raw is null) return null;
         var batch = CorrectionClone(raw);
         // This validates existing source/employee evidence but deliberately omits the
@@ -54,7 +64,7 @@ public sealed partial class ExcelPayslipRepository
         var masters = await ReadProfileMastersAsync(db, tx, clientId, batch.Month);
         await EmployeeRepository.ApplyEmploymentStatusAsync(db, masters, tx);
         await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, masters, tx);
-        var source = await ReadCalculationSourceAsync(db, clientId, batchId, tx);
+        var source = captured is null ? await ReadCalculationSourceAsync(db, clientId, batchId, tx) : captured.Source;
         AnnotateCurrentProfiles(batch, source, masters);
         await AnnotateCurrentMasterAsync(db, tx, batch, source, configuration, profileOnly: true);
         AnnotateWarningReviews(batch);

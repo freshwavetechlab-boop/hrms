@@ -58,12 +58,12 @@
 .public-jobs-card:hover { border-color:#c9dce8; box-shadow:0 5px 18px #203a5008; }
 .public-jobs-card-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; }
 .public-jobs-card-heading > div { min-width:0; }
-.public-jobs-client { display:block; font-size:11px; font-weight:600; color:#61849d; overflow-wrap:anywhere; }
+.public-jobs-employer { display:block; font-size:11px; font-weight:600; color:#61849d; overflow-wrap:anywhere; }
 .public-jobs-card h3 { margin:6px 0 6px; color:var(--jobs-ink); font-size:18px; line-height:1.45; letter-spacing:-.3px; }
 .public-jobs-card h3 button { text-align:left; padding:0; background:none; border:0; color:inherit; font:inherit; font-weight:700; cursor:pointer; overflow-wrap:anywhere; }
 .public-jobs-card h3 button:hover { color:var(--jobs-blue); }
 .public-jobs-reference { font-size:10px; color:#95a1ab; overflow-wrap:anywhere; }
-.public-jobs-client-mark { width:43px; height:43px; display:grid; place-items:center; flex-shrink:0; border-radius:10px; border:1px solid #e5edf2; color:#56768b; background:#f5f9fb; font-size:13px; font-weight:700; }
+.public-jobs-employer-mark { width:43px; height:43px; display:grid; place-items:center; flex-shrink:0; border-radius:10px; border:1px solid #e5edf2; color:#56768b; background:#f5f9fb; font-size:13px; font-weight:700; }
 .public-jobs-facts { display:grid; grid-template-columns:minmax(0,.85fr) minmax(0,1.3fr) minmax(0,1fr); gap:18px; margin:21px 0 17px; }
 .public-jobs-facts > div { display:flex; gap:8px; align-items:flex-start; min-width:0; }
 .public-jobs-facts > div > span:first-child { color:#8196a6; margin-top:4px; font-size:13px; }

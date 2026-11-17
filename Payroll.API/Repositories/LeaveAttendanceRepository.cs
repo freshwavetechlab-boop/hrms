@@ -1990,8 +1990,8 @@ WHERE client_id=@ClientId AND name=@Name AND id<>@Id", new { request.ClientId, N
         }
         var matchingEmployeeIds = (await connection.QueryAsync<int>(@"SELECT Id FROM employees
 WHERE IsActive=TRUE AND ClientId=@ClientId AND WorkLocationId=@WorkLocationId
-AND Department=@Department
-AND Designation=@Designation
+AND (@Department='All' OR Department=@Department)
+AND (@Designation='All' OR Designation=@Designation)
 AND Id IN @EmployeeIds", new { request.ClientId, request.WorkLocationId, Department = (request.Department ?? string.Empty).Trim(), Designation = (request.Designation ?? string.Empty).Trim(), EmployeeIds = employeeIds })).Distinct().ToHashSet();
         return matchingEmployeeIds.Count == employeeIds.Length
             ? null

@@ -12,12 +12,24 @@ public sealed class ExcelPayrollSetupRequest
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public ExcelPayrollIdentityColumnReview? IdentityColumnReview { get; set; }
     public ExcelPayrollLocationAllocationReview? LocationAllocations { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public NamedFormulaInputReview? NamedInputReview { get; set; }
+    // Opt-in reported period facts, never a dependency-complete or actual-presence claim.
+    // Omission is deliberate: existing v1 request bytes and signatures stay unchanged.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ReportedPeriodInputReview? ReportedPeriodInputs { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public HistoricalSourceIdentityReview? SourceIdentityReview { get; set; }
     public ExcelPayrollAttendanceReview? AttendanceReview { get; set; }
     public int TransferReviewVersion { get; set; }
     public int TemplateScopeReviewVersion { get; set; }
     public ExcelPayrollTemplateScope? TemplateScope { get; set; }
     public bool ReviewedFixedInputs { get; set; }
     public bool ReviewedPolicyScope { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ExcelPayrollConfigurationDifferenceReview? ConfigurationDifferenceReview { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ExcelPayrollRecurringBlankInputReview? RecurringBlankInputReview { get; set; }
     public Dictionary<string, string> RoundingReviews { get; set; } = [];
     public List<ExcelPayrollTransferTemplateDecision> TemplateDecisions { get; set; } = [];
     public string BatchId { get; set; } = "";
@@ -29,6 +41,8 @@ public sealed class ExcelPayrollSetupRequest
     public string PayrollDaysCell { get; set; } = "";
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public int? MonthlyCtcColumnIndex { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ReviewedSourceMonthlyCtcOperand { get; set; }
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool ReviewedExtraDutyUnits { get; set; }
     public Dictionary<int, string> SourceColumnRoles { get; set; } = [];
@@ -61,6 +75,9 @@ public sealed class ExcelPayrollSetupRequest
 }
 
 public sealed record ExcelPayrollQuickPreparation(int Version, string SourceHash, string AttendanceSnapshotHash);
+
+public sealed record ExcelPayrollRecurringBlankInputReview(int Version, bool Reviewed, string SourceHash,
+    IReadOnlyList<int> ColumnIndices, string Reason);
 
 public sealed class ExcelPayrollIdentityColumnReview
 {

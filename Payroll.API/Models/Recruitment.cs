@@ -278,6 +278,7 @@ public class RecruitmentOpenPosition
     public string PreferredSkills { get; set; } = "";
     public string ExperienceRange { get; set; } = "";
     public int RecruiterUserId { get; set; }
+    public string JobDescriptionText { get; set; } = "";
     public string RecruiterName { get; set; } = "";
     public int CandidateCount { get; set; }
     public int RequiredCandidateCount { get; set; }

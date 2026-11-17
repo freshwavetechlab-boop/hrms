@@ -31,6 +31,7 @@ import { billingOnlySettings, canOpenReport, hasReportWorkspace } from './utils/
 import { assignedClients, isSelectedClientUser, isUnrestrictedClientAdmin } from './utils/clientAccess'
 import type { ReportDefinition, ReportingMenu } from './pages/ReportingPage'
 import RecruitmentPage, { recruitmentViews, type RecruitmentPageView, type RecruitmentRequestNavigation } from './pages/RecruitmentPage'
+import RecruitmentOfferClientSelect from './components/RecruitmentOfferClientSelect'
 import { getJsonResult } from './services/apiClient'
 import MyProfilePage from './pages/MyProfilePage'
 import TravelAdvancesPage from './pages/TravelAdvancesPage'
@@ -892,7 +893,9 @@ export default function SettingsApp() {
   }
 
   const clientScopeControl = selectedClientAccess
-    ? <Select aria-label="Assigned client" style={{ width: 280, maxWidth: '100%' }} value={session?.activeClientId || undefined} showSearch optionFilterProp="label" placeholder="Select assigned client" loading={assignedClientLoading} disabled={!assignedClientOptions.length} options={assignedClientOptions.map(client => ({ value: client.id, label: client.name }))} onChange={value => { if (!session?.selectClient(value)) void message.info('Wait for the current save or upload to finish before switching clients.') }} />
+    ? mainModule === 'TalentAcquisition' && recruitmentView === 'Offers & Pre-Onboarding'
+      ? <RecruitmentOfferClientSelect aria-label="Assigned client" allowClear={false} style={{ width: 280, maxWidth: '100%' }} value={session?.activeClientId || undefined} placeholder="Select assigned client" loading={assignedClientLoading} disabled={!assignedClientOptions.length} options={assignedClientOptions.map(client => ({ value: client.id, label: client.name }))} onChange={value => { if (value && !session?.selectClient(value)) void message.info('Wait for the current save or upload to finish before switching clients.') }} />
+      : <Select aria-label="Assigned client" style={{ width: 280, maxWidth: '100%' }} value={session?.activeClientId || undefined} showSearch optionFilterProp="label" placeholder="Select assigned client" loading={assignedClientLoading} disabled={!assignedClientOptions.length} options={assignedClientOptions.map(client => ({ value: client.id, label: client.name }))} onChange={value => { if (!session?.selectClient(value)) void message.info('Wait for the current save or upload to finish before switching clients.') }} />
     : clientScopedAdmin && scopedClient ? <span className="scoped-client-chip" data-testid="scoped-client-chip">{scopedClient.logoDataUrl ? <img src={scopedClient.logoDataUrl} alt={`${scopedClient.name} logo`} /> : <BankOutlined />}{scopedClient.name}</span> : undefined
   const shellClassName = ['hrms-shell', navOpen ? '' : 'rail-collapsed', appDrawerOpen ? 'drawer-open' : '', mobileShell && navOpen ? 'mobile-nav-open' : ''].filter(Boolean).join(' ')
 

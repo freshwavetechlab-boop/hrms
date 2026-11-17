@@ -14,7 +14,10 @@ public static class RecruitmentDocumentEndpoints
         {
             var user = currentUser(context.HttpContext);
             if (user.Id <= 0 || !user.IsActive || user.MustChangePassword) return Results.Unauthorized();
-            if (!RecruitmentPermissions.Has(user, "recruitment.candidate.manage", "recruitment.offer.manage", "recruitment.offer.issue")) return Results.StatusCode(403);
+            var isClientSummary = HttpMethods.IsGet(context.HttpContext.Request.Method)
+                && context.HttpContext.Request.Path.Equals("/api/recruitment/document-roster/client-summary", StringComparison.OrdinalIgnoreCase);
+            if (!RecruitmentDocumentRepository.CanReadRosterForSummary(user)
+                && !(isClientSummary && RecruitmentDocumentRepository.CanReadNativeOffersForSummary(user))) return Results.StatusCode(403);
             try { return await next(context); }
             catch (UnauthorizedAccessException) { return Results.StatusCode(403); }
             catch (Exception e) when (e is InvalidOperationException or JsonException or InvalidDataException or ArgumentException or System.Xml.XmlException)
@@ -26,6 +29,19 @@ public static class RecruitmentDocumentEndpoints
             Results.Ok(await repository.EnsureDefaultTemplateAsync(clientId, currentUser(context))));
         routes.MapGet("/rows", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
             Results.Ok(await repository.RowsAsync(clientId, currentUser(context))));
+        routes.MapGet("/client-summary", async (RecruitmentDocumentRepository repository, HttpContext context) =>
+            Results.Ok(await repository.ClientSummaryAsync(currentUser(context))));
+        routes.MapGet("/simple-jds", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
+            Results.Ok(await repository.SimpleJdLinksAsync(clientId, currentUser(context))));
+        routes.MapGet("/rows/{id:long}/simple-jd", async (RecruitmentDocumentRepository repository, int clientId, long id, HttpContext context) =>
+        {
+            var description = await repository.SimpleJdAsync(clientId, id, currentUser(context));
+            return description is null ? Results.NotFound(new { error = "A current job description is not linked to this employee list row." }) : Results.Ok(description);
+        });
+        routes.MapPost("/rows/{id:long}/simple-jd", async (RecruitmentDocumentRepository repository, int clientId, long id, CreateRecruitmentRosterSimpleJd request, HttpContext context) =>
+            Results.Ok(await repository.CreateSimpleJdAsync(clientId, id, request, currentUser(context))));
+        routes.MapPost("/simple-jds", async (RecruitmentDocumentRepository repository, int clientId, CreateRecruitmentRosterSimpleJds request, HttpContext context) =>
+            Results.Ok(await repository.CreateSimpleJdsAsync(clientId, request, currentUser(context))));
         routes.MapPost("/mail-preview",async(RecruitmentDocumentRepository repository,int clientId,RecruitmentOfferMailRequest request,HttpContext context)=>
             Results.Ok(new {Items=await repository.PreviewOfferMailAsync(clientId,request,currentUser(context))}));
         routes.MapPost("/mail-jobs",async(RecruitmentDocumentRepository repository,int clientId,RecruitmentOfferMailRequest request,HttpContext context)=>

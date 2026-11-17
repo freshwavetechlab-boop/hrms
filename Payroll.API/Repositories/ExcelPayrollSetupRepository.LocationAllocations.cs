@@ -18,6 +18,8 @@ public sealed partial class ExcelPayrollSetupRepository
         public List<PayrollLocationPartPeriod> Periods { get; } = [];
         public string SetupJson { get; set; } = "";
         public LocationAllocationStorageState Storage { get; set; } = new([], []);
+        public NamedFormulaInputProfile? NamedProfile { get; set; }
+        public List<NamedFormulaInputManifest> NamedManifests { get; set; } = [];
     }
 
     internal static void ValidateLocationAllocationFields(ExcelPayrollSetupRequest request)
@@ -72,7 +74,8 @@ public sealed partial class ExcelPayrollSetupRepository
     internal static LocationAllocationPlan ReviewLocationAllocationPlan(int clientId, ExcelPayrollSetupRequest request,
         ExcelPayslipBatch batch, ExcelPayslipCalculationSource source, string setupJson, IReadOnlyList<Identity> identities,
         IReadOnlyDictionary<int, Employee> employeeMasters, IReadOnlyList<LocationAllocationMaster> locations,
-        IReadOnlyList<ExcelPayslipOriginal>? originals = null)
+        IReadOnlyList<ExcelPayslipOriginal>? originals = null, NamedFormulaInputProfile? namedProfile = null,
+        IReadOnlyList<HistoricalBankIdentity>? reviewedBankOwners = null)
     {
         ValidateLocationAllocationFields(request);
         var review = request.LocationAllocations!;
@@ -83,7 +86,7 @@ public sealed partial class ExcelPayrollSetupRepository
         evidence.Preview.SelectedSourceRows = DescribeSelectedSources(batch, request);
         evidence.Preview.Transfer = new() { SourceMonth = batch.Month, SourceBatchId = batch.Id, SourceHash = sourceHash,
             EffectiveFrom = review.ConfigurationEffectiveFrom, PreparationStatus = "Blocked" };
-        var result = new LocationAllocationPlan { Evidence = evidence, SetupJson = setupJson };
+        var result = new LocationAllocationPlan { Evidence = evidence, SetupJson = setupJson, NamedProfile = namedProfile };
         void Error(string message, string? row = null, string? code = null) => evidence.Preview.Issues.Add(new("Error", message, row, code));
         foreach (var message in LocationAllocationGroupIssues(batch, request)) Error(message);
         if (batch.ClientId != clientId) Error("The source batch belongs to another client.");
@@ -131,11 +134,23 @@ public sealed partial class ExcelPayrollSetupRepository
                 if (template is null) { Error("Choose an active existing Settings template belonging to this client.", row.Id); continue; }
                 try
                 {
+                    (NamedFormulaInputContext Context, List<NamedFormulaInputCell> Cells)? named = namedProfile is null ? null : ReviewedNamedFormulaInputs.Bind(namedProfile, request.NamedInputReview!.Bindings,
+                        source, row, request.Components.SelectMany(c => new[] { c.ExistingComponentId ?? "", c.Code }));
+                    if (namedProfile is not null)
+                    {
+                        var decisions = request.EmployeeDecisions.Where(d => d.RowId == row.Id).ToArray();
+                        if (decisions.Length != 1 || decisions[0].MatchedEmployeeId != group.EmployeeId || decisions[0].AllowCreate)
+                            throw new InvalidOperationException("Explicitly retain the exact existing employee for every named source row; identities are never created here.");
+                        var bankIdentity = ReviewSourceNamedBankIdentity(request, batch, source, row, group.EmployeeId, identities, reviewedBankOwners ?? []);
+                        RequireNamedSourceSetupOwner(batch, source, row, group.EmployeeId, identities, request.SourceWorkLocationColumnIndex, bankIdentity);
+                    }
                     var components = ComponentsForRow(resolved, row.Id);
                     if (TransferTemplateDifferences(template, components).Count > 0) { Error("The selected Settings template does not exactly preserve the reviewed component formulas, order, inputs and proration. Prepare the proper Settings template first.", row.Id); continue; }
                     var ids = components.Select(component => component.Id).Order(StringComparer.Ordinal);
                     if (!ids.SequenceEqual(part.ComponentScopes.Keys.Order(StringComparer.Ordinal))) { Error("Review Monthly or SourceFormulaPerPart for every exact Settings component ID.", row.Id); continue; }
-                    var arithmetic = CalculateRow(clientId, request, components, cells, row, source.Columns.Where(column => column.BlankAsZero).Select(column => column.ColumnIndex).ToHashSet());
+                    var blanks = source.Columns.Where(column => column.BlankAsZero).Select(column => column.ColumnIndex).ToHashSet();
+                    var arithmetic = named is null ? CalculateRow(clientId, request, components, cells, row, blanks)
+                        : CalculateRow(clientId, request, components, cells, row, blanks, source, namedInputs: named.Value.Context);
                     if (decimal.Round(arithmetic.Preview.PresentDays, 4) != arithmetic.Preview.PresentDays
                         || decimal.Round(arithmetic.Preview.PayableDays, 4) != arithmetic.Preview.PayableDays
                         || decimal.Round(arithmetic.Preview.AnnualCtc, 4) != arithmetic.Preview.AnnualCtc)
@@ -149,10 +164,13 @@ public sealed partial class ExcelPayrollSetupRepository
                     planned.Preview.Action = "Save location salary assignment and source-period allocation";
                     evidence.Rows.Add(planned); evidence.Preview.Rows.Add(planned.Preview);
                     evidence.Preview.Issues.AddRange(arithmetic.Issues);
-                    var formulas = components.Select(component => InspectTransferFormula(request, source, row, component.Definition)).ToList();
+                    var leaves = named is null ? null : request.NamedInputReview!.Bindings.ToDictionary(b => b.ColumnIndex,
+                        b => new NamedRecurringSourceBoundary(b.Key, named.Value.Context.Values[b.Key]));
+                    var formulas = components.Select(component => leaves is null ? InspectTransferFormula(request, source, row, component.Definition)
+                        : InspectNamedTransferFormula(request, source, row, component.Definition, leaves)).ToList();
                     evidence.Preview.Transfer.Formulas.AddRange(formulas);
                     foreach (var formula in formulas.Where(formula => formula.Status == "Blocked")) Error(formula.Reason, row.Id, formula.Code);
-                    var amounts = ClassifyTransferAmounts(evidence, planned, request, sourceHash, formulas);
+                    var amounts = ClassifyTransferAmounts(evidence, planned, request, sourceHash, formulas, named?.Context);
                     evidence.Preview.Transfer.AmountComparisons.Add(amounts);
                     if (amounts.Status == "Explained rounding")
                     {
@@ -164,17 +182,21 @@ public sealed partial class ExcelPayrollSetupRepository
                     evidence.Preview.Transfer.AttendanceProofs.Add(attendance);
                     if (attendance.Status == "Blocked") Error(attendance.Reason, row.Id, "Attendance mapping");
                     var rulesHash = LocationSettingsRulesHash(template, masters);
+                    if (namedProfile is not null) rulesHash = ReviewedNamedFormulaInputs.RulesHash(rulesHash, namedProfile.DeclarationHash);
                     var assignmentId = Hash(JsonSerializer.Serialize(new { clientId, group.EmployeeId, location.Id, location.State, part.TemplateId,
                         arithmetic.Preview.AnnualCtc, SalaryInputs = arithmetic.Inputs.OrderBy(pair => pair.Key), ComponentScopes = part.ComponentScopes.OrderBy(pair => pair.Key),
                         rulesHash, sourceHash, review.ConfigurationEffectiveFrom }, Json))[..32];
                     var partKey = Hash(batch.Id + ":" + row.Id)[..32];
+                    if (named is not null) assignmentId = Hash(JsonSerializer.Serialize(new { legacy = assignmentId, row.Id, partKey,
+                        named.Value.Context.DeclarationHash, Values = named.Value.Context.Values.OrderBy(p => p.Key, StringComparer.Ordinal) }, Json))[..32];
                     previewGroup.Parts.Add(new() { RowId = row.Id, SourceRow = row.SourceRow, PartKey = partKey, AssignmentId = assignmentId,
                         WorkLocationId = location.Id, WorkLocationName = location.Name, WorkState = location.State, TemplateId = part.TemplateId,
                         PayrollDays = arithmetic.Preview.PayrollDays, PresentDays = arithmetic.Preview.PresentDays, PayableDays = arithmetic.Preview.PayableDays,
                         AnnualCtc = arithmetic.Preview.AnnualCtc, SalaryInputs = new(arithmetic.Inputs), ComponentScopes = new(part.ComponentScopes), RulesHash = rulesHash, SourceHash = sourceHash });
                     period.Parts.Add(new() { PartKey = partKey, AssignmentId = assignmentId, WorkLocationId = location.Id, WorkState = location.State,
                         SalaryStructureId = part.TemplateId, AnnualCtc = arithmetic.Preview.AnnualCtc, SalaryInputs = new(arithmetic.Inputs), ComponentScopes = new(part.ComponentScopes),
-                        PayrollDays = arithmetic.Preview.PayrollDays, PresentDays = arithmetic.Preview.PresentDays, PayableDays = arithmetic.Preview.PayableDays });
+                        PayrollDays = arithmetic.Preview.PayrollDays, PresentDays = arithmetic.Preview.PresentDays, PayableDays = arithmetic.Preview.PayableDays,
+                        NamedInputs = named?.Context });
                 }
                 catch (Exception error) when (error is InvalidOperationException or FormatException or OverflowException) { Error(error.Message, row.Id); }
             }
@@ -202,10 +224,20 @@ public sealed partial class ExcelPayrollSetupRepository
             if (employee?.ClientId == clientId) masters[id] = employee;
         }
         var settings = await PayrollDataTableStore.GetSetupJsonAsync(db, tx);
-        var identities = await ReadIdentitiesAsync(db, tx, clientId, batch.Month);
+        var namedProfile = await ReadSourceSetupNamedProfileAsync(db, tx, clientId, request, source, settings);
+        var identities = namedProfile is null ? await ReadIdentitiesAsync(db, tx, clientId, batch.Month)
+            : await ReadNamedSourceSetupIdentitiesAsync(db, tx, clientId, batch.Month);
+        var bankOwners = request.SourceIdentityReview is null ? null : await ReadSourceNamedBankOwnersAsync(db, tx);
         var locations = (await db.QueryAsync<LocationAllocationMaster>("SELECT Id,Name,State FROM worklocations WHERE ClientId=@ClientId AND IsActive=TRUE ORDER BY Id", new { ClientId = clientId }, tx)).ToList();
         var originals = source.CaptureVersion == 1 ? await ExcelPayslipRepository.ReadLinkedOriginalsAsync(db, tx, clientId, batch.Id) : [];
-        var plan = ReviewLocationAllocationPlan(clientId, request, batch, source, settings, identities, masters, locations, originals.ToList());
+        var plan = ReviewLocationAllocationPlan(clientId, request, batch, source, settings, identities, masters, locations, originals.ToList(), namedProfile, bankOwners);
+        if (namedProfile is not null)
+        {
+            var raw = await db.QuerySingleAsync<(string BatchHash, string SourceHash)>(@"SELECT SHA2(CAST(b.batch_json AS CHAR),256) BatchHash,SHA2(CAST(s.source_json AS CHAR),256) SourceHash
+FROM excel_payslip_batches b JOIN excel_payslip_calculation_sources s ON s.client_id=b.client_id AND s.batch_id=b.id WHERE b.client_id=@ClientId AND b.id=@BatchId",
+                new { ClientId = clientId, request.BatchId }, tx);
+            plan.NamedManifests = PrepareSourceSetupNamedManifests(plan, request, raw.BatchHash, raw.SourceHash);
+        }
         var preview = plan.Evidence.Preview;
         void Error(string message) => preview.Issues.Add(new("Error", message));
         var schemaReady = await HasLocationAllocationSchemaAsync(db, tx) && await HasReceiptTableAsync(db, tx);
@@ -256,12 +288,14 @@ AND pr.Status IN ('Draft','Queued','Processing','Pending Approval','Approved','P
         var monthly = (await db.QueryAsync("SELECT * FROM employee_monthly_attendance WHERE client_id=@ClientId AND employee_id IN @Ids AND attendance_month=@Month ORDER BY employee_id", new { ClientId = clientId, Ids = ids, Month = batch.Month }, tx)).ToList();
         var memberships = (await db.QueryAsync(@"SELECT m.employee_id,g.* FROM attendance_group_employees m JOIN attendance_groups g ON g.id=m.attendance_group_id WHERE g.client_id=@ClientId AND m.employee_id IN @Ids ORDER BY m.employee_id,g.id", new { ClientId = clientId, Ids = ids }, tx)).ToList();
         var policies = (await db.QueryAsync("SELECT * FROM modulesettings WHERE client_id=@ClientId AND ModuleCode IN ('payroll','leave_attendance') ORDER BY Id", new { ClientId = clientId }, tx)).ToList();
-        preview.PlanHash = Hash(JsonSerializer.Serialize(new { clientId, request, batch, source, settings, identities, masters, locations, originals, plan.Storage, attendance, monthly, memberships, policies, adjustments, conflicts }, Json));
+        preview.PlanHash = namedProfile is null
+            ? Hash(JsonSerializer.Serialize(new { clientId, request, batch, source, settings, identities, masters, locations, originals, plan.Storage, attendance, monthly, memberships, policies, adjustments, conflicts }, Json))
+            : Hash(JsonSerializer.Serialize(new { clientId, request, batch, source, settings, identities, masters, locations, originals, plan.Storage, attendance, monthly, memberships, policies, adjustments, conflicts, namedProfile, plan.NamedManifests }, Json));
         preview.Transfer!.PreparationStatus = preview.CanApply ? "Ready for reviewed location salary and source-period allocation Apply; saved Employee parity pending" : "Blocked";
         return plan;
     }
 
-    private async Task<ExcelPayrollSetupResult> ApplyLocationAllocationsAsync(int clientId, ExcelPayrollSetupApplyRequest apply, string actor)
+    private async Task<ExcelPayrollSetupResult> ApplyLocationAllocationsAsync(int clientId, ExcelPayrollSetupApplyRequest apply, string actor, int reviewerId = 0)
     {
         if (!Regex.IsMatch(apply.PlanHash ?? "", "^[a-fA-F0-9]{64}$") || !Guid.TryParse(apply.RequestId, out _))
             throw new InvalidOperationException("Preview the source-bound location allocations and provide their plan hash and stable request ID.");
@@ -275,9 +309,12 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND (request_id=@Requ
         if (receipt is { Status: "Applied" })
         {
             if (!SameReviewedRequest(receipt.RequestJson, apply.Request)) throw new InvalidOperationException("This source selection was already applied with different reviewed settings. Open its receipt.");
+            if (apply.Request.NamedInputReview is not null)
+                await NamedFormulaInputStore.RequireSourceSetupReplayAsync(db, tx, configuration, clientId, receipt.Id, apply.RequestId);
             var replay = JsonSerializer.Deserialize<ExcelPayrollSetupResult>(receipt.ResultJson, Json)!; replay.Replayed = true; await tx.CommitAsync(); return replay;
         }
         if (receipt is not null && (receipt.RequestId != apply.RequestId || receipt.Status is not ("Draft" or "Kept"))) throw new InvalidOperationException("Open the existing saved draft/result for this source selection.");
+        await LockSourceNamedBankOwnersAsync(db, tx, apply.Request);
         await LockApplyInputsAsync(db, tx, clientId, apply.Request);
         var employeeIds = apply.Request.LocationAllocations!.Groups.Select(group => group.EmployeeId).Order().ToArray();
         await db.QueryAsync<int>("SELECT Id FROM worklocations WHERE ClientId=@ClientId ORDER BY Id FOR UPDATE", new { ClientId = clientId }, tx);
@@ -285,6 +322,8 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND (request_id=@Requ
         var plan = await BuildLocationAllocationPlanAsync(db, tx, clientId, apply.Request);
         if (!plan.Evidence.Preview.CanApply) throw new InvalidOperationException(string.Join(" ", plan.Evidence.Preview.Issues.Where(issue => issue.Severity == "Error").Take(5).Select(issue => issue.Message)));
         RequireMatchingSetupPlanHash(plan.Evidence.Preview.PlanHash, apply.PlanHash!);
+        if (plan.NamedProfile is not null && reviewerId <= 0)
+            throw new InvalidOperationException("A trusted authenticated reviewer is required for first-source named assignments.");
         var result = new ExcelPayrollSetupResult { ImportId = receipt?.Id ?? Guid.NewGuid().ToString("N"), LocationAllocations = plan.Evidence.Preview.LocationAllocations,
             Transfer = plan.Evidence.Preview.Transfer, EmployeeIds = employeeIds.ToList(), UpdatedCount = employeeIds.Length,
             TemplateId = plan.Evidence.Preview.TemplateId, TemplateIds = plan.Evidence.Preview.TemplateIds.ToList() };
@@ -303,6 +342,9 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND (request_id=@Requ
                 result.LocationAllocations.PayrollPeriod, result.LocationAllocations.ConfigurationEffectiveFrom, part.RulesHash, part.SourceHash));
         }
         await InsertLocationAllocationStorageAsync(db, tx, assignments, allocations);
+        var namedManifests = plan.NamedManifests.Select(m => m with { RequestId = Guid.Parse(apply.RequestId).ToString("N"),
+            ReviewerId = reviewerId, ReviewedAtUtc = DateTime.UtcNow }).ToList();
+        foreach (var manifest in namedManifests) await NamedFormulaInputStore.InsertManifestAsync(db, tx, configuration, manifest);
         foreach (var row in plan.Evidence.Rows) result.TransferRows.Add(new(row.RowId, row.Employee.Id, row.Preview.PayrollDays, row.Preview.PresentDays, row.Preview.PayableDays,
             plan.Evidence.Batch.Rows.Single(sourceRow => sourceRow.Id == row.RowId).NetPay, row.Preview.Lines.ToList()));
         if (apply.Request.ImportAttendance)
@@ -322,6 +364,9 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND (request_id=@Requ
         if (receipt is null) await db.ExecuteAsync(@"INSERT INTO excel_payroll_setup_imports(id,client_id,batch_id,request_id,selection_hash,request_hash,plan_hash,status,request_json,result_json,created_by)
 VALUES(@Id,@ClientId,@BatchId,@RequestId,@SelectionHash,@RequestHash,@PlanHash,'Applied',CAST(@RequestJson AS JSON),CAST(@ResultJson AS JSON),@Actor)", values, tx);
         else await db.ExecuteAsync(@"UPDATE excel_payroll_setup_imports SET status='Applied',batch_id=@BatchId,selection_hash=@SelectionHash,request_hash=@RequestHash,plan_hash=@PlanHash,request_json=CAST(@RequestJson AS JSON),result_json=CAST(@ResultJson AS JSON) WHERE id=@Id AND status IN ('Draft','Kept')", values, tx);
+        if (namedManifests.Count > 0)
+            await NamedFormulaInputStore.InsertSourceSetupApprovalAsync(db, tx, configuration, clientId, result.ImportId,
+                apply.RequestId, requestHash, apply.PlanHash!, reviewerId, namedManifests);
         await tx.CommitAsync(); return result;
     }
 }

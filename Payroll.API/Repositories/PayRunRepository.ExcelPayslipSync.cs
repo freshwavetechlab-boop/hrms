@@ -70,11 +70,16 @@ public partial class PayRunRepository
                 link.ImportId,link.SourceHash,link.PayrollDays,link.PayableDays,ReviewedExtraDutyUnits:link.ReviewedExtraDutyUnits);
         await LoadLocationPartPeriodsAsync(db,tx,[employee],batch.Month);
         if(employee.LocationParts is not null)throw new InvalidOperationException("This employee has reviewed location allocations. Review their location salary inputs before generating a current Master payslip.");
+        // Validate against this current projection's salary basis. A historical
+        // reviewed amount cannot silently follow a changed current assignment.
+        // Source reads annotate identity only and never recurse into projection.
+        await LoadReviewedProfessionalTaxAsync(db,tx,[employee],batch.Month);
         await LoadPfPolicyPeriodsAsync(db,tx,[employee],batch.Month,setupJson);
         var selected=adjustments.Where(a=>a.EmployeeId==employee.Id).ToList();
         var result=BuildCurrentMasterSalary(employee,setupJson,batch,link,selected);
-        var tax=await CalculateMonthlyTdsAsync(db,tx,employee,result,batch.Month,persistSnapshot:false);
+        var tax=await CalculateMonthlyTdsAsync(db,tx,employee,result,batch.Month,persistSnapshot:false,setupJson:setupJson);
         if(tax.Calculated)result=BuildCurrentMasterSalary(employee,setupJson,batch,link,selected,tax.Amount,tax.ComponentCode);
+        result=WithSourceTdsEvidence(result,tax);
         using var details=JsonDocument.Parse(result.DetailsJson);
         List<ExcelPayslipAmount> Lines(Func<string,bool> category)=>details.RootElement.EnumerateArray().Where(l=>category(Text(l,"Category")))
             .Select(l=>new ExcelPayslipAmount{Label=Text(l,"Name"),Amount=NumberFrom(Text(l,"amount"))}).ToList();

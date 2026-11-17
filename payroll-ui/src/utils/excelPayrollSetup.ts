@@ -128,7 +128,11 @@ function resolveFixedCondition(formula: string, source: ExcelPayslipCalculationS
 export function proposeExcelPayrollSetup(batch: ExcelPayslipBatch, context: PayrollSetupContext, rowIds: string[], roles: Record<number, string> = {}) {
   const rows = batch.rows.filter(row => rowIds.includes(row.id)), notes: string[] = []
   const source = { ...context.source, columns: payrollSourceColumns(context.source, roles, rows.map(row => row.sourceRow)) }
-  const dayColumn = source.columns.find(c => /^(?:WORKINGDAYS?|ATTENDANCE|PAYABLEDAYS?|PAYBLEDAYS?|NUMBEROFWORKINGDAYSATTENDED)$/.test(normalized(c.sourceHeader)))
+  const dayColumn = source.columns.find(c => /^(?:WORKINGDAYS?|TOTALWORKINGDAYS?|ATTENDANCE|ATTEDANCE|PAIDDAYS?|PAYABLEDAYS?|PAYBLEDAYS?|NUMBEROFWORKINGDAYSATTENDED)$/.test(normalized(c.sourceHeader)))
+  // A present-day heading is a separate candidate, never a substitute for paid
+  // salary units. Its actual-worked meaning still needs the attendance review.
+  const presentColumns = source.columns.filter(c => /^(?:ACTUALPRESENTDAYS?|PRESENTDAYS?|DAYSPRESENT)$/.test(normalized(c.sourceHeader)))
+  const presentIndex = presentColumns.length === 1 ? presentColumns[0].columnIndex : undefined
   const periodColumn = source.columns.find(c => /^(?:MONTH|MONTHDAYS|PAYROLLDAYS|CALCULATIONDAYS|TOTALDAYS)$/.test(normalized(c.sourceHeader)) && rows.every(row => { const value = numeric(sourceCell(source, row.sourceRow, c.columnIndex)?.value); return value !== undefined && value >= 1 && value <= 31 }))
   const daysIndex = dayColumn?.columnIndex ?? -1, periodIndex = periodColumn?.columnIndex ?? -1
   const locations = source.columns.filter(column => /^(?:WORKLOCATION.*|LOCATION|LOCATIONNAME.*|PLACEOFPOSTING|POSTING)$/.test(normalized(column.sourceHeader)))
@@ -201,7 +205,7 @@ export function proposeExcelPayrollSetup(batch: ExcelPayslipBatch, context: Payr
       return String(value)
     })
     if (/!|\[|IF\(|VLOOKUP|SUM\(/.test(formula) || [...formula.matchAll(/\b([A-Z][A-Z0-9_]*)\(/g)].some(match => !['MIN', 'MAX', 'ROUND', 'ROUNDUP', 'ROUNDDOWN'].includes(match[1]))) throw new Error('This formula needs an explicit payroll rule.')
-    if (formula.length > 1000) throw new Error('Split this long formula into reviewed salary components.')
+    if (formula.length > 4096) throw new Error('Split formulas longer than 4096 characters into reviewed salary components.')
     return formula
   }
   for (const column of outputColumns) {
@@ -260,7 +264,7 @@ export function proposeExcelPayrollSetup(batch: ExcelPayslipBatch, context: Payr
   const sharedDivisor = periodIndex < 0 ? sharedPayrollDivisor(source, daysIndex) : null
   const fixedDays = periodIndex < 0 ? sharedDivisor?.days ?? payslipAttendanceBasis(source, daysIndex < 0 ? undefined : daysIndex).fixedDays : undefined
   const request: PayrollSetupRequest = { updateExistingConfiguration: true, batchId: batch.id, rowIds: rows.map(r => r.id), templateName: `${(batch.clientName || 'Client').slice(0, 70)} salary template`, effectiveFrom: `${batch.month}-01`,
-    payrollDaysColumnIndex: periodIndex, fixedPayrollDays: fixedDays, payrollDaysCell: sharedDivisor?.cell, sourceColumnRoles: Object.fromEntries(source.columns.map(column => [column.columnIndex, column.kind])), payableDaysColumnIndex: daysIndex, workWeek: suggested?.workWeek || context.workWeeks.find(w => normalized(w.label) === 'SUNDAYOFF')?.value || context.workWeeks[0]?.value || 'Sunday off',
+    payrollDaysColumnIndex: periodIndex, fixedPayrollDays: fixedDays, payrollDaysCell: sharedDivisor?.cell, sourceColumnRoles: Object.fromEntries(source.columns.map(column => [column.columnIndex, column.kind])), payableDaysColumnIndex: daysIndex, presentDaysColumnIndex: presentIndex, workWeek: suggested?.workWeek || context.workWeeks.find(w => normalized(w.label) === 'SUNDAYOFF')?.value || context.workWeeks[0]?.value || 'Sunday off',
     attendanceCycleStartDay: suggested?.attendanceCycleStartDay ?? 1, attendanceCycleEndDay: suggested?.attendanceCycleEndDay ?? new Date(Number(batch.month.slice(0,4)), Number(batch.month.slice(5,7)), 0).getDate(), payrollReportGenerationDay: suggested?.payrollReportGenerationDay ?? 3, defaultDepartment: suggested?.department || '', defaultDesignation: suggested?.designation || '', defaultGrade: suggested?.grade || '', defaultWorkLocationName: context.workLocations.length === 1 ? context.workLocations[0].name : 'Head office', sourceWorkLocationColumnIndex: locationIndex, defaultWorkLocationState: suggested?.workLocationState || '', createMissingWorkLocations: true, createMissingDropdownValues: true, preserveExistingAttendancePolicies: true,
     components, employeeDecisions: decisions, editableDefaults: { leave: { status: 'Draft', quotaApproved: false, proposedAnnualPaidLeave: 0, active: false },
       holiday: { status: 'Draft', year: Number(batch.month.slice(0, 4)), dates: [] }, shift: { status: 'Draft', requiredForMonthlyTotals: false }, attendance: { mode: 'Monthly', payableDaysSource: 'Uploaded salary workbook' } } }

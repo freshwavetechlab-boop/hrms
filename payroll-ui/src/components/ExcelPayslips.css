@@ -125,6 +125,20 @@
 .excel-payslip-attendance-value { display: inline-flex; flex-direction: column; gap: 2px; }
 .excel-payslip-attendance-value small { color: var(--ant-color-text-secondary, #595959); overflow-wrap: anywhere; }
 .excel-payslip-history-client { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.excel-payslip-saved-month { width: 175px; }
+.excel-payslip-saved-location { width: 240px; max-width: 100%; }
+.excel-payslip-saved-scope, .excel-payslip-saved-scope > .ant-space-item { min-width: 0; max-width: 100%; }
+.excel-payslip-history .ant-drawer-body { display: flex; flex-direction: column; min-height: 0; gap: 12px; overflow: hidden; }
+.excel-payslip-history-controls { flex: 0 0 auto; min-width: 0; }
+.excel-payslip-history .ant-smart-table.table-fill-height { flex: 1; min-height: 0; }
+@media (max-width: 480px) {
+  .excel-payslip-history .ant-drawer-body { padding: 12px; }
+  .excel-payslip-saved-scope { width: 100%; }
+  .excel-payslip-saved-scope > .ant-space-item { flex: 1 1 145px; }
+  .excel-payslip-saved-scope .ant-select { width: 100%; }
+  .excel-payslip-history .ant-table-toolbar { align-items: stretch; flex-wrap: wrap; }
+  .excel-payslip-history .ant-table-actions { min-width: 0; flex-wrap: wrap; }
+}
 
 /* Keep the primary source list usable when the shell or side panel is short.
    Extra history can scroll within this workspace instead of clipping row actions. */

@@ -80,7 +80,7 @@ WHERE client_id IN @ClientIds AND action_code IN ('batch-group-create','batch-gr
         public byte[]? SourcePayload { get; set; }
     }
     private static async Task<IReadOnlyList<ExcelPayslipBatchSummary>> FilterCatalogConsolidatedSummariesAsync(MySqlConnection db,
-        MySqlTransaction tx, IReadOnlyList<ExcelPayslipBatchSummary> summaries)
+        MySqlTransaction tx, IReadOnlyList<ExcelPayslipBatchSummary> summaries, bool includeConsolidated = false)
     {
         var clientIds = summaries.Select(summary => summary.ClientId).Distinct().ToArray();
         var audits = await ReadCatalogConsolidationAuditsAsync(db, clientIds, tx);
@@ -105,7 +105,7 @@ WHERE {string.Join(" OR ",terms)}", args, tx);
                     ExcelPayslipConsolidationCatalog.DecodeSnapshot(snapshot.BatchPayload,false)!,
                     ExcelPayslipConsolidationCatalog.DecodeSnapshot(snapshot.SourcePayload,true)));
         }
-        return ExcelPayslipConsolidationCatalog.Visible(summaries, groups, hashes);
+        return ExcelPayslipConsolidationCatalog.Visible(summaries, groups, hashes, includeConsolidated);
     }
     private static ConsolidationProof ConsolidationDocument(ConsolidationAudit audit,int clientId)
     {
@@ -257,23 +257,16 @@ VALUES(@ClientId,@Id,@RequestId,@RequestHash,@Action,@ObjectId,@BatchHash,@Id,@B
     }
     private static async Task<IReadOnlyList<ExcelPayslipBatchSummary>> FilterConsolidatedSummariesAsync(MySqlConnection db,int clientId,IReadOnlyList<ExcelPayslipBatchSummary> summaries,bool includeConsolidated=false)
     {
-        var groups=ActiveConsolidations(await ReadConsolidationAuditsAsync(db,clientId),clientId).ToList();
-        var fresh=new Dictionary<string,bool>(StringComparer.Ordinal);
-        foreach(var group in groups)
-        {
-            var canonical=await ReadConsolidationSnapshotAsync(db,null,clientId,group.Proof.CanonicalBatchId);
-            var sourceHashes=new Dictionary<string,string?>(StringComparer.Ordinal);
-            foreach(var source in group.Proof.Sources)sourceHashes[source.BatchId]=(await ReadConsolidationSnapshotAsync(db,null,clientId,source.BatchId))?.Hash;
-            fresh[group.Proof.GroupId]=ExcelPayslipSavedConsolidation.SnapshotBindingsMatch(canonical?.Hash,group.Proof.CanonicalHash,sourceHashes,group.Proof.Sources.ToDictionary(s=>s.BatchId,s=>s.SnapshotHash,StringComparer.Ordinal));
-        }
-        foreach(var summary in summaries)
-        {
-            var source=groups.SingleOrDefault(g=>g.Proof.Sources.Any(s=>s.BatchId==summary.Id));
-            var canonical=groups.SingleOrDefault(g=>g.Proof.CanonicalBatchId==summary.Id);
-            if(source.Proof is not null){summary.IsConsolidatedSource=true;summary.ConsolidationStale=!fresh[source.Proof.GroupId];summary.CanonicalBatchId=source.Proof.CanonicalBatchId;summary.ConsolidationGroupId=source.Proof.GroupId;}
-            if(canonical.Proof is not null){summary.ConsolidationStale=!fresh[canonical.Proof.GroupId];summary.ConsolidationGroupId=canonical.Proof.GroupId;summary.ConsolidatedSourceBatchIds=canonical.Proof.Sources.Select(s=>s.BatchId).ToList();}
-        }
-        return summaries.Where(s=>!ExcelPayslipSavedConsolidation.ShouldHideSource(s.IsConsolidatedSource,!s.ConsolidationStale,includeConsolidated)).ToArray();
+        if (summaries.Any(summary => summary.ClientId != clientId))
+            throw new InvalidOperationException("Saved batch summary ownership does not match the selected client.");
+        // List and Dashboard need only current snapshot hashes, not delivery state.
+        // Reuse the bounded catalog reader instead of one full snapshot round trip
+        // for every canonical/source version. Hash/proof semantics stay identical,
+        // and all audit/hash reads now share one read-only repeatable snapshot.
+        await using var tx = await db.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, isReadOnly: true);
+        var visible = await FilterCatalogConsolidatedSummariesAsync(db, tx, summaries, includeConsolidated);
+        await tx.RollbackAsync();
+        return visible;
     }
     internal static async Task RequireMutableConsolidationSnapshotAsync(MySqlConnection db,MySqlTransaction? tx,int clientId,string batchId)
     {

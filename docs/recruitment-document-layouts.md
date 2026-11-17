@@ -11,12 +11,17 @@ and the existing UIDAI branded offer path retain their existing behavior.
    upload its layout JSON.
 2. Open [Offers & Pre-boarding](/recruitment/offers-and-pre-onboarding) (or Client
    candidate profiles), then **Employee lists & offer letters**. This action
-   appears when the client has an active structured Offer Letter template.
+   prepares a standard template when the client has no active structured Offer
+   Letter template. Clients with saved lists or offers are green in the client picker.
 3. Choose **Import employee list** and the original `.xlsx`. Select the input
-   preset, actual header row and worksheet. Choose an existing **Work location /
-   institute (optional)** for this import, then review source column mapping,
-   defaults, identity matches and missing details before saving.
-4. Filter by source group and **Work location / institute**. For existing unlinked
+   preset, actual header row and worksheet, or download the selected document's
+   Excel template and fill its **Employees** sheet. The template includes a
+   **Location** column and an **Instructions** sheet. **Import batch name** labels
+   a source list within the client; it is separate from the client and job role.
+   Choose an existing **Work location / institute (optional)** to apply one
+   location to the whole import, or use each row's location column. Preview shows
+   existing and proposed new locations before saving.
+4. Filter by import batch and **Work location / institute**. For existing unlinked
    rows, select the appropriate people > **Set work location** > choose an
    existing location > **Link profiles**. This links the roster row; it does not
    change the linked candidate's personal current location or salary.
@@ -32,7 +37,9 @@ and the existing UIDAI branded offer path retain their existing behavior.
 Release is an explicit action protected by `recruitment.offer.issue`. It records
 an issued document and downloads its PDF (or a ZIP for several people). It does
 not automatically run an approval workflow, email the document, change a hiring
-stage, select/hire a candidate, convert to Employee Master or create payroll.
+stage, select/hire a candidate or create payroll. Release creates or links Employee
+Master through the shared identity rules; this master link is separate from actual
+joining confirmation in the candidate pipeline.
 It does not bypass or replace the existing native offer approval workflow.
 
 An unsigned draft and a plain released letter are different: a draft is for
@@ -72,6 +79,8 @@ or offer-issue access to open the workspace. Actions retain separate permissions
 | --- | --- |
 | Import a list | `recruitment.candidate.manage` |
 | Edit document inputs | `recruitment.candidate.manage` or `recruitment.offer.manage` |
+| Create / link a Simple JD | `recruitment.candidate.manage` or `recruitment.offer.manage` |
+| Create new work locations during import | `settings.manage` or `client.settings.manage`, with client-wide recruitment scope |
 | Link work locations / manage the client's signature image | `recruitment.offer.manage` |
 | Release signed or plain letters | `recruitment.offer.issue` |
 
@@ -91,12 +100,15 @@ location access. A city string, candidate `CurrentLocation`, or worksheet name
 does not establish a location link.
 
 For one location's list, select its master location during import. For a mixed
-list, import where unlinked access is permitted, filter/select each known group
-and use **Set work location**. Ordinary spreadsheet input mapping is still
-available, but mapping free-text institute/location columns does not create a
-master location or an authoritative FK link. Reimports retain an existing link
-when no replacement is selected; preview fingerprints and row revisions detect
-concurrent changes.
+list, supply a location name per employee. On reviewed import, a name reuses a
+unique active master for the same client. A new name creates an active,
+non-primary master and links the imported row when the user has the master
+permission above. Restricted users can use permitted existing locations.
+Inactive, ambiguous or unauthorized matches remain import issues. Preview never
+creates masters. An explicit location selected for the whole import takes
+precedence over source names; reimports with no source replacement retain an
+existing saved row link. Preview fingerprints and row revisions detect concurrent
+changes. Personal addresses are not inferred to be work-location addresses.
 
 Linked documents obtain institute name, address, city and state from that active
 master at generation. The renderer supplies `jobLocation`, `workLocation`,
@@ -112,6 +124,22 @@ client-wide view for users entitled to it. Recruitment **SelectedLocations** and
 **EmployeeLocation** restrictions use exact permitted master IDs; restricted
 users cannot see unlinked roster or pipeline records until an authorized user
 links them. A user's employee location is valid only within the same client.
+
+## One-click Simple JD
+
+Each employee row offers **Create JD** using its saved position name. When the
+name is missing, enter only **Position name** beside the action. The action saves
+a ready Simple JD with basic role purpose, responsibilities and skills; there is
+no review form or extra qualification/experience requirement. **View JD** opens
+the saved document. **Create selected JDs** handles selected rows with position
+names and reuses the same role within the selected client.
+
+Simple JDs are title-based role guides, not requisition approval or historical
+selection evidence. They do not create a requisition, vacancy, candidate pipeline
+or approval. An unambiguous matching approved hiring JD may be linked when the
+user is entitled to view it. Original hiring JD approval and eligibility rules
+are preserved. Changing a row's position name invalidates its old JD association;
+creating again links the current role. Links and creation are audited.
 
 ## Layout contract
 

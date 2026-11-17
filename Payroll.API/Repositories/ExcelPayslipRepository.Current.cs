@@ -38,7 +38,7 @@ public sealed partial class ExcelPayslipRepository
         return JsonNode.DeepEquals(Snapshot(batch),Snapshot(existing));
     }
 
-    internal static void ReusePayslipIdentity(ExcelPayslipBatch batch, ExcelPayslipBatch existing)
+    internal static void ReusePayslipIdentity(ExcelPayslipBatch batch, ExcelPayslipBatch existing,bool preserveReviewedRowIdentity=false)
     {
         if (batch.Month != existing.Month) throw new InvalidOperationException("An update must keep the saved salary month.");
         batch.Id = existing.Id; batch.CreatedAtUtc = existing.CreatedAtUtc; batch.CreatedBy = existing.CreatedBy;
@@ -46,6 +46,10 @@ public sealed partial class ExcelPayslipRepository
         batch.LocationBatch = existing.LocationBatch; batch.LocationLabel = existing.LocationLabel; batch.LocationImportHash = existing.LocationImportHash;
         foreach (var row in batch.Rows)
         {
+            // An imported acknowledgement is never authority. Only the saved
+            // same-row review below can survive an unchanged salary snapshot.
+            row.WarningReview = null;
+            row.WarningReviewToken = null;
             if(string.IsNullOrWhiteSpace(row.EmployeeCode))
             {
                 var generated=existing.Rows.Where(old=>old.SourceRow==row.SourceRow
@@ -64,11 +68,31 @@ public sealed partial class ExcelPayslipRepository
                 RetainUnchangedDecimalCaches(row,matches[0]);
                 var suppliedId = row.Id;
                 row.Id = matches[0].Id;
-                if (NegativeAmountHash(row) == NegativeAmountHash(matches[0])) row.NegativeAmountReview = matches[0].NegativeAmountReview;
-                else row.Id = suppliedId == matches[0].Id ? Guid.NewGuid().ToString("N") : suppliedId;
+                if (NegativeAmountHash(row) == NegativeAmountHash(matches[0]))
+                {
+                    row.NegativeAmountReview = matches[0].NegativeAmountReview;
+                    if (batch.ClientId == existing.ClientId && HasCurrentWarningReview(matches[0])
+                        && matches[0].WarningReview!.Warnings.SequenceEqual(SourceRowWarnings(row), StringComparer.Ordinal))
+                        row.WarningReview = matches[0].WarningReview;
+                }
+                // Reclassifying a reconciliation control as Information can
+                // change the review/PDF snapshot without changing this owned
+                // employee's actual payslip cash. Keep its delivery identity;
+                // the unchanged hash checks above still invalidate old reviews.
+                else if (batch.ClientId != existing.ClientId || !preserveReviewedRowIdentity&&!SamePayslipCash(row,matches[0]))
+                    row.Id = suppliedId == matches[0].Id ? Guid.NewGuid().ToString("N") : suppliedId;
                 row.Warnings = RowWarnings(row);
             }
         }
+    }
+
+    private static bool SamePayslipCash(ExcelPayslipRow row,ExcelPayslipRow old)
+    {
+        static bool Lines(List<ExcelPayslipAmount> current,List<ExcelPayslipAmount> previous) =>
+            current.Count==previous.Count && current.Zip(previous).All(pair =>
+                pair.First.Label==pair.Second.Label && pair.First.Amount==pair.Second.Amount);
+        return row.NetPay==old.NetPay && Lines(row.Earnings,old.Earnings)
+            && Lines(row.Deductions,old.Deductions) && Lines(row.EmployerContributions,old.EmployerContributions);
     }
 
     private static void RetainUnchangedDecimalCaches(ExcelPayslipRow row,ExcelPayslipRow old)

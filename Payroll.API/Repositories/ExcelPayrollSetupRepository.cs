@@ -11,10 +11,21 @@ using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
-public sealed partial class ExcelPayrollSetupRepository(IConfiguration configuration, EmployeeRepository employees)
+public sealed partial class ExcelPayrollSetupRepository(IConfiguration configuration, EmployeeRepository employees,
+    PayRunRepository? historicalPayRuns = null, PortableIntegrationCredentialProtector? historicalReviewProtector = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    internal const string MasterEmployeeNameSql = "TRIM(CONCAT_WS(' ',e.FirstName,e.LastName))";
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
+    internal static Task<IEnumerable<dynamic>> ReadAttendanceMembershipSnapshotAsync(MySqlConnection db,MySqlTransaction tx,int clientId,IReadOnlyCollection<int> employeeIds) =>
+        // A legacy policy reference is text, including references which are not
+        // GUIDs. Widen the projected CHAR metadata so MySqlConnector does not
+        // reinterpret CHAR(36) as Guid while Dapper reads the snapshot.
+        db.QueryAsync(@"SELECT m.employee_id,g.id,g.client_id,CAST(g.policy_batch_id AS CHAR(100)) policy_batch_id,
+g.name,g.work_location_id,g.department,g.designation,g.work_week,g.attendance_cycle_start_day,g.attendance_cycle_end_day,
+g.payroll_report_generation_day,g.is_active,g.created_at,g.updated_at,g.shift_id,g.attendance_mode,g.allowed_shift_ids_json
+FROM attendance_group_employees m JOIN attendance_groups g ON g.id=m.attendance_group_id
+WHERE g.client_id=@ClientId AND m.employee_id IN @Ids ORDER BY m.employee_id,g.id",new{ClientId=clientId,Ids=employeeIds},tx);
     internal const string Schema = @"CREATE TABLE IF NOT EXISTS excel_payroll_setup_imports (
 id CHAR(32) PRIMARY KEY,client_id INT NOT NULL,batch_id CHAR(32) NOT NULL,request_id VARCHAR(64) NOT NULL,
 selection_hash CHAR(64) NOT NULL,request_hash CHAR(64) NOT NULL,plan_hash VARCHAR(64) NOT NULL DEFAULT '',
@@ -40,7 +51,7 @@ UNIQUE KEY ux_excel_payroll_setup_selection(client_id,batch_id,selection_hash));
 CalculationType calculationType,PayType payType,ValueText value,Formula formula,BaseComponent baseComponent,ProRata proRata,Taxable taxable,Active active,Priority priority FROM salarycomponents ORDER BY Priority,Code");
         var workWeeks = await db.QueryAsync("SELECT DISTINCT Value value,Value label FROM dropdownmasters WHERE Type='Work Week' AND IsActive=TRUE AND ClientId IN (0,@ClientId) ORDER BY Value", new { ClientId = clientId });
         var workLocations = await db.QueryAsync("SELECT Id id,Name name FROM worklocations WHERE ClientId=@ClientId AND IsActive=TRUE ORDER BY Name", new { ClientId = clientId });
-        var employeeRows = await db.QueryAsync(@"SELECT e.Id id,e.EmployeeCode employeeCode,TRIM(CONCAT(e.FirstName,' ',e.LastName)) employeeName,
+        var employeeRows = await db.QueryAsync(@"SELECT e.Id id,e.EmployeeCode employeeCode," + MasterEmployeeNameSql + @" employeeName,
 e.WorkLocationId workLocationId,COALESCE(w.Name,'') workLocation,e.Designation designation FROM employees e LEFT JOIN worklocations w ON w.Id=e.WorkLocationId
 WHERE e.ClientId=@ClientId AND " + EmployeeEmploymentRules.EligibleInMonth("e", "@Month") + " ORDER BY e.FirstName,e.LastName", new { ClientId = clientId, Month = batch.Month });
         var ready = await HasReceiptTableAsync(db);
@@ -121,10 +132,10 @@ VALUES(@Id,@ClientId,@BatchId,@RequestId,@SelectionHash,@Hash,'','Draft',CAST(@J
         await tx.RollbackAsync(); return plan.Preview;
     }
 
-    public async Task<ExcelPayrollSetupResult> ApplyAsync(int clientId, ExcelPayrollSetupApplyRequest apply, string actor)
+    public async Task<ExcelPayrollSetupResult> ApplyAsync(int clientId, ExcelPayrollSetupApplyRequest apply, string actor, int reviewerId = 0)
     {
         ValidateRequest(apply.Request);
-        if (apply.Request.LocationAllocations is not null) return await ApplyLocationAllocationsAsync(clientId, apply, actor);
+        if (apply.Request.LocationAllocations is not null) return await ApplyLocationAllocationsAsync(clientId, apply, actor, reviewerId);
         if (!Regex.IsMatch(apply.PlanHash ?? "", "^[a-fA-F0-9]{64}$") || !Guid.TryParse(apply.RequestId, out _))
             throw new InvalidOperationException("Preview the reviewed setup first and provide its plan hash and request ID.");
         await using var db = Db(); await db.OpenAsync();
@@ -190,7 +201,8 @@ SELECT Id,Name,@LocationName,'','',@State,'','',FALSE,TRUE FROM clients WHERE Id
             var id = unchanged ? row.Employee.Id : await EmployeeRepository.SaveExcelPayrollSetupEmployeeAsync(db, tx, row.Employee, plan.EffectiveFrom, actor,
                 $"Reviewed salary Excel {apply.Request.BatchId}, row {row.SourceRow}, import {result.ImportId}",
                 apply.Request.CorrectionOfImportId is null ? null
-                    : $"Reviewed salary Excel {apply.Request.BatchId}, row {row.SourceRow}, import {apply.Request.CorrectionOfImportId}");
+                    : $"Reviewed salary Excel {apply.Request.BatchId}, row {row.SourceRow}, import {apply.Request.CorrectionOfImportId}",
+                row.ReviewedInitialBudgetAnnual);
             row.Employee.Id = id; result.EmployeeIds.Add(id);
             var sourceIdentity=plan.Batch.Rows.Single(item=>item.Id==row.RowId);
             result.MasterLinks.Add(new(row.RowId,id,sourceIdentity.SourceRow,ExcelPayslipMasterSynchronization.IdentityHash(sourceIdentity),
@@ -244,9 +256,15 @@ VALUES(@Id,@ClientId,@BatchId,@RequestId,@SelectionHash,@RequestHash,@PlanHash,@
 
     private async Task<Plan> BuildPlanAsync(MySqlConnection db, MySqlTransaction tx, int clientId, ExcelPayrollSetupRequest request)
     {
+        RequireConfigurationDifferenceReviewEnabled(configuration,request);
+        await PayrollFormulaStorage.RequireAsync(db,tx,PayrollFormulaStorage.SetupRequestFormulas(request));
         if (request.LocationAllocations is not null) return (await BuildLocationAllocationPlanAsync(db, tx, clientId, request)).Evidence;
         await ExcelPayslipRepository.RequireCurrentConsolidationSourceAsync(db,tx,clientId,request.BatchId);
         var (batch, source) = await ReadSourceAsync(db, tx, clientId, request.BatchId);
+        BindRecurringBlankInputReview(request,batch,source);
+        if(request.ReviewedSourceMonthlyCtcOperand)
+            foreach(var row in batch.Rows.Where(r=>request.RowIds.Contains(r.Id)))
+                _=ReviewedNormalSourceCtcBoundary(request,source,row);
         var reviewedIdentityColumn = ReviewedIdentityColumn(batch,source,request);
         var reviewedIdentityColumns = reviewedIdentityColumn is int selectedColumn
             ? request.RowIds.ToDictionary(id=>id,_=>selectedColumn,StringComparer.Ordinal) : null;
@@ -296,7 +314,7 @@ VALUES(@Id,@ClientId,@BatchId,@RequestId,@SelectionHash,@RequestHash,@PlanHash,@
         if (modeColumns != 2) Error("The additive attendance scheduling schema upgrade is required for an explicit Monthly policy.");
         if (request.DefaultWorkLocationId is > 0 && await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM worklocations WHERE Id=@Id AND ClientId=@ClientId AND IsActive=TRUE", new { Id = request.DefaultWorkLocationId, ClientId = clientId }, tx) == 0)
             Error("The default work location must be active and belong to this client.");
-        var identities = (await db.QueryAsync<Identity>(@"SELECT e.Id,e.ClientId,e.EmployeeCode,CONCAT(e.FirstName,' ',e.LastName) Name,e.IsActive," + EmployeeEmploymentRules.EligibleInMonth("e", "@Month") + @" EligibleForMonth,
+        var identities = (await db.QueryAsync<Identity>(@"SELECT e.Id,e.ClientId,e.EmployeeCode," + MasterEmployeeNameSql + @" Name,e.IsActive," + EmployeeEmploymentRules.EligibleInMonth("e", "@Month") + @" EligibleForMonth,
 COALESCE(p.PanNumber,'') Pan,COALESCE(p.AadhaarNumber,'') Aadhaar,COALESCE(p.UanNumber,'') Uan,COALESCE(w.Name,'') WorkLocation
 FROM employees e LEFT JOIN employeepersonaldetails p ON p.EmployeeId=e.Id LEFT JOIN worklocations w ON w.Id=e.WorkLocationId WHERE e.ClientId=@ClientId ORDER BY e.Id", new { ClientId = clientId, Month = batch.Month }, tx)).ToList();
         var locations = (await db.QueryAsync<Location>("SELECT Id,Name FROM worklocations WHERE ClientId=@ClientId AND IsActive=TRUE ORDER BY Id", new { ClientId = clientId }, tx)).ToList();
@@ -343,6 +361,18 @@ FROM employees e LEFT JOIN employeepersonaldetails p ON p.EmployeeId=e.Id LEFT J
             {
                 var retainedCtc = request.UpdateExistingConfiguration && !request.MonthlyCtcColumnIndex.HasValue && employee.Id>0 && employee.AnnualCtc>0 ? employee.AnnualCtc : (decimal?)null;
                 var arithmetic = CalculateRow(clientId, request, plan.Components, sourceRow, row, source.Columns.Where(c => c.BlankAsZero).Select(c => c.ColumnIndex).ToHashSet(), source,retainedCtc);
+                var reviewedInitialBudget=ReviewedInitialBudgetAnnual(request,employee,arithmetic.Preview.AnnualCtc,()=>{
+                    var independent=CalculateRow(clientId,request,plan.Components,sourceRow,row,
+                        source.Columns.Where(c=>c.BlankAsZero).Select(c=>c.ColumnIndex).ToHashSet(),source,retainedAnnualCtc:null);
+                    if(independent.Issues.Any(issue=>issue.Severity=="Error")||independent.Preview.Gross is null||independent.Preview.Net is null)
+                        throw new InvalidOperationException("Independent initial salary budget could not be calculated.");
+                    return independent.Preview.AnnualCtc;
+                });
+                if(reviewedInitialBudget.HasValue && await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM employees e
+WHERE e.Id=@Id AND e.ClientId=@ClientId AND e.AnnualCtc=@Annual AND (e.SalaryStructureId IS NULL OR TRIM(e.SalaryStructureId)='')
+AND e.SalaryJson IS NOT NULL AND JSON_TYPE(e.SalaryJson)='OBJECT' AND JSON_LENGTH(e.SalaryJson)=0
+AND NOT EXISTS(SELECT 1 FROM employeesalarycomponents c WHERE c.EmployeeId=e.Id)",new{employee.Id,employee.ClientId,Annual=reviewedInitialBudget.Value},tx)!=1)
+                    reviewedInitialBudget=null;
                 planned.Preview = arithmetic.Preview;
                 planned.SalaryInputs = arithmetic.Inputs;
                 planned.Adjustments = arithmetic.Adjustments;
@@ -371,16 +401,21 @@ WHERE pe.EmployeeId=@Id AND pr.ClientId=@ClientId AND pr.PayPeriod=@Month AND pe
                     if (groups > 1) Error("The selected employee belongs to multiple active attendance policies. Resolve the ambiguous membership before applying.", row.Id);
                     else if (groups == 1 && !request.PreserveExistingAttendancePolicies) Error("This employee already has an attendance policy. Enable Preserve existing attendance policies to reuse it unchanged.", row.Id);
                     else if (groups == 1) plan.Preview.Issues.Add(new("Info", "Existing attendance membership will be retained; reviewed monthly totals will be saved without replacing that policy.", row.Id));
-                    var later = (await db.QueryAsync<EmployeeRepository.ExcelPayrollSalaryHistory>(@"SELECT Id,EffectiveFrom,Status,SalaryStructureId,AnnualCtc,CAST(SalaryJson AS CHAR) SalaryJson,COALESCE(ChangeReason,'') ChangeReason
+                    var salaryProjection=reviewedInitialBudget.HasValue?"COALESCE(CAST(SalaryJson AS CHAR),'null')":"CAST(SalaryJson AS CHAR)";
+                    var later = (await db.QueryAsync<EmployeeRepository.ExcelPayrollSalaryHistory>($@"SELECT Id,EffectiveFrom,Status,SalaryStructureId,AnnualCtc,{salaryProjection} SalaryJson,COALESCE(ChangeReason,'') ChangeReason
 FROM employee_it0008_basic_pay WHERE EmployeeId=@Id AND EffectiveFrom>=@Date ORDER BY EffectiveFrom,Id", new { employee.Id, Date = plan.EffectiveFrom }, tx)).ToList();
                     try
                     {
                         var correctionReference = request.CorrectionOfImportId is null ? null
                             : $"Reviewed salary Excel {request.BatchId}, row {row.SourceRow}, import {request.CorrectionOfImportId}";
-                        var markers = EmployeeRepository.ExcelSalaryHistoryMarkers(later, plan.EffectiveFrom, correctionReference);
+                        if(later.Any(history=>history.EffectiveFrom.Date>plan.EffectiveFrom.Date&&history.AnnualCtc!=0))
+                            planned.ReviewedInitialBudgetAnnual=reviewedInitialBudget;
+                        var markers = EmployeeRepository.ExcelSalaryHistoryMarkers(later, plan.EffectiveFrom, correctionReference,planned.ReviewedInitialBudgetAnnual);
                         if (markers.Length > 0) plan.Preview.Issues.Add(new("Review",
                             correctionReference is null
-                                ? $"Initial empty salary-history snapshots will be retained. Salary starts {plan.EffectiveFrom:yyyy-MM-dd}, with matching salary versions at the original setup dates ({string.Join(", ", markers.Select(d=>d.ToString("yyyy-MM-dd")))}). No configured future salary can be replaced."
+                                ? planned.ReviewedInitialBudgetAnnual.HasValue
+                                    ? $"Reviewed matching initial salary-budget snapshots will retain their values. Normal versions start {plan.EffectiveFrom:yyyy-MM-dd} and at the original marker dates ({string.Join(", ", markers.Select(d=>d.ToString("yyyy-MM-dd")))}); active marker status/end dates close through normal versioning. No configured future salary or annual target can be replaced."
+                                    : $"Initial empty salary-history snapshots will be retained. Salary starts {plan.EffectiveFrom:yyyy-MM-dd}, with matching salary versions at the original setup dates ({string.Join(", ", markers.Select(d=>d.ToString("yyyy-MM-dd")))}). No configured future salary can be replaced."
                                 : $"Original-import salary history will be retained. Corrected versions are appended at its original effective dates ({string.Join(", ", markers.Select(d=>d.ToString("yyyy-MM-dd")))}); unrelated configured history cannot be replaced.", row.Id));
                     }
                     catch (InvalidOperationException e) { Error(e.Message, row.Id); }
@@ -429,7 +464,7 @@ FROM employee_monthly_attendance WHERE client_id=@ClientId AND attendance_month=
 FROM payruns pr JOIN payrunemployees pe ON pe.PayRunId=pr.Id WHERE pr.ClientId=@ClientId AND pe.EmployeeId IN @Ids AND pr.PayPeriod<=@Month ORDER BY pr.Id,pe.EmployeeId",
             new { ClientId = clientId, Ids = existingIds, Month = batch.Month }, tx)).ToList();
         var adjustmentsState = existingIds.Length == 0 ? [] : (await db.QueryAsync("SELECT * FROM payrolladjustments WHERE ClientId=@ClientId AND EmployeeId IN @Ids AND PayPeriod=@Month ORDER BY EmployeeId,Id",new { ClientId=clientId,Ids=existingIds,Month=batch.Month },tx)).ToList();
-        var membershipState = existingIds.Length == 0 ? [] : (await db.QueryAsync(@"SELECT m.employee_id,g.* FROM attendance_group_employees m JOIN attendance_groups g ON g.id=m.attendance_group_id WHERE g.client_id=@ClientId AND m.employee_id IN @Ids ORDER BY m.employee_id,g.id", new { ClientId = clientId, Ids = existingIds }, tx)).ToList();
+        var membershipState = existingIds.Length == 0 ? [] : (await ReadAttendanceMembershipSnapshotAsync(db,tx,clientId,existingIds)).ToList();
         if(request.AttendanceReview?.Mode=="VerifyExistingNative")plan.NativeAttendanceInputs=await PayRunRepository.ReadNativeAttendanceProofAsync(db,tx,clientId,batch.Month,existingIds,allowRecordedMonthlyForSalaryCorrection:request.CorrectionOfImportId is not null);
         if(request.TransferReviewVersion==1 && request.TemplateScopeReviewVersion!=1 && !request.TemplateDecisions.All(d=>d.KeepExisting)) Error("Refresh the saved-batch setup and complete explicit template applicability review before source transfer.");
         if(request.TemplateScopeReviewVersion==1)plan.TemplateScopes=await ReadTemplateScopesAsync(db,tx,clientId);
@@ -454,6 +489,8 @@ FROM payruns pr JOIN payrunemployees pe ON pe.PayRunId=pr.Id WHERE pr.ClientId=@
         }
         plan.Preview.PlanHash = Hash(JsonSerializer.Serialize(new { clientId, request, batch, source, setupJson, identities, locations, existingState, salaryHistory, attendanceState, membershipState,
             templateScopes=plan.TemplateScopes, linkedOriginals=plan.LinkedOriginals, nativeAttendanceInputs=plan.NativeAttendanceInputs, policyJson, attendanceJson, taxSettings, taxVersions, selectedRegimes, payrollHistory,adjustmentsState, adjustmentReuses=plan.AdjustmentReuses,correctionReceiptFingerprint=plan.CorrectionReceiptFingerprint }, Json));
+        var initialBudgets=plan.Rows.Where(row=>row.ReviewedInitialBudgetAnnual.HasValue).Select(row=>new{row.RowId,EmployeeId=row.Employee.Id,Annual=row.ReviewedInitialBudgetAnnual!.Value}).OrderBy(row=>row.RowId,StringComparer.Ordinal).ToArray();
+        if(initialBudgets.Length>0)plan.Preview.PlanHash=Hash(JsonSerializer.Serialize(new{basePlanHash=plan.Preview.PlanHash,reviewedInitialBudgets=initialBudgets},Json));
         return plan;
     }
 
@@ -512,6 +549,7 @@ FROM payruns pr JOIN payrunemployees pe ON pe.PayRunId=pr.Id WHERE pr.ClientId=@
         public bool KeepExisting { get; set; }
         public string ExistingTemplateId { get; set; } = "";
         public decimal ExistingAnnualCtc { get; set; }
+        public decimal? ReviewedInitialBudgetAnnual { get; set; }
         public Dictionary<string, decimal> ExistingSalaryInputs { get; set; } = [];
         public string RowId { get; set; } = ""; public int SourceRow { get; set; }
         public Employee Employee { get; set; } = new();

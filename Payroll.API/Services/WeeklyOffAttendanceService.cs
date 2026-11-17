@@ -15,7 +15,16 @@ public static class WeeklyOffAttendanceService
 {
     private sealed record EmployeeScope(int EmployeeId, int WorkLocationId);
     private sealed record Policy(int EmployeeId, string WorkWeek, int StartDay, int EndDay);
-    private sealed record Preference(int WorkLocationId, string WorkWeek, int StartDay, int EndDay);
+    // MySQL can expose COALESCE(integer,0) as Int64 even for an INT column.
+    // Property materialization keeps checked numeric conversion instead of
+    // requiring one exact positional-constructor metadata signature.
+    private sealed class Preference
+    {
+        public int WorkLocationId { get; set; }
+        public string WorkWeek { get; set; } = "";
+        public int StartDay { get; set; }
+        public int EndDay { get; set; }
+    }
     private sealed record WeekConfig(int ClientId, string Value, string ConfigJson);
     private sealed record Daily(int EmployeeId, DateTime Date, string Status, decimal PayableValue, string Remarks);
     private sealed record LockedPeriod(int EmployeeId, string PayPeriod);

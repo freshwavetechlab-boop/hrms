@@ -139,8 +139,9 @@ public sealed partial class RecruitmentDocumentRepository
         await using var db = Db(); await db.OpenAsync();
         if (!await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM clients WHERE Id=@Id AND IsActive=TRUE)", new { Id = request.ClientId })) throw new InvalidOperationException("Select an active client.");
         if (request.WorkLocationId is <= 0) throw new InvalidOperationException("Select an existing work location or leave it unassigned.");
-        await RequireLocationAsync(db, user, request.ClientId, request.WorkLocationId);
+        if (request.WorkLocationId.HasValue) await RequireLocationAsync(db, user, request.ClientId, request.WorkLocationId);
         var locations = await RecruitmentAccessScope.WorkLocationsAsync(db, user, request.ClientId);
+        var clientLocations = (await db.QueryAsync<WorkLocation>("SELECT * FROM worklocations WHERE ClientId=@ClientId ORDER BY Id", new { request.ClientId })).ToList();
         var template = await TemplateAsync(db, request.ClientId, request.TemplateId); var layout = LayoutDocumentPdfService.Parse(template.BodyTemplate);
         if (!layout.Inputs.Any(f => f.Key == "candidateName") || !layout.Inputs.Any(f => f.Key is "candidateEmail" or "candidatePhone"))
             throw new InvalidOperationException("The roster template must define candidateName and an email or phone input.");
@@ -159,6 +160,7 @@ public sealed partial class RecruitmentDocumentRepository
             var values = NormalizeInputs(layout, raw);
             var row = new RecruitmentRosterPreviewRow { SourceRow = source.Row, WorkLocationId = request.WorkLocationId, CandidateName = name, Email = raw.GetValueOrDefault("candidateEmail", "").Trim(), Phone = Phones(raw.GetValueOrDefault("candidatePhone", "")).FirstOrDefault() ?? "", PositionTitle = values.GetValueOrDefault("positionTitle", ""), WorkLocation = values.GetValueOrDefault("jobLocation", ""), Values = values,
                 SourceValues = header.Values.Select((h, i) => new { Key = (i + 1).ToString(CultureInfo.InvariantCulture) + ": " + h, Value = source.Values.ElementAtOrDefault(i) ?? "" }).ToDictionary(p => p.Key, p => p.Value) };
+            if (!request.WorkLocationId.HasValue) row.ProposedWorkLocation = ReadImportLocation(layout, raw, request.ClientId, row.ImportIssues, header.Values, source.Values);
             if (name.Length > 240 || name.Split(' ', 2)[0].Length > 120 || name.Split(' ', 2).ElementAtOrDefault(1)?.Length > 120) row.ImportIssues.Add("Candidate name is too long for the profile");
             if (row.Email.Length > 190 || row.Email.Length > 0 && !Regex.IsMatch(row.Email, @"^[^\s@<>;,]+@[^\s@<>;,]+\.[^\s@<>;,]+$")) row.ImportIssues.Add("Review the email address");
             if (row.Phone.Length == 0 && row.Email.Length == 0) row.ImportIssues.Add("A valid email or phone is required");
@@ -196,19 +198,24 @@ public sealed partial class RecruitmentDocumentRepository
                         else
                         {
                             row.ExistingRevision = RowRevision(old.ValuesJson, old.WorkLocationId);
-                            row.WorkLocationId ??= old.WorkLocationId;
+                            if (string.IsNullOrWhiteSpace(row.ProposedWorkLocation?.Name)) row.WorkLocationId ??= old.WorkLocationId;
                             row.Values = MergeValues(old.ValuesJson, row.Values);
                         }
                     }
                 }
             }
-            if (row.ImportIssues.Count > 0) row.MatchStatus = "Review identity";
-            var location = locations.FirstOrDefault(item => item.Id == row.WorkLocationId);
+            ResolveImportLocation(row, request.ClientId, user, clientLocations, locations.Select(location => location.Id).ToHashSet());
+        }
+        MergeNewImportLocationDetails(preview.Rows);
+        foreach (var row in preview.Rows)
+        {
+            if (row.ImportIssues.Count > 0) row.MatchStatus = "Review import";
+            var location = row.WorkLocationStatus is "Existing" or "New" ? row.ProposedWorkLocation : null;
             if (location is not null) { ApplyLocationValues(row.Values, location); row.WorkLocation = location.Name; }
             LayoutDocumentPdfService.PrepareValues(layout, row.Values, false, out var missing); row.DocumentIssues = missing;
-            if (row.WorkLocationId.HasValue && location is null) row.DocumentIssues.Add("The linked work location is unavailable or inactive");
+            if (row.WorkLocationId.HasValue && row.WorkLocationStatus != "Existing") row.DocumentIssues.Add("The linked work location is unavailable or inactive");
         }
-        var fingerprint = JsonSerializer.Serialize(new { request.ClientId, request.TemplateId, request.WorkLocationId, Group = request.SourceGroup.Trim(), preview.FileHash, TemplateHash = Hash(template.BodyTemplate), preview.SheetName, request.HeaderRow, Mapping = mapping.OrderBy(p => p.Key).ToArray(), Defaults = request.Defaults.OrderBy(p => p.Key).ToArray(), Existing = preview.Rows.Select(r => new { r.SourceRow, r.ExistingRevision, r.WorkLocationId }), Locations = locations.Where(l => preview.Rows.Any(r => r.WorkLocationId == l.Id)).OrderBy(l => l.Id) }, Json);
+        var fingerprint = JsonSerializer.Serialize(new { request.ClientId, request.TemplateId, request.WorkLocationId, Group = request.SourceGroup.Trim(), preview.FileHash, TemplateHash = Hash(template.BodyTemplate), preview.SheetName, request.HeaderRow, Mapping = mapping.OrderBy(p => p.Key).ToArray(), Defaults = request.Defaults.OrderBy(p => p.Key).ToArray(), Existing = preview.Rows.Select(r => new { r.SourceRow, r.ExistingRevision, r.WorkLocationId }), LocationPlans = preview.Rows.Select(r => new { r.SourceRow, r.WorkLocationStatus, r.WorkLocation, Proposed = r.ProposedWorkLocation, r.ImportIssues }), Locations = locations.Where(l => preview.Rows.Any(r => r.WorkLocationId == l.Id)).OrderBy(l => l.Id) }, Json);
         preview.PreviewToken = Hash(fingerprint); return preview;
     }
     private static IEnumerable<string> Identities(RecruitmentRosterPreviewRow row)

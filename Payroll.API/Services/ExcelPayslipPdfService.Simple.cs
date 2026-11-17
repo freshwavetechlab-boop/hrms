@@ -116,19 +116,22 @@ public sealed partial class ExcelPayslipPdfService
     }
 
     private static SimplePlan MakeSimplePlan(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, int decimals = 2,
-        ExcelPayslipCalculationSource? calculationSource = null)
+        ExcelPayslipCalculationSource? calculationSource = null, ExcelPayslipPdfPresentationOptions? presentation = null)
     {
-        var information = SimpleInformation(batch, row);
+        IReadOnlyList<SimpleField> information = presentation?.ExplicitSimpleInformation == true
+            ? new[] { new SimpleField("Employee Name",row.EmployeeName) }.Concat(presentation.ShowClient ? new[] { new SimpleField("Department",batch.ClientName) } : [])
+                .Concat(row.Information.Select(field=>new SimpleField(field.Label,InformationValue(field,row,decimals)))).ToArray()
+            : SimpleInformation(batch, row);
         var income = SimpleRates(row, calculationSource, decimals).ToList();
-        income.AddRange(row.Earnings.Where(item => item.Amount != 0).Select(item => new SimpleField(FieldKey(item.Label) is "wages" or "earnedwages" ? "Earn Salary" : item.Label, Amount(item.Amount, decimals))));
-        var deductions = row.Deductions.Where(item => item.Amount != 0).Select(item => new SimpleField(item.Label, Amount(item.Amount, decimals))).ToList();
-        var employerAmounts = row.EmployerContributions.Where(item => item.Amount != 0).ToList();
+        income.AddRange(row.Earnings.Where(item => presentation?.KeepMappedZeroRows == true || item.Amount != 0).Select(item => new SimpleField(FieldKey(item.Label) is "wages" or "earnedwages" ? "Earn Salary" : item.Label, Amount(item.Amount, decimals))));
+        var deductions = row.Deductions.Where(item => presentation?.KeepMappedZeroRows == true || item.Amount != 0).Select(item => new SimpleField(item.Label, Amount(item.Amount, decimals))).ToList();
+        var employerAmounts = row.EmployerContributions.Where(item => presentation?.KeepMappedZeroRows == true || item.Amount != 0).ToList();
         var employer = employerAmounts.Select(item => new SimpleField(EmployerLabel(item.Label), Amount(item.Amount, decimals))).ToList();
-        var employerTotal = employerAmounts.Sum(item => item.Amount);
+        var employerTotal = presentation?.NativeEmployerTotal ?? employerAmounts.Sum(item => item.Amount);
         for (var size = 11d; size >= 7; size -= .5)
         {
             double Height(string text, double width, bool bold = false) => Math.Max(1, Wrap(gfx, text, Font(size, bold), width).Count) * size * 1.36 + 12;
-            var infoHeights = Enumerable.Range(0, 4).Select(index => information.Skip(index * 2).Take(2)
+            var infoHeights = Enumerable.Range(0, (information.Count+1)/2).Select(index => information.Skip(index * 2).Take(2)
                 .Max(field => Math.Max(Height(field.Label, 119, true), Height(field.Value, Width / 2 - 147, true)))).ToArray();
             double MoneyHeight(SimpleField field) => Math.Max(Height(field.Label, Width / 2 - 103, true),
                 decimal.TryParse(field.Value, NumberStyles.Number, CultureInfo.InvariantCulture, out _) ? 0 : Height(field.Value, 75, true));
@@ -147,22 +150,22 @@ public sealed partial class ExcelPayslipPdfService
     }
 
     private static void DrawSimplePage(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, XImage logo, int decimals,
-        ExcelPayslipCalculationSource? calculationSource)
+        ExcelPayslipCalculationSource? calculationSource, ExcelPayslipPdfPresentationOptions? presentation = null)
     {
-        var plan = MakeSimplePlan(gfx, batch, row, decimals, calculationSource);
+        var plan = MakeSimplePlan(gfx, batch, row, decimals, calculationSource, presentation);
         var bold = Font(plan.Size, true);
-        DrawBrandingHeader(gfx, logo);
+        DrawBrandingHeader(gfx, logo, presentation);
         var y = Top + HeaderHeight;
         Box(Left, Width - 185, 25, "Salary Slip", centered: true, fill: Pink);
         Box(Left + Width - 185, 54, 25, "Month", fill: Pink);
         Box(Left + Width - 131, 131, 25, MonthLabel(batch.Month), fill: Pink);
         y += 25;
-        for (var index = 0; index < 4; index++)
+        for (var index = 0; index < plan.InformationHeights.Length; index++)
         {
             var height = plan.InformationHeights[index];
             for (var side = 0; side < 2; side++)
             {
-                var field = plan.Information[index * 2 + side]; var x = Left + side * Width / 2;
+                var field = plan.Information.ElementAtOrDefault(index * 2 + side) ?? new SimpleField("",""); var x = Left + side * Width / 2;
                 Box(x, 133, height, field.Label);
                 Box(x + 133, Width / 2 - 133, height, field.Value);
             }
@@ -204,8 +207,9 @@ public sealed partial class ExcelPayslipPdfService
         Box(Left, Width, plan.FooterNoteHeight, "", fill: Pale);
         Text(gfx, EmployerNote, Font(8), Left + 7, y + 6, Width - 14, plan.FooterNoteHeight - 12);
         y += plan.FooterNoteHeight;
-        gfx.DrawString("This is a system-generated payslip and does not require a signature.", Font(8), XBrushes.Gray,
+        if (presentation?.Footer is null or "This is a system-generated payslip and does not require a signature.") gfx.DrawString("This is a system-generated payslip and does not require a signature.", Font(8), XBrushes.Gray,
             new XRect(Left, y + 8, Width, 18), XStringFormats.TopCenter);
+        else Text(gfx, presentation.Footer ?? "This is a system-generated payslip and does not require a signature.", Font(8), Left, y + 8, Width, 24, centered: true);
 
         void EmployerCells(SimpleField field, double height, XBrush? fill = null)
         {

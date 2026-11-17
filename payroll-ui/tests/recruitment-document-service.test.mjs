@@ -35,6 +35,30 @@ test('bulk master linking sends selected row revisions and the explicit client s
   assert.deepEqual(request.args[1], { ids: [1, 3], workLocationId: 11, revisions: { 1: 'a', 3: 'c' } })
 })
 
+test('simple JD creation sends only position name and row revision within the client scope', async () => {
+  const row = { id: 3, revision: 'original-revision', values: { positionTitle: '' } }
+  const before = JSON.stringify(row), count = calls.length
+  await exports.createRosterJobDescription(55, row, 'Synthetic coordinator')
+  assert.equal(calls.length, count + 1, 'one click issues one request without an approval or review request')
+  const request = calls.pop()
+  assert.equal(request.kind, 'post')
+  assert.equal(request.args[0], '/api/recruitment/document-roster/rows/3/simple-jd?clientId=55')
+  assert.deepEqual(request.args[1], { positionTitle: 'Synthetic coordinator', revision: 'original-revision' })
+  assert.equal(JSON.stringify(row), before, 'the saved row is not changed before the server responds')
+})
+
+test('simple JD links, read-only details and batch creation retain explicit row and client scope', async () => {
+  await exports.getRosterJobDescriptions(55)
+  assert.equal(calls.pop().args[0], '/api/recruitment/document-roster/simple-jds?clientId=55')
+  await exports.getRosterJobDescription(55, 3)
+  assert.equal(calls.pop().args[0], '/api/recruitment/document-roster/rows/3/simple-jd?clientId=55')
+  await exports.createRosterJobDescriptions(55, [{ id: 1, revision: 'a' }, { id: 3, revision: 'c' }])
+  const request = calls.pop()
+  assert.equal(request.kind, 'post')
+  assert.equal(request.args[0], '/api/recruitment/document-roster/simple-jds?clientId=55')
+  assert.deepEqual(request.args[1], { ids: [1, 3], revisions: { 1: 'a', 3: 'c' } })
+})
+
 test('release carries explicit signature choice for single PDF and selected ZIP while draft route remains unsigned', async () => {
   await exports.releaseRosterLetters(55, [1], false)
   assert.equal(calls.pop().path, '/api/recruitment/document-roster/rows/1/release?clientId=55&applySignature=false')

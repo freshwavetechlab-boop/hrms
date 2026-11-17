@@ -12,6 +12,11 @@ import { Card, Chk, F, Sel } from '../components/FormPrimitives'
 import PageTabs from '../components/PageTabs'
 import SalaryTemplateDesigner from '../components/SalaryTemplateDesigner'
 import SalaryComponentEditor from '../components/SalaryComponentEditor'
+import ExcelPayslipDesignEditor from '../components/ExcelPayslipDesignEditor'
+import SearchSelect from '../components/SearchSelect'
+import { excelPayslipTheme, newestClientExcelPayslip } from '../utils/payslipDesign'
+import type { PayslipDesignTemplate } from '../services/payslipService'
+import { getJsonResult } from '../services/apiClient'
 import { calculationChoices, validateSalaryComponent } from '../utils/salaryComponentConfig'
 import TaxEngineManager from '../components/TaxEngineManager'
 import PfPolicyVersions from '../components/PfPolicyVersions'
@@ -46,6 +51,7 @@ const defaultComponentRole = (category: string) => category === 'Deduction' ? 'R
 const ptSlab0: ProfessionalTaxSlab = { id: 0, state: '', salaryFrom: '0', salaryTo: '', deductionAmount: '', effectiveFrom: new Date().toISOString().slice(0, 10), effectiveTo: '', gender: 'All', notes: '', active: true }
 const calculationOptions = calculationChoices.map(item => item.value)
 const settingsSetup0: Setup = setup0
+const newExcelPayslipDraft = (clientId = '') => ({ ...payslip0, clientId, name: 'Excel Payslip', theme: excelPayslipTheme, showYtd: false })
 const billingRateCardTypes: ClientBillingRateCardType[] = ['All', 'Service Charge', 'Reimbursement', 'Bonus', 'Statutory Compliance Charges']
 const billingRateTypes: ClientBillingRateType[] = ['Percentage', 'Fixed']
 const billing0: ClientBillingConfiguration = { id: 0, clientId: 0, clientName: '', workLocationId: null, workLocationName: '', rateCardType: 'All', rateType: 'Percentage', value: 0, taxInclusive: false, gstRatePercent: 18, effectiveFrom: new Date().toISOString().slice(0, 10), effectiveTo: null, isActive: true }
@@ -172,6 +178,7 @@ const workWeekPayload = (config: WorkWeekConfig) => {
 export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onMessage: (message: string) => void }) {
   const session = useAuthSession()
   const [searchParams] = useSearchParams()
+  const requestedPayslipClientId = Number(searchParams.get('clientId')) || 0
   const clientScopedAdmin = Boolean(session?.user.clientId && !session.user.permissions.includes('settings.manage'))
   const toast = useToast()
   const [org, setOrg] = useState(org0), [setup, setSetup] = useState(settingsSetup0), [clients, setClients] = useState<Client[]>([]), [client, setClient] = useState(client0)
@@ -179,7 +186,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const requestedLocationClient = clients.find(item => item.id === Number(searchParams.get('clientId')))
   const newLocation = { ...location0, clientId: clientScopedAdmin ? Number(session?.user.clientId) : requestedLocationClient?.id || Number(searchParams.get('clientId')) || 0, clientName: requestedLocationClient?.name || '' }
   const [employees, setEmployees] = useState<Employee[]>([]), [attendanceGroups, setAttendanceGroups] = useState<AttendanceGroup[]>([])
-  const [component, setComponent] = useState(component0), [structure, setStructure] = useState(structure0), [payslip, setPayslip] = useState(payslip0), [componentTab, setComponentTab] = useState<ComponentCategory>('Earning')
+  const [component, setComponent] = useState(component0), [structure, setStructure] = useState(structure0), [payslip, setPayslip] = useState(() => newExcelPayslipDraft()), [componentTab, setComponentTab] = useState<ComponentCategory>('Earning')
   const [billingEnabled, setBillingEnabled] = useState(false), [billingRows, setBillingRows] = useState<ClientBillingConfiguration[]>([]), [billingRow, setBillingRow] = useState<ClientBillingConfiguration>(billing0), [billingDrawerOpen, setBillingDrawerOpen] = useState(false)
   const [billingAdvancedEnabled, setBillingAdvancedEnabled] = useState(false), [billingAdvancedHeaders, setBillingAdvancedHeaders] = useState<ClientBillingCostRuleHeader[]>([]), [billingAdvancedLines, setBillingAdvancedLines] = useState<ClientBillingCostRuleLine[]>([]), [billingAdvancedLine, setBillingAdvancedLine] = useState<ClientBillingCostRuleLine>(billingAdvancedLine0), [billingAdvancedLineDrawerOpen, setBillingAdvancedLineDrawerOpen] = useState(false)
   const [billingGuideOpen, setBillingGuideOpen] = useState(false)
@@ -205,6 +212,8 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const [componentSaving, setComponentSaving] = useState(false)
   const [templateSaving, setTemplateSaving] = useState(false)
   const [payslipSaving, setPayslipSaving] = useState(false)
+  const [payslipReady, setPayslipReady] = useState(false)
+  const [payslipDesignRevision, setPayslipDesignRevision] = useState(0)
   const [saving, setSaving] = useState(false)
   const [dropState, setDropState] = useState('')
   const [bulkPreview, setBulkPreview] = useState<BulkUploadPreviewState>(emptyBulkUploadPreview)
@@ -213,6 +222,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const isErrorMessage = (message: string) => /error|unable|failed|required|resolve|select|invalid|must|cannot|some/i.test(message)
 
   const load = async () => {
+    if (tab === 'Payslip Templates') return
     if (billingOnlySettings(session?.user.permissions ?? [])) {
       const [clientRows, locationRows, billingModule, billingConfigs, billingAdvanced] = await Promise.all([getClients(), getWorkLocations(), getClientBillingModule(), getClientBillingConfigurations(), getClientBillingAdvanced()])
       setClients(clientRows)
@@ -250,6 +260,27 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   }
 
   useEffect(() => { void load() }, [])
+  useEffect(() => {
+    if (tab !== 'Payslip Templates') return
+    let active = true
+    // Prevent a stale/default setup from being saved while this scope reloads.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPayslipReady(false)
+    void Promise.all([getOrganization(org0), getJsonResult<Setup | null>('/api/setup', null, { toast: false }), getClients(true)]).then(([organization, result, clientRows]) => {
+      if (!active) return
+      if (!result.ok || !result.data) { toast(result.error || 'Unable to load payslip settings. Refresh before saving.', 'error'); return }
+      const rawSetup = result.data
+      setOrg({ ...org0, ...organization })
+      setSetup(current => ({ ...current, ...rawSetup, payslipTemplates: rawSetup.payslipTemplates ?? [], salaryComponents: (rawSetup.salaryComponents ?? []).map(normalizeComponentForUi), salaryStructures: rawSetup.salaryStructures ?? [] }))
+      setClients(clientRows)
+      const selectedClient = clientScopedAdmin ? Number(session?.user.clientId) : clientRows.some(client => client.id === requestedPayslipClientId) ? requestedPayslipClientId : 0
+      if (selectedClient > 0) setPayslip(current => current.id > 0 && Number(refId(current.clientId)) === selectedClient ? current : newestClientExcelPayslip(rawSetup.payslipTemplates ?? [], selectedClient) ?? newExcelPayslipDraft(String(selectedClient)))
+      setPayslipReady(true)
+    })
+    return () => { active = false }
+    // Toast identity changes with the shared provider; loading is keyed to page and scope.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, clientScopedAdmin, session?.user.clientId, requestedPayslipClientId])
   const o = <K extends keyof Org>(key: K, value: Org[K]) => setOrg(current => ({ ...current, [key]: value }))
   const u = <S extends keyof Setup, K extends keyof Setup[S]>(section: S, key: K, value: Setup[S][K]) => setSetup(current => ({ ...current, [section]: { ...current[section], [key]: value } }))
   const setPtSlabField = <K extends keyof ProfessionalTaxSlab>(key: K, value: ProfessionalTaxSlab[K]) => setPtSlab(current => ({ ...current, [key]: value }))
@@ -749,6 +780,8 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     notify(rows.length > 1 ? `Salary template saved for ${rows.length} clients.` : rows[0]?.id === structure.id ? 'Salary template updated.' : 'Salary template saved.')
   }
   const savePayslip = async () => {
+    if (!payslipReady) return notify('Wait for saved payslip settings to load before saving.', 'error')
+    if (payslip.theme === excelPayslipTheme || setup.payslipTemplates.some(item => item.id === payslip.id && item.theme === excelPayslipTheme)) return notify('Save this template through its reviewed Excel Payslip design.', 'error')
     if (!payslip.name.trim()) return notify('Payslip template name is required.', 'error')
     const row = { ...payslip, clientId: refId(payslip.clientId), id: payslip.id || Date.now() }
     const nextSetup = { ...setup, payslipTemplates: [...setup.payslipTemplates.filter(item => item.id !== row.id), row] }
@@ -757,8 +790,27 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     setPayslipSaving(false)
     if (!response.ok) return notify(response.error || 'Unable to save payslip template.', 'error')
     setSetup(nextSetup)
-    setPayslip(clientScopedAdmin ? { ...payslip0, clientId: String(session?.user.clientId || '') } : payslip0)
+    setPayslip(newExcelPayslipDraft(clientScopedAdmin ? String(session?.user.clientId || '') : ''))
     notify(row.id === payslip.id ? 'Payslip template updated.' : 'Payslip template saved.')
+  }
+  const onPayslipDesignSaved = async (saved: PayslipDesignTemplate) => {
+    const row = { ...saved, clientId: String(saved.clientId) }
+    const merged = { ...setup, payslipTemplates: [...setup.payslipTemplates.filter(item => item.id !== saved.id), row] }
+    setSetup(current => ({ ...current, payslipTemplates: [...current.payslipTemplates.filter(item => item.id !== saved.id), row] }))
+    setPayslip(row)
+    setPayslipDesignRevision(current => current + 1)
+    notify('Payslip template and design saved. Preview an approved payroll in Payslip Register.')
+    const fresh = await getSetup(merged)
+    setSetup(current => ({ ...current, payslipTemplates: fresh.payslipTemplates ?? merged.payslipTemplates }))
+  }
+  const managedPayslip = setup.payslipTemplates.some(item => item.id === payslip.id && item.theme === excelPayslipTheme)
+  const selectPayslipClient = (value: string) => {
+    if (payslipSaving) return
+    const id = Number(refId(value)) || 0
+    if (id > 0 && !clients.some(client => client.id === id)) return
+    if (payslip.theme !== excelPayslipTheme && !managedPayslip) { setPayslip(current => ({ ...current, clientId: value })); return }
+    setPayslip(newestClientExcelPayslip(setup.payslipTemplates, id) ?? newExcelPayslipDraft(id > 0 ? String(id) : ''))
+    setPayslipDesignRevision(current => current + 1)
   }
   const previewStructure = setup.salaryStructures.find(item => refId(item.clientId) === refId(payslip.clientId)) ?? setup.salaryStructures[0]
   const monthly = Number(previewStructure?.annualCtc || 600000) / 12
@@ -855,7 +907,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
 
 
   const pfPolicyTab = tab === 'Statutory Setup' && statutoryTab === 'PF Policy Versions'
-  return <form className={pfPolicyTab ? 'pf-policy-settings-page' : undefined} onSubmit={event => { if (pfPolicyTab) event.preventDefault(); else void saveAll(event) }}>
+  return <form className={pfPolicyTab ? 'pf-policy-settings-page' : undefined} onSubmit={event => { if (pfPolicyTab || tab === 'Payslip Templates' && payslip.theme === excelPayslipTheme) event.preventDefault(); else void saveAll(event) }}>
     {tab === 'Organization' && <AntCard size="small" className="settings-panel organization-settings-page" aria-label="Organization configuration"><PageTabs items={organizationTabs} value={organizationTab} onChange={setOrganizationTab} label="Organization sections" />{renderOrganizationBody()}</AntCard>}
     {tab === 'Clients' && <>
       <AntCard size="small" className="settings-panel settings-table-panel" aria-label="Client master">
@@ -911,7 +963,27 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     {tab === 'Attachments' && <AttachmentSettings />}
     {tab === 'Salary Components' && <Card t="Salary components"><PageTabs items={componentTabs} value={componentTab} onChange={item => { setComponentTab(item); setComponent(normalizeComponentForUi({ ...component0, category: item })); setComponentDrawerOpen(false) }} label="Salary component categories" getLabel={item => `${item}s`} /><div className="component-table-head"><div><b>{componentTab}s</b><span>Maintain salary component formulas, flags, and payroll order.</span></div><Space className="settings-master-actions" size={8} wrap><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={downloadSalaryComponentTemplate}>Template</Button><label className={`settings-upload-action ${!componentTemplateDownloaded ? 'disabled' : ''}`} title={componentTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!componentTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadSalaryComponents(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button type="primary" icon={<PlusOutlined />} disabled={componentSaving} onClick={openNewComponent}>Add {componentTab}</Button></Space></div><DataTable rows={componentRows} actions={row => <span className="row-actions"><button type="button" onClick={() => editComponent(row)}>Edit</button><button type="button" className="danger" disabled={componentSaving} onClick={() => void deleteComponent(row)}>Delete</button></span>} emptyText={`No ${componentTab.toLowerCase()} components configured yet.`} exportFileName={`salary-${componentTab.toLowerCase()}-components`} columns={[{ key: 'code', label: 'Code' }, { key: 'name', label: 'Name' }, { key: 'componentType', label: 'Type' }, { key: 'componentRole', label: 'Role' }, { key: 'statutoryType', label: 'Statutory', render: item => item.statutoryType && item.statutoryType !== 'None' ? item.statutoryType : '-' }, { key: 'calculationType', label: 'Calculation' }, { key: 'payType', label: 'Pay Type' }, { key: 'priority', label: 'Priority' }, { key: 'locked', label: 'Lock', render: item => componentUsed(item.id, setup) ? 'Locked' : 'Open' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} /></Card>}
     {tab === 'Salary Templates' && <SalaryTemplateDesigner fixedClientId={clientScopedAdmin ? Number(session?.user.clientId || 0) : undefined} clients={clients} components={setup.salaryComponents} structure={structure} setStructure={setStructure} templates={setup.salaryStructures.filter(item => !item.clientId || activeClientIds.has(refId(item.clientId)))} saveTemplate={saveStructure} saving={templateSaving} templateDownloaded={salaryTemplateDownloaded} onDownloadTemplate={downloadSalaryTemplateTemplate} onUploadTemplate={uploadSalaryTemplates} />}
-    {tab === 'Payslip Templates' && <Card t="Payslip templates"><div className="grid"><F l="Client"><Sel v={payslip.clientId} set={value => setPayslip({ ...payslip, clientId: value })} a={clients.map(item => `${item.id}:${item.name}`)} /></F><F l="Template name"><input value={payslip.name} onChange={event => setPayslip({ ...payslip, name: event.target.value })} /></F><F l="Theme"><Sel v={payslip.theme} set={value => setPayslip({ ...payslip, theme: value })} a={['Classic', 'Modern', 'Compact']} /></F><Chk l="Show logo" v={payslip.showLogo} set={value => setPayslip({ ...payslip, showLogo: value })} /><Chk l="Show client" v={payslip.showClient} set={value => setPayslip({ ...payslip, showClient: value })} /><Chk l="Show YTD" v={payslip.showYtd} set={value => setPayslip({ ...payslip, showYtd: value })} /><Chk l="Show bank info" v={payslip.showBank} set={value => setPayslip({ ...payslip, showBank: value })} /><Chk l="Active" v={payslip.active} set={value => setPayslip({ ...payslip, active: value })} /><F l="Footer note" w><input value={payslip.note} onChange={event => setPayslip({ ...payslip, note: event.target.value })} /></F><button type="button" disabled={payslipSaving} onClick={() => void savePayslip()}>{payslipSaving ? 'Saving...' : 'Add / Update template'}</button></div><div className={`payslip-preview ${payslip.theme.toLowerCase()}`}><header>{payslip.showLogo && <b className={org.logoDataUrl ? 'payslip-logo-mark' : ''}>{org.logoDataUrl ? <img src={org.logoDataUrl} alt="Organization logo" /> : 'P'}</b>}<div><h3>{org.name || 'Your Organization'}</h3><p>Payslip for June 2026</p>{payslip.showClient && <small>Client: {clientName(payslip.clientId)}</small>}</div></header><section><div><span>Employee</span><strong>Demo Employee</strong></div><div><span>Designation</span><strong>Software Engineer</strong></div><div><span>Pay Days</span><strong>30</strong></div><div><span>Bank</span><strong>{payslip.showBank ? 'HDFC ****1234' : '-'}</strong></div></section><table><thead><tr><th>Earnings</th><th>Amount</th><th>Deductions</th><th>Amount</th></tr></thead><tbody>{previewLines.map((item, index) => <tr key={item.componentRow.id}><td>{item.componentRow.category !== 'Deduction' ? item.componentRow.name : ''}</td><td>{item.componentRow.category !== 'Deduction' ? money(item.amount) : ''}</td><td>{item.componentRow.category === 'Deduction' ? item.componentRow.name : index === 0 ? 'Professional Tax' : ''}</td><td>{item.componentRow.category === 'Deduction' ? money(item.amount) : index === 0 ? '200' : ''}</td></tr>)}</tbody></table>{payslip.showYtd && <p className="ytd">YTD Gross: Rs {money(monthly * 6)} | YTD Tax: Rs {money(1200)}</p>}<footer>{payslip.note}</footer></div><DataTable rows={setup.payslipTemplates.filter(item => !item.clientId || activeClientIds.has(refId(item.clientId)))} onEdit={setPayslip} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client', value: row => clientName(row.clientId) }, { key: 'theme', label: 'Theme' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} /></Card>}
+    {tab === 'Payslip Templates' && <Card t="Payslip templates">
+      <section className="payslip-template-settings-form">
+        <div className="grid">
+          <F l="Client"><SearchSelect value={payslip.clientId} disabled={payslipSaving} onChange={selectPayslipClient} options={[{ value: '', label: 'Select client' }, ...clients.map(item => ({ value: item.id, label: item.name }))]} /></F>
+          <F l="Template name"><input disabled={payslipSaving} value={payslip.name} onChange={event => setPayslip({ ...payslip, name: event.target.value })} /></F>
+          <F l="Theme"><SearchSelect value={payslip.theme} disabled={payslipSaving || managedPayslip} onChange={value => setPayslip({ ...payslip, theme: value })} options={['Classic', 'Modern', 'Compact', excelPayslipTheme].map(value => ({ value, label: value }))} /></F>
+          <F l="Show logo"><input type="checkbox" disabled={payslipSaving} checked={payslip.showLogo} onChange={event => setPayslip({ ...payslip, showLogo: event.target.checked })} /></F>
+          <F l="Show client"><input type="checkbox" disabled={payslipSaving} checked={payslip.showClient} onChange={event => setPayslip({ ...payslip, showClient: event.target.checked })} /></F>
+          {payslip.theme !== excelPayslipTheme && <F l="Show YTD"><input type="checkbox" disabled={payslipSaving} checked={payslip.showYtd} onChange={event => setPayslip({ ...payslip, showYtd: event.target.checked })} /></F>}
+          <F l="Show bank info"><input type="checkbox" disabled={payslipSaving} checked={payslip.showBank} onChange={event => setPayslip({ ...payslip, showBank: event.target.checked })} /></F>
+          <F l="Active"><input type="checkbox" disabled={payslipSaving} checked={payslip.active} onChange={event => setPayslip({ ...payslip, active: event.target.checked })} /></F>
+          <F l="Footer note" w><input disabled={payslipSaving} value={payslip.note} onChange={event => setPayslip({ ...payslip, note: event.target.value })} /></F>
+          {payslip.theme !== excelPayslipTheme && <button type="button" disabled={payslipSaving || !payslipReady} onClick={() => void savePayslip()}>{payslipSaving ? 'Saving...' : 'Add / Update template'}</button>}
+          <Button disabled={payslipSaving} onClick={() => setPayslip(newExcelPayslipDraft(clientScopedAdmin ? String(session?.user.clientId || '') : refId(payslip.clientId)))}>New template</Button>
+        </div>
+        {payslip.theme === excelPayslipTheme
+          ? <ExcelPayslipDesignEditor key={refId(payslip.clientId) + ':' + payslip.id + ':' + payslipDesignRevision} template={{ ...payslip, clientId: Number(refId(payslip.clientId)) || 0, theme: 'Excel Payslip' }} onBusyChange={setPayslipSaving} onSaved={saved => void onPayslipDesignSaved(saved)} />
+          : <div className={`payslip-preview ${payslip.theme.toLowerCase()}`}><header>{payslip.showLogo && <b className={org.logoDataUrl ? 'payslip-logo-mark' : ''}>{org.logoDataUrl ? <img src={org.logoDataUrl} alt="Organization logo" /> : 'P'}</b>}<div><h3>{org.name || 'Your Organization'}</h3><p>Payslip for June 2026</p>{payslip.showClient && <small>Client: {clientName(payslip.clientId)}</small>}</div></header><section><div><span>Employee</span><strong>Demo Employee</strong></div><div><span>Designation</span><strong>Software Engineer</strong></div><div><span>Pay Days</span><strong>30</strong></div><div><span>Bank</span><strong>{payslip.showBank ? 'HDFC ****1234' : '-'}</strong></div></section><table><thead><tr><th>Earnings</th><th>Amount</th><th>Deductions</th><th>Amount</th></tr></thead><tbody>{previewLines.map((item, index) => <tr key={item.componentRow.id}><td>{item.componentRow.category !== 'Deduction' ? item.componentRow.name : ''}</td><td>{item.componentRow.category !== 'Deduction' ? money(item.amount) : ''}</td><td>{item.componentRow.category === 'Deduction' ? item.componentRow.name : index === 0 ? 'Professional Tax' : ''}</td><td>{item.componentRow.category === 'Deduction' ? money(item.amount) : index === 0 ? '200' : ''}</td></tr>)}</tbody></table>{payslip.showYtd && <p className="ytd">YTD Gross: Rs {money(monthly * 6)} | YTD Tax: Rs {money(1200)}</p>}<footer>{payslip.note}</footer></div>}
+      </section>
+      <DataTable rows={setup.payslipTemplates.filter(item => !item.clientId || activeClientIds.has(refId(item.clientId)))} onEdit={row => { if (!payslipSaving) setPayslip(row) }} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client', value: row => clientName(row.clientId) }, { key: 'theme', label: 'Theme' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} />
+    </Card>}
     {!pfPolicyTab && !['Clients', 'Client Billing Configuration', 'Travel & Expense Policies', 'Notifications', 'AI Integration', 'Attendance API Integrator', 'Scheduled Jobs', 'Attachments', 'Salary Components', 'Salary Templates', 'Payslip Templates', 'Work Locations', 'Dropdown Masters', 'ESS Settings'].includes(tab) && <div className="actions"><p>Structures are client-wise. Components are global.</p><button disabled={saving}>{saving ? 'Saving...' : 'Save settings'}</button></div>}
     <BulkUploadProgressModal open={clientUpload.open} title="Client bulk upload" state={clientUpload.state} percent={clientUpload.percent} summary={clientUpload.summary} onClose={() => setClientUpload(current => ({ ...current, open: false }))} />
     <BulkUploadProgressModal open={locationUpload.open} title="Work-location bulk upload" state={locationUpload.state} percent={locationUpload.percent} summary={locationUpload.summary} onClose={() => setLocationUpload(current => ({ ...current, open: false }))} />

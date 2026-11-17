@@ -10,7 +10,7 @@ namespace Payroll.API.Services;
 /// instances that use the same configured database. Legacy Data Protection
 /// payloads remain readable only so they can be migrated automatically.
 /// </summary>
-public sealed class PortableIntegrationCredentialProtector
+public sealed partial class PortableIntegrationCredentialProtector
 {
     private const string AiPrefix = "ai-credential:v2:";
     private const string StoragePrefix = "storage-credential:v2:";
@@ -63,6 +63,9 @@ public sealed class PortableIntegrationCredentialProtector
     // Query memory never accepts credential ciphertext or legacy key-ring payloads.
     internal string ProtectVerifiedPlan(string value) => Protect(value, PlanPrefix, PlanPurpose);
     internal string ProtectExcelPayslipUpdate(string value) => Protect(value, "excel-payslip-update:v1:", Encoding.UTF8.GetBytes("Payroll.API.ExcelPayslipUpdateReviews.v1"));
+    internal string ProtectReviewedProfessionalTax(string value) => Protect(value, "reviewed-period-pt:v1:", Encoding.UTF8.GetBytes("Payroll.API.ReviewedPeriodProfessionalTax.v1"));
+    internal string? UnprotectReviewedProfessionalTax(string value) =>
+        IsPortable(value, "reviewed-period-pt:v1:") && TryUnprotect(value, "reviewed-period-pt:v1:", Encoding.UTF8.GetBytes("Payroll.API.ReviewedPeriodProfessionalTax.v1"), legacyAiProtector, out var plaintext) ? plaintext : null;
     internal string? UnprotectExcelPayslipUpdate(string value) =>
         IsPortable(value, "excel-payslip-update:v1:") && TryUnprotect(value, "excel-payslip-update:v1:", Encoding.UTF8.GetBytes("Payroll.API.ExcelPayslipUpdateReviews.v1"), legacyAiProtector, out var plaintext)
             ? plaintext : null;

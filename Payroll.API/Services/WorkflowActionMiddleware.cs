@@ -18,8 +18,14 @@ public class WorkflowActionMiddleware(RequestDelegate next, ILogger<WorkflowActi
 
     public async Task InvokeAsync(HttpContext context, WorkflowRepository workflows, NotificationRepository notifications)
     {
-        if (IsCalculationOnlyRequest(context.Request.Method, context.Request.Path.Value))
+        if (IsCalculationOnlyRequest(context.Request.Method, context.Request.Path.Value)
+            || HttpMethods.IsPost(context.Request.Method) && (context.GetEndpoint()?.Metadata.GetMetadata<CalculationOnlyPayrollReview>() is not null
+                || context.GetEndpoint()?.Metadata.GetMetadata<PayrollReferenceMetadataOnly>() is not null
+                    && context.Request.Path.Value?.TrimEnd('/').Equals("/api/payslip-designs/reference-information/apply",StringComparison.OrdinalIgnoreCase)==true))
         {
+            // Reference metadata apply is a real scoped metadata write with its
+            // own same-transaction workflow guard, never a calculation endpoint.
+            // Do not run a stale outer AfterSuccess rule or send notifications.
             await next(context);
             return;
         }
@@ -111,6 +117,8 @@ public class WorkflowActionMiddleware(RequestDelegate next, ILogger<WorkflowActi
             if (context.Request.Path == "/api/ess/leave/requests" && resourceType == "LeaveRequest" &&
                 (await workflows.GetResourceStateAsync("AttendanceRegularization", resourceId))?.CurrentState == "Pending")
                 resourceType = "AttendanceRegularization";
+            var resolution = await workflows.ResolveActionWorkflowAsync(rule, clientId, resourceType, resourceId);
+            clientId = resolution.ClientId;
             var payload = JsonSerializer.Serialize(new
             {
                 rule.ActivityCode,
@@ -124,7 +132,7 @@ public class WorkflowActionMiddleware(RequestDelegate next, ILogger<WorkflowActi
                 RequestedAt = DateTime.UtcNow
             });
 
-            var workflowId = rule.WorkflowId ?? await workflows.GetDefaultIdForActivityAsync(rule.ActivityCode, clientId);
+            var workflowId = resolution.WorkflowId;
             if (workflowId is not null)
             {
                 var existingState = await workflows.GetResourceStateAsync(resourceType, resourceId);
@@ -135,7 +143,7 @@ public class WorkflowActionMiddleware(RequestDelegate next, ILogger<WorkflowActi
                         ResourceType = resourceType,
                         ResourceId = resourceId,
                         PayloadJson = payload
-                    }, user.Id);
+                    }, user.Id, clientId);
             }
 
             // Publish after workflow creation so dynamic recipients such as Current Approver
@@ -249,7 +257,7 @@ public class WorkflowActionMiddleware(RequestDelegate next, ILogger<WorkflowActi
         return null;
     }
 
-    static Dictionary<string, string>? Match(string pattern, string path)
+    internal static Dictionary<string, string>? Match(string pattern, string path)
     {
         var patternParts = pattern.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
         var pathParts = path.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);

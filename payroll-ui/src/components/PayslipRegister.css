@@ -7,4 +7,5 @@
 .payslip-period-control .app-search-select{width:220px;max-width:100%}
 .payslip-preview-loading{display:grid;place-items:center;min-height:250px}
 .payslip-preview-panel footer button:disabled{opacity:.6;cursor:default}
+.payslip-preview-error{display:flex;flex-direction:column;align-items:flex-start;gap:12px;min-height:220px;overflow:auto}.payslip-preview-loading{gap:12px;align-content:center}.payslip-document-panel{min-width:0;overflow:auto}.payslip-document-panel header>div{min-width:0;overflow-wrap:anywhere}
 @media(max-width:750px){.payslip-toolbar{gap:6px!important}.payslip-period-control{flex-wrap:wrap}.payslip-period-control .app-search-select{width:180px}}

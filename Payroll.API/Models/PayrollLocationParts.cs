@@ -25,8 +25,14 @@ public sealed class PayrollLocationPart
     public int PayrollDays { get; set; }
     public decimal PresentDays { get; set; }
     public decimal PayableDays { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public NamedFormulaInputContext? NamedInputs { get; set; }
 }
 
 public sealed record PayrollLocationComponentPart(string PartKey, string AssignmentId, int WorkLocationId,
     string SalaryStructureId, int PayrollDays, decimal PresentDays, decimal PayableDays,
-    string Scope, string Formula, decimal Monthly, decimal Earned, decimal? UnroundedEarned = null);
+    string Scope, string Formula, decimal Monthly, decimal Earned, decimal? UnroundedEarned = null)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public NamedFormulaInputContext? NamedOperands {get;init;}
+}

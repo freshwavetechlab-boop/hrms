@@ -87,7 +87,27 @@ public static partial class ExcelPayslipCalculationService
         || pendingSavedDecimalRestore && Math.Abs(saved.Value-amount)<=0.00000001m
         || double.Parse(saved.Value.ToString(CultureInfo.InvariantCulture), CultureInfo.InvariantCulture)
             == double.Parse(amount.ToString(CultureInfo.InvariantCulture), CultureInfo.InvariantCulture)
-        || saved.Value.ToString("G15", CultureInfo.InvariantCulture) == amount.ToString("G15", CultureInfo.InvariantCulture));
+        || saved.Value.ToString("G15", CultureInfo.InvariantCulture) == amount.ToString("G15", CultureInfo.InvariantCulture)
+        || SameAdjacentCachedAmount(saved.Value, amount));
+
+    // A browser round trip can move an XLSX cache by one IEEE step across a
+    // G15 midpoint. This represents money only; retain both original numbers.
+    // It grants no rounding approval or formula/native payroll equivalence.
+    internal static bool SameAdjacentCachedAmount(decimal saved, decimal source)
+    {
+        if (saved == 0 || source == 0 || (saved < 0) != (source < 0)
+            || Math.Abs(saved - source) > 0.00000001m
+            || decimal.Round(saved, 2, MidpointRounding.AwayFromZero) != decimal.Round(source, 2, MidpointRounding.AwayFromZero)
+            || decimal.Round(saved, 2, MidpointRounding.ToEven) != decimal.Round(source, 2, MidpointRounding.ToEven)) return false;
+        static ulong Rank(decimal number)
+        {
+            var value = double.Parse(number.ToString(CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
+            var bits = unchecked((ulong)BitConverter.DoubleToInt64Bits(value));
+            return (bits & 0x8000000000000000UL) != 0 ? ~bits : bits | 0x8000000000000000UL;
+        }
+        var first = Rank(saved); var second = Rank(source);
+        return (first >= second ? first - second : second - first) <= 1UL;
+    }
     private static bool MatchesAmount(ExcelPayslipRow row, ExcelPayslipCalculationColumn column, decimal amount, int position, bool pendingSavedDecimalRestore = false) => column.Kind switch
     {
         "netPay" => SameNumber(row.NetPay, amount, pendingSavedDecimalRestore),

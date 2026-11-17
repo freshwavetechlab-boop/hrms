@@ -32,7 +32,7 @@ public sealed partial class ExcelPayslipPdfService
     }
 
     public byte[] Create(ExcelPayslipBatch batch, IReadOnlyList<ExcelPayslipRow> rows, bool includeSeal = false, int amountDecimalPlaces = 0,
-        ExcelPayslipCalculationSource? calculationSource = null)
+        ExcelPayslipCalculationSource? calculationSource = null, ExcelPayslipPdfPresentationOptions? presentation = null)
     {
         ArgumentNullException.ThrowIfNull(batch);
         ArgumentNullException.ThrowIfNull(rows);
@@ -52,8 +52,8 @@ public sealed partial class ExcelPayslipPdfService
             var page = document.AddPage();
             page.Size = PdfSharp.PageSize.A4;
             using var gfx = XGraphics.FromPdfPage(page);
-            if (batch.SimpleLayout) DrawSimplePage(gfx, batch, row, logo, amountDecimalPlaces, calculationSource);
-            else DrawPage(gfx, batch, row, logo, amountDecimalPlaces);
+            if (batch.SimpleLayout) DrawSimplePage(gfx, batch, row, logo, amountDecimalPlaces, calculationSource, presentation);
+            else DrawPage(gfx, batch, row, logo, amountDecimalPlaces, presentation);
         }
         using var output = new MemoryStream();
         document.Save(output, false);
@@ -130,12 +130,12 @@ public sealed partial class ExcelPayslipPdfService
             CultureInfo.InvariantCulture, out var amount) ? Amount(amount, amountDecimalPlaces) : value;
     }
 
-    private static Plan MakePlan(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, int amountDecimalPlaces = 2)
+    private static Plan MakePlan(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, int amountDecimalPlaces = 2, ExcelPayslipPdfPresentationOptions? presentation = null)
     {
         var info = new List<Cell>();
         var displayInformation=ExcelPayslipPresentation.Information(row);
         if (!string.IsNullOrWhiteSpace(row.EmployeeCode)) info.Add(new("Employee Code", row.EmployeeCode));
-        if (!string.IsNullOrWhiteSpace(batch.ClientName) && !displayInformation.Any(x => x.Label.Contains("client", StringComparison.OrdinalIgnoreCase)))
+        if (presentation?.ShowClient != false && !string.IsNullOrWhiteSpace(batch.ClientName) && !displayInformation.Any(x => x.Label.Contains("client", StringComparison.OrdinalIgnoreCase)))
             info.Add(new("Client", batch.ClientName));
         info.AddRange(displayInformation.Where(x => !string.IsNullOrWhiteSpace(x.Label)
             && !x.Label.Equals("Employee Name", StringComparison.OrdinalIgnoreCase)
@@ -162,19 +162,19 @@ public sealed partial class ExcelPayslipPdfService
         throw new InvalidOperationException($"Excel row {row.SourceRow} has too much text to fit legibly on one payslip page. Shorten mapped labels or reduce the information fields.");
     }
 
-    private static void DrawBrandingHeader(XGraphics gfx, XImage logo)
+    private static void DrawBrandingHeader(XGraphics gfx, XImage logo, ExcelPayslipPdfPresentationOptions? presentation = null)
     {
         gfx.DrawRectangle(Border, Left, Top, Width, HeaderHeight);
-        Image(gfx, logo, Left + 10, Top + 8, 67, 50);
+        if (presentation?.ShowLogo != false) Image(gfx, logo, Left + 10, Top + 8, 67, 50);
         Text(gfx, "GA DIGITAL WEB WORD (P) LTD", Font(16, true), Left + 85, Top + 12, Width - 98, 22, centered: true);
         Text(gfx, "NO.1, HARGOBIND ENCLAVE, VIKAS MARG EXTN., DELHI-110092", Font(8), Left + 84, Top + 39, Width - 96, 20, centered: true);
     }
 
-    private static void DrawPage(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, XImage logo, int amountDecimalPlaces)
+    private static void DrawPage(XGraphics gfx, ExcelPayslipBatch batch, ExcelPayslipRow row, XImage logo, int amountDecimalPlaces, ExcelPayslipPdfPresentationOptions? presentation = null)
     {
-        var plan = MakePlan(gfx, batch, row, amountDecimalPlaces);
+        var plan = MakePlan(gfx, batch, row, amountDecimalPlaces, presentation);
         var normal = Font(plan.Size); var bold = Font(plan.Size, true);
-        DrawBrandingHeader(gfx, logo);
+        DrawBrandingHeader(gfx, logo, presentation);
         gfx.DrawRectangle(Border, Pink, Left, 99, Width, 25);
         Text(gfx, $"SALARY SLIP - {MonthLabel(batch.Month)}", Font(11, true), Left + 6, 104, Width - 12, 17, centered: true);
         var y = BodyTop;
@@ -226,8 +226,9 @@ public sealed partial class ExcelPayslipPdfService
                 employerY += plan.EmployerHeights[i];
             }
         }
-        gfx.DrawString("This is a system-generated payslip and does not require a signature.", Font(8), XBrushes.Gray,
+        if (presentation?.Footer is null or "This is a system-generated payslip and does not require a signature.") gfx.DrawString("This is a system-generated payslip and does not require a signature.", Font(8), XBrushes.Gray,
             new XRect(Left, Bottom + 8, Width, 18), XStringFormats.TopCenter);
+        else Text(gfx, presentation.Footer ?? "This is a system-generated payslip and does not require a signature.", Font(8), Left, Bottom + 8, Width, 24, centered: true);
 
         void MoneyHeader(string label, double x, double top)
         {

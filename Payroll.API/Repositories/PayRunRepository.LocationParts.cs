@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Payroll.API.Models;
+using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
@@ -63,14 +64,14 @@ public sealed partial class PayRunRepository
     {
         Id=employee.Id,ClientId=employee.ClientId,EmployeeCode=employee.EmployeeCode,FirstName=employee.FirstName,LastName=employee.LastName,
         SalaryStructureId=part.SalaryStructureId,AnnualCtc=part.AnnualCtc,WorkLocationId=part.WorkLocationId,WorkState=part.WorkState,
-        SalaryComponents=new(part.SalaryInputs,StringComparer.OrdinalIgnoreCase),SalaryJson=JsonSerializer.Serialize(part.SalaryInputs)
+        SalaryComponents=new(part.SalaryInputs,StringComparer.OrdinalIgnoreCase),SalaryJson=JsonSerializer.Serialize(part.SalaryInputs),NamedInputs=part.NamedInputs
     };
 
-    private static string LocationAssignmentSignature(PayrollLocationPart part) => JsonSerializer.Serialize(new
+    private static string LocationAssignmentSignature(PayrollLocationPart part) => ReviewedNamedFormulaInputs.Signature(JsonSerializer.Serialize(new
     {
         part.WorkLocationId,part.WorkState,part.SalaryStructureId,part.AnnualCtc,part.PayrollDays,
         inputs=part.SalaryInputs.OrderBy(pair=>pair.Key,StringComparer.Ordinal),scopes=part.ComponentScopes.OrderBy(pair=>pair.Key,StringComparer.Ordinal)
-    });
+    }),part.NamedInputs);
 
     private static decimal LocationEarned(CalculatedPayrollComponent line, PayrollLocationPart part) =>
         line.EarnedOverride ?? (line.DailyRate is decimal rate ? decimal.Round(rate*part.PayableDays,2)
@@ -170,10 +171,10 @@ public sealed partial class PayRunRepository
             var parts=group.Select(item=>new PayrollLocationComponentPart(item.Item.Part.PartKey,item.Item.Part.AssignmentId,item.Item.Part.WorkLocationId,
                 item.Item.Part.SalaryStructureId,item.Item.Part.PayrollDays,item.Item.Part.PresentDays,item.Item.Part.PayableDays,"SourceFormulaPerPart",
                 item.Line.Component.Formula,item.Line.Monthly,LocationEarned(item.Line,item.Item.Part),
-                item.Item.Trace.SingleOrDefault(line=>line.Code==item.Line.Component.Code)?.UnroundedEarned)).ToArray();
+                item.Item.Trace.SingleOrDefault(line=>line.Code==item.Line.Component.Code)?.UnroundedEarned) { NamedOperands=item.Item.Part.NamedInputs }).ToArray();
             results[group.Key]=new(first with{ProRata=false},referenceLine?.Monthly??0,EarnedOverride:parts.Sum(part=>part.Earned),LocationParts:parts);
         }
-        var values=new Dictionary<string,decimal>(StringComparer.OrdinalIgnoreCase);
+        var values=reference.Part.NamedInputs is null?new Dictionary<string,decimal>(StringComparer.OrdinalIgnoreCase):new Dictionary<string,decimal>(reference.Part.NamedInputs.Values,StringComparer.OrdinalIgnoreCase);
         foreach(var line in reference.Projection)
         {values[line.Component.Id]=values[line.Component.Code]=line.Monthly;values[line.Component.Id+"_MONTHLY"]=values[line.Component.Code+"_MONTHLY"]=line.Monthly;}
         void SetEarned(CalculatedPayrollComponent line)
@@ -186,6 +187,8 @@ public sealed partial class PayRunRepository
             var entry=monthly[id];var component=entry[0].Line.Component;
             foreach(var token in FormulaReferences(component.Formula))
             {
+                if(reference.Part.NamedInputs?.Values.TryGetValue(token,out var operand)==true && calculated.Any(item=>item.Part.NamedInputs is null||!item.Part.NamedInputs.Values.TryGetValue(token,out var other)||other!=operand))
+                    throw new InvalidOperationException("A monthly named operand differs across location parts; review source-part scope or one exact common operand.");
                 var dependency=setup.Components.FirstOrDefault(item=>item.Id==BaseComponentToken(token)||item.Code.Equals(BaseComponentToken(token),StringComparison.OrdinalIgnoreCase));
                 if(dependency is not null&&monthly.ContainsKey(dependency.Id))EvaluateMonthly(dependency.Id);
                 if(dependency is not null&&!token.EndsWith("_EARNED",StringComparison.OrdinalIgnoreCase)&&!reference.Projection.Any(line=>line.Component.Id==dependency.Id))
@@ -219,7 +222,7 @@ public sealed partial class PayRunRepository
             var monthlyAmount=Math.Max(0,decimal.Round(raw,2));
             var earned=component.ProRata?decimal.Round(monthlyAmount*payableDays/payrollDays,2):monthlyAmount;
             var parts=entry.Select(item=>new PayrollLocationComponentPart(item.Item.Part.PartKey,item.Item.Part.AssignmentId,item.Item.Part.WorkLocationId,
-                item.Item.Part.SalaryStructureId,item.Item.Part.PayrollDays,item.Item.Part.PresentDays,item.Item.Part.PayableDays,"Monthly",component.Formula,item.Line.Monthly,0)).ToArray();
+                item.Item.Part.SalaryStructureId,item.Item.Part.PayrollDays,item.Item.Part.PresentDays,item.Item.Part.PayableDays,"Monthly",component.Formula,item.Line.Monthly,0) { NamedOperands=item.Item.Part.NamedInputs }).ToArray();
             results[id]=new(component with{ProRata=false},reference.Projection.FirstOrDefault(line=>line.Component.Id==id)?.Monthly??monthlyAmount,
                 EarnedOverride:earned,LocationParts:parts);
             values[id]=values[component.Code]=monthlyAmount;values[id+"_MONTHLY"]=values[component.Code+"_MONTHLY"]=monthlyAmount;SetEarned(results[id]);
@@ -231,7 +234,7 @@ public sealed partial class PayRunRepository
             trace.Add(new(line.Component.Code,line.Component.Name,line.Component.Category,line.Component.Formula,
                 monthly.ContainsKey(line.Component.Id)?"Settings monthly rule evaluated once over reviewed location inputs":"Settings formulas evaluated per location part; earned amounts summed once",
                 line.EarnedOverride!.Value,line.Monthly,line.EarnedOverride.Value,false,"Reviewed saved location attendance allocations",
-                "Actual engine component rounding retained; no second attendance proration.",[]) {UnroundedEarned=line.LocationParts?.All(part=>part.UnroundedEarned.HasValue)==true ? line.LocationParts.Sum(part=>part.UnroundedEarned!.Value) : null});
+                "Actual engine component rounding retained; no second attendance proration.",[]) {NamedOperandParts=line.LocationParts?.Any(part=>part.NamedOperands is not null)==true?line.LocationParts.Where(part=>part.NamedOperands is not null).ToDictionary(part=>part.PartKey,part=>part.NamedOperands!):null,UnroundedEarned=line.LocationParts?.All(part=>part.UnroundedEarned.HasValue)==true ? line.LocationParts.Sum(part=>part.UnroundedEarned!.Value) : null});
         return output;
     }
 }

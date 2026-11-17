@@ -1701,7 +1701,9 @@ WHERE age.employee_id=@EmployeeId AND g.client_id=@ClientId", new { EmployeeId =
 SELECT id,@EmployeeId FROM attendance_groups WHERE client_id=@ClientId AND is_active=TRUE AND id IN @GroupIds",
                 new { EmployeeId = employee.Id, employee.ClientId, GroupIds = selectedImportedGroups }, tx);
 
-        if (employee.WorkLocationId <= 0 || string.IsNullOrWhiteSpace(employee.Department) || string.IsNullOrWhiteSpace(employee.Designation)) return;
+        // A blank employee value can still match a policy's All/empty scope.
+        // Let the existing per-policy predicates reject specific mismatches.
+        if (employee.WorkLocationId <= 0) return;
 
         await db.ExecuteAsync(@"INSERT IGNORE INTO attendance_group_employees (attendance_group_id, employee_id)
 SELECT g.id, @EmployeeId
@@ -1717,8 +1719,8 @@ WHERE g.client_id=@ClientId
             employee.ClientId,
             employee.WorkLocationId,
             ImportedGroupIds = importedGroupIds,
-            Department = employee.Department.Trim(),
-            Designation = employee.Designation.Trim()
+            Department = (employee.Department ?? "").Trim(),
+            Designation = (employee.Designation ?? "").Trim()
         }, tx);
     }
 

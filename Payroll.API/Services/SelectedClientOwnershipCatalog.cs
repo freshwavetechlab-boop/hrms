@@ -153,7 +153,7 @@ public static class SelectedClientOwnershipCatalog
         var normalized = Path(path); var name = Regex.Replace(fieldName, "[^A-Za-z0-9]", "").ToLowerInvariant();
         var resource = name switch
         {
-            "ids" or "rowids" when normalized is "/api/recruitment/document-roster/releases" or "/api/recruitment/document-roster/drafts" or "/api/recruitment/document-roster/rows/work-location" => "document-roster",
+            "ids" or "rowids" when normalized is "/api/recruitment/document-roster/releases" or "/api/recruitment/document-roster/drafts" or "/api/recruitment/document-roster/rows/work-location" or "/api/recruitment/document-roster/simple-jds" => "document-roster",
             "templateid" or "structureid" or "salarystructureid" when Under(normalized, "/api/payroll") || Under(normalized, "/api/pay-runs") || Under(normalized, "/api/setup") => "salary-structure",
             "templateid" when Under(normalized, "/api/recruitment") || Under(normalized, "/api/recruitment-admin") || Under(normalized, "/api/recruitment-orchestration") => "recruitment-template",
             "pipelinestageinstanceid" when Under(normalized, "/api/recruitment/hiring-cases") => "position-stage-instance",

@@ -29,6 +29,12 @@ public sealed class SelectedClientScopeMiddleware(RequestDelegate next)
         if (path.StartsWith("/api/auth/", StringComparison.OrdinalIgnoreCase)) { await next(context); return; }
         if (path.Equals("/api/clients", StringComparison.OrdinalIgnoreCase) && HttpMethods.IsGet(context.Request.Method))
         { await next(context); return; } // This endpoint explicitly returns assigned clients.
+        // This read-only picker summary checks assigned clients and exact work
+        // locations itself. Preserve the authenticated identity so selecting a
+        // client does not hide the other clients' permitted availability.
+        if (path.Equals("/api/recruitment/document-roster/client-summary", StringComparison.OrdinalIgnoreCase)
+            && HttpMethods.IsGet(context.Request.Method))
+        { await next(context); return; }
         if (!SelectedClientOwnershipCatalog.IsAllowedScopedRequest(context.Request.Method, path))
         { await Deny(context, "This operation requires unrestricted administration or a supported client-scoped route."); return; }
 

@@ -9,7 +9,7 @@ namespace Payroll.API.Services;
 public sealed class ExcelPayslipMappingService(RecruitmentAiScoringService ai,
     IWebHostEnvironment environment, ILogger<ExcelPayslipMappingService> logger)
 {
-    internal const string KnowledgeVersion = "excel-payroll-mapping-v26";
+    internal const string KnowledgeVersion = "excel-payroll-mapping-v67";
     internal static readonly HashSet<string> Kinds = ["employeeName", "employeeCode", "email", "info", "earning", "deduction", "employer", "netPay", "grossTotal", "deductionTotal", "ignore"];
     private static readonly HashSet<string> Functions = ["SUM", "ROUND", "ROUNDUP", "ROUNDDOWN", "IF", "IFERROR", "MIN", "MAX", "SUMIF", "SUMIFS", "COUNT", "COUNTA", "COUNTIF", "COUNTIFS", "AND", "OR", "ABS", "CEILING", "FLOOR", "VLOOKUP", "HLOOKUP", "XLOOKUP", "INDEX", "MATCH"];
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -102,6 +102,19 @@ public sealed class ExcelPayslipMappingService(RecruitmentAiScoringService ai,
             var dependencyRule = Regex.Split(knowledge, @"\r?\n(?=## )").FirstOrDefault(c => c.StartsWith("## Cross-sheet formula inputs"));
             if (dependencyRule is not null && !chunks.Any(c => c.Content == dependencyRule.Trim()))
                 chunks.Add(new("excel-payroll-mapping.md#dependencies", "Cross-sheet formula inputs", dependencyRule.Trim()));
+        }
+        // Header scoring cannot recognize an unlabelled auxiliary dependency.
+        // Supply its review boundary from structural metadata only; this does
+        // not establish whole-column isolation or authorize any mapping/write.
+        if (columns.Any(aux => aux.Kind == "ignore" && string.IsNullOrWhiteSpace(aux.SourceHeader)
+            && aux.HasNumbers && aux.HasBlanks && !aux.HasFormula
+            && columns.Count(earning => earning.Kind == "earning" && earning.HasFormula
+                && earning.FormulaDependencies.Contains(aux.ColumnIndex)) >= 2))
+        {
+            var isolatedRule = Regex.Split(knowledge, @"\r?\n(?=## )")
+                .FirstOrDefault(c => c.Split('\n')[0].TrimEnd('\r').EndsWith(": isolated absolute divisor", StringComparison.Ordinal));
+            if (isolatedRule is not null && !chunks.Any(c => c.Content == isolatedRule.Trim()))
+                chunks.Add(new("excel-payroll-mapping.md#isolated-divisor", isolatedRule.Split('\n')[0].TrimStart('#', ' ', '\r'), isolatedRule.Trim()));
         }
         var presets = examples.Select(example => new {
             Example = example, Score = example.Columns.SelectMany(c => Tokens(SafeText(c.SourceHeader))).Distinct().Count(query.Contains)

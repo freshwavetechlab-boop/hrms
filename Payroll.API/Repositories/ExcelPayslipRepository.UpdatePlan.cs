@@ -12,6 +12,7 @@ namespace Payroll.API.Repositories;
 public sealed partial class ExcelPayslipRepository
 {
     private sealed record UpdateFieldBinding(ExcelPayslipUpdateField Field, string Kind, int Position, string? MasterKey);
+    private sealed record UpdateTransport(byte[] BatchJson, byte[]? SourceJson, byte[] SendJson);
     private sealed class UpdateContext
     {
         public string BatchJson = "", SourceJson = "", SendJson = "";
@@ -44,16 +45,23 @@ public sealed partial class ExcelPayslipRepository
 
     private async Task<UpdateContext> LoadUpdateContextAsync(MySqlConnection db, MySqlTransaction tx, int clientId, string id)
     {
-        var stored = await db.QuerySingleOrDefaultAsync<(string BatchJson, string? SourceJson, string SendJson)>(@"
-SELECT CAST(b.batch_json AS CHAR) BatchJson,CAST(s.source_json AS CHAR) SourceJson,CAST(b.send_state_json AS CHAR) SendJson
+        var stored = await db.QuerySingleOrDefaultAsync<UpdateTransport>(@"
+SELECT COMPRESS(CAST(b.batch_json AS CHAR)) BatchJson,COMPRESS(CAST(s.source_json AS CHAR)) SourceJson,COMPRESS(CAST(b.send_state_json AS CHAR)) SendJson
 FROM excel_payslip_batches b LEFT JOIN excel_payslip_calculation_sources s ON s.client_id=b.client_id AND s.batch_id=b.id
-WHERE b.client_id=@ClientId AND b.id=@Id", new { ClientId = clientId, Id = id }, tx);
-        if (string.IsNullOrWhiteSpace(stored.BatchJson)) throw new InvalidOperationException("The saved payslip batch was not found for this client.");
-        var context = new UpdateContext { BatchJson = stored.BatchJson, SourceJson = stored.SourceJson ?? "", SendJson = stored.SendJson };
-        context.Raw = JsonSerializer.Deserialize<ExcelPayslipBatch>(stored.BatchJson, JsonOptions)!;
+WHERE b.client_id=@ClientId AND b.id=@Id", new { ClientId = clientId, Id = id }, tx, commandTimeout: 120);
+        if (stored is null) throw new InvalidOperationException("The saved payslip batch was not found for this client.");
+        // Preserve the exact reviewed documents while avoiding a wide raw JSON
+        // transfer that can exhaust the normal command timeout.
+        var batchJson = ExcelPayslipConsolidationCatalog.DecodeSnapshot(stored.BatchJson, false)!;
+        var sourceJson = ExcelPayslipConsolidationCatalog.DecodeSnapshot(stored.SourceJson, true);
+        if (string.IsNullOrWhiteSpace(batchJson)) throw new InvalidOperationException("The saved payslip batch was not found for this client.");
+        var context = new UpdateContext { BatchJson = batchJson, SourceJson = sourceJson ?? "", SendJson = ExcelPayslipConsolidationCatalog.DecodeSnapshot(stored.SendJson, false)! };
+        context.Raw = JsonSerializer.Deserialize<ExcelPayslipBatch>(batchJson, JsonOptions)!;
         if (context.Raw.ClientId != clientId || context.Raw.Id != id) throw new InvalidOperationException("The saved batch scope is invalid.");
-        context.Source = stored.SourceJson is null ? null : JsonSerializer.Deserialize<ExcelPayslipCalculationSource>(stored.SourceJson, JsonOptions);
-        context.Projection = await ReadCorrectionBatchAsync(db, clientId, id, tx) ?? throw new InvalidOperationException("The saved payslip batch is unavailable.");
+        context.Source = sourceJson is null ? null : JsonSerializer.Deserialize<ExcelPayslipCalculationSource>(sourceJson, JsonOptions);
+        context.Projection = await ReadCorrectionBatchAsync(db, clientId, id, tx,
+            new CorrectionReadSnapshot(db, tx, clientId, id, context.Raw, context.Source))
+            ?? throw new InvalidOperationException("The saved payslip batch is unavailable.");
         context.MasterByRow = context.Projection.Rows.Where(ExcelPayslipPresentation.Linked)
             .ToDictionary(row => row.Id, row => row.MasterDetails!.EmployeeId, StringComparer.Ordinal);
         var ids = context.MasterByRow.Values.Distinct().ToArray();

@@ -98,6 +98,8 @@ public sealed partial class ExcelPayrollSetupRepository
             if(native.CycleStart!=review.CycleStart||native.CycleEnd!=review.CycleEnd)return Result("Blocked","Native dated cycle differs from the reviewed source dates; no cross-cycle proof is accepted.");
             if(native.PayrollDays!=p.PayrollDays||Math.Abs(native.PayableDays-p.PayableDays)>0.000001m||request.PresentDaysColumnIndex.HasValue&&(!native.PresentDays.HasValue||Math.Abs(native.PresentDays.Value-p.PresentDays)>0.000001m))
                 return Result("Blocked","Same-cycle native divisor/present/payable inputs differ from the finance source. Review the displayed source/native attendance and policy, then repreview; CL is not automatically credited.");
+            if(native.ProofKind==RecordedLegacyAttendanceProof.Kind)
+                return Result("Native attendance inputs matched",sourceBasis+"Explicit persisted Legacy day rows cover this exact closed month and reconcile to the unchanged recorded monthly actual-presence/payable totals. No weekly-off policy version, entitlement or weekday rule is inferred. Component/net/employer comparison and Employee statutory simulation remain separate checks.");
             return Result("Native attendance inputs matched",sourceBasis+(request.CorrectionOfImportId is null
                 ? "The regular attendance engine's same-employee/client/month/dated-cycle inputs match the captured source. "
                 : "The regular engine's recorded monthly inputs for this employee/client/month and configured cycle match the captured source. ")

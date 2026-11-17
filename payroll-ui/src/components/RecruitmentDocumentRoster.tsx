@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { Alert, Button, Drawer, Dropdown, Form, Input, InputNumber, Select, Space, Spin, Switch, Tag } from 'antd'
-import { DownloadOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons'
+import { DownloadOutlined, FileTextOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons'
 import DataTable, { type Column } from './DataTable'
 import FileDropZone from './FileDropZone'
 import { PageHeaderPortal } from './layout/AppPageHeader'
-import { downloadRosterDrafts, editDocumentRoster, getDocumentRoster, getDocumentTemplates, getRosterSigningAsset, getRosterWorkLocations, linkRosterWorkLocation, prepareDocumentTemplates, releaseRosterLetters, removeRosterSigningAsset, uploadDocumentRoster, uploadRosterSigningAsset, type DocumentRosterRow, type DocumentTemplate, type RosterImportResult, type RosterImportSettings, type RosterPreview, type RosterSheet, type RosterSigningAsset } from '../services/recruitmentDocumentService'
-import { suggestRosterMapping } from '../utils/recruitmentDocumentLayout'
+import { createRosterJobDescription, createRosterJobDescriptions, downloadRosterDrafts, editDocumentRoster, getDocumentRoster, getDocumentTemplates, getRosterJobDescription, getRosterJobDescriptions, getRosterSigningAsset, getRosterWorkLocations, linkRosterWorkLocation, prepareDocumentTemplates, releaseRosterLetters, removeRosterSigningAsset, uploadDocumentRoster, uploadRosterSigningAsset, type DocumentRosterRow, type DocumentTemplate, type RosterImportResult, type RosterImportSettings, type RosterJobDescription, type RosterJobDescriptionLink, type RosterPreview, type RosterSheet, type RosterSigningAsset } from '../services/recruitmentDocumentService'
 import { filterRosterRows, rosterLocationName, rosterMasterLocationField, rosterPermissions, rosterReleaseReady, selectedRosterRows, signingAssetFileError } from '../utils/recruitmentRosterOperations'
 import { useAuthSession } from './AuthGate'
 import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
@@ -14,6 +13,7 @@ import type { WorkLocation } from '../types/payroll'
 import './RecruitmentDocumentRoster.css'
 import RecruitmentOfferMail, { OfferMailProgress } from './RecruitmentOfferMail'
 import { useRecruitmentOfferMail } from '../hooks/useRecruitmentOfferMail'
+import { downloadRosterImportTemplate, isRosterImportTemplate, templateRosterMapping } from '../utils/recruitmentRosterTemplate'
 
 export default function RecruitmentDocumentRosterLauncher({ clientId, onChanged }: { clientId: number; onChanged: () => Promise<void> }) {
   const location = useLocation()
@@ -48,7 +48,7 @@ export default function RecruitmentDocumentRosterLauncher({ clientId, onChanged 
   if (!clientId || !canOpen) return null
   const ready = state.clientId === clientId && !state.loading && state.templates.length > 0
   return <><PageHeaderPortal slot="recruitment-page-controls"><Button icon={<UploadOutlined />} onClick={() => { setOpen(true); void loadTemplates(true) }}>Employee lists &amp; offer letters</Button></PageHeaderPortal>
-    {open && (ready ? <RecruitmentDocumentRoster key={clientId} clientId={clientId} templates={state.templates} onClose={() => setOpen(false)} onChanged={onChanged} /> : <Drawer open title="Employee lists & offer letters" width="min(1380px, 98vw)" onClose={() => setOpen(false)} footer={<Button onClick={() => setOpen(false)}>Close</Button>}>
+    {open && (ready ? <RecruitmentDocumentRoster key={clientId} clientId={clientId} templates={state.templates} onClose={() => setOpen(false)} onChanged={async () => { window.dispatchEvent(new Event('recruitment:roster-changed')); await onChanged() }} /> : <Drawer open title="Employee lists & offer letters" width="min(1380px, 98vw)" onClose={() => setOpen(false)} footer={<Button onClick={() => setOpen(false)}>Close</Button>}>
       {state.clientId === clientId && state.error ? <Alert type="error" showIcon message={state.error} action={<Button onClick={() => void loadTemplates(true)}>Retry</Button>} /> : <Space><Spin size="small" /><span>Preparing offer letters…</span></Space>}
     </Drawer>)}</>
 }
@@ -68,17 +68,23 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
   const [mobileFilters, setMobileFilters] = useState(false)
   const mail = useRecruitmentOfferMail(clientId, canRelease, JSON.stringify([session?.user.id, session?.user.clientAccessMode, session?.user.assignedClientIds, session?.user.recruitmentScopeMode, session?.user.recruitmentLocationIds]))
   const [edit, setEdit] = useState<DocumentRosterRow | null>(null), [editValues, setEditValues] = useState<Record<string, string>>({})
+  const [jdLinks, setJdLinks] = useState<RosterJobDescriptionLink[]>([]), [jdError, setJdError] = useState('')
+  const [positionNames, setPositionNames] = useState<Record<string, string>>({})
+  const [jdDetails, setJdDetails] = useState<RosterJobDescription | null>(null), [jdLoadingId, setJdLoadingId] = useState<number | null>(null)
+  const canCreateJd = canImport || canManageOffers
   const alive = useRef(true)
   useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
   const load = async () => {
     setLoading(true)
     try {
-      const [r, locationResult] = await Promise.all([getDocumentRoster(clientId), getRosterWorkLocations(clientId)])
+      const [r, locationResult, jdResult] = await Promise.all([getDocumentRoster(clientId), getRosterWorkLocations(clientId), getRosterJobDescriptions(clientId)])
       if (!alive.current) return
       if (!r.ok) setError(r.error || 'Unable to load employee lists.')
       else { setRows(r.data); setSelected(current => current.filter(id => r.data.some(row => row.id === id))) }
       if (locationResult.ok) { setLocations(locationResult.data); setLocationError('') }
       else { setLocations([]); setLocationError(locationResult.error || 'Unable to load permitted work locations.') }
+      if (jdResult.ok) { setJdLinks(jdResult.data); setJdError('') }
+      else { setJdLinks([]); setJdError(jdResult.error || 'Unable to load job descriptions.') }
     }
     catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to load employee lists.') }
     finally { if (alive.current) setLoading(false) }
@@ -99,13 +105,53 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
   const selectedRows = selectedRosterRows(visible, selected)
   const selectedReady = selectedRosterRows(visible, selected, true).map(row => row.id)
   const selectedReleaseReady = selectedRows.filter(rosterReleaseReady).map(row => row.id)
+  const selectedJdRows = selectedRows.filter(row => row.values.positionTitle?.trim() && !jdLinks.some(link => link.rosterId === row.id))
+  async function createJd(row: DocumentRosterRow) {
+    const positionTitle = (row.values.positionTitle || positionNames[String(row.id)] || '').trim()
+    if (!canCreateJd || busy || !positionTitle) return
+    setBusy(true); setError('')
+    try {
+      const result = await createRosterJobDescription(clientId, row, positionTitle)
+      if (!result.ok || !result.data) throw new Error(result.error || 'Unable to create the job description.')
+      await load()
+      setNotice(`${result.data.created ? 'Simple JD created' : 'Existing JD linked'}: ${result.data.jobDescription.title}.`)
+    } catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to create the job description.') }
+    finally { if (alive.current) setBusy(false) }
+  }
+  async function createSelectedJds() {
+    if (!canCreateJd || busy || !selectedJdRows.length) return
+    setBusy(true); setError('')
+    try {
+      const result = await createRosterJobDescriptions(clientId, selectedJdRows)
+      if (!result.ok || !result.data) throw new Error(result.error || 'Unable to create the selected job descriptions.')
+      await load()
+      setNotice(`${result.data.created} simple JD(s) created, ${result.data.reused} reused; ${result.data.linkedRows} employee rows linked.`)
+    } catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to create the selected job descriptions.') }
+    finally { if (alive.current) setBusy(false) }
+  }
+  async function viewJd(row: DocumentRosterRow) {
+    if (jdLoadingId !== null) return
+    setJdLoadingId(row.id); setError('')
+    try {
+      const result = await getRosterJobDescription(clientId, row.id)
+      if (!result.ok || !result.data) throw new Error(result.error || 'The job description is unavailable. Refresh the employee list.')
+      if (alive.current) setJdDetails(result.data)
+    } catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to load the job description.') }
+    finally { if (alive.current) setJdLoadingId(null) }
+  }
   const rosterColumns = useMemo<Column<DocumentRosterRow>[]>(() => [
-    { key: 'sourceGroup', label: 'Source group', width: 210 }, { key: 'candidateCode', label: 'Profile code', width: 130 }, { key: 'candidateName', label: 'Employee', width: 220 }, { key: 'workLocation', label: 'Work location / institute', value: row => rosterLocationName(row, locations), width: 240 },
-    { key: 'designation', label: 'Designation', value: row => row.values.positionTitle || 'Not supplied', width: 220 }, { key: 'joiningDate', label: 'Date of joining', value: row => row.values.joiningDate || 'Not supplied' }, { key: 'tenure', label: 'Contract end', value: row => row.values.contractEndDate || 'Not supplied' },
+    { key: 'sourceGroup', label: 'Import batch', width: 210 }, { key: 'candidateCode', label: 'Profile code', width: 130 }, { key: 'candidateName', label: 'Employee', width: 220 }, { key: 'workLocation', label: 'Work location / institute', value: row => rosterLocationName(row, locations), width: 240 },
+    { key: 'designation', label: 'Designation', value: row => row.values.positionTitle || 'Not supplied', width: 220 },
+    { key: 'jobDescription', label: 'Job description', width: 260, value: row => jdLinks.find(link => link.rosterId === row.id)?.title || 'Not created', render: row => {
+      const linked = jdLinks.find(link => link.rosterId === row.id)
+      return linked ? <Space size={4} wrap><Tag color={linked.source === 'Simple' ? 'green' : 'blue'}>{linked.source === 'Simple' ? 'Simple JD' : 'Existing JD'}</Tag><Button size="small" icon={<FileTextOutlined />} disabled={busy || jdLoadingId !== null} loading={jdLoadingId === row.id} onClick={() => void viewJd(row)}>View JD</Button></Space>
+        : canCreateJd ? <Space direction="vertical" size={4} className="document-roster-jd-create">{!row.values.positionTitle?.trim() && <Input aria-label={`Position name for ${row.candidateName}`} placeholder="Position name" maxLength={180} disabled={busy} value={positionNames[String(row.id)] || ''} onChange={event => setPositionNames(current => ({ ...current, [String(row.id)]: event.target.value }))} />}<Button size="small" icon={<FileTextOutlined />} disabled={busy || !(row.values.positionTitle || positionNames[String(row.id)] || '').trim()} onClick={() => void createJd(row)}>Create JD</Button></Space> : <span>Not created</span>
+    } },
+    { key: 'joiningDate', label: 'Date of joining', value: row => row.values.joiningDate || 'Not supplied' }, { key: 'tenure', label: 'Contract end', value: row => row.values.contractEndDate || 'Not supplied' },
     { key: 'basic', label: 'Monthly basic', value: row => row.values.monthlyBasic || '' }, { key: 'gross', label: 'Monthly gross', value: row => row.values.monthlyGross || '' }, { key: 'readiness', label: 'Draft readiness', value: row => row.documentIssues.length ? row.documentIssues.join('; ') : 'Ready for draft', width: 250 },
     { key: 'released', label: 'Released offer', width: 180, value: row => row.releasedAt ? row.offerNumber || 'Released' : 'Not released' },
     { key: 'employeeMaster', label: 'Employee Master', width: 180, value: row => row.employeeId ? row.employeeCode || `Employee ${row.employeeId}` : row.releasedAt ? 'Release again to link Master' : 'Added on release' },
-  ], [locations])
+  ], [locations, jdLinks, canCreateJd, positionNames, busy, jdLoadingId])
   const linkLocation = async () => {
     if (!canManageOffers || !linkLocationId || busy || !selectedRows.length) return
     setBusy(true); setError('')
@@ -137,11 +183,12 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
     finally { if (alive.current) setBusy(false) }
   }
   return <><Drawer open title="Employee lists & offer letters" className="recruitment-document-roster" width="min(1380px, 98vw)" onClose={() => { if (!busy && !releaseIds) onClose() }} closable={!busy && !releaseIds} maskClosable={!busy && !releaseIds} footer={<Button disabled={busy || !!releaseIds} onClick={onClose}>Close</Button>}>
-    <div className="document-roster-toolbar"><Space wrap className={`document-roster-filter-controls${mobileFilters ? ' is-open' : ''}`}><Select aria-label="Employee list group" style={{ minWidth: 220, maxWidth: 360 }} value={group} options={[{ value: '', label: 'All source groups' }, ...[...new Set(rows.map(r => r.sourceGroup))].map(value => ({ value, label: value }))]} onChange={setGroup} />
+    <div className="document-roster-toolbar"><Space wrap className={`document-roster-filter-controls${mobileFilters ? ' is-open' : ''}`}><Select aria-label="Employee list import batch" title="Import batches identify separate uploaded lists within this client." style={{ minWidth: 220, maxWidth: 360 }} value={group} options={[{ value: '', label: 'All import batches' }, ...[...new Set(rows.map(r => r.sourceGroup))].map(value => ({ value, label: value }))]} onChange={setGroup} />
       <Select aria-label="Roster work location filter" showSearch optionFilterProp="label" className="document-roster-location-select" value={workLocationFilter} options={[{ value: 0, label: 'All permitted work locations' }, { value: -1, label: 'Not linked to a work location' }, ...locations.map(location => ({ value: location.id, label: location.name }))]} onChange={setWorkLocationFilter} />
       <Input.Search aria-label="Search employee list" placeholder="Search employee list" allowClear value={search} onChange={event => setSearch(event.target.value)} className="document-roster-search" />
       <Tag>{visible.length} profiles</Tag><Tag color="green">{ready.length} draft ready</Tag><Tag color="orange">{visible.length - ready.length} need details</Tag></Space>
       <Space wrap className="document-roster-desktop-actions"><Button icon={<ReloadOutlined />} disabled={busy} onClick={() => void load()}>Refresh</Button>{canImport && <Button type="primary" icon={<UploadOutlined />} disabled={busy} onClick={() => setImportOpen(true)}>Import employee list</Button>}<Button disabled={busy || !visible.length} onClick={() => setSelected(visible.slice(0, 200).map(row => row.id))}>Select all ({visible.length > 200 ? 'first 200' : visible.length})</Button><Button disabled={busy || !ready.length} onClick={() => setSelected(ready.slice(0, 200).map(row => row.id))}>Select ready ({ready.length > 200 ? 'first 200' : ready.length})</Button><Button disabled={busy || !selected.length} onClick={() => setSelected([])}>Clear selection</Button>
+        {canCreateJd && <Button icon={<FileTextOutlined />} disabled={busy || !selectedJdRows.length} title="Create a simple JD for each selected position name and reuse matching roles." onClick={() => void createSelectedJds()}>Create selected JDs ({selectedJdRows.length})</Button>}
         {canManageOffers && <Button disabled={busy || !selectedRows.length || !locations.length} onClick={() => { setLinkLocationId(undefined); setLinkOpen(true) }}>Set work location ({selectedRows.length})</Button>}
         {canManageOffers && <Button disabled={busy} onClick={() => setReleaseIds([])}>Signature &amp; stamp</Button>}
         <Button icon={<DownloadOutlined />} disabled={busy || !selectedReady.length} loading={busy && !edit && !linkOpen} onClick={() => void generate(selectedReady)}>Download selected drafts ({selectedReady.length})</Button>
@@ -158,17 +205,22 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
           { key: 'clear', label: 'Clear selection', disabled: !selectedRows.length, onClick: () => setSelected([]) },
           { key: 'ready', label: `Select ready (${Math.min(ready.length, 200)})`, disabled: !ready.length, onClick: () => setSelected(ready.slice(0, 200).map(row => row.id)) },
           { key: 'drafts', label: `Download selected drafts (${selectedReady.length})`, disabled: !selectedReady.length, onClick: () => void generate(selectedReady) },
+          ...(canCreateJd ? [{ key: 'jds', label: `Create selected JDs (${selectedJdRows.length})`, disabled: !selectedJdRows.length, onClick: () => void createSelectedJds() }] : []),
           ...(canManageOffers ? [{ key: 'location', label: 'Set work location', disabled: !selectedRows.length, onClick: () => { setLinkLocationId(undefined); setLinkOpen(true) } }, { key: 'sign', label: 'Signature & stamp', onClick: () => setReleaseIds([]) }] : []),
         ] }}><Button disabled={busy}>More</Button></Dropdown>
       </Space></div>
     <Alert type="info" showIcon message="Review details, then download drafts or release letters" description="Draft PDFs are unsigned. Release letters together with an optional signature and stamp. Missing details remain pending." />
     {locationError && <Alert type="warning" showIcon message={locationError} />}
+    {jdError && <Alert type="warning" showIcon message={jdError} />}
     {canRelease && <OfferMailProgress jobs={mail.jobs} loading={mail.loading} error={mail.error} onRefresh={mail.refresh} onRetry={ids => setMailRequest({ ids, retryFailed: true })} />}
     {canRelease && selectedRows.some(row => !row.workLocationId) && <Alert type="warning" showIcon message="Link a work location before releasing the selected unlinked profiles." />}
     {error && <Alert closable type="error" showIcon message={error} onClose={() => setError('')} />}{notice && <Alert closable type="success" showIcon message={notice} onClose={() => setNotice('')} />}
     <div className="document-roster-table"><DataTable fillHeight hideSearch rows={baseVisible} columns={rosterColumns} onVisibleRowsChange={onVisibleRowsChange} loading={loading} getRowId={row => row.id} title="Employee list" exportFileName="employee-list-offer-letters" emptyText="No employee lists match these filters." rowSelection={{ selectedRowKeys: selectedRows.map(row => row.id), onChange: keys => setSelected(keys.map(Number)), getCheckboxProps: () => ({ disabled: busy }) }} actionsWidth={canRelease ? 265 : 190} actions={row => <Space><Button size="small" disabled={busy} onClick={() => { setEdit(row); setEditValues({ ...row.values }) }}>Details / Edit</Button><Button size="small" disabled={busy || !!row.documentIssues.length} onClick={() => void generate([row.id])}>Draft PDF</Button>{canRelease && <Button size="small" disabled={busy || !rosterReleaseReady(row)} title={!row.workLocationId ? 'Link a work location before release' : row.documentIssues.length ? 'Complete document details before release' : undefined} onClick={() => setReleaseIds([row.id])}>Release</Button>}</Space>} /></div>
   </Drawer>
-  {importOpen && <RosterImportDrawer clientId={clientId} templates={templates} locations={locations} onClose={() => setImportOpen(false)} onSaved={async result => { setImportOpen(false); await load(); await onChanged(); setNotice(`${result.savedRows} list rows saved: ${result.createdProfiles} new profiles, ${result.reusedProfiles} existing profiles reused.${result.errors.length ? ' ' + result.errors.join(' ') : ''}`) }} />}
+  <Drawer open={!!jdDetails} title={jdDetails ? jdDetails.title : 'Job description'} className="document-roster-jd-details" width="min(760px, 96vw)" onClose={() => setJdDetails(null)} footer={<Button onClick={() => setJdDetails(null)}>Close</Button>}>
+    {jdDetails && <><Tag color={jdDetails.source === 'Simple' ? 'green' : 'blue'}>{jdDetails.source === 'Simple' ? 'Simple JD' : 'Existing JD'}</Tag><p>{jdDetails.summary}</p>{jdDetails.rolePurpose && <><h3>Role purpose</h3><p>{jdDetails.rolePurpose}</p></>}{[{ title: 'Responsibilities', items: jdDetails.responsibilities }, { title: 'Skills', items: jdDetails.skills }, { title: 'Qualifications', items: jdDetails.qualifications }, { title: 'Certifications', items: jdDetails.certifications }, { title: 'Languages', items: jdDetails.languages }, { title: 'Benefits', items: jdDetails.benefits }].filter(section => section.items?.length).map(section => <section key={section.title}><h3>{section.title}</h3><ul>{section.items!.map((text, index) => <li key={index}>{text}</li>)}</ul></section>)}</>}
+  </Drawer>
+  {importOpen && <RosterImportDrawer clientId={clientId} templates={templates} locations={locations} onClose={() => setImportOpen(false)} onSaved={async result => { setImportOpen(false); await load(); await onChanged(); setNotice(`${result.savedRows} list rows saved: ${result.createdProfiles} new profiles, ${result.reusedProfiles} existing profiles reused.${result.createdWorkLocations ? ` ${result.createdWorkLocations} work location(s) added to this client's master.` : ''}${result.errors.length ? ' ' + result.errors.join(' ') : ''}`) }} />}
   {mailRequest && <RecruitmentOfferMail key={`${clientId}:${mailRequest.ids.join(',')}:${mailRequest.retryFailed}`} clientId={clientId} ids={mailRequest.ids} retryFailed={mailRequest.retryFailed} onClose={() => setMailRequest(null)} onQueued={job => { setMailRequest(null); mail.refresh(); setNotice(`${job.totalEmails} offer email(s) queued or tracked. Progress is available here and in Notifications.`) }} />}
   <Drawer open={linkOpen} title="Set work location / institute" width="min(540px, 96vw)" onClose={() => { if (!busy) setLinkOpen(false) }} closable={!busy} maskClosable={!busy} footer={<Space><Button disabled={busy} onClick={() => setLinkOpen(false)}>Cancel</Button><Button type="primary" loading={busy} disabled={!linkLocationId || !selectedRows.length} onClick={() => void linkLocation()}>Link {selectedRows.length} profiles</Button></Space>}>
     {error && <Alert type="error" showIcon message={error} />}
@@ -251,9 +303,17 @@ function RosterImportDrawer({ clientId, templates, locations, onClose, onSaved }
   const inspect = async (upload: File, state = settings) => {
     setBusy(true); setError(''); setPreview(null); setSelected([]); setPhase('Reading worksheet columns...')
     try {
-      const parsed = await uploadDocumentRoster<RosterSheet[]>('inspect', upload, { ...state, templateId })
-      const chosen = parsed.find(s => s.name === state.sheetName) || parsed[0]
-      setFile(upload); setSheets(parsed); setSettings(s => ({ ...s, ...state, templateId, sheetName: chosen?.name || '', mapping: suggestRosterMapping(template?.fields || [], chosen?.headers || []) }))
+      const [configuredResult, firstRowResult] = await Promise.allSettled([
+        uploadDocumentRoster<RosterSheet[]>('inspect', upload, { ...state, templateId }),
+        state.headerRow === 1 ? Promise.resolve(null) : uploadDocumentRoster<RosterSheet[]>('inspect', upload, { ...state, templateId, headerRow: 1 }),
+      ])
+      const configuredSheets = configuredResult.status === 'fulfilled' ? configuredResult.value : []
+      const firstRowSheets = firstRowResult.status === 'fulfilled' ? firstRowResult.value : null
+      const templateSheet = template && (firstRowSheets || configuredSheets).find(sheet => sheet.name === 'Employees' && isRosterImportTemplate(template, sheet.headers))
+      if (!templateSheet && configuredResult.status === 'rejected') throw configuredResult.reason
+      const parsed = templateSheet ? firstRowSheets || configuredSheets : configuredSheets
+      const chosen = templateSheet || parsed.find(s => s.name === state.sheetName) || parsed[0]
+      setFile(upload); setSheets(parsed); setSettings(s => ({ ...s, ...state, templateId, headerRow: templateSheet ? 1 : state.headerRow, sheetName: chosen?.name || '', mapping: templateRosterMapping(template?.fields || [], chosen?.headers || []) }))
     } catch (e) { setError(e instanceof Error ? e.message : 'Unable to read the workbook.'); setSheets([]) }
     finally { setBusy(false); setPhase('') }
   }
@@ -271,25 +331,32 @@ function RosterImportDrawer({ clientId, templates, locations, onClose, onSaved }
     catch (e) { setError(e instanceof Error ? e.message : 'Unable to save the list. Re-previewing and retrying will check existing identities.') }
     finally { setBusy(false); setPhase('') }
   }
-  return <Drawer open className="document-roster-import" title="Import employee list" width="min(1200px, 98vw)" onClose={() => { if (!busy) onClose() }} closable={!busy} maskClosable={!busy} footer={<Space><Button disabled={busy} onClick={onClose}>Cancel</Button><Button disabled={busy || !file || !sheets.length || !settings.sourceGroup.trim()} onClick={() => void buildPreview()}>Preview list</Button><Button type="primary" loading={busy} disabled={busy || !preview || !selected.length} onClick={() => void save()}>Save reviewed profiles ({selected.length})</Button></Space>}>
-    <Alert type="info" showIcon message="Review source mapping once, then save" description="Email/phone identifies existing profiles. Re-upload updates the same source-group rows and retains completed details where the incoming source is blank. Monthly wages remain monthly document inputs; they are not treated as annual CTC. Missing tenure/designation/location can be completed later." />
+  const downloadTemplate = () => {
+    if (!template || busy) return
+    setError('')
+    try { downloadRosterImportTemplate(template, { sourceGroup: settings.sourceGroup, workLocationName: locations.find(location => location.id === settings.workLocationId)?.name, defaults: settings.defaults }) }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to download the employee-list template.') }
+  }
+  return <Drawer open className="document-roster-import" title="Import employee list" width="min(1200px, 98vw)" onClose={() => { if (!busy) onClose() }} closable={!busy} maskClosable={!busy} footer={<Space wrap><Button disabled={busy} onClick={onClose}>Cancel</Button><Button disabled={busy || !file || !sheets.length || !settings.sourceGroup.trim()} onClick={() => void buildPreview()}>Preview list</Button><Button type="primary" loading={busy} disabled={busy || !preview || !selected.length} onClick={() => void save()}>Save reviewed profiles ({selected.length})</Button></Space>}>
+    <Alert type="info" showIcon message="Review source mapping once, then save" description="Email/phone identifies existing profiles. Re-upload to the same import batch to update its rows and retain completed details where incoming cells are blank. Monthly wages remain monthly document inputs; they are not treated as annual CTC. Missing tenure/designation/location can be completed later." />
     {error && <Alert type="error" showIcon message={error} />}{phase && <Alert type="info" showIcon message={phase} />}
     <Form layout="vertical" disabled={busy} className="document-roster-fields">
       <Form.Item label="Offer document template" required><Select aria-label="Roster document template" value={templateId} options={templates.map(t => ({ value: t.id, label: t.templateName }))} onChange={chooseTemplate} /></Form.Item>
       <Form.Item label="Input preset (optional)"><Select aria-label="Roster input preset" value={preset} options={[{ value: '', label: 'Choose / enter values manually' }, ...(template?.importPresets || []).map(p => ({ value: p.name, label: p.name }))]} onChange={value => { setPreset(value); const p = template?.importPresets.find(p => p.name === value); invalidate({ sourceGroup: p?.name || '', headerRow: p?.headerRow || 4, defaults: p?.defaults || {} }); setSheets([]); setFile(null) }} /></Form.Item>
-      <Form.Item label="Source group" required><Input aria-label="Roster source group" maxLength={180} value={settings.sourceGroup} onChange={e => invalidate({ sourceGroup: e.target.value })} placeholder="Institute / office / source list" /></Form.Item>
-      <Form.Item label="Work location / institute (optional)"><Select aria-label="Import roster work location" allowClear showSearch optionFilterProp="label" placeholder="Choose an existing work location" value={settings.workLocationId || undefined} options={locations.map(location => ({ value: location.id, label: location.name }))} onChange={value => invalidate({ workLocationId: value || null })} /></Form.Item>
+      <Form.Item label="Import batch name" required extra="A name for this uploaded list within the selected client. Re-upload to the same batch to update its saved rows."><Input aria-label="Roster import batch name" maxLength={180} value={settings.sourceGroup} onChange={e => invalidate({ sourceGroup: e.target.value })} placeholder="e.g. November joiners / existing staff" /></Form.Item>
+      <Form.Item label="Work location / institute (optional)" extra="Choose one location for the whole list, or leave this blank to use each employee's Location column. New names are saved to this client's master when you import."><Select aria-label="Import roster work location" allowClear showSearch optionFilterProp="label" placeholder="Use each row's location" value={settings.workLocationId || undefined} options={locations.map(location => ({ value: location.id, label: location.name }))} onChange={value => invalidate({ workLocationId: value || null })} /></Form.Item>
       <Form.Item label="Header row"><InputNumber aria-label="Roster header row" min={1} max={100} value={settings.headerRow} onChange={v => { const next = { ...settings, headerRow: v || 1 }; invalidate({ headerRow: v || 1 }); if (file) void inspect(file, next) }} /></Form.Item>
     </Form>
-    <FileDropZone accept=".xlsx" title="Upload employee workbook" hint="Choose the original employee list. The workbook is read without changing its cells or formulas." fileName={file?.name || ''} onFile={f => { if (!busy) void inspect(f) }} />
-    {!!sheets.length && <><Form layout="vertical"><Form.Item label="Worksheet"><Select aria-label="Roster worksheet" disabled={busy} value={settings.sheetName} options={sheets.map(s => ({ value: s.name, label: s.name }))} onChange={value => { const s = sheets.find(s => s.name === value); invalidate({ sheetName: value, mapping: suggestRosterMapping(template?.fields || [], s?.headers || []) }) }} /></Form.Item></Form>
+    <div className="document-roster-template-download"><div><strong>1. Download and fill the Excel template</strong><p>Use the Employees sheet, with one employee per row. Required fields and formats are explained in Instructions.</p></div><Button icon={<DownloadOutlined />} disabled={busy || !template} onClick={downloadTemplate}>Download Excel template</Button></div>
+    <FileDropZone accept=".xlsx" title="2. Upload the completed employee list" hint="Upload your filled template or an existing .xlsx list, then preview the mapping and employee identities before saving." fileName={file?.name || ''} onFile={f => { if (!busy) void inspect(f) }} />
+    {!!sheets.length && <><Form layout="vertical"><Form.Item label="Worksheet"><Select aria-label="Roster worksheet" disabled={busy} value={settings.sheetName} options={sheets.map(s => ({ value: s.name, label: s.name }))} onChange={value => { const s = sheets.find(s => s.name === value); invalidate({ sheetName: value, mapping: templateRosterMapping(template?.fields || [], s?.headers || []) }) }} /></Form.Item></Form>
       <details className="document-roster-mapping"><summary>Review column mapping and default values</summary><DataTable rows={template?.fields || []} getRowId={f => f.key} hideSearch exportDisabled title="Source mapping" columns={[
         { key: 'label', label: 'Document field', width: 230, render: f => <span>{f.label}{f.required ? ' *' : ''}</span> },
         { key: 'source', label: 'Source column', render: f => <Select aria-label={`Roster column ${f.key}`} disabled={busy} style={{ width: '100%' }} value={settings.mapping[f.key] ?? -1} options={[{ value: -1, label: 'No source column / use default' }, ...(sheet?.headers || []).map((h, i) => ({ value: i, label: `${i + 1} · ${h || '(blank)'}` }))]} onChange={v => invalidate({ mapping: { ...settings.mapping, [f.key]: v } })} /> },
         { key: 'default', label: 'Default when no source column', render: f => <Input aria-label={`Roster default ${f.key}`} disabled={busy || (settings.mapping[f.key] ?? -1) >= 0} value={settings.defaults[f.key] ?? f.defaultValue ?? ''} onChange={e => invalidate({ defaults: { ...settings.defaults, [f.key]: e.target.value } })} /> },
       ]} /></details></>}
     {preview && <><Space wrap style={{ marginBlock: 12 }}><Tag color="blue">{preview.rows.length} source employees</Tag><Tag>{preview.rows.filter(r => r.candidateId).length} existing profiles</Tag><Tag color="orange">{preview.rows.filter(r => r.documentIssues.length).length} need document details</Tag></Space><DataTable rows={preview.rows} getRowId={r => r.sourceRow} exportDisabled title="Employee import preview" rowSelection={{ selectedRowKeys: selected, onChange: keys => setSelected(keys.map(Number)), getCheckboxProps: row => ({ disabled: busy || row.importIssues.length > 0 }) }} columns={[
-      { key: 'sourceRow', label: 'Source row' }, { key: 'candidateName', label: 'Employee', width: 230 }, { key: 'workLocation', label: 'Work location' }, { key: 'positionTitle', label: 'Designation' }, { key: 'matchStatus', label: 'Profile match' }, { key: 'issues', label: 'Review', width: 300, value: r => r.importIssues.length ? r.importIssues.join('; ') : r.documentIssues.length ? 'Draft pending: ' + r.documentIssues.join('; ') : 'Ready for draft' },
+      { key: 'sourceRow', label: 'Source row' }, { key: 'candidateName', label: 'Employee', width: 230 }, { key: 'workLocation', label: 'Work location' }, { key: 'workLocationStatus', label: 'Location master', value: r => r.workLocationStatus === 'New' ? 'New — created on import' : r.workLocationStatus === 'Existing' ? 'Existing location' : 'Not assigned' }, { key: 'positionTitle', label: 'Designation' }, { key: 'matchStatus', label: 'Profile match' }, { key: 'issues', label: 'Review', width: 300, value: r => r.importIssues.length ? r.importIssues.join('; ') : r.documentIssues.length ? 'Draft pending: ' + r.documentIssues.join('; ') : 'Ready for draft' },
     ]} /></>}
   </Drawer>
 }

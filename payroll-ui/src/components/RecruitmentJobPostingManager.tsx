@@ -2,6 +2,7 @@ import DataTable from './DataTable'
 import { useRecruitmentPreference, useRecruitmentView } from '../hooks/useRecruitmentPreferences'
 import RecruitmentHiringProgress from './RecruitmentHiringProgress'
 import { RecruitmentFilterPanel, RecruitmentQuickFilters } from './RecruitmentRecordList'
+import { formatPublicJobSalary, formatRecruitmentExperience } from '../utils/publicJobsBoard'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import dayjs from 'dayjs'
@@ -471,8 +472,8 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
                 {clientId === 0 && <Typography.Text type="secondary">{row.clientName || `Client #${row.clientId}`}</Typography.Text>}
                 </div>
                 <div className="job-card-metrics candidate-card-contact">
-                  <JobFact icon={<FieldTimeOutlined />} label="Experience" value={position?.requisitionExperienceRange || position?.experienceRange || 'Not specified'} />
-                  <JobFact icon={<DollarOutlined />} label="CTC" value={formatCtc(position)} />
+                  <JobFact icon={<FieldTimeOutlined />} label="Experience" value={formatRecruitmentExperience({ experienceRange: position?.requisitionExperienceRange || position?.experienceRange, summary: position?.jobDescriptionText })} />
+                  <JobFact icon={<DollarOutlined />} label="Annual salary" value={formatSalary(position)} />
                   <JobFact icon={<EnvironmentOutlined />} label="Location" value={position?.requisitionJobLocation || position?.jobLocation || 'Not specified'} />
                   <JobFact icon={<TeamOutlined />} label="Vacancies" value={position ? `${position.remainingPositions ?? 0} open / ${position.numberOfPositions || position.requisitionNumberOfOpenings || 0} total` : 'Not specified'} />
                 </div>
@@ -572,16 +573,13 @@ function JobFact({ icon, label, value }: { icon: ReactNode; label: string; value
   return <span className="job-card-metric">{icon}<small>{label}</small><strong title={value}>{value}</strong></span>
 }
 
-function formatCtc(position?: RecruitmentPositionOption) {
-  if (!position) return 'Not specified'
-  const minimum = Number(position.requisitionSalaryMin || position.salaryMin || 0)
-  const maximum = Number(position.requisitionSalaryMax || position.salaryMax || 0)
-  const currency = position.requisitionCurrency || position.currency || 'INR'
-  const amount = (value: number) => new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(value)
-  if (minimum > 0 && maximum > 0) return minimum === maximum ? `${currency} ${amount(minimum)}` : `${currency} ${amount(minimum)} – ${amount(maximum)}`
-  if (minimum > 0) return `From ${currency} ${amount(minimum)}`
-  if (maximum > 0) return `Up to ${currency} ${amount(maximum)}`
-  return 'Not specified'
+function formatSalary(position?: RecruitmentPositionOption) {
+  return formatPublicJobSalary({
+    salaryMin: Number(position?.requisitionSalaryMin || position?.salaryMin || 0),
+    salaryMax: Number(position?.requisitionSalaryMax || position?.salaryMax || 0),
+    currency: position?.requisitionCurrency || position?.currency || 'INR',
+    summary: position?.jobDescriptionText,
+  })
 }
 
 function formatWorkMode(value?: string) {

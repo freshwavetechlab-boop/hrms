@@ -29,6 +29,7 @@ type DataTableProps<T> = {
   rowClassName?: (row: T) => string
   emptyText?: string
   title?: string
+  rowLabel?: string
   exportFileName?: string
   exportToolbar?: ReactNode
   primaryAction?: ReactNode
@@ -104,7 +105,6 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
   const searchable = useCallback((row: T) => columns.map(column => text(valueOf(row, column))).join(' ').toLowerCase(), [columns, valueOf])
 
   const data = useMemo(() => rows.filter(row => !query || searchable(row).includes(query.toLowerCase())), [rows, query, searchable])
-  const legacyExportRows = props.view !== 'Cards' && visibleTableState?.source === data ? visibleTableState.rows : data
   const antColumns = useMemo<ColumnsType<T>>(() => {
     const mapped = columns.map(column => {
       const key = String(column.key)
@@ -116,6 +116,7 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
         ellipsis: !column.wrap,
         sorter: column.sortable === false ? undefined : (a: T, b: T) => text(valueOf(a, column)).localeCompare(text(valueOf(b, column)), undefined, { numeric: true, sensitivity: 'base' }),
         filters,
+        filteredValue: column.filterable === false ? undefined : columnFilters[key] ?? null,
         filterSearch: true,
         onFilter: column.filterable === false ? undefined : (value: boolean | Key, row: T) => text(valueOf(row, column)) === String(value),
         render: (_: unknown, row: T) => {
@@ -127,18 +128,20 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
       }
     })
     return actions || onEdit ? [...mapped, { key: '__actions', title: 'Actions', fixed: 'right' as const, width: actionsWidth, render: (_: unknown, row: T) => <div className="ant-table-row-actions">{actions ? actions(row) : <Button size="small" onClick={() => onEdit?.(row)}>Edit</Button>}</div> }] : mapped
-  }, [columns, rows, actions, onEdit, valueOf, actionsWidth])
+  }, [columns, rows, actions, onEdit, valueOf, actionsWidth, columnFilters])
 
   const visibleRows = useMemo(() => {
-    if (!props.onVisibleRowsChange || props.view === 'Cards' || visibleTableState?.source === data) return legacyExportRows
-    // A refreshed source keeps Ant Table's active facets. Reuse their actual
-    // predicates so an opted-in bulk toolbar cannot expand to hidden records.
+    if (props.view === 'Cards') return data
+    if (visibleTableState?.source === data) return visibleTableState.rows
+    if (!Object.values(columnFilters).some(values => values?.length)) return data
+    // Counts, exports and opted-in bulk actions share the native table facets,
+    // including after refreshed data and when returning from Cards.
     return data.filter(row => antColumns.every(column => {
       const selectedValues = columnFilters[String(column.key)]
       return !selectedValues?.length || !('onFilter' in column) || !column.onFilter || selectedValues.some(value => column.onFilter!(typeof value === 'bigint' ? String(value) : value, row))
     }))
-  }, [props.onVisibleRowsChange, props.view, visibleTableState, data, legacyExportRows, antColumns, columnFilters])
-  const exportRows = props.onVisibleRowsChange ? visibleRows : legacyExportRows
+  }, [props.view, visibleTableState, data, antColumns, columnFilters])
+  const exportRows = visibleRows
   useEffect(() => { props.onVisibleRowsChange?.(visibleRows) }, [props.onVisibleRowsChange, visibleRows])
 
   const rowHeight = 48
@@ -217,7 +220,7 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
 
   return <div className={`ant-smart-table${props.fillHeight ? ' table-fill-height' : ''}`} style={tableStyle}>
     <div className="ant-table-toolbar">
-      <div className="ant-table-summary">{title && <strong>{title}</strong>}<span>{(props.onVisibleRowsChange ? visibleRows : data).length} of {rows.length} rows</span></div>
+      <div className="ant-table-summary">{title && <strong>{title}</strong>}<span>{visibleRows.length} of {rows.length} {props.rowLabel || 'rows'}</span></div>
       <div className="ant-table-actions">
         {!props.hideSearch && <Input allowClear className="table-filter" placeholder="Search table..." value={query} onChange={event => setQuery(event.target.value)} />}
         {(props.hideInactiveClear === false || query || dirtyTable) && <Button onClick={clear}>Reset</Button>}
@@ -264,7 +267,8 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
         if (paginationState.pageSize && paginationState.pageSize !== tablePageSize) setTablePageSize(paginationState.pageSize)
         setDirtyTable(true)
         setVisibleTableState({ source: data, rows: extra.currentDataSource as T[] })
-        if (props.onVisibleRowsChange) { setColumnFilters(filters); props.onVisibleRowsChange(extra.currentDataSource as T[]) }
+        setColumnFilters(filters)
+        props.onVisibleRowsChange?.(extra.currentDataSource as T[])
       }}
     />}
   </div>

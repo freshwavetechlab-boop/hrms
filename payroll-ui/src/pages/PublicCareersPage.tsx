@@ -13,6 +13,7 @@ import type {
   DynamicFormField, PublicApplicationProcessingStatus, PublicApplicationSession, PublicApplicationVerification, PublicCandidateApplicationTracker, PublicFormValue, PublicRecruitmentJob, PublicUploadedFile, PublicUploadMetadata,
 } from '../types/recruitmentOrchestration'
 import { formatApiDateTime } from '../utils/apiDateTime'
+import { publicRecruitmentEmployer, publicRecruitmentJobView } from '../utils/publicRecruitmentPresentation'
 import '../components/RecruitmentOrchestration.css'
 import './PublicCareersPage.css'
 
@@ -52,7 +53,7 @@ export default function PublicCareersPage({ slug: suppliedSlug }: Props) {
 
   useEffect(() => {
     let active = true; setLoading(true)
-    void getPublicCareerJobResult(slug).then(response => { if (active) { setJob(response.data); setLoadFailure(response.ok ? '' : response.status === 404 ? 'not-found' : 'unavailable'); setLoading(false) } })
+    void getPublicCareerJobResult(slug).then(response => { if (active) { setJob(response.data ? publicRecruitmentJobView(response.data) : null); setLoadFailure(response.ok ? '' : response.status === 404 ? 'not-found' : 'unavailable'); setLoading(false) } })
     return () => { active = false }
   }, [slug])
 
@@ -191,7 +192,8 @@ export default function PublicCareersPage({ slug: suppliedSlug }: Props) {
     setResumePrefill(null)
   }
 
-  const branding = <CareersBrand name={brand?.name || job?.clientName || 'Careers'} logo={brand?.logoDataUrl} />
+  const organization = brand?.name || publicRecruitmentEmployer
+  const branding = <CareersBrand name={organization} logo={brand?.logoDataUrl} />
   if (loading) return <main className="public-career-page careers-page"><div className="public-career-shell">{branding}<Card><Skeleton active paragraph={{ rows: 12 }} /></Card></div></main>
   if (!job) return <main className="public-career-page careers-page"><div className="public-career-shell">{branding}<div className="public-success"><Result status={loadFailure === 'unavailable' ? 'error' : '404'} title={loadFailure === 'unavailable' ? 'Unable to load this job' : 'Job posting not found'} subTitle={loadFailure === 'unavailable' ? 'The recruitment service is temporarily unavailable. Please try again shortly.' : 'This link may be incorrect, closed or no longer public.'} /></div></div></main>
   if (result) return <main className="public-career-page careers-page"><div className="public-career-shell">{branding}<div className="public-success"><Result status="success" title={result.status === 'ResumeUpdated' ? 'Resume updated' : 'Application submitted'} subTitle={result.message || `Your application reference is ${result.applicationCode}.`} extra={<Space direction="vertical" size={12}><Tag color="green" icon={<CheckCircleOutlined />}>{result.applicationCode}</Tag><Alert showIcon type={processingStatus?.status === 'NeedsReview' ? 'warning' : processingStatus?.status === 'Completed' ? 'success' : 'info'} message={processingStatus?.status === 'NeedsReview' ? 'Processing issue detected' : processingStatus?.status === 'Completed' ? 'Processing complete' : 'Processing resume'} description={processingStatus?.message || 'Your application is saved. Resume processing is continuing.'} /><Button onClick={() => setTrackingOpen(true)}>View complete application status</Button><p>Keep this APP reference and your 6-digit tracking PIN to check this application later.</p></Space>} /></div></div><PublicApplicationTrackerModal open={trackingOpen} slug={slug} initialApplicationCode={result.applicationCode} initialPin={verificationCode} onClose={() => setTrackingOpen(false)} /></main>
@@ -224,7 +226,7 @@ export default function PublicCareersPage({ slug: suppliedSlug }: Props) {
       <div className={`public-job-layout${session ? ' is-applying' : ''}`}>
         <section className="public-job-hero" aria-labelledby="careers-job-title">
           <div className="careers-role-eyebrow"><span className={`careers-availability${unavailable ? ' is-unavailable' : ''}`}>{unavailable ? 'Applications not open' : 'Applications open'}</span>{job.positionCode && <span className="careers-job-reference">Job ID: {job.positionCode}</span>}</div>
-          <p className="careers-hiring-for">Hiring for {job.clientName}</p>
+          <p className="careers-hiring-for">{organization}</p>
           <h1 id="careers-job-title">{job.publicTitle || job.positionTitle}</h1>
           <div className="public-job-tags">
             {job.jobLocation && <span><EnvironmentOutlined />{job.jobLocation}</span>}
@@ -293,7 +295,7 @@ export default function PublicCareersPage({ slug: suppliedSlug }: Props) {
           </div>
         </Card>
       </div>
-      <footer className="careers-footer"><span>{job.clientName} · Careers</span><span>Powered by <b>Frevo</b></span></footer>
+      <footer className="careers-footer"><span>{organization} · Careers</span><span>Powered by <b>Frevo</b></span></footer>
       <Modal open={Boolean(filePreview)} title={filePreview?.name || 'Resume preview'} footer={<Button type="primary" onClick={() => setFilePreview(null)}>Close</Button>} onCancel={() => setFilePreview(null)} width={820}>
         <pre className="public-resume-preview-text">{filePreview?.text}</pre>
       </Modal>
@@ -337,7 +339,7 @@ function PublicApplicationTrackerModal({ open, slug, initialApplicationCode, ini
   return <Modal className="public-tracker-modal" open={open} title="Track your applications" footer={null} onCancel={close} width="min(920px, 96vw)" destroyOnClose>
     {!tracker ? <Form layout="vertical" onFinish={() => void login()}>
       <Alert showIcon type="info" message="Track your application" description="Use the APP reference shown after submission and the 6-digit tracking PIN sent during your first verification." style={{ marginBottom: 16 }} />
-      <Form.Item label="Application reference" required><Input prefix={<FileTextOutlined />} autoComplete="off" placeholder="APP-UIDAI-000072" value={applicationCode} onChange={event => setApplicationCode(event.target.value.toUpperCase())} /></Form.Item>
+      <Form.Item label="Application reference" required><Input prefix={<FileTextOutlined />} autoComplete="off" placeholder="Enter your application reference" value={applicationCode} onChange={event => setApplicationCode(event.target.value.toUpperCase())} /></Form.Item>
       <Form.Item label="Tracking PIN" required><Input.Password prefix={<LockOutlined />} inputMode="numeric" autoComplete="current-password" maxLength={6} value={pin} onChange={event => setPin(event.target.value.replace(/\D/g, '').slice(0, 6))} /></Form.Item>
       {error && <Alert showIcon type="error" message={error} style={{ marginBottom: 16 }} />}
       <Button block type="primary" htmlType="submit" loading={busy}>View application status</Button>

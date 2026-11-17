@@ -4,7 +4,8 @@ import { ArrowRightOutlined, BankOutlined, ClockCircleOutlined, CloseOutlined, D
 import { Alert, Button, Checkbox, Drawer, Empty, Input, Pagination, Select, Skeleton } from 'antd'
 import { apiUrl } from '../services/apiClient'
 import { apiUtcDate } from '../utils/apiDateTime'
-import { emptyPublicJobFilters, filterPublicJobs, formatPublicJobSalary, publicJobApplyUrl, publicJobFiltersFromSearch, publicJobTitle, sortPublicJobs, type PublicCareerJob, type PublicJobFilters } from '../utils/publicJobsBoard'
+import { emptyPublicJobFilters, filterPublicJobs, formatPublicJobSalary, formatRecruitmentExperience, publicJobApplyUrl, publicJobFiltersFromSearch, publicJobTitle, sortPublicJobs, type PublicCareerJob, type PublicJobFilters } from '../utils/publicJobsBoard'
+import { publicRecruitmentEmployer, publicRecruitmentJobView } from '../utils/publicRecruitmentPresentation'
 import './PublicJobsBoardPage.css'
 
 const pageSize = 10
@@ -13,7 +14,6 @@ const date = (value?: string | null) => {
   const parsed = apiUtcDate(value)
   return Number.isNaN(parsed.getTime()) ? '' : parsed.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
 }
-const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map(word => word[0]).join('').toUpperCase()
 
 export default function PublicJobsBoardPage() {
   const [params, setParams] = useSearchParams()
@@ -23,6 +23,12 @@ export default function PublicJobsBoardPage() {
   const [refresh, setRefresh] = useState(0), [mobileFilters, setMobileFilters] = useState(false)
   const [search, setSearch] = useState(filters.q), [location, setLocation] = useState(filters.location)
   const sort = params.get('sort') === 'title' ? 'title' : 'recent'
+  useEffect(() => {
+    if (!params.has('client')) return
+    const next = new URLSearchParams(params)
+    next.delete('client')
+    setParams(next, { replace: true })
+  }, [params, setParams])
   useEffect(() => {
     const previousTitle = document.title
     document.title = `Careers | ${brand?.name || 'GA Digital'}`
@@ -45,7 +51,7 @@ export default function PublicJobsBoardPage() {
       return response.json() as Promise<PublicCareerJob[]>
     }).then(result => {
       if (!active) return
-      if (Array.isArray(result)) setJobs(result.filter(job => !!publicJobApplyUrl(job)))
+      if (Array.isArray(result)) setJobs(result.filter(job => !!publicJobApplyUrl(job)).map(job => publicRecruitmentJobView({ ...job, experienceRange: formatRecruitmentExperience(job) })))
       else { setJobs([]); setError('We could not load the open jobs. Please try again.') }
       setLoading(false)
     }).catch(() => { if (active) { setJobs([]); setError('We could not load the open jobs. Please try again.'); setLoading(false) } })
@@ -74,15 +80,14 @@ export default function PublicJobsBoardPage() {
   const selected = jobs.find(job => job.publicSlug === params.get('job'))
   const selectedMissing = !!params.get('job') && !selected && !loading && !error
   const chooseJob = (slug?: string) => { const next = new URLSearchParams(params); if (slug) next.set('job', slug); else next.delete('job'); setParams(next) }
-  const options = (key: 'clientName' | 'jobLocation' | 'employmentType' | 'workMode' | 'experienceRange') => [...new Set(jobs.map(job => job[key]).filter(Boolean))].sort().map(value => ({ value, label: value }))
-  const activeCount = [filters.client, filters.type, filters.mode, filters.experience, filters.salary].filter(Boolean).length
-  const organization = brand?.name || 'GA Digital Web Word Pvt. Ltd.'
+  const options = (key: 'jobLocation' | 'employmentType' | 'workMode' | 'experienceRange') => [...new Set(jobs.map(job => job[key]).filter(Boolean))].sort().map(value => ({ value, label: value }))
+  const activeCount = [filters.type, filters.mode, filters.experience, filters.salary].filter(Boolean).length
+  const organization = brand?.name || publicRecruitmentEmployer
   const filterControls = <div className="public-jobs-filter-fields">
-    <FilterSelect label="Client / organization" value={filters.client} options={options('clientName')} onChange={value => update({ client: value })} />
     <FilterSelect label="Experience" value={filters.experience} options={options('experienceRange')} onChange={value => update({ experience: value })} />
     <FilterSelect label="Employment type" value={filters.type} options={options('employmentType')} onChange={value => update({ type: value })} />
     <FilterSelect label="Work mode" value={filters.mode} options={options('workMode')} onChange={value => update({ mode: value })} />
-    <Checkbox checked={filters.salary} onChange={event => update({ salary: event.target.checked })}>Salary / CTC specified</Checkbox>
+    <Checkbox checked={filters.salary} onChange={event => update({ salary: event.target.checked })}>Annual salary specified</Checkbox>
   </div>
 
   return <main className="public-jobs-board">
@@ -93,25 +98,25 @@ export default function PublicJobsBoardPage() {
       </a><a className="public-jobs-nav" href="#open-jobs">Explore jobs <ArrowRightOutlined /></a>
     </div></header>
     <section className="public-jobs-hero"><div className="public-jobs-hero-inner">
-      <div className="public-jobs-hero-copy"><span className="public-jobs-eyebrow">YOUR NEXT CHAPTER STARTS HERE</span><h1>Good work. <span>Great possibilities.</span></h1><p>Explore opportunities across our client network. Find a role that fits your skills and take your next step with us.</p></div>
-      <div className="public-jobs-hero-note"><span className="public-jobs-live-dot" /> Open opportunities<span>One place. All our hiring clients.</span></div>
+      <div className="public-jobs-hero-copy"><span className="public-jobs-eyebrow">YOUR NEXT CHAPTER STARTS HERE</span><h1>Good work. <span>Great possibilities.</span></h1><p>Explore opportunities with GA Digital. Find a role that fits your skills and take your next step with us.</p></div>
+      <div className="public-jobs-hero-note"><span className="public-jobs-live-dot" /> Open opportunities<span>Your next role with GA Digital.</span></div>
       <form className="public-jobs-search" onSubmit={event => { event.preventDefault(); update({ q: search.trim(), location }) }}>
-        <label className="public-jobs-keywords"><span className="public-jobs-visually-hidden">Job title, skills or client</span><SearchOutlined /><Input aria-label="Job title, skills or client" value={search} onChange={event => setSearch(event.target.value)} placeholder="Job title, skills or client" bordered={false} allowClear /></label>
+        <label className="public-jobs-keywords"><span className="public-jobs-visually-hidden">Job title or skills</span><SearchOutlined /><Input aria-label="Job title or skills" value={search} onChange={event => setSearch(event.target.value)} placeholder="Job title or skills" bordered={false} allowClear /></label>
         <label className="public-jobs-location"><EnvironmentOutlined /><Select aria-label="Job location" showSearch allowClear placeholder="All locations" value={location || undefined} options={options('jobLocation')} onChange={value => setLocation(value || '')} bordered={false} optionFilterProp="label" /></label>
         <Button type="primary" htmlType="submit" size="large" icon={<SearchOutlined />}>Search jobs</Button>
       </form>
     </div></section>
     <div className="public-jobs-content" id="open-jobs">
-      <aside className="public-jobs-filter-sidebar" aria-label="Filter jobs"><div className="public-jobs-filter-title"><h2><FilterOutlined /> Filters</h2><button type="button" onClick={() => update({}, true)}>Reset all</button></div>{filterControls}<div className="public-jobs-filter-note"><BankOutlined /><p>Opportunities from every hiring client, brought together in one place.</p></div></aside>
+      <aside className="public-jobs-filter-sidebar" aria-label="Filter jobs"><div className="public-jobs-filter-title"><h2><FilterOutlined /> Filters</h2><button type="button" onClick={() => update({}, true)}>Reset all</button></div>{filterControls}<div className="public-jobs-filter-note"><BankOutlined /><p>Find your next opportunity with GA Digital.</p></div></aside>
       <section className="public-jobs-results" aria-labelledby="public-jobs-results-title">
-        <div className="public-jobs-results-heading"><div><span className="public-jobs-section-label">FIND YOUR FIT</span><h2 id="public-jobs-results-title">{loading && !jobs.length ? 'Open opportunities' : `${filtered.length} open ${filtered.length === 1 ? 'opportunity' : 'opportunities'}`}</h2><p>{filters.q ? `Results for “${filters.q}”` : 'Explore roles across our hiring clients'}{filters.location ? ` · ${filters.location}` : ''}</p></div>
+        <div className="public-jobs-results-heading"><div><span className="public-jobs-section-label">FIND YOUR FIT</span><h2 id="public-jobs-results-title">{loading && !jobs.length ? 'Open opportunities' : `${filtered.length} open ${filtered.length === 1 ? 'opportunity' : 'opportunities'}`}</h2><p>{filters.q ? `Results for “${filters.q}”` : 'Explore roles with GA Digital'}{filters.location ? ` · ${filters.location}` : ''}</p></div>
           <div className="public-jobs-result-controls"><Button className="public-jobs-mobile-filter" icon={<FilterOutlined />} onClick={() => setMobileFilters(true)}>Filters{activeCount ? ` (${activeCount})` : ''}</Button><Select aria-label="Sort jobs" value={sort} options={[{ value: 'recent', label: 'Newest first' }, { value: 'title', label: 'Job title A–Z' }]} onChange={value => { const next = new URLSearchParams(params); next.set('sort', value); next.delete('page'); setParams(next) }} /></div>
         </div>
         {(Object.values(filters).some(Boolean)) && <div className="public-jobs-active-filters"><span>Filtered results</span><button type="button" onClick={() => update({}, true)}>Clear all filters <CloseOutlined /></button></div>}
         {selectedMissing && <Alert type="info" showIcon message="This role is no longer listed. Explore the current opportunities below." closable onClose={() => chooseJob()} />}
         {error ? <div className="public-jobs-empty"><Empty description={error} /><Button type="primary" onClick={() => setRefresh(value => value + 1)}>Try again</Button></div>
           : loading && !jobs.length ? <div className="public-jobs-card-list" aria-label="Loading jobs">{[1, 2, 3].map(key => <div className="public-jobs-card" key={key}><Skeleton active paragraph={{ rows: 4 }} /></div>)}</div>
-          : !filtered.length ? <div className="public-jobs-empty"><SearchOutlined /><h3>{jobs.length ? 'No roles match your search' : 'No open roles right now'}</h3><p>{jobs.length ? 'Try another keyword, location or filter to discover more opportunities.' : 'Please check back soon for new opportunities across our clients.'}</p>{jobs.length > 0 && <Button onClick={() => update({}, true)}>Clear filters</Button>}</div>
+          : !filtered.length ? <div className="public-jobs-empty"><SearchOutlined /><h3>{jobs.length ? 'No roles match your search' : 'No open roles right now'}</h3><p>{jobs.length ? 'Try another keyword, location or filter to discover more opportunities.' : 'Please check back soon for new opportunities with GA Digital.'}</p>{jobs.length > 0 && <Button onClick={() => update({}, true)}>Clear filters</Button>}</div>
           : <div className="public-jobs-card-list" aria-label="Open jobs">{visible.map(job => <JobCard key={job.publicSlug} job={job} onView={() => chooseJob(job.publicSlug)} />)}</div>}
         {!error && filtered.length > pageSize && <Pagination className="public-jobs-pagination" current={page} pageSize={pageSize} total={filtered.length} showSizeChanger={false} onChange={value => { const next = new URLSearchParams(params); next.set('page', String(value)); setParams(next) }} />}
       </section>
@@ -119,7 +124,7 @@ export default function PublicJobsBoardPage() {
     <footer className="public-jobs-footer"><span>{organization} · Careers</span><span>Powered by <b>Frevo</b></span></footer>
     <Drawer open={mobileFilters} onClose={() => setMobileFilters(false)} title="Filter jobs" placement="left" width="min(360px, 94vw)" rootClassName="public-jobs-filter-drawer" footer={<div className="public-jobs-drawer-actions"><Button onClick={() => update({}, true)}>Reset filters</Button><Button type="primary" onClick={() => setMobileFilters(false)}>Show {filtered.length} {filtered.length === 1 ? 'job' : 'jobs'}</Button></div>}><div className="public-jobs-board public-jobs-filter-body">{filterControls}</div></Drawer>
     <Drawer open={!!selected} onClose={() => chooseJob()} width="min(800px, 100vw)" title="Job details" rootClassName="public-jobs-detail-drawer" footer={selected && <div className="public-jobs-drawer-actions"><Button onClick={() => chooseJob()}>Back to jobs</Button><Button type="primary" href={publicJobApplyUrl(selected)} icon={<ArrowRightOutlined />}>Apply now</Button></div>}>
-      {selected && <div className="public-jobs-detail"><span className="public-jobs-section-label">HIRING FOR {selected.clientName}</span><h2>{publicJobTitle(selected)}</h2><p className="public-jobs-reference">Job ID: {selected.positionCode}</p><JobFacts job={selected} />
+      {selected && <div className="public-jobs-detail"><span className="public-jobs-section-label">{organization}</span><h2>{publicJobTitle(selected)}</h2><p className="public-jobs-reference">Job ID: {selected.positionCode}</p><JobFacts job={selected} />
         <div className="public-jobs-detail-grid"><DetailFact label="Employment type" value={selected.employmentType} /><DetailFact label="Work mode" value={selected.workMode} /><DetailFact label="Department" value={selected.department} /><DetailFact label="Open positions" value={selected.remainingPositions ? String(selected.remainingPositions) : ''} /><DetailFact label="Posted on" value={date(selected.publishedAtUtc)} /><DetailFact label="Apply by" value={date(selected.closesAtUtc)} /></div>
         <DetailSection title="Role overview" text={[selected.summary, selected.rolePurpose].filter((text, index, all) => !!text && all.indexOf(text) === index).join('\n\n')} />
         <DetailSection title="Key responsibilities" items={selected.responsibilities} /><DetailSection title="Skills" items={selected.skills} /><DetailSection title="Qualifications" items={selected.qualifications} /><DetailSection title="Certifications" items={selected.certifications} /><DetailSection title="Languages" items={selected.languages} /><DetailSection title="Benefits" items={selected.benefits} />
@@ -134,7 +139,7 @@ function FilterSelect({ label, value, options, onChange }: { label: string; valu
 }
 function JobCard({ job, onView }: { job: PublicCareerJob; onView: () => void }) {
   return <article className="public-jobs-card">
-    <div className="public-jobs-card-heading"><div><span className="public-jobs-client">{job.clientName}</span><h3><button onClick={onView}>{publicJobTitle(job)}</button></h3><span className="public-jobs-reference">Job ID: {job.positionCode}</span></div><span className="public-jobs-client-mark" aria-hidden="true">{initials(job.clientName) || 'GA'}</span></div>
+    <div className="public-jobs-card-heading"><div><span className="public-jobs-employer">{publicRecruitmentEmployer}</span><h3><button onClick={onView}>{publicJobTitle(job)}</button></h3><span className="public-jobs-reference">Job ID: {job.positionCode}</span></div><span className="public-jobs-employer-mark" aria-hidden="true">GA</span></div>
     <JobFacts job={job} />
     {(job.summary || job.rolePurpose) && <p className="public-jobs-summary">{job.summary || job.rolePurpose}</p>}
     <div className="public-jobs-tags">{[job.employmentType, job.workMode, ...(job.skills || []).slice(0, 4)].filter((value, index, all) => value && all.indexOf(value) === index).map(value => <span key={value}>{value}</span>)}</div>
@@ -142,7 +147,7 @@ function JobCard({ job, onView }: { job: PublicCareerJob; onView: () => void }) 
   </article>
 }
 function JobFacts({ job }: { job: PublicCareerJob }) {
-  return <div className="public-jobs-facts"><Fact icon={<ClockCircleOutlined />} label="Experience" value={job.experienceRange || 'Not specified'} /><Fact icon={<DollarOutlined />} label="Salary / CTC" value={formatPublicJobSalary(job)} /><Fact icon={<EnvironmentOutlined />} label="Location" value={job.jobLocation || 'Not specified'} /></div>
+  return <div className="public-jobs-facts"><Fact icon={<ClockCircleOutlined />} label="Experience" value={formatRecruitmentExperience(job)} /><Fact icon={<DollarOutlined />} label="Annual salary" value={formatPublicJobSalary(job)} /><Fact icon={<EnvironmentOutlined />} label="Location" value={job.jobLocation || 'Not specified'} /></div>
 }
 function Fact({ icon, label, value }: { icon: ReactNode; label: string; value: string }) { return <div><span aria-hidden="true">{icon}</span><span><small>{label}</small><strong>{value}</strong></span></div> }
 function DetailFact({ label, value }: { label: string; value?: string }) { return value ? <div><small>{label}</small><strong>{value}</strong></div> : null }

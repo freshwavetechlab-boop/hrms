@@ -65,4 +65,8 @@ public sealed class ExcelPayrollTransferAmountReview
     public decimal? RawNetDelta { get; set; }
     public decimal? DisplayNetDelta { get; set; }
     public List<ExcelPayrollTransferAmountLine> Lines { get; set; } = [];
+    [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public HistoricalAmountDifferenceEvidence? BoundedDifference { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ExcelPayrollConfigurationDifferenceEvidence? ConfigurationDifference { get; set; }
 }

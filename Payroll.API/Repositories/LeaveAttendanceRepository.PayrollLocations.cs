@@ -71,6 +71,27 @@ ORDER BY e.EmployeeCode,e.Id", new { ClientId = clientId, Month = month, Start =
 assignment_id AssignmentId,reference_assignment_id ReferenceAssignmentId,payroll_days PayrollDays,present_days PresentDays,payable_days PayableDays
 FROM employee_payroll_location_allocations WHERE client_id=@ClientId AND employee_id IN @Ids AND pay_period<=@Month
 ORDER BY pay_period DESC,source_part_key", new { ClientId = clientId, Ids = ids, Month = month }, tx)).ToList();
+        var priorCorrections = allocations.Where(part => part.Period != month && assignments.Any(assignment => assignment.Id == part.AssignmentId
+            && assignment.Status == ReviewedLocationCorrectionOrigins.Status)).ToArray();
+        if (priorCorrections.Length > 0)
+        {
+            var origins = await ReviewedLocationCorrectionOrigins.ReadAsync(db, tx, configuration, clientId,
+                priorCorrections.Select(part => part.AssignmentId).Distinct(StringComparer.Ordinal).ToArray());
+            foreach (var part in priorCorrections)
+            {
+                var origin = origins[part.AssignmentId];
+                if (origin.EmployeeId != part.EmployeeId || origin.Month != part.Period || origin.PartKey != part.PartKey
+                    || !assignments.Any(assignment => assignment.Id == part.AssignmentId && assignment.SourceHash == origin.SourceHash)
+                    || !assignments.Any(assignment => assignment.Id == origin.PreviousAssignmentId && assignment.EmployeeId == part.EmployeeId && assignment.Status == "Active"))
+                    throw new InvalidOperationException("The original future location salary default cannot be verified from the period correction receipt.");
+                if (part.ReferenceAssignmentId == part.AssignmentId) part.ReferenceAssignmentId = origin.PreviousAssignmentId;
+                part.AssignmentId = origin.PreviousAssignmentId;
+            }
+            foreach (var part in allocations.Where(part => part.Period != month))
+                if (part.ReferenceAssignmentId is { } reference && origins.TryGetValue(reference, out var referenceOrigin)
+                    && referenceOrigin.EmployeeId == part.EmployeeId && referenceOrigin.Month == part.Period)
+                    part.ReferenceAssignmentId = referenceOrigin.PreviousAssignmentId;
+        }
         var storage = tables.Contains("payroll_location_attendance_inputs") && tables.Contains("payroll_location_attendance_imports");
         var inputs = !storage ? [] : (await db.QueryAsync<LocationAttendanceSavedInput>(@"SELECT employee_id EmployeeId,
 part_key PartKey,payroll_days PayrollDays,present_days PresentDays,payable_days PayableDays FROM payroll_location_attendance_inputs
@@ -85,6 +106,19 @@ AND RunType='Regular' AND Status IN ('AwaitingProcessing','Queued','Processing')
         var setup = JsonNode.Parse(setupJson)!.AsObject();
         var templates = (setup["salaryStructures"] as JsonArray ?? []).OfType<JsonObject>().ToList();
         var masters = (setup["salaryComponents"] as JsonArray ?? []).OfType<JsonObject>().ToList();
+        var usedTemplateIds=new HashSet<string>(StringComparer.Ordinal);
+        foreach(var employee in employees)
+        {
+            var latest=allocations.FirstOrDefault(part=>part.EmployeeId==employee.EmployeeId)?.Period;
+            var relevant=allocations.Where(part=>part.EmployeeId==employee.EmployeeId&&part.Period==latest).ToArray();
+            foreach(var assignment in relevant.Length>0
+                ?assignments.Where(assignment=>relevant.Any(part=>part.AssignmentId==assignment.Id))
+                :assignments.Where(assignment=>assignment.EmployeeId==employee.EmployeeId&&assignment.Status=="Active"))
+                usedTemplateIds.Add(assignment.TemplateId);
+        }
+        var namedProfiles=usedTemplateIds.Count>0&&await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='modulesettings')",transaction:tx)
+            ?await NamedFormulaInputStore.ReadProfilesAsync(db,tx,configuration,clientId,usedTemplateIds)
+            :new Dictionary<string,NamedFormulaInputProfile>(StringComparer.Ordinal);
         var reviewPriorPeriod = PayRunRepository.PriorPeriodLocationPayReviewer(clientId, setupJson, month);
         var result = new PayrollLocationAttendanceContext { ClientId = clientId, Month = month, PolicyBatchId = policyBatchId,
             GroupIds = groupIds.Order().ToList(), StorageAvailable = storage };
@@ -121,9 +155,16 @@ AND RunType='Regular' AND Status IN ('AwaitingProcessing','Queued','Processing')
                 else
                 {
                     row.TemplateName = template["name"]?.ToString() ?? row.TemplateId;
-                    try { row.RulesHash = ExcelPayrollSetupRepository.LocationSettingsRulesHash(template, masters); }
+                    try { row.RulesHash = ExcelPayrollSetupRepository.LocationSettingsRulesHash(template, masters);
+                        if(namedProfiles.TryGetValue(row.TemplateId,out var named))
+                        {
+                            if(named.RulesHash!=row.RulesHash)throw new InvalidOperationException("The reviewed named-operand monetary rules changed; refresh their configuration.");
+                            row.RulesHash=ReviewedNamedFormulaInputs.RulesHash(row.RulesHash,named.DeclarationHash);
+                        }
+                    }
                     catch (InvalidOperationException error) { row.Issue = error.Message; }
-                    if (native && (assignment!.Status != "Active" || !row.RulesHash.Equals(assignment.RulesHash, StringComparison.OrdinalIgnoreCase)))
+                    if (native && (assignment!.Status != "Active" && !(currentSource && assignment.Status == ReviewedLocationCorrectionOrigins.Status)
+                        || !row.RulesHash.Equals(assignment.RulesHash, StringComparison.OrdinalIgnoreCase)))
                         row.Issue = "Location salary rules changed. Review a new assignment version before importing attendance.";
                     if (native && row.Issue.Length == 0 && assignment!.SourceMonth.Length > 0)
                         try { row.Issue = reviewPriorPeriod(new() { SalaryStructureId = row.TemplateId,

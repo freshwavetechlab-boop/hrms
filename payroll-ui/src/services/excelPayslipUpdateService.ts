@@ -12,6 +12,6 @@ export type PayslipUpdateApplyRequest = { token: string; selectedChangeIds: stri
 export type PayslipUpdateResult = { batch: ExcelPayslipBatch; appliedChanges: number; updatedEmployees: number; replayed: boolean }
 
 const path = (clientId: number, id: string, action: string) => `/api/excel-payslips/batches/${encodeURIComponent(id)}/${action}?clientId=${clientId}`
-export const getPayslipUpdateCatalog = (clientId: number, id: string) => getJsonResult<PayslipUpdateCatalog | null>(path(clientId, id, 'update-catalog'), null, { toast: false, loader: false, timeoutMs: 120000 })
-export const previewPayslipUpdate = (clientId: number, id: string, request: PayslipUpdatePreviewRequest) => postJson<PayslipUpdatePreviewRequest, PayslipUpdatePreview | null>(path(clientId, id, 'update-preview'), request, null, { toast: false, loader: false, timeoutMs: 120000 })
-export const applyPayslipUpdate = (clientId: number, id: string, request: PayslipUpdateApplyRequest) => postJson<PayslipUpdateApplyRequest, PayslipUpdateResult | null>(path(clientId, id, 'update-apply'), request, null, { toast: false, loader: false, timeoutMs: 120000 })
+export const getPayslipUpdateCatalog = (clientId: number, id: string) => getJsonResult<PayslipUpdateCatalog | null>(path(clientId, id, 'update-catalog'), null, { toast: false, loader: false, timeoutMs: 240000 })
+export const previewPayslipUpdate = (clientId: number, id: string, request: PayslipUpdatePreviewRequest) => postJson<PayslipUpdatePreviewRequest, PayslipUpdatePreview | null>(path(clientId, id, 'update-preview'), request, null, { toast: false, loader: false, timeoutMs: 240000 })
+export const applyPayslipUpdate = (clientId: number, id: string, request: PayslipUpdateApplyRequest) => postJson<PayslipUpdateApplyRequest, PayslipUpdateResult | null>(path(clientId, id, 'update-apply'), request, null, { toast: false, loader: false, timeoutMs: 240000 })

@@ -15,6 +15,83 @@ const { proposeExcelPayrollSetup } = load('excelPayrollSetup')
 const { defaultPayslipMapping, payslipHeaders, buildExcelPayslipRows, buildPayslipCalculationSource } = load('excelPayslipImport')
 const { validateSalaryComponent } = load('salaryComponentConfig')
 
+for (const repeats of [8, 22]) test(`expanded native formula uses the bounded 4096 limit (${repeats} source groups)`, () => {
+  const names = Array.from({ length: 8 }, (_, i) => `Auxiliary allowance source ${i + 1}`)
+  const headers = ['Employee name', 'Total Days', 'Payable Days', ...names, 'Computed earning']
+  const letters = ['D', 'E', 'F', 'G', 'H', 'I', 'J', 'K']
+  const formula = Array.from({ length: repeats }, () => letters.map(c => `${c}2`).join('+')).join('+')
+  const source = { headerRow: 1, columnCount: headers.length,
+    columns: headers.map((sourceHeader, columnIndex) => ({ sourceHeader, label: sourceHeader, columnIndex, kind: columnIndex === 0 ? 'employeeName' : columnIndex < 3 ? 'info' : 'earning' })),
+    rows: [{ sourceRow: 2, cells: ['Synthetic Person', '30', '30', ...names.map(() => '100'), String(repeats * 800)].map((value, i) => ({ value, ...(i === 11 ? { formulaText: formula } : {}) })) }] }
+  const row = { id: 'row', sourceRow: 2, employeeCode: 'SYN-1', employeeName: 'Synthetic Person', earnings: [...names.map(label => ({ label, amount: 100 })), { label: 'Computed earning', amount: repeats * 800 }], deductions: [], employerContributions: [], information: [] }
+  const batch = { id: 'synthetic-long-source', clientId: 9, clientName: 'Synthetic', month: '2026-10', rows: [row] }
+  const context = { source, components: [], employees: [], workWeeks: [], workLocations: [] }
+  const before = JSON.stringify({ batch, context })
+  const { request } = proposeExcelPayrollSetup(batch, context, ['row'])
+  const component = request.components.find(c => c.expectedColumnIndex === 11)
+  assert.ok(component)
+  if (repeats === 8) {
+    assert.notEqual(component.rowFormulas.row, 'REVIEW_REQUIRED')
+    assert.ok(component.rowFormulas.row.length > 1000 && component.rowFormulas.row.length <= 4096)
+    assert.match(component.rowFormulas.row, /_EARNED/)
+  } else assert.equal(component.rowFormulas.row, 'REVIEW_REQUIRED')
+  assert.equal(JSON.stringify({ batch, context }), before)
+})
+
+for (const heading of ['Paid Days', 'Total working Days', 'Attedance']) test(`salary-unit alias ${heading} stays dynamic without inventing actual presence`, () => {
+  const headers = ['Employee name', 'Total Days', heading, 'Basic', 'Basic', 'Extra duty']
+  const kinds = ['employeeName', 'info', 'info', 'info', 'earning', 'earning']
+  const source = { headerRow: 1, columnCount: headers.length,
+    columns: headers.map((sourceHeader, columnIndex) => ({ sourceHeader, label: sourceHeader, columnIndex, kind: kinds[columnIndex] })),
+    rows: [{ sourceRow: 2, cells: ['Synthetic Person', '26', '17.5', '26000', '17500', '1750'].map((value, i) => ({ value,
+      ...(i === 4 ? { formulaText: 'D2/B2*C2' } : i === 5 ? { formulaText: 'C2*100' } : {}) })) }] }
+  const batch = { id: 'alias-source', clientId: 9, clientName: 'Synthetic', month: '2026-10', rows: [{ id: 'row', sourceRow: 2, employeeCode: 'SYN-1', employeeName: 'Synthetic Person' }] }
+  const context = { source, components: [], employees: [], workWeeks: [], workLocations: [] }
+  const before = JSON.stringify({ batch, context })
+  const { request } = proposeExcelPayrollSetup(batch, context, ['row'])
+  assert.equal(request.payableDaysColumnIndex, 2)
+  assert.equal(request.payrollDaysColumnIndex, 1)
+  assert.equal(request.presentDaysColumnIndex, undefined)
+  assert.equal(request.attendanceReview, undefined, 'a heading is not an approved attendance meaning')
+  assert.equal(request.components.find(c => c.code === 'EXTRA_DUTY').rowFormulas.row, 'PAYABLE_DAYS*100')
+  assert.equal(JSON.stringify({ batch, context }), before)
+})
+
+test('explicit present-day columns remain separate from paid units and do not approve their meaning', () => {
+  const headers = ['Employee name', 'Total Days', 'Paid Days', 'Present Days', 'Basic']
+  const source = { headerRow: 1, columnCount: headers.length,
+    columns: headers.map((sourceHeader, columnIndex) => ({ sourceHeader, label: sourceHeader, columnIndex, kind: columnIndex === 0 ? 'employeeName' : columnIndex === 4 ? 'earning' : 'info' })),
+    rows: [{ sourceRow: 2, cells: ['Synthetic Person', '30', '25', '21', '1000'].map(value => ({ value })) }] }
+  const batch = { id: 'separate-presence', clientId: 9, clientName: 'Synthetic', month: '2026-10', rows: [{ id: 'row', sourceRow: 2, employeeCode: 'SYN-1', employeeName: 'Synthetic Person' }] }
+  const context = { source, components: [], employees: [], workWeeks: [], workLocations: [] }
+  const { request } = proposeExcelPayrollSetup(batch, context, ['row'])
+  assert.equal(request.payableDaysColumnIndex, 2)
+  assert.equal(request.presentDaysColumnIndex, 3)
+  assert.equal(request.attendanceReview, undefined)
+  source.columns[2].sourceHeader = 'Unspecified units'
+  assert.equal(proposeExcelPayrollSetup(batch, context, ['row']).request.payableDaysColumnIndex, -1, 'present days must not silently become paid units')
+  source.columns.push({ sourceHeader: 'Actual Present Days', label: 'Actual Present Days', columnIndex: 5, kind: 'info' })
+  assert.equal(proposeExcelPayrollSetup(batch, context, ['row']).request.presentDaysColumnIndex, undefined, 'ambiguous present columns require a manual choice')
+})
+
+test('captured cap and floor IF rules generate the exact supported native MIN/MAX shape', () => {
+  for (const operation of ['>', '>=', '<', '<=']) for (const yesIsBase of [true, false]) {
+    const headers = ['Employee name', 'Total Days', 'Paid Days', 'Basic', 'PF']
+    const source = { headerRow: 1, columnCount: headers.length,
+      columns: headers.map((sourceHeader, columnIndex) => ({ sourceHeader, label: sourceHeader, columnIndex, kind: columnIndex === 0 ? 'employeeName' : columnIndex === 3 ? 'earning' : columnIndex === 4 ? 'deduction' : 'info' })),
+      rows: [0, 19000, 25000, 31000].map((amount, i) => { const row = i + 2, base = `D${row}`, yes = yesIsBase ? base : '25000', no = yesIsBase ? '25000' : base
+        return { sourceRow: row, cells: ['Synthetic Person', '30', '20', String(amount), '0'].map((value, column) => ({ value, ...(column === 4 ? { formulaText: `IF(${base}${operation}25000,${yes}*12%,${no}*12%)` } : {}) })) }
+      }) }
+    const batch = { id: 'cap-rule', clientId: 9, clientName: 'Synthetic', month: '2026-10', rows: source.rows.map((r, i) => ({ id: `row-${i}`, sourceRow: r.sourceRow, employeeCode: `SYN-${i}`, employeeName: 'Synthetic Person' })) }
+    const context = { source, components: [], employees: [], workWeeks: [], workLocations: [] }
+    const before = JSON.stringify({ batch, context })
+    const { request } = proposeExcelPayrollSetup(batch, context, batch.rows.map(r => r.id))
+    const expected = `${operation.startsWith('>') === yesIsBase ? 'MAX' : 'MIN'}(BASIC_EARNED,25000)*12%`
+    assert.deepEqual([...new Set(Object.values(request.components.find(c => c.code === 'PF').rowFormulas))], [expected])
+    assert.equal(JSON.stringify({ batch, context }), before, 'source formulas/caches and payroll data stay unchanged')
+  }
+})
+
 test('later client imports reuse configuration while new employees and changed formulas come from the new sheet',()=>{
   const columns=['Employee name','Total Days','Payble Days','Basic','Basic','HRA','Professional Tax'].map((sourceHeader,columnIndex)=>({sourceHeader,label:sourceHeader,columnIndex,kind:['employeeName','info','info','info','earning','earning','deduction'][columnIndex]}))
   const oldSource={headerRow:2,columnCount:7,columns,rows:[{sourceRow:3,cells:['One','26','17','10000','6538.4615384615','326.9230769231','200'].map((value,i)=>({value,...(i===4?{formulaText:'D3/B3*C3'}:i===5?{formulaText:'E3*0.05'}:{})}))}]}

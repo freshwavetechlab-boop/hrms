@@ -17,6 +17,7 @@ const { selectedRosterRows, rosterReleaseReady } = operations
 // predicates. The small hook host replaces rendering infrastructure only.
 function mountTable(initialProps) {
   const slots = []; let cursor = 0, effects = [], output, props = initialProps
+  const downloads = []
   const sameDeps = (a, b) => !!a && !!b && a.length === b.length && a.every((value, index) => Object.is(value, b[index]))
   const hooks = {
     ...actualReact,
@@ -39,7 +40,7 @@ function mountTable(initialProps) {
   const component = name => Object.assign(() => null, { displayName: name })
   const antd = Object.fromEntries(['Button', 'Checkbox', 'Empty', 'Input', 'Pagination', 'Table'].map(name => [name, component(name)]))
   antd.Dropdown = { Button: component('DropdownButton') }
-  const dependencies = { react: hooks, 'react/jsx-runtime': jsxRuntime, antd, '@ant-design/icons': new Proxy({}, { get: () => component('Icon') }), jspdf: { jsPDF: class {} }, 'jspdf-autotable': { default: () => {} }, '../utils/xlsx': { downloadXlsx: () => {} } }
+  const dependencies = { react: hooks, 'react/jsx-runtime': jsxRuntime, antd, '@ant-design/icons': new Proxy({}, { get: () => component('Icon') }), jspdf: { jsPDF: class {} }, 'jspdf-autotable': { default: () => {} }, '../utils/xlsx': { downloadXlsx: (...args) => downloads.push(args) } }
   const exported = {}
   const source = readFileSync(process.env.FREVO_DATA_TABLE_SOURCE || `${uiRoot}/src/components/DataTable.tsx`, 'utf8')
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true } }).outputText
@@ -51,7 +52,7 @@ function mountTable(initialProps) {
     return null
   }
   render()
-  return { render, table: () => find(output, node => node.type === antd.Table), reset: () => find(output, node => node.type === antd.Button && node.props.children === 'Reset'), export: () => find(output, node => node.type === antd.Dropdown.Button) }
+  return { render, downloads, table: () => find(output, node => node.type === antd.Table), reset: () => find(output, node => node.type === antd.Button && node.props.children === 'Reset'), export: () => find(output, node => node.type === antd.Dropdown.Button), summary: () => find(output, node => node.props.className === 'ant-table-summary'), search: () => find(output, node => node.type === antd.Input) }
 }
 
 const rows = Array.from({ length: 12 }, (_, index) => ({ id: index + 1, candidateName: `Test ${index + 1}`, workLocation: index === 11 ? 'Mumbai' : 'Sikkim', workLocationId: index === 11 ? 111 : 222, sourceGroup: 'Sikkim project', documentIssues: [], revision: `r${index + 1}` }))
@@ -100,4 +101,53 @@ test('tables that do not opt into the callback retain their existing native-filt
   applySikkimFacet(host); host.render()
   host.export().props.onClick()
   assert.equal(exported.at(-1).length, 11)
+})
+
+const summaryText = host => {
+  const text = node => Array.isArray(node) ? node.map(text).join('') : actualReact.isValidElement(node) ? text(node.props.children) : node == null ? '' : String(node)
+  return text(host.summary())
+}
+
+test('native facets update displayed counts without any visible-rows callback and after refreshed data', () => {
+  const exported = [], props = { rows, columns, title: 'Saved batches', rowLabel: 'batches', onExcelExport: visible => exported.push(visible) }
+  const host = mountTable(props)
+  applySikkimFacet(host); host.render()
+  assert.equal(summaryText(host), 'Saved batches11 of 12 batches')
+  const refreshed = rows.map(row => ({ ...row, revision: 'fresh' }))
+  host.render({ ...props, rows: refreshed })
+  assert.equal(summaryText(host), 'Saved batches11 of 12 batches')
+  host.export().props.onClick()
+  assert.equal(exported.at(-1).length, 11)
+  assert.ok(exported.at(-1).every(row => row.revision === 'fresh'))
+  host.reset().props.onClick(); host.render()
+  assert.equal(summaryText(host), 'Saved batches12 of 12 batches')
+})
+
+test('search intersects native facets, and Cards ignores table facets until returning to Table', () => {
+  const props = { rows, columns }, host = mountTable(props)
+  applySikkimFacet(host); host.render()
+  host.search().props.onChange({ target: { value: 'Test 12' } }); host.render()
+  assert.equal(summaryText(host), '0 of 12 rows')
+  host.render({ ...props, view: 'Cards' })
+  assert.equal(summaryText(host), '1 of 12 rows')
+  host.render({ ...props, view: 'Table' })
+  assert.equal(summaryText(host), '0 of 12 rows')
+  assert.deepEqual(host.table().props.columns.find(column => column.key === 'workLocation').filteredValue, ['Sikkim'])
+})
+
+test('default Excel export uses the filtered set after refresh and leaves source amounts untouched', () => {
+  const source = rows.map(row => ({ ...row, netPay: 1234.56789 }))
+  const props = { rows: source, columns: [...columns, { key: 'netPay', label: 'Net pay' }], exportFileName: 'Saved batches' }
+  const host = mountTable(props)
+  applySikkimFacet(host); host.render()
+  const refreshed = source.map(row => ({ ...row, netPay: 2345.67891 }))
+  const before = JSON.stringify(refreshed)
+  host.render({ ...props, rows: refreshed })
+  host.export().props.onClick()
+  const [fileName, sheets] = host.downloads.at(-1)
+  assert.equal(fileName, 'Saved batches.xlsx')
+  assert.deepEqual(sheets[0].rows[0], ['Employee', 'Work location', 'Project', 'Net pay'])
+  assert.equal(sheets[0].rows.length, 12, 'eleven filtered records plus the header')
+  assert.ok(sheets[0].rows.slice(1).every(row => row[1] === 'Sikkim' && row[3] === '2345.67891'))
+  assert.equal(JSON.stringify(refreshed), before)
 })

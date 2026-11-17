@@ -56,7 +56,7 @@ public sealed partial class ExcelPayrollSetupRepository
         && row.Lines.All(l => l.SourceAmount.HasValue && l.Variance.HasValue && Math.Abs(l.Variance.Value) <= 0.000001m);
 
     internal static ExcelPayrollTransferFormula InspectTransferFormula(ExcelPayrollSetupRequest request, ExcelPayslipCalculationSource source,
-        ExcelPayslipRow row, ExcelPayrollSetupComponent component)
+        ExcelPayslipRow row, ExcelPayrollSetupComponent component,IReadOnlyDictionary<int,InspectedRecurringSourceBoundary>? inspectedSourceBoundary=null)
     {
         var column = component.ExpectedColumnIndex;
         var cell = column is int index ? source.Rows.SingleOrDefault(r => r.SourceRow == row.SourceRow)?.Cells.ElementAtOrDefault(index) : null;
@@ -72,7 +72,13 @@ public sealed partial class ExcelPayrollSetupRepository
         // Reviewing a literal output cannot turn a lookup/formula cache in the
         // selected salary basis into a permanent recurring employee input.
         if(component.SourceColumnIndex is int recurringColumn && !string.IsNullOrWhiteSpace(source.Rows.SingleOrDefault(r=>r.SourceRow==row.SourceRow)?.Cells.ElementAtOrDefault(recurringColumn)?.FormulaText))
-            return Review("Blocked","The recurring monthly/rate input is itself a captured formula. Translate its dependencies into native components or explicitly resolve a reviewed effective salary input; its lookup/formula cache cannot become a recurring constant.");
+        {
+            try { _ = InspectConstantRecurringInput(request, source, row, component); }
+            catch (InvalidOperationException e)
+            {
+                return Review("Blocked","The recurring monthly/rate input is itself a captured formula. Translate its dependencies into native components or explicitly resolve a reviewed effective salary input; its lookup/formula cache cannot become a recurring constant. " + e.Message);
+            }
+        }
         if (string.IsNullOrWhiteSpace(cell?.FormulaText))
             return request.ReviewedFixedInputs
                 ? Review("Reviewed fixed source", "No source formula is captured. The reviewer accepted fixed/input semantics for this component; future-period rules are not inferred.")
@@ -81,7 +87,7 @@ public sealed partial class ExcelPayrollSetupRepository
             return Review("Blocked", "A formula output cannot be frozen into a period adjustment by Transfer Batch. Review an explicit recurring rule or a separately approved source correction.");
         try
         {
-            var translation = TranslateTransferFormulaWithEvidence(cell!.FormulaText!, request, source, row);
+            var translation = TranslateTransferFormulaWithEvidence(cell!.FormulaText!, request, source, row,inspectedSourceBoundary);
             var translated = translation.Formula;
             if (translation.Dependencies.Count > 0)
                 sourceHash = Hash(JsonSerializer.Serialize(new { Output = sourceHash, RecurringInputs = translation.Dependencies }, Json));
@@ -89,17 +95,36 @@ public sealed partial class ExcelPayrollSetupRepository
             if (component.SourceColumnIndex.HasValue && component.CalculationType == "Fixed Amount" && component.ProRata)
                 configured = component.Code + "_MONTHLY/PAYROLL_DAYS*PAYABLE_DAYS";
             else if (component.SourceColumnIndex.HasValue && component.CalculationType == "Daily Rate")
-                configured = component.Code + "_MONTHLY*PAYABLE_DAYS";
+                configured = "(" + component.Code + "_MONTHLY/PAYROLL_DAYS)*PAYABLE_DAYS";
             else if (component.CalculationType == "Formula" && !component.ProRata)
                 configured = component.RowFormulas.GetValueOrDefault(row.Id, component.Formula);
             else return Review("Blocked", "The captured formula needs an explicit native Formula without additional proration, or a proven monthly/daily input mapping.");
             if(request.PresentDaysColumnIndex is null && Regex.IsMatch(configured,@"\bPRESENT_DAYS\b",RegexOptions.IgnoreCase))return Review("Blocked","Map actual present/worked days explicitly; payable days cannot silently stand in for PRESENT_DAYS.");
             PayrollFormulaEvaluator.Validate(translated); PayrollFormulaEvaluator.Validate(configured);
-            if (CanonicalTransferFormula(translated, request) != CanonicalTransferFormula(configured, request))
+            var sourceRule = CanonicalTransferFormula(translated, request);
+            if (sourceRule != CanonicalTransferFormula(configured, request)
+                && sourceRule != CanonicalTransferFormula(NormalizeTransferCapFormula(configured), request)
+                && !HasExactDailyRateSourceNormalization(request, source, row, component, translation, configured))
                 return Review("Blocked", "Captured formula translation differs from the configured rule. Equivalent-looking rewrites require supported translation; cached-value equality is insufficient.");
             return Review("Exact supported translation", "Captured numeric arithmetic/conditional AST maps exactly to the selected native component/day inputs. Statutory correctness and saved Employee parity remain separate checks.");
         }
         catch (InvalidOperationException e) { return Review("Blocked", e.Message); }
+    }
+
+    internal static ExcelPayrollTransferFormula InspectNamedTransferFormula(ExcelPayrollSetupRequest request,ExcelPayslipCalculationSource source,
+        ExcelPayslipRow row,ExcelPayrollSetupComponent component,IReadOnlyDictionary<int,NamedRecurringSourceBoundary> named,
+        IReadOnlyDictionary<int,InspectedRecurringSourceBoundary>? inspectedSourceBoundary=null)
+    {
+        var cell=component.ExpectedColumnIndex is int index?source.Rows.Single(r=>r.SourceRow==row.SourceRow).Cells.ElementAtOrDefault(index):null;
+        if(string.IsNullOrWhiteSpace(cell?.FormulaText))return InspectTransferFormula(request,source,row,component,inspectedSourceBoundary);
+        var translation=TranslateNamedFormulaWithEvidence(cell.FormulaText,request,source,row,named,inspectedSourceBoundary);
+        if(!named.Values.Any(input=>Regex.IsMatch(translation.Formula,@"\b"+Regex.Escape(input.Key)+@"\b",RegexOptions.IgnoreCase)))
+            return InspectTransferFormula(request,source,row,component,inspectedSourceBoundary);
+        if(component.CalculationType!="Formula"||component.SourceColumnIndex.HasValue||component.ProRata||component.IsPeriodAdjustment||component.ExemptWhenSourceZero)
+            throw new InvalidOperationException("Named operands require exact recurring formula output mappings, without frozen inputs or second proration.");
+        if(PayrollFormulaEvaluator.CanonicalStructure(translation.Formula)!=PayrollFormulaEvaluator.CanonicalStructure(component.Formula))
+            throw new InvalidOperationException("The native rule does not preserve the exact source named-operand AST.");
+        return new(row.Id,component.Code,row.SourceRow,component.ExpectedColumnIndex,Hash(JsonSerializer.Serialize(new{cell,named},Json)),"Exact supported translation","Exact declared independent source operands; source AST and component rounding retained.");
     }
 
     private static string CanonicalTransferFormula(string formula, ExcelPayrollSetupRequest request)
@@ -133,11 +158,14 @@ public sealed partial class ExcelPayrollSetupRepository
     }
     private static string CanonicalTransferValue(string value) => decimal.TryParse(value,NumberStyles.Float,CultureInfo.InvariantCulture,out var number)?number.ToString("G29",CultureInfo.InvariantCulture):value.Trim();
     private static string CanonicalNativeFormula(string formula) => string.IsNullOrWhiteSpace(formula)?"":PayrollFormulaEvaluator.Canonicalize(formula);
-    private static bool TransferFieldEqual(string field,string existing,string proposed) {
-        try {return field=="formula"?CanonicalNativeFormula(existing)==CanonicalNativeFormula(proposed):field=="value"?CanonicalTransferValue(existing)==CanonicalTransferValue(proposed):string.Equals(existing.Trim(),proposed.Trim(),StringComparison.Ordinal);}
+    private static bool TransferFieldEqual(string field,string existing,string proposed,bool reviewedFormulaEquivalence=false) {
+        try {return field=="formula"?CanonicalNativeFormula(NormalizeTransferCapFormula(existing))==CanonicalNativeFormula(NormalizeTransferCapFormula(proposed))
+                ||reviewedFormulaEquivalence&&!string.IsNullOrWhiteSpace(existing)&&!string.IsNullOrWhiteSpace(proposed)
+                    &&PayrollFormulaEvaluator.ReviewedTemplateStructure(NormalizeTransferCapFormula(existing))==PayrollFormulaEvaluator.ReviewedTemplateStructure(NormalizeTransferCapFormula(proposed))
+                :field=="value"?CanonicalTransferValue(existing)==CanonicalTransferValue(proposed):string.Equals(existing.Trim(),proposed.Trim(),StringComparison.Ordinal);}
         catch(InvalidOperationException){return false;}catch(FormatException){return false;}catch(OverflowException){return false;}
     }
-    internal static IReadOnlyList<string> TransferTemplateDifferences(JsonObject candidate, IReadOnlyList<ResolvedComponent> proposed, bool employeeInputOverridesFallback = false)
+    internal static IReadOnlyList<string> TransferTemplateDifferences(JsonObject candidate, IReadOnlyList<ResolvedComponent> proposed, bool employeeInputOverridesFallback = false,bool reviewedFormulaEquivalence=false)
     {
         var lines = (candidate["lines"] as JsonArray ?? []).OfType<JsonObject>().ToList();
         var differences = new List<string>();
@@ -153,22 +181,29 @@ public sealed partial class ExcelPayrollSetupRepository
                 // The source column supplies this employee's explicit fixed input,
                 // including zero. A different unused template fallback is not a rule variant.
                 if(employeeInputOverridesFallback && pair.Key=="value" && d.SourceColumnIndex.HasValue && !d.IsPeriodAdjustment && d.CalculationType=="Fixed Amount") continue;
-                if (!TransferFieldEqual(pair.Key, Text(line,pair.Key), pair.Value))
+                if (!TransferFieldEqual(pair.Key, Text(line,pair.Key), pair.Value,reviewedFormulaEquivalence))
                     differences.Add($"{d.Code}: {pair.Key} differs");
             }
         }
         return differences;
     }
 
-    internal static string ReusedTemplateRulesSignature(JsonObject template,IReadOnlyList<ResolvedComponent> proposed)
+    internal static string ReusedTemplateRulesSignature(JsonObject template,IReadOnlyList<ResolvedComponent> proposed,bool reviewedFormulaEquivalence=false)
     {
         var lines=(template["lines"] as JsonArray ?? []).OfType<JsonObject>().ToArray();
         return TransferRulesSignature(proposed.Select(component=>{
             var definition=component.Definition;
-            if(definition.SourceColumnIndex.HasValue && !definition.IsPeriodAdjustment && definition.CalculationType=="Fixed Amount")
+            var matching=lines.Where(item=>Text(item,"componentId")==component.Id).ToArray();
+            var line=matching.Length==1?matching[0]:null;
+            var fixedInput=definition.SourceColumnIndex.HasValue&&!definition.IsPeriodAdjustment&&definition.CalculationType=="Fixed Amount";
+            var equivalentFormula=reviewedFormulaEquivalence&&line is not null
+                &&!TransferFieldEqual("formula",Text(line,"formula"),definition.Formula)
+                &&TransferFieldEqual("formula",Text(line,"formula"),definition.Formula,true);
+            if(line is not null&&(fixedInput||equivalentFormula))
             {
-                var line=lines.SingleOrDefault(item=>Text(item,"componentId")==component.Id);
-                if(line is not null){definition=JsonSerializer.Deserialize<ExcelPayrollSetupComponent>(JsonSerializer.Serialize(definition,Json),Json)!;definition.Value=Text(line,"value");}
+                definition=JsonSerializer.Deserialize<ExcelPayrollSetupComponent>(JsonSerializer.Serialize(definition,Json),Json)!;
+                if(fixedInput)definition.Value=Text(line,"value");
+                if(equivalentFormula)definition.Formula=Text(line,"formula");
             }
             return component with{Definition=definition};
         }).ToList());
@@ -214,7 +249,10 @@ public sealed partial class ExcelPayrollSetupRepository
         if (request.TransferReviewVersion != 1) return;
         var transfer = new ExcelPayrollTransferReview { SourceMonth=plan.Batch.Month, SourceBatchId = plan.Batch.Id, SourceHash = Hash(JsonSerializer.Serialize(new { plan.Batch, plan.Source }, Json)), EffectiveFrom = request.EffectiveFrom };
         plan.Preview.Transfer = transfer;
+        var reviewedFormulaReuse=request.ReviewedFixedInputs&&request.ReviewedPolicyScope;
         void Error(string message, string? row = null, string? code = null) => plan.Preview.Issues.Add(new("Error", message, row, code));
+        if(request.ConfigurationDifferenceReview is{} configuredReview&&configuredReview.SourceHash!=transfer.SourceHash)
+            Error("The configuration monetary declaration belongs to another saved source version. Refresh the source-bound review.",code:"Configuration monetary review");
 
         transfer.Components = plan.Components.Select(c => new ExcelPayrollTransferComponent(c.Definition.Code,c.Definition.Category,c.IsNew ? "Create" : "Reuse unchanged",c.Id)).ToList();
         var variants = plan.Rows.Where(r => r.TemplateId.Length > 0).GroupBy(r => r.TemplateId).ToList();
@@ -227,7 +265,7 @@ public sealed partial class ExcelPayrollSetupRepository
             var decision = request.TemplateDecisions.SingleOrDefault(d => d.VariantKey == variant.Key);
             var rules = TransferRulesSignature(variant.First().Components);
             review.Candidates = templates.Where(t => RefId(Text(t,"clientId")) == clientId && Text(t,"active") != "false").Select(t => {
-                var differences = TransferTemplateDifferences(t, variant.First().Components, employeeInputOverridesFallback: true); var compatibility=CompareTemplateScope(Text(t,"id"),ReusedTemplateRulesSignature(t,variant.First().Components),request,clientId,plan.TemplateScopes,decision); return new ExcelPayrollTransferTemplateCandidate(Text(t,"id"),Text(t,"name"), differences.Count == 0 && compatibility.Compatible,differences,TransferTemplateDetails(t,variant.First().Components)) { RecordedScopes=plan.TemplateScopes.Where(record=>record.ClientId==clientId&&record.TemplateId==Text(t,"id")).ToList(), ConfigurationExact=differences.Count==0,ScopeStatus=compatibility.Status,ScopeReason=compatibility.Reason };
+                var differences = TransferTemplateDifferences(t, variant.First().Components, employeeInputOverridesFallback: true,reviewedFormulaEquivalence:reviewedFormulaReuse); var compatibility=CompareTemplateScope(Text(t,"id"),ReusedTemplateRulesSignature(t,variant.First().Components,reviewedFormulaReuse),request,clientId,plan.TemplateScopes,decision); return new ExcelPayrollTransferTemplateCandidate(Text(t,"id"),Text(t,"name"), differences.Count == 0 && compatibility.Compatible,differences,TransferTemplateDetails(t,variant.First().Components)) { RecordedScopes=plan.TemplateScopes.Where(record=>record.ClientId==clientId&&record.TemplateId==Text(t,"id")).ToList(), ConfigurationExact=differences.Count==0,ScopeStatus=compatibility.Status,ScopeReason=compatibility.Reason };
             }).ToList();
             foreach(var row in variant) {
                 var current=templates.SingleOrDefault(t=>RefId(Text(t,"clientId"))==clientId && Text(t,"id")==row.ExistingTemplateId && Text(t,"active")!="false");
@@ -258,7 +296,8 @@ public sealed partial class ExcelPayrollSetupRepository
             }
             else if (decision.CreateVariant)
             {
-                if(request.UpdateExistingConfiguration && variant.Any(row=>row.Employee.Id>0 && row.ExistingTemplateId.Length>0)) { Error("These employees already have a salary configuration. Reuse or update an existing template; another duplicate is not created.");continue; }
+                if(request.UpdateExistingConfiguration && variant.Any(row=>row.Employee.Id>0 && row.ExistingTemplateId.Length>0)
+                    && !DistinctReviewedSourceVariant(request,decision,review.Candidates,variants.Count)) { Error("These employees already have a salary configuration. Reuse or update an existing template; another duplicate is not created.");continue; }
                 if (review.Candidates.Any(c => c.Exact)) { Error("An exact existing template is available. Reuse it explicitly instead of creating a duplicate."); continue; }
                 if(request.TemplateScopeReviewVersion==1 && review.Candidates.Any(c=>c.ConfigurationExact && c.ScopeStatus is "Unknown legacy scope" or "Extension review required") && (decision.ScopeAction!="DifferentScope" || decision.ScopeReason.Trim().Length<10)) { Error("An existing template has the same rules but unresolved applicability. Review explicit reuse/extension, or explain the distinct scope before creating another variant.");continue; }
                 var name = request.TemplateName.Trim() + (variants.Count > 1 ? $" / {transfer.Templates.Count}" : "");
@@ -267,7 +306,7 @@ public sealed partial class ExcelPayrollSetupRepository
                 review.Action = "Create reviewed variant"; review.TemplateId = variant.Key; review.Name = name;
             }
             else Error("Choose explicit template reuse or reviewed variant creation.");
-            var appliedRules=plan.ReusedTemplateIds.Contains(review.TemplateId)?ReusedTemplateRulesSignature(templates.Single(template=>Text(template,"id")==review.TemplateId),variant.First().Components):rules;
+            var appliedRules=plan.ReusedTemplateIds.Contains(review.TemplateId)?ReusedTemplateRulesSignature(templates.Single(template=>Text(template,"id")==review.TemplateId),variant.First().Components,reviewedFormulaReuse):rules;
             if(review.TemplateId.Length>0 && request.TemplateScopeReviewVersion==1 && request.TemplateScope is {} reviewedScope)review.Applicability=new(clientId,review.TemplateId,appliedRules,request.EffectiveFrom,ScopePolicyKey(reviewedScope,appliedRules),JsonSerializer.Deserialize<ExcelPayrollTemplateScope>(JsonSerializer.Serialize(reviewedScope,Json),Json)!,plan.Batch.Id,plan.Batch.Month);
         }
         plan.Preview.TemplateIds=plan.Rows.Where(r=>r.TemplateId.Length>0).Select(r=>r.TemplateId).Distinct().ToList();
@@ -288,13 +327,19 @@ public sealed partial class ExcelPayrollSetupRepository
                 if (proof.Status == "Blocked") plan.Preview.Issues.Add(new(row.KeepExisting ? "Review" : "Error",proof.Reason + (row.KeepExisting ? " Existing configuration is kept; this source rule was not transferred." : ""),row.RowId,component.Definition.Code));
             }
             var amountReview = ClassifyTransferAmounts(plan, row, request, transfer.SourceHash, rowProofs);
+            if(request.ConfigurationDifferenceReview is not null&&amountReview.Status is not("Exact at raw precision" or "Explained rounding"))
+                amountReview=ReviewConfigurationAmountDifferences(plan,row,request,transfer.SourceHash,rowProofs,amountReview);
             transfer.AmountComparisons.Add(amountReview);
-            if (amountReview.Status == "Explained rounding")
+            if (amountReview.Status is "Explained rounding" or BoundedConfigurationDifferenceStatus)
             {
                 amountReview.Acknowledged = request.RoundingReviews.GetValueOrDefault(row.RowId) == amountReview.ProofHash;
+                var boundedConfiguration=amountReview.Status==BoundedConfigurationDifferenceStatus;
                 plan.Preview.Issues.Add(new(row.KeepExisting || amountReview.Acknowledged ? "Review" : "Error",
-                    amountReview.Acknowledged ? "Reviewed deterministic source/core rounding is recorded. Raw/display differences remain visible; Employee payroll parity is not certified."
-                        : "Review the deterministic rounding proof for this saved row, then repreview. No blanket currency tolerance or financial-result override is used.", row.RowId, "Rounding review"));
+                    boundedConfiguration
+                        ? amountReview.Acknowledged ? "Explicit bounded configuration differences are recorded. Source and native amounts remain unchanged; saved Employee payroll, actual presence and policy are not certified."
+                            : "Review and acknowledge this source-bound configuration difference ledger, then repreview. No amount is replaced and no saved Employee payroll is certified."
+                        : amountReview.Acknowledged ? "Reviewed deterministic source/core rounding is recorded. Raw/display differences remain visible; Employee payroll parity is not certified."
+                            : "Review the deterministic rounding proof for this saved row, then repreview. No blanket currency tolerance or financial-result override is used.", row.RowId, boundedConfiguration?"Configuration monetary review":"Rounding review"));
             }
             else if (amountReview.Status != "Exact at raw precision")
                 plan.Preview.Issues.Add(new(row.KeepExisting ? "Review" : "Error", "Excel comparison is unresolved. " + amountReview.Reason + (row.KeepExisting ? " Existing assignments are kept unchanged; no source transfer was approved." : ""), row.RowId, "Amount comparison"));
@@ -305,4 +350,17 @@ public sealed partial class ExcelPayrollSetupRepository
         plan.Preview.TemplateId = plan.Preview.TemplateIds.FirstOrDefault() ?? "";
         transfer.PreparationStatus = plan.Preview.CanApply ? plan.Rows.All(r=>r.KeepExisting) ? "Ready to record keep decisions — no source transfer; parity unresolved" : "Ready for reviewed configuration Apply — payroll parity not verified" : "Blocked";
     }
+
+    // A shared legacy template may differ from the captured source. Preserve it
+    // for its other employees; a single explicitly reviewed different rule set
+    // can become one reusable variant. Input values or unknown applicability do
+    // not justify copying a template whose rules already match.
+    internal static bool DistinctReviewedSourceVariant(ExcelPayrollSetupRequest request,
+        ExcelPayrollTransferTemplateDecision decision,IReadOnlyList<ExcelPayrollTransferTemplateCandidate> candidates,int variants) =>
+        request.UpdateExistingConfiguration && request.TransferReviewVersion==1 && request.ReviewedFixedInputs && request.ReviewedPolicyScope
+        && request.TemplateScopeReviewVersion==1 && request.TemplateScope is {Reviewed:true}
+        && variants==1 && decision.CreateVariant && !decision.KeepExisting && !decision.UpdateExisting
+        && string.IsNullOrEmpty(decision.ExistingTemplateId) && decision.ScopeAction=="DifferentScope"
+        && decision.ScopeReason is {Length:>=10 and <=500} && decision.ScopeReason.Trim().Length>=10
+        && candidates.Count>0 && !candidates.Any(candidate=>candidate.ConfigurationExact || candidate.Exact);
 }

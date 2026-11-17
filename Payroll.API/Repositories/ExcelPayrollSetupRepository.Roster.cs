@@ -43,7 +43,7 @@ public sealed partial class ExcelPayrollSetupRepository
     }
 
     internal static async Task<List<Identity>> ReadIdentitiesAsync(MySqlConnection db, MySqlTransaction? tx, int clientId, string month) =>
-        (await db.QueryAsync<Identity>(@"SELECT e.Id,e.ClientId,e.EmployeeCode,CONCAT(e.FirstName,' ',e.LastName) Name,e.IsActive," + EmployeeEmploymentRules.EligibleInMonth("e", "@Month") + @" EligibleForMonth,
+        (await db.QueryAsync<Identity>(@"SELECT e.Id,e.ClientId,e.EmployeeCode," + MasterEmployeeNameSql + @" Name,e.IsActive," + EmployeeEmploymentRules.EligibleInMonth("e", "@Month") + @" EligibleForMonth,
 COALESCE(p.PanNumber,'') Pan,COALESCE(p.AadhaarNumber,'') Aadhaar,COALESCE(p.UanNumber,'') Uan,COALESCE(w.Name,'') WorkLocation
 FROM employees e LEFT JOIN employeepersonaldetails p ON p.EmployeeId=e.Id LEFT JOIN worklocations w ON w.Id=e.WorkLocationId AND w.ClientId=e.ClientId
 WHERE e.ClientId=@ClientId ORDER BY e.Id", new { ClientId=clientId, Month=month },tx)).ToList();

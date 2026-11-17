@@ -1,6 +1,7 @@
 using Dapper;
 using MySqlConnector;
 using Payroll.API.Models;
+using Payroll.API.Services;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO.Compression;
@@ -244,7 +245,7 @@ SELECT 0, CONCAT('City:', State), City, TRUE FROM (
 ) c WHERE NOT EXISTS (SELECT 1 FROM dropdownmasters d WHERE d.ClientId = 0 AND d.Type = CONCAT('City:', c.State) AND d.Value = c.City);");
     }
 
-    private static async Task EnsureLocationDropdownMastersAsync(MySqlConnection connection, string? state, string? city, MySqlTransaction? transaction = null)
+    internal static async Task EnsureLocationDropdownMastersAsync(MySqlConnection connection, string? state, string? city, MySqlTransaction? transaction = null)
     {
         var cleanState = state?.Trim() ?? "";
         var cleanCity = city?.Trim() ?? "";
@@ -1142,7 +1143,7 @@ ORDER BY Type, ClientId DESC, Value;", new { ClientId = clientId });
                 ValidateLength(name, "Name", 160, rowNumber, rowErrors);
                 ValidateLength(componentType, "Component Type", 120, rowNumber, rowErrors);
                 ValidateLength(value, "Value", 500, rowNumber, rowErrors);
-                ValidateLength(formula, "Formula", 1000, rowNumber, rowErrors);
+                ValidateLength(formula, "Formula", PayrollFormulaEvaluator.MaximumExpressionLength, rowNumber, rowErrors);
 
                 if (rowErrors.Count > 0)
                 {

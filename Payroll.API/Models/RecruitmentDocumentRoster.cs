@@ -33,6 +33,7 @@ public sealed class RecruitmentRosterPreviewRow
     public string Phone { get; set; } = "";
     public string PositionTitle { get; set; } = "";
     public string WorkLocation { get; set; } = "";
+    public string WorkLocationStatus { get; set; } = "Unassigned";
     public string MatchStatus { get; set; } = "New profile";
     public long? CandidateId { get; set; }
     public int? WorkLocationId { get; set; }
@@ -41,6 +42,7 @@ public sealed class RecruitmentRosterPreviewRow
     public List<string> DocumentIssues { get; set; } = [];
     public Dictionary<string, string> Values { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> SourceValues { get; set; } = [];
+    internal WorkLocation? ProposedWorkLocation { get; set; }
 }
 public sealed class RecruitmentDocumentRosterRow
 {
@@ -72,6 +74,7 @@ public sealed class RecruitmentDocumentRosterRow
 public sealed class RecruitmentRosterImportResult
 {
     public int CreatedProfiles { get; set; }
+    public int CreatedWorkLocations { get; set; }
     public int ReusedProfiles { get; set; }
     public int SavedRows { get; set; }
     public List<string> Errors { get; set; } = [];

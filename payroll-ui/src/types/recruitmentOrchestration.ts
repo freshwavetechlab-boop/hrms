@@ -214,6 +214,7 @@ export type RecruitmentPositionOption = {
   employmentType?: string
   experienceRange?: string
   requisitionExperienceRange?: string
+  jobDescriptionText?: string
   salaryMin?: number
   salaryMax?: number
   currency?: string

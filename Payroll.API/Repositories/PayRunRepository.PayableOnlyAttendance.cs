@@ -53,7 +53,10 @@ public partial class PayRunRepository
     private static void ValidatePayableOnlyCalculation(PayRunSourceEmployee employee,PayrollSetupData setup,int payrollDays,decimal payableDays)
     {
         var evidence=employee.PayableOnlyAttendance;
-        if(evidence is null||evidence.ClientId!=employee.ClientId||evidence.EmployeeId!=employee.Id||evidence.PayrollDays!=payrollDays||evidence.PayableDays!=payableDays)
+        var pending=employee.ReportedPendingSeed;
+        if(pending is not null || evidence?.Origin==SourcePayableAttendance.ClosedReportedOrigin)
+            RequireReportedPayableScope(employee,payrollDays,payableDays);
+        if(pending is null&&(evidence is null||evidence.ClientId!=employee.ClientId||evidence.EmployeeId!=employee.Id||evidence.PayrollDays!=payrollDays||evidence.PayableDays!=payableDays))
             throw new InvalidOperationException("Unknown actual presence requires matching reviewed payable-only attendance provenance. No present value was assumed.");
         var structure=setup.Structures.SingleOrDefault(template=>template.Active&&template.Id==employee.SalaryStructureId
             &&template.ClientId.Split([';',',','|']).Any(value=>value.Split(':')[0].Trim()==employee.ClientId.ToString(CultureInfo.InvariantCulture)));
@@ -69,5 +72,26 @@ public partial class PayRunRepository
         });
         SourcePayableAttendance.EnsureIndependent(expressions,employee.AttendancePolicySnapshot is not null,
             employee.PfPolicyPeriod?.Versions.Count>1,employee.LocationParts is not null);
+    }
+
+    private static void RequireReportedPayableScope(PayRunSourceEmployee employee,int payrollDays,decimal payableDays)
+    {
+        var proof=employee.NamedInputs?.ReportedPeriodProof;
+        var native=proof?.NativeAttendance;
+        if(proof is null || native is null || proof.Profile.TemplateId!=employee.SalaryStructureId || proof.Profile.ClientId!=employee.ClientId
+            || native.EmployeeId!=employee.Id || native.ClientId!=employee.ClientId || native.Month!=proof.Bound.PayPeriod
+            || native.PayrollDays!=payrollDays || native.PayableDays!=payableDays || native.PresentDays.HasValue)
+            throw new InvalidOperationException("Closed reported payable-only payroll requires its authenticated exact v2 profile/history/source/identity/native receipt context; formatted remarks alone are not authorization.");
+        ReportedPeriodCalculationContext.Validate(employee.NamedInputs!,[],payrollDays,payableDays);
+        if(employee.ReportedPendingSeed is { } pending)
+        {
+            if(native.ProofKind!=ExcelPayrollSetupRepository.HistoricalPayableSeedPendingKind || pending.PendingNativeInput!=native
+                || pending.TemplateId!=employee.SalaryStructureId || pending.BoundInputs.ProofHash!=proof.Bound.ProofHash)
+                throw new InvalidOperationException("The internal proposed attendance proof changed; no native record or closed receipt has been claimed.");
+        }
+        else if(native.ProofKind!=ExcelPayrollSetupRepository.HistoricalPayableSeedSavedKind || employee.NamedInputs!.ManifestHash.Length!=64
+            || employee.PayableOnlyAttendance is not {Version:3} evidence || evidence.Origin!=SourcePayableAttendance.ClosedReportedOrigin
+            || evidence.ReportedBoundaryHash!=proof.Bound.ProofHash || evidence.SourceHash!=proof.Bound.SourceHash)
+            throw new InvalidOperationException("The saved closed reported attendance lacks its exact protected assignment; no old Applied import or legacy salary fallback is accepted.");
     }
 }

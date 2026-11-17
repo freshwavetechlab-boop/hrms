@@ -10,6 +10,24 @@ public sealed partial class ExcelPayrollSetupRepository
 {
     internal static void ValidateRequest(ExcelPayrollSetupRequest request)
     {
+        if (request?.ReportedPeriodInputs is not null)
+            throw new InvalidOperationException("Reported period inputs are not supported by this normal workflow yet. Compatible template, attendance, history and worker integration is required; capability flags alone do not authorize ignoring this review.");
+        ValidateRequestShape(request!,allowConfigurationDifferenceReview:true);
+        ValidateConfigurationDifferenceReview(request!);
+        ValidateRecurringBlankInputReview(request!);
+        ValidateSourceMonthlyCtcOperandReview(request!);
+    }
+
+    // Only dedicated adapters which have already validated the complete v2
+    // declaration may call this. Legacy entrypoints retain the fail-closed guard.
+    private static void ValidateRequestShape(ExcelPayrollSetupRequest request,bool allowConfigurationDifferenceReview=false)
+    {
+        if(request?.ConfigurationDifferenceReview is not null&&!allowConfigurationDifferenceReview)
+            throw new InvalidOperationException("Configuration monetary review is only supported by the normal configuration workflow; it cannot authorize historical payroll or reported input adapters.");
+        if(request?.RecurringBlankInputReview is not null&&!allowConfigurationDifferenceReview)
+            throw new InvalidOperationException("Recurring blank operand review is supported only by the normal configuration workflow.");
+        if(request?.ReviewedSourceMonthlyCtcOperand==true&&!allowConfigurationDifferenceReview)
+            throw new InvalidOperationException("Reviewed monthly CTC operands are supported only by the normal configuration workflow.");
         if (request?.QuickPreparation is { } quick && (quick.Version!=1
             || !Regex.IsMatch(quick.SourceHash ?? "",@"\A[0-9a-fA-F]{64}\z")
             || !Regex.IsMatch(quick.AttendanceSnapshotHash ?? "",@"\A[0-9a-fA-F]{64}\z")))
@@ -17,6 +35,7 @@ public sealed partial class ExcelPayrollSetupRepository
         if (request is null || !Guid.TryParseExact(request.BatchId, "N", out _) || request.RowIds is null || request.RowIds.Count is < 1 or > 100
             || request.RowIds.Any(string.IsNullOrWhiteSpace) || request.RowIds.Distinct().Count() != request.RowIds.Count)
             throw new InvalidOperationException("Select 1–100 unique employee rows from a saved salary batch.");
+        ValidateSourceSetupNamedInputReview(request);
         if(request.CorrectionOfImportId is not null&&!Guid.TryParseExact(request.CorrectionOfImportId,"N",out _))
             throw new InvalidOperationException("Salary correction requires the exact prior Applied receipt ID.");
         if (string.IsNullOrWhiteSpace(request.TemplateName) || request.TemplateName.Length > 160 || request.WorkWeek is null || request.WorkWeek.Length > 80
@@ -46,7 +65,8 @@ public sealed partial class ExcelPayrollSetupRepository
                 || new[] { "MIN", "MAX", "ROUND", "ROUNDUP", "ROUNDDOWN", "SUM" }.Contains(c.Code, StringComparer.OrdinalIgnoreCase)
                 || string.IsNullOrWhiteSpace(c.Name) || c.Name.Length > 160 || c.Category is not ("Earning" or "Deduction" or "Benefit" or "Reimbursement")
                 || c.CalculationType is not ("Fixed Amount" or "Formula" or "Manual / Variable" or "Daily Rate" or "Residual / Balancing" or "Slab Based")
-                || new[] { c.Value, c.Formula, c.BaseComponent, c.ComponentRole, c.StatutoryType }.Any(v => v is null || v.Length > 1000)
+                || new[] { c.Value, c.BaseComponent, c.ComponentRole, c.StatutoryType }.Any(v => v is null || v.Length > 1000)
+                || c.Formula is null || c.Formula.Length > PayrollFormulaEvaluator.MaximumExpressionLength
                 || c.SourceColumnIndex is < 0 or > 1499 || c.ExpectedColumnIndex is < 0 or > 1499)
                 throw new InvalidOperationException("Use valid component names, codes, classifications, formulas and source columns.");
             if (ResolvedPayType(c) is not ("Fixed Pay" or "Variable Pay") || c.IsPeriodAdjustment && ResolvedPayType(c) != "Variable Pay")
@@ -94,7 +114,7 @@ public sealed partial class ExcelPayrollSetupRepository
         foreach (var component in request.Components)
         {
             if (component.RowFormulas is null || component.RowFormulas.Count > request.RowIds.Count
-                || component.RowFormulas.Any(p => !request.RowIds.Contains(p.Key) || p.Value is null || p.Value.Length > 1000))
+                || component.RowFormulas.Any(p => !request.RowIds.Contains(p.Key) || p.Value is null || p.Value.Length > PayrollFormulaEvaluator.MaximumExpressionLength))
                 throw new InvalidOperationException("Formula variants must refer to selected rows and contain bounded native formulas.");
             ValidateSourceProration(component);
         }
@@ -116,14 +136,17 @@ public sealed partial class ExcelPayrollSetupRepository
 
     internal static RowArithmetic CalculateRow(int clientId, ExcelPayrollSetupRequest request, IReadOnlyList<ResolvedComponent> components,
         ExcelPayslipCalculationSourceRow source, ExcelPayslipRow row, IReadOnlySet<int>? blankAsZeroColumns = null,
-        ExcelPayslipCalculationSource? calculationSource = null, decimal? retainedAnnualCtc = null)
+        ExcelPayslipCalculationSource? calculationSource = null, decimal? retainedAnnualCtc = null, NamedFormulaInputContext? namedInputs = null)
     {
         components = ComponentsForRow(components, row.Id);
         foreach (var component in components) ValidateSourceProration(component.Definition);
-        var payrollNumber = request.FixedPayrollDays is int fixedDays ? fixedDays : ReadNumber(source, request.PayrollDaysColumnIndex);
+        var reported = namedInputs?.ReportedPeriodProof?.Bound;
+        if (request.ReportedPeriodInputs is not null && reported is null)
+            throw new InvalidOperationException("Reported-day calculation requires its server-bound context; a request review alone is insufficient.");
+        var payrollNumber = reported is not null ? reported.PayrollDivisor : request.FixedPayrollDays is int fixedDays ? fixedDays : ReadNumber(source, request.PayrollDaysColumnIndex);
         if (payrollNumber is < 1 or > 31 || decimal.Truncate(payrollNumber) != payrollNumber) throw new InvalidOperationException("Payroll denominator must be a whole number between 1 and 31; it is read separately for each employee.");
         var days = (int)payrollNumber;
-        var payable = ReadNumber(source, request.PayableDaysColumnIndex);
+        var payable = reported?.PayableDays ?? ReadNumber(source, request.PayableDaysColumnIndex);
         var present = request.PresentDaysColumnIndex is int p ? ReadNumber(source, p) : Math.Min(payable, days);
         if (payable < 0 || present < 0 || payable > (request.ReviewedExtraDutyUnits ? 999.99m : days) || present > days)
             throw new InvalidOperationException("Present/payable days must lie between zero and this employee's source payroll denominator. Explicitly reviewed source payable units may exceed the divisor within the attendance quantity storage range; actual presence is separate.");
@@ -133,8 +156,19 @@ public sealed partial class ExcelPayrollSetupRepository
         foreach (var c in components)
         {
             if (c.Definition.SourceColumnIndex is not int column) continue;
-            var amount = ReadNumber(source, column, c.Definition.BlankInputAsZero || blankAsZeroColumns?.Contains(column) == true);
+            var inputExpression = source.Cells.ElementAtOrDefault(column)?.FormulaText;
+            var amount = !c.Definition.IsPeriodAdjustment && request.ReviewedFixedInputs && request.ReviewedPolicyScope
+                && !string.IsNullOrWhiteSpace(inputExpression)
+                && Regex.IsMatch(inputExpression.Trim().TrimStart('='), @"\A[0-9eE.\s()+*/%\-]+\z", RegexOptions.CultureInvariant)
+                ? InspectConstantRecurringInput(request, calculationSource ?? throw new InvalidOperationException("Complete captured source metadata is required for a recurring entry expression."), row, c.Definition).Value
+                : ReadNumber(source, column, c.Definition.BlankInputAsZero || blankAsZeroColumns?.Contains(column) == true);
             if (amount < 0 || amount > 1_000_000_000m) throw new InvalidOperationException($"{c.Definition.Code}: reviewed source amounts must be non-negative and within the import limit.");
+            if (!c.Definition.IsPeriodAdjustment && decimal.Round(amount,4) != amount
+                && RecurringSalaryInputPrecision.TryNormalize(request,c.Definition,calculationSource,source,amount,out var storageAmount,out var precisionEvidence))
+            {
+                amount=storageAmount;
+                issues.Add(new("Info",precisionEvidence!,row.Id,c.Definition.Code));
+            }
             if (!c.Definition.IsPeriodAdjustment && decimal.Round(amount,4) != amount) throw new InvalidOperationException($"{c.Definition.Code}: monthly/rate input exceeds the employee salary store's four-decimal precision. Review an explicit source precision before applying.");
             if (c.Definition.IsPeriodAdjustment) adjustments.Add((c, decimal.Round(amount, 2)));
             else inputs[c.Id] = amount;
@@ -152,14 +186,16 @@ public sealed partial class ExcelPayrollSetupRepository
             c.Definition.IsPeriodAdjustment ? "false" : c.Definition.ProRata.ToString().ToLowerInvariant())).ToList();
         annual = request.MonthlyCtcColumnIndex.HasValue
             ? ReviewedSourceAnnualCtc(request, calculationSource, source, row)
-            : retainedAnnualCtc ?? DeriveReviewedFormulaAnnualBasis(clientId, request, components, snapshotComponents, lines, inputs, days, annual);
+            : retainedAnnualCtc ?? (namedInputs is null
+                ? DeriveReviewedFormulaAnnualBasis(clientId, request, components, snapshotComponents, lines, inputs, days, annual)
+                : NamedSourceFixedMonthlyAnnualBasis(request, components, annual, namedInputs));
         if (annual <= 0 && !components.Any(c => c.Definition.CalculationType == "Daily Rate"))
             throw new InvalidOperationException("A positive full-month salary input is required; attendance zero is valid and does not make the monthly salary zero. In Salary components and formulas, review Source input column for a recurring monthly amount or daily rate. An earned output/cache is not a monthly salary input. Review captured rate/day references and preserve the source formula and rounding before repreviewing; no salary amount is inferred.");
         var simulationRequest = new PayrollSimulationRequest
         {
             Mode = "Template", ClientId = clientId, TemplateId = "excel-draft", PayrollDays = days, PresentDays = present, PayableDays = payable,
             AnnualCtc = annual, AmountOverrides = new(inputs), Snapshot = new("Template", clientId, "", annual, snapshotComponents, lines),
-            ReviewedExtraDutyUnits = request.ReviewedExtraDutyUnits
+            ReviewedExtraDutyUnits = request.ReviewedExtraDutyUnits, NamedInputs=namedInputs
         };
         var calculated = PayRunRepository.SimulateTemplate(simulationRequest);
         var exemptionChanged = false;

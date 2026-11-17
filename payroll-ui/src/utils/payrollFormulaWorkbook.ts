@@ -1,4 +1,4 @@
-import type { FormulaWorkbookEmployee, FormulaWorkbookRequest, SimulationLine } from '../services/payrollCalculationService'
+import type { FormulaWorkbookEmployee, FormulaWorkbookRequest, NamedFormulaInputDefinition, SimulationLine } from '../services/payrollCalculationService'
 import type { XlsxCell, XlsxSheet } from './xlsx'
 
 const letter = (index: number) => { let name = ''; for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) name = String.fromCharCode(65 + (n - 1) % 26) + name; return name }
@@ -10,6 +10,31 @@ export const excelCurrencyRound = (value: string) => `IF(ABS(ABS((${value})*100-
 const formula = (text: string, value: number | string): XlsxCell => ({ formula: text, value, type: typeof value === 'number' ? 'number' : 'text', style: 'currency' })
 const input = (value: number | string): XlsxCell => ({ value, style: 'input' })
 const functions = new Set(['IF', 'IFERROR', 'AND', 'OR', 'SUM', 'MIN', 'MAX', 'ABS', 'ROUND', 'ROUNDUP', 'ROUNDDOWN', 'TRUE', 'FALSE'])
+const namedDefinitionKey = (definition: NamedFormulaInputDefinition) => JSON.stringify([definition.key, definition.label, definition.unit, definition.precision, definition.minimum, definition.maximum, definition.required, definition.purpose])
+
+function workbookNamedDefinitions(employee: FormulaWorkbookEmployee) {
+  const context = employee.namedInputs
+  if (context == null) return []
+  const system = ['CTC', 'GROSS', 'MONTHLY_CTC', 'ANNUAL_CTC', 'PAYROLL_DAYS', 'TOTAL_DAYS', 'WORKING_DAYS', 'PRESENT_DAYS', 'PAYABLE_DAYS', 'LOP_DAYS', 'EARNINGS_BEFORE_THIS', 'MONTHLY_EARNINGS_BEFORE_THIS', 'FIXED_EARNINGS', 'FIXED_EARNINGS_BEFORE_THIS', 'GROSS_EARNED', 'EARNED_EARNINGS_BEFORE_THIS']
+  const forbidden = new Set([...system, ...functions, ...employee.calculation.lines.flatMap(line => [line.code, line.componentId || ''].flatMap(key => [key, `${key}_MONTHLY`, `${key}_EARNED`]))].map(key => key.toUpperCase()))
+  if (!Array.isArray(context.definitions) || context.definitions.length < 1 || context.definitions.length > 16 || !context.values
+    || !/^[a-f0-9]{64}$/.test(context.declarationHash) || !/^[a-f0-9]{64}$/.test(context.manifestHash)
+    || Object.keys(context.values).length !== context.definitions.length || new Set(context.definitions.map(definition => definition.key?.toUpperCase())).size !== context.definitions.length)
+    throw Error(`${employee.employeeCode}: complete reviewed named formula input evidence is required; no values were guessed.`)
+  for (const definition of context.definitions) {
+    const value = context.values[definition.key]
+    if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(definition.key) || forbidden.has(definition.key) || /_(?:MONTHLY|EARNED)$/.test(definition.key)
+      || !definition.label?.trim() || definition.label.length > 120 || !['Amount', 'PercentPoints'].includes(definition.unit) || definition.purpose !== 'FormulaOperandOnly' || !definition.required
+      || !Number.isInteger(definition.precision) || definition.precision < 0 || definition.precision > 8
+      || !Number.isFinite(definition.minimum) || !Number.isFinite(definition.maximum) || definition.minimum < 0 || definition.maximum < definition.minimum || definition.maximum > 1e9 || definition.unit === 'PercentPoints' && definition.maximum > 100
+      || typeof value !== 'number' || !Number.isFinite(value) || value < definition.minimum || value > definition.maximum
+      || Number(value.toFixed(definition.precision)) !== value)
+      throw Error(`${employee.employeeCode}: ${definition.key} needs its exact declared unit, value, bounds and precision.`)
+  }
+  if (Object.keys(context.values).some(key => !context.definitions.some(definition => definition.key === key)))
+    throw Error(`${employee.employeeCode}: undeclared named formula inputs are not exported.`)
+  return context.definitions
+}
 
 export function preparePayrollFormulaWorkbookRequest(clientId:number,payPeriod:string,policy:{id:string;groupIds:number[];employeeIds:number[]}|null,employeeIds:number[]):FormulaWorkbookRequest {
   if(!clientId||!policy?.id.trim()||!policy.groupIds.length)throw Error('Select an attendance policy before downloading Excel with formulas.')
@@ -22,7 +47,7 @@ export function translatePayrollExcelFormula(source: string, values: Record<stri
   const normalized = source.trim().replace(/^=/, '').toUpperCase().replace(/×/g, '*').replace(/÷/g, '/')
     .replace(/SUM\s*\(\s*(FIXED\s+)?EARNINGS(_BEFORE_THIS)?\s*\)/g, (_, fixed) => fixed ? 'FIXED_EARNINGS_BEFORE_THIS' : 'EARNINGS_BEFORE_THIS')
     .replace(/(\d+(?:\.\d+)?)\s*%\s*OF\s*([A-Z0-9_]+)/g, '$2*$1/100')
-  if (!normalized || /[!\[\]"';{}]/.test(normalized)) throw Error('A payroll rule cannot be represented as a bounded local Excel formula.')
+  if (!normalized || /[![\]"';{}]/.test(normalized)) throw Error('A payroll rule cannot be represented as a bounded local Excel formula.')
   return normalized.replace(/\b[A-Z_][A-Z0-9_]*\b/g, token => {
     if (values[token] !== undefined) return `(${values[token]})`
     if (functions.has(token)) return token
@@ -60,6 +85,14 @@ export function buildPayrollFormulaWorkbook(clientName: string, period: string, 
   const positions = new Map([...keys.keys()].map((key, i) => [key, 15 + i * 3]))
   const headers: XlsxCell[] = ['Employee code', 'Employee name', 'Template', 'Annual CTC input', 'Monthly CTC', 'Payroll days input', 'Present days input', 'Payable days input', 'Input check', 'Gross earnings', 'Employee deductions', 'Employer contributions', 'Net pay', 'Engine net at download', 'Net change from download']
   for (const item of keys.values()) headers.push(`${item.code} input / raw`, `${item.code} monthly`, `${item.code} earned`)
+  const namedColumns = new Map<string, { definition: NamedFormulaInputDefinition; position: number }>()
+  for (const employee of keyed) for (const definition of workbookNamedDefinitions(employee)) {
+    const key = namedDefinitionKey(definition)
+    if (!namedColumns.has(key)) {
+      namedColumns.set(key, { definition, position: headers.length })
+      headers.push(`${definition.label} [${definition.key}] input (${definition.unit === 'PercentPoints' ? 'percent points' : 'amount'})`)
+    }
+  }
   if(headers.length>16384)throw Error('Too many component columns for Excel. Select a smaller roster.')
   const rows: XlsxCell[][] = [headers.map(cell => ({ value: String(cell), style: 'header' }))]
   const rules: XlsxCell[][] = [
@@ -71,6 +104,9 @@ export function buildPayrollFormulaWorkbook(clientName: string, period: string, 
     ['Currency stages preserve engine midpoint-to-even rounding. ROUND inside a configured rule retains Excel/native away-from-zero rounding.'],
     ['Client', 'Template', 'Component', 'Category', 'Calculation', 'Configured formula', 'Prorate', 'Amount source'],
   ]
+  if (namedColumns.size) rules.splice(6, 0,
+    ['Named formula operands are highlighted separately from salary components. Percent points means enter 25 for 25%; these inputs do not add an earning or change annual CTC.'],
+    ['Inputs must stay within their declared range and decimal precision. Missing, text or invalid values stop calculated cells; no zero or cached salary is substituted.'])
   const ruleKeys = new Set<string>()
   for (const employee of keyed) {
     const calculation = employee.calculation, rowNumber = rows.length + 1
@@ -88,12 +124,23 @@ export function buildPayrollFormulaWorkbook(clientName: string, period: string, 
     const days = `F${rowNumber}`, present = `G${rowNumber}`, payable = `H${rowNumber}`
     const needsPresence = employee.lines.some(({ line }) => /\bPRESENT_DAYS\b/i.test(line.formula) && !line.amountOverride)
     const valid = `AND(COUNT(${days},${payable})=2,${days}>=1,${days}<=31,${days}=ROUND(${days},0),${payable}>=0,${payable}<=${employee.reviewedExtraDutyUnits ? '999.99' : days},${needsPresence ? `COUNT(${present})=1` : `OR(${present}="",COUNT(${present})=1)`},${present}>=0,${present}<=${days})`
-    row[8] = formula(`IF(${valid},"Ready","Check attendance")`, 'Ready')
+    const namedTokens: Record<string, string> = {}, namedChecks: string[] = []
+    for (const definition of workbookNamedDefinitions(employee)) {
+      const position = namedColumns.get(namedDefinitionKey(definition))!.position, address = `${letter(position)}${rowNumber}`
+      row[position] = { value: employee.namedInputs!.values[definition.key], style: 'operand' }
+      namedTokens[definition.key] = address
+      namedChecks.push(`IF(COUNT(${address})=1,AND(${address}>=${definition.minimum},${address}<=${definition.maximum},${address}=ROUND(${address},${definition.precision})),FALSE)`)
+      const rule = [clientName, calculation.templateId, definition.key, 'Formula operand only', definition.unit, `Required; ${definition.precision} decimal places; range ${definition.minimum} to ${definition.maximum}`, 'No salary proration', `Declaration ${employee.namedInputs!.declarationHash}; period manifest ${employee.namedInputs!.manifestHash}`]
+      const signature = JSON.stringify(rule)
+      if (!ruleKeys.has(signature)) { rules.push(rule); ruleKeys.add(signature) }
+    }
+    row[8] = formula(namedChecks.length ? `IF(AND(${valid},${namedChecks.join(',')}),"Ready","Check attendance / formula inputs")` : `IF(${valid},"Ready","Check attendance")`, 'Ready')
     const guarded = (expression: string) => `IF(I${rowNumber}="Ready",${expression},NA())`
     const monthlyEarnings: string[] = [], earnedEarnings: string[] = [], fixedEarnings: string[] = [], deductions: string[] = [], benefits: string[] = []
     const tokens: Record<string, string> = {
       CTC: `E${rowNumber}`, GROSS: `E${rowNumber}`, MONTHLY_CTC: `E${rowNumber}`, ANNUAL_CTC: `E${rowNumber}*12`,
       PAYROLL_DAYS: days, TOTAL_DAYS: days, WORKING_DAYS: days, PRESENT_DAYS: present, PAYABLE_DAYS: payable, LOP_DAYS: `MAX(0,${days}-${payable})`,
+      ...namedTokens,
     }
     for (const { key, line } of employee.lines) {
       if (line.source.includes('Effective-dated PF') || line.source.startsWith('Projected TDS')) throw Error(`${line.code}: offline export cannot replace dated policy calculations.`)
@@ -123,7 +170,7 @@ export function buildPayrollFormulaWorkbook(clientName: string, period: string, 
     rows.push(row)
   }
   const sheets: XlsxSheet[] = [
-    { name: 'Payroll', rows, freezeRows: 1, freezeColumns: 2, columnWidths: headers.map((_, index) => index === 1 ? 32 : index === 0 ? 19 : index === 2 ? 23 : 19) },
+    { name: 'Payroll', rows, freezeRows: 1, freezeColumns: 2, ...(namedColumns.size ? { headerRowHeight: 72 } : {}), columnWidths: headers.map((_, index) => index >= 15 + keys.size * 3 ? 40 : index === 1 ? 32 : index === 0 ? 19 : index === 2 ? 23 : 19) },
     { name: 'Rules', rows: rules, columnWidths: [24, 24, 22, 18, 23, 90, 12, 55] },
   ]
   if (employees.every(employee => employee.location?.contextVersion)) {

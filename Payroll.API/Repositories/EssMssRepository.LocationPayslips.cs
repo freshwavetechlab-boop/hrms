@@ -26,6 +26,11 @@ AND r.Status IN ('Draft','Pending Approval','Approved','Partially Paid','Paid') 
         var template = await db.QueryFirstOrDefaultAsync<EssPayslipTemplate>(@"SELECT Id,ClientId,Name,Theme,ShowLogo,ShowClient,ShowYtd,ShowBank,Note,Active
 FROM paysliptemplates WHERE Active=TRUE AND (ClientId=@ClientId OR ClientId=0)
 ORDER BY CASE WHEN ClientId=@ClientId THEN 0 ELSE 1 END,Id DESC LIMIT 1", new { ClientId = clientId }) ?? new EssPayslipTemplate();
+        if (rows.Count > 0)
+        {
+            var referenceSelection = await GuardReferenceInformationTemplateAsync(db, template, clientId, payRunId);
+            template = referenceSelection.Manifested ? referenceSelection.Template : await ResolvePayslipPeriodTemplateAsync(db, template, clientId, rows[0].PayPeriod);
+        }
         // A split slip is period/location-specific; employee-wide YTD remains in
         // the existing consolidated document. No template is saved or modified.
         template.ShowYtd = false;

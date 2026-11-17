@@ -120,6 +120,9 @@ public sealed record ExcelPayslipEmployment(int? EmployeeId, string EmployeeCode
 // Independent source snapshot: these identifiers never reference employee or pay-run records.
 public sealed class ExcelPayslipBatch
 {
+    // Accepted only on same-ID Save; never persisted as payroll/source data.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ExpectedSaveSnapshotHash { get; set; }
     // Server-owned. Public imports cannot nominate an EmployeeId through this field.
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<ExcelPayslipProfileLink>? ProfileLinks { get; set; }

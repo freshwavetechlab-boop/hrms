@@ -1,0 +1,39 @@
+using System.Text.Json;using Payroll.API.Models;using Payroll.API.Repositories;using Xunit;
+namespace Payroll.API.Tests.Services;
+
+public sealed class SourceMonthlyCtcOperandTests
+{
+ private static (ExcelPayrollSetupRequest Q,ExcelPayslipCalculationSource S,ExcelPayslipRow R) Fixture()
+ {
+  var r=new ExcelPayslipRow{Id="source-ctc-example",SourceRow=8,NetPay=24000};
+  var s=new ExcelPayslipCalculationSource{SheetName="Salary",WorkbookKey="root",ColumnCount=9,Rows=[new(){SourceRow=8,Cells=[new(){DataType="Number",Value="60000",FormulaText="B8+C8"},new(){DataType="Number",Value="55000"},new(){DataType="Number",Value="5000"},new(){DataType="Number",Value="30000"},new(){DataType="Number",Value="18000",FormulaText="A8*30%"},new(){DataType="Number",Value="15"},new(){DataType="Number",Value="15000",FormulaText="D8/30*F8"},new(){DataType="Number",Value="9000",FormulaText="E8/30*F8"},new(){DataType="Number",Value="24000",FormulaText="G8+H8"}]}],Columns=[new(){ColumnIndex=0,Kind="ignore",SourceHeader="Revised CTC",Label="Revised CTC"},new(){ColumnIndex=1,Kind="ignore",SourceHeader="Old CTC",Label="Old CTC"},new(){ColumnIndex=2,Kind="ignore",SourceHeader="Increment",Label="Increment"},new(){ColumnIndex=3,Kind="ignore",SourceHeader="Monthly basic",Label="Monthly basic"},new(){ColumnIndex=4,Kind="ignore",SourceHeader="Hardship allowance",Label="Hardship allowance"},new(){ColumnIndex=5,Kind="info",SourceHeader="Payable days",Label="Payable days"},new(){ColumnIndex=6,Kind="earning",SourceHeader="Basic",Label="Basic"},new(){ColumnIndex=7,Kind="earning",SourceHeader="Hardship",Label="Hardship"},new(){ColumnIndex=8,Kind="netPay",SourceHeader="Net pay",Label="Net pay"}]};
+  var q=new ExcelPayrollSetupRequest{BatchId=new string('a',32),RowIds=[r.Id],ReviewedFixedInputs=true,ReviewedPolicyScope=true,TransferReviewVersion=1,ReviewedSourceMonthlyCtcOperand=true,MonthlyCtcColumnIndex=0,FixedPayrollDays=30,PayableDaysColumnIndex=5,SourceColumnRoles=new(){{0,"info"},{1,"info"},{2,"info"},{3,"info"},{4,"info"}},Components=[new(){Key="basic",Code="BASIC",ExistingComponentId="101",SourceColumnIndex=3,ExpectedColumnIndex=6,CalculationType="Fixed Amount",ProRata=true},new(){Key="hardship",Code="HARDSHIP",ExistingComponentId="102",ExpectedColumnIndex=7,CalculationType="Formula",Formula="(MONTHLY_CTC*30%)/PAYROLL_DAYS*PAYABLE_DAYS",ProRata=false}]};return(q,s,r);
+ }
+ [Fact] public void IndependentCapturedCtcExpressionBindsTheActualReusableNativeVariable()
+ {
+  var f=Fixture();var before=JsonSerializer.Serialize(f.S);var proof=ExcelPayrollSetupRepository.TranslateTransferFormulaWithEvidence("E8/30*F8",f.Q,f.S,f.R);
+  Assert.Contains("MONTHLY_CTC",proof.Formula);Assert.DoesNotContain("55000",proof.Formula);
+  Assert.Contains(proof.Dependencies,d=>d.ColumnIndex==0&&d.Kind=="reviewed-monthly-ctc"&&d.Formula=="B8+C8"&&d.Literal=="60000");
+  Assert.Equal("Exact supported translation",ExcelPayrollSetupRepository.InspectTransferFormula(f.Q,f.S,f.R,f.Q.Components[1]).Status);
+  var components=f.Q.Components.Select(c=>new ExcelPayrollSetupRepository.ResolvedComponent(c,c.ExistingComponentId!,false)).ToArray();var calculated=ExcelPayrollSetupRepository.CalculateRow(7,f.Q,components,f.S.Rows[0],f.R,calculationSource:f.S);
+  Assert.Equal(720000,calculated.Preview.AnnualCtc);Assert.Equal(24000,calculated.Preview.Net);Assert.Single(calculated.Inputs);Assert.Equal(30000,calculated.Inputs["101"]);
+  var whatIf=calculated.Preview.WhatIfSimulation!;whatIf.AnnualCtc=840000;var changed=PayRunRepository.SimulateTemplate(whatIf);Assert.True(changed.Complete);Assert.Equal(10500,changed.Lines.Single(l=>l.Code=="HARDSHIP").Earned);
+  Assert.Equal(before,JsonSerializer.Serialize(f.S));
+ }
+ [Fact]public void LiteralCtcCanUseTheSameExplicitBoundary(){var f=Fixture();f.S.Rows[0].Cells[0]!.FormulaText=null;var p=ExcelPayrollSetupRepository.TranslateTransferFormulaWithEvidence("A8*30%",f.Q,f.S,f.R);Assert.Equal("MONTHLY_CTC*30%",p.Formula);}
+ [Fact]public void DefaultRequestsRetainTheirOriginalExpansionAndSerializedShape()
+ {var f=Fixture();f.Q.ReviewedSourceMonthlyCtcOperand=false;Assert.DoesNotContain("reviewedSourceMonthlyCtcOperand",JsonSerializer.Serialize(f.Q,new JsonSerializerOptions(JsonSerializerDefaults.Web)));var p=ExcelPayrollSetupRepository.TranslateTransferFormula("A8*30%",f.Q,f.S,f.R);Assert.DoesNotContain("MONTHLY_CTC",p);Assert.Contains("55000",p);}
+ [Theory][InlineData("unreviewed")][InlineData("policy")][InlineData("mode")][InlineData("missing-index")][InlineData("missing-selection")][InlineData("text")][InlineData("missing-cell")][InlineData("duplicate-row")][InlineData("duplicate-metadata")][InlineData("financial-output")][InlineData("component-input")][InlineData("source-role")][InlineData("negative")][InlineData("zero")][InlineData("budget-precision")][InlineData("annual-precision")][InlineData("error")][InlineData("missing-cache")][InlineData("bad-cache")][InlineData("calculation-error")][InlineData("identity")][InlineData("payable")][InlineData("earned")][InlineData("circular")][InlineData("unsupported-lookup")][InlineData("shared-row")]
+ public void ReviewCannotConvertCachesIdentitiesAttendanceOrUnrepresentableTargets(string mutation)
+ {
+  var f=Fixture();var c=f.S.Rows[0].Cells[0]!;
+  switch(mutation){case"unreviewed":f.Q.ReviewedFixedInputs=false;break;case"policy":f.Q.ReviewedPolicyScope=false;break;case"mode":f.Q.TransferReviewVersion=0;break;case"missing-index":f.Q.MonthlyCtcColumnIndex=null;break;case"missing-selection":f.Q.RowIds.Clear();break;case"text":c.DataType="Text";break;case"missing-cell":f.S.Rows[0].Cells[0]=null;break;case"duplicate-row":f.S.Rows.Add(f.S.Rows[0]);break;case"duplicate-metadata":f.S.Columns.Add(f.S.Columns[0]);break;case"financial-output":f.S.Columns[0].Kind="earning";break;case"component-input":f.Q.Components[0].SourceColumnIndex=0;break;case"source-role":f.Q.SourceColumnRoles[0]="ignore";break;case"negative":c.Value="-1";break;case"zero":c.Value="0";break;case"budget-precision":c.FormulaText=null;c.Value="60000.00001";break;case"annual-precision":c.FormulaText=null;c.Value="60000.001";break;case"error":c.Error="#VALUE!";break;case"missing-cache":c.MissingCachedValue=true;break;case"bad-cache":c.Value="60001";break;case"calculation-error":c.CalculationError="#REF!";break;case"identity":f.S.Columns[0].SourceHeader="Employee ID";break;case"payable":c.FormulaText="B8/F8";break;case"earned":c.FormulaText="G8+H8";break;case"circular":c.FormulaText="A8+1";break;case"unsupported-lookup":c.FormulaText="VLOOKUP(B8,B8:D8,2,0)";break;case"shared-row":c.FormulaText="B9+C8";break;}
+  Assert.Throws<InvalidOperationException>(()=>ExcelPayrollSetupRepository.ReviewedNormalSourceCtcBoundary(f.Q,f.S,f.R));
+ }
+ [Fact]public void EqualIndependentLiteralIsNotAnotherCtcAlias()
+ {var f=Fixture();f.S.Rows[0].Cells[0]!.FormulaText=null;f.S.Rows[0].Cells[1]!.Value="60000";var p=ExcelPayrollSetupRepository.TranslateTransferFormula("A8+B8",f.Q,f.S,f.R);Assert.Equal("MONTHLY_CTC+60000",p);}
+ [Fact]public void PreviouslyInspectedBoundaryCannotSurviveAChangedCell()
+ {var f=Fixture();var p=ExcelPayrollSetupRepository.ReviewedNormalSourceCtcBoundary(f.Q,f.S,f.R);f.S.Rows[0].Cells[0]!.Value="60001";Assert.Throws<InvalidOperationException>(()=>ExcelPayrollSetupRepository.TranslateTransferFormulaWithEvidence("A8*30%",f.Q,f.S,f.R,p,bindReviewedMonthlyCtc:false));}
+ [Theory][InlineData(false)][InlineData(true)]public void ConfigurationOperandCannotAuthorizeHistoricalPayroll(bool reported)
+ {var f=Fixture();var r=new HistoricalPeriodSalaryRequest{Setup=f.Q};var e=Assert.Throws<InvalidOperationException>(()=>{if(reported)ExcelPayrollSetupRepository.ValidateReportedHistoricalSalaryRequest(r);else ExcelPayrollSetupRepository.ValidateHistoricalSalaryRequest(r);});Assert.Contains("Normal source monthly CTC operands cannot authorize",e.Message);}
+}

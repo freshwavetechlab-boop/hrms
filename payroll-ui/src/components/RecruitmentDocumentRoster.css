@@ -5,10 +5,18 @@
 .document-roster-fields .ant-form-item { min-width: 0; }
 .document-roster-mapping { margin-block: 12px; }
 .document-roster-mapping summary { cursor: pointer; font-weight: 600; padding-block: 8px; }
+.document-roster-template-download { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px; margin-block: 12px; border: 1px solid var(--border, #dfe2ea); border-radius: 8px; }
+.document-roster-template-download > div { flex: 1 1 240px; min-width: 0; }
+.document-roster-template-download p { margin: 4px 0 0; color: var(--muted); }
+.document-roster-template-download .ant-btn { max-width: 100%; }
 .document-roster-import .ant-alert + .ant-alert { margin-top: 10px; }
 .document-roster-location-select { min-width: 240px; max-width: 360px; }
 .document-roster-search { width: 240px; max-width: 100%; }
 .document-roster-selected-summary { color: var(--muted); overflow-wrap: anywhere; }
+.document-roster-jd-create { width: 100%; }
+.document-roster-jd-details p, .document-roster-jd-details li, .document-roster-jd-details .ant-drawer-title { overflow-wrap: anywhere; }
+.document-roster-jd-details h3 { margin-top: 20px; }
+.document-roster-jd-details li { margin-block: 6px; }
 .document-roster-release .ant-drawer-body { display: flex; flex-direction: column; gap: 16px; }
 .document-roster-signature-section { min-width: 0; }
 .document-roster-signature-section h3 { margin: 0 0 8px; }

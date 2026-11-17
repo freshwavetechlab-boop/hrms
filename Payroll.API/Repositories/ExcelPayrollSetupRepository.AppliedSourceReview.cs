@@ -108,14 +108,21 @@ public sealed partial class ExcelPayrollSetupRepository
         else if (receipt.Transfer is not null || receipt.TransferRows.Count != 0)
             throw AppliedSourceConflict("The legacy receipt contains mixed transfer versions; resolve its provenance without rewriting history.");
 
+        var reviewedUanColumn = ReviewedIdentityColumn(batch, source, original);
+        var reviewedIdentityColumns = reviewedUanColumn.HasValue
+            ? ReviewedIdentityColumns(batch, source, [(original, receipt)]) : new Dictionary<string, int>(StringComparer.Ordinal);
+        if (reviewedUanColumn is int reviewedColumn
+            && (!reviewedIdentityColumns.TryGetValue(row.Id, out var boundColumn) || boundColumn != reviewedColumn))
+            throw AppliedSourceConflict("The reviewed identity column is not bound to this original source row and applied employee receipt.");
+
         var identities = identitySnapshot.Select(e => new Identity { Id = e.Id, ClientId = e.ClientId,
             EmployeeCode = e.EmployeeCode, Name = (e.FirstName + " " + e.LastName).Trim(), IsActive = e.IsActive,
             Pan = e.PersonalDetails.PanNumber, Aadhaar = e.PersonalDetails.AadhaarNumber, Uan = e.PersonalDetails.UanNumber }).ToArray();
-        var metadata = SourceInformation(row, source, original.SourceWorkLocationColumnIndex);
+        var metadata = SourceInformation(row, source, original.SourceWorkLocationColumnIndex, reviewedUanColumn);
         var identityIssues = new List<ExcelPayrollSetupIssue>();
         var matched = MatchIdentity(row, metadata, identities, decisions[0], identityIssues);
         if (matched?.Id != employeeId || identityIssues.Any(i => i.Severity == "Error")
-            || !SalaryOnlyBankReviewRows(batch, source, identities).Contains(row.Id))
+            || !SalaryOnlyBankReviewRows(batch, source, identities, reviewedIdentityColumns).Contains(row.Id))
             throw AppliedSourceConflict("Source identity is not uniquely anchored to the explicitly reviewed existing employee; no name-only match is accepted.");
         var candidate = NewEmployee(clientId, row, original, metadata);
         candidate.Id = employeeId;
@@ -197,8 +204,8 @@ public sealed partial class ExcelPayrollSetupRepository
             var financial = definition.Category switch { "Earning" or "Reimbursement" => row.Earnings, "Deduction" => row.Deductions, _ => row.EmployerContributions };
             var amounts = financial.Where(a => Normalize(a.Label) == Normalize(columns[0].Label)).ToArray();
             var raw = ReadAppliedCapturedNumber(source, cellRows[0], column);
-            if (amounts.Length != 1 || amounts[0].Amount != raw)
-                throw AppliedSourceConflict("The saved financial line and preserved source output do not agree exactly.");
+            if (amounts.Length != 1 || SourceDisplayPrecision(amounts[0].Amount) != SourceDisplayPrecision(raw))
+                throw AppliedSourceConflict("The saved financial line and preserved source output do not agree at the existing source representation precision.");
             var recalculated = RequireAppliedCapturedValue(source, row.SourceRow, column, raw, inputBoundary);
             recalculatedOutputs[TransferLetter(column)+row.SourceRow] = recalculated;
             var formula = InspectTransferFormula(reviewedRequest, source, row, definition);
@@ -236,14 +243,23 @@ public sealed partial class ExcelPayrollSetupRepository
         var gross = row.Earnings.Sum(a => a.Amount); var deductions = row.Deductions.Sum(a => a.Amount);
         if (row.DeclaredGross is decimal declaredGross && declaredGross != gross
             || row.DeclaredDeductions is decimal declaredDeductions && declaredDeductions != deductions
-            || row.NetPay != Math.Max(0, gross - deductions))
+            || SourceDisplayPrecision(row.NetPay) != SourceDisplayPrecision(Math.Max(0, gross - deductions)))
             throw AppliedSourceConflict("Saved gross/deduction/net totals do not prove the exact raw financial aggregate.");
         foreach (var total in new[] { (Role: "netPay", Amount: row.NetPay), (Role: "grossTotal", Amount: gross), (Role: "deductionTotal", Amount: deductions) })
         {
             var columns = source.Columns.Where(c => original.SourceColumnRoles.GetValueOrDefault(c.ColumnIndex, c.Kind) == total.Role).ToArray();
             if (columns.Length > 1 || total.Role == "netPay" && columns.Length != 1)
                 throw AppliedSourceConflict("A unique preserved source net output and unambiguous total columns are required.");
-            foreach (var column in columns) RequireAppliedCapturedValue(source, row.SourceRow, column.ColumnIndex, total.Amount, inputBoundary);
+            foreach (var column in columns)
+            {
+                var capturedTotal = ReadAppliedCapturedNumber(source, cellRows[0], column.ColumnIndex);
+                if (SourceDisplayPrecision(capturedTotal) != SourceDisplayPrecision(total.Amount))
+                    throw AppliedSourceConflict("A preserved total and its saved comparison value differ at the existing source representation precision.");
+                // Preserve the original cache and the helper's exact same-cell
+                // guard. G15 is only the existing source representation boundary;
+                // native amounts and independently evaluated formulas are unchanged.
+                RequireAppliedCapturedValue(source, row.SourceRow, column.ColumnIndex, capturedTotal, inputBoundary);
+            }
         }
         foreach (var column in new[] { original.FixedPayrollDays.HasValue ? (int?)null : original.PayrollDaysColumnIndex, original.PayableDaysColumnIndex, original.PresentDaysColumnIndex }.Where(c => c.HasValue).Select(c => c!.Value).Distinct())
             RequireAppliedCapturedValue(source, row.SourceRow, column, ReadNumber(cellRows[0], column), inputBoundary);

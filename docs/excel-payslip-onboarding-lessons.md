@@ -1,6 +1,6 @@
 # Excel Payslip onboarding: verified lessons and release gates
 
-Updated 2026-10-27. Engineering evidence and operator checklist, not a statutory-policy declaration. No employee personal identifiers belong in this file.
+Updated 2026-11-15. Engineering evidence and operator checklist, not a statutory-policy declaration. No employee personal identifiers belong in this file.
 
 ## Source boundary
 
@@ -94,6 +94,8 @@ Grouped verification requires actual Employee-mode client/employee/month/allocat
 ## Source payable days with unknown actual presence
 
 `Attendance` used as a multiplier in a saved salary formula establishes a payable input, not necessarily actual worked days. The opt-in payable-only transfer must retain `PresentDays = null` in monthly attendance, persisted payroll, simulation, reports, CSV and payslip presentation. Known actual zero remains zero. Never fill unknown presence with payable days or zero merely to satisfy the former non-nullable schema.
+
+Check the database-to-response DTO when an ESS attendance summary shows zero despite unknown source presence. A nonnullable decimal can turn a database NULL into its default zero during row mapping. Retain the nullable value through JSON; the existing ESS/PWA summary renders it as `Not supplied`, while a verified numeric zero still displays as zero. This is a reader/display diagnostic, not evidence to change attendance, payable units or salary mapping.
 
 The reviewed `ExcelPayableOnly` source record carries exact client, employee, source month, batch/row/import receipt, source hash, salary divisor and payable days. The source-only mode is independent from calendar length and does not grant leave or weekly-off entitlement. A saved fixed divisor of 31 does not prove 31 actual days worked in September.
 
@@ -238,7 +240,36 @@ A formula can produce a monthly salary input, earned output, total, net, employe
 
 ### Configured default storage also accepts original workbooks
 
+### Initial annual budget markers can receive their first complete salary setup
+
+Normal first configuration can now review an annual-only Master whose template and physical salary inputs are absent. It independently derives the source annual without retaining the current target, requires exact equality with the positive current/planned budget, strict empty-object JSON and only matching budget/empty future markers. Apply rechecks the locked original Master and history. Existing configured salaries, differing budgets, malformed/NULL maps and correction ownership remain protected. The ordinary workflow retains financial/authorship fields, performs its normal history status/end-date transitions and appends configured versions at the original marker dates; it does not claim byte-identical history status metadata. No new public DTO, route, schema, feature flag or invented joining date is involved. A guarded synthetic preview → Apply → ordinary Employee proof covers this path; configuration-only setup writes no monthly attendance.
+
+### An isolated auxiliary divisor is different from another employee's days
+
+A complete typed workbook can put one absolute payroll-divisor literal in an otherwise empty, unlabelled ignored column beside a salary row. Transfer now distinguishes that bounded case from another employee's day or wage input: require the exact reviewed fixed cell, current original binding, complete saved-row witness, whole-column isolation and absolute same-row-payable earning references. The salary formula on the constant's own physical row uses that same reviewed input. Labelled/protected fields, additional values/errors/formulas, relative references and incomplete captures still fail. This proves neither worked attendance nor leave/weekly-off policy. Synthetic guard/translator regressions and an all-row private original-source replay cover the actual failure; mapping knowledge v47 retrieves the diagnostic from anonymous structural dependencies.
+
+A separate verified mapping case keeps a partial gross subtotal as Information and derives complete gross from all cash earnings. It preserves the original subtotal cell/formula/value, every earning/deduction and source net, and does not clear a discrepancy by acknowledgement. An unchanged separate deduction subtotal keeps its own captured formula and threshold. Normal same-client mapping-only saves retain the owned row IDs when source row/code/name, ordered earning/deduction/employer labels and exact cash/net are unchanged. Mail jobs/documents and durable Master links keep their existing row references; changing a declared control still invalidates reconciliation acknowledgements and the full PDF snapshot hash. Actual cash, label/category/order or identity changes keep the existing new-row behavior. Refresh setup source hashes/reviews after mapping edits; saving sends no email and creates no Employee Master or another salary batch. Mapping knowledge v49 retains this contextual boundary.
+
 `allowLocalFallback: false` prevents creating or repairing an automatic local fallback; it must not exclude an already configured active writable `API_LOCAL` server. Workbook retention now uses the same configured write ordering as other attachments: default first, then priority/name, with existing readiness, capacity and path checks. Missing or disabled local storage remains unavailable, and workbook uploads still cannot provision or reactivate it. Two routing regressions and the existing original-registration/upload checks passed (16 scoped tests total).
 
 On 2026-10-30, the configured default was server 1, API_LOCAL / LocalFileSystem. Its synthetic write/read/hash probe passed and removed only its own temporary file. After the verified local API restart with migrations/global workers disabled and outbound suppressed, the existing NHDC September import was saved once through the browser: batch `b6bab59d98b843a5a1b6327b72ab2b1d`, 109 rows, one calculation-source record, one retained original attachment (475). The retained 105,774-byte workbook's SHA-256 matched the supplied workbook; formulas and linked sheets remain in those original bytes. The old five-row batch remained unchanged. Master setup opened with 104 Existing, 4 New, 1 Needs review and 0 Applied for this new batch. Source retention is verified; this save does not establish master Apply or Regular Draft parity. No migration or storage configuration change was required for this routing fix.
 
+
+
+### Control-only remapping keeps delivery ownership, not stale approval
+
+`ExcelPayslipControlMappingIdentityTests` and the existing warning/delivery/mail tests verify exact cash/category/label/order and identity near-misses, including a previously reviewed negative amount. A guarded synthetic normal `SaveAsync` lifecycle reclassified a partial gross control as Information while retaining two typed mail jobs, three delivery documents, two request receipts, raw mail history, original attachments, source cells and two durable Master links. The actual old-PDF attachment path rejected its changed full snapshot hash; a real cash edit still obtained a new row ID. No SMTP messages were sent, and every owned fixture row was cleaned. This classification fix does not authorize blank-to-zero inputs, change salary, reuse stale reviews or relax identity/source guards.
+
+
+### Retained ignored subtotals and the actual pre-save layout boundary
+
+A proven partial subtotal need not become a new printed Information field. If the original payslip fits but adding that display field exceeds the legibility limit, retain the control as ignored with its original cell, cached value and formula intact, clear only its declared-full-gross classification, and derive complete gross from unchanged cash. Preserve every existing information field and signed earning, deduction and employer line. This option requires the actual source relationship and operator review; it does not permit ignoring a true full-gross control or dropping an amount to silence a warning. Run the actual PDF layout validator for every included row before normal Save; changing font/page rules or assuming only a sample fits is insufficient.
+
+The synthetic partial-subtotal regression retains full source cells/formulas, all original information and exact cash, reproduces the added-field overflow through the real renderer, and preflights the ignored-control variant. A failed layout save must be reconciled before a new reviewed operation. After a successful mapping save, rebase all configuration/source proofs to the newly saved batch and calculation-source hashes. Old protected previews or customer v2 requests bound to the previous epoch are stale; unchanged mail bytes and row IDs do not authorize reusing those plans. Mapping knowledge v50 retains this boundary without a new financial rule or renderer change.
+
+
+### Saved monthly component information in native payslip designs
+
+An Information field may select `COMPONENT_MONTHLY:<code>` for one existing active salary component. Rendering reads only that component's saved native monthly amount; it never substitutes earned pay, total gross, a source cache or current Master salary. One nonzero monthly base is accepted. Additional period-adjustment lines with zero monthly amounts do not add to that base; missing or multiple nonzero bases require review. All saved cash, deductions, employer amounts and net pay remain unchanged. Existing profile version and legacy information tokens retain their wire format.
+
+Fresh writes require the default-off `Payroll:ComponentMonthlyPayslipInformationWritesEnabled` capability after compatible API, ESS and payroll-worker readers are deployed. An exact authenticated committed request can still replay when the writer is later disabled; genuinely new writes remain blocked. Saved rendering and read-only previews accept the supported token independently of that writer setting. Reuse the existing field selector and preserve source labels, kinds and order. This is a presentation binding, with no automatic classification rule or mapping-knowledge version change.

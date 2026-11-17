@@ -112,6 +112,279 @@ public sealed class AppliedSourceReviewTests
     private static NativePayrollAttendanceInput NativeDays(string month = "2026-09") =>
         new(11,7,month,30,27,30,month+"-01",month+"-30",new string('c',64),"");
 
+    private static Fixture SourceRepresentationFixture(string saved, string cache, string netCache = "167679.99999999998")
+    {
+        var f = new Fixture();
+        f.Batch.Rows[0].Earnings[1].Amount = decimal.Parse(saved, System.Globalization.CultureInfo.InvariantCulture);
+        f.Batch.Rows[0].DeclaredGross = f.Batch.Rows[0].Earnings.Sum(line => line.Amount);
+        f.Source.Rows[0].Cells[4]!.Value = cache;
+        f.Source.Rows[0].Cells[7]!.Value = netCache;
+        return f;
+    }
+
+    [Theory]
+    [InlineData("22680", "22679.999999999998")]
+    [InlineData("22679.999999999998", "22680")]
+    public void Source_representation_tails_use_existing_G15_boundary_without_changing_raw_values_or_native_math(string saved, string cache)
+    {
+        var f = SourceRepresentationFixture(saved, cache);
+        var before = f.Snapshot();
+        var review = f.Review();
+        var travel = Assert.Single(review.Lines, line => line.Code == "TA_DA");
+        Assert.Equal(decimal.Parse(cache, System.Globalization.CultureInfo.InvariantCulture), travel.SourceRaw);
+        Assert.Equal(22680m, travel.CoreAmount);
+        Assert.Equal(167680m, review.Arithmetic.Net);
+        Assert.Equal(before, f.Snapshot());
+    }
+
+    [Theory]
+    [InlineData("saved-component")]
+    [InlineData("captured-component")]
+    [InlineData("saved-net")]
+    [InlineData("captured-net")]
+    [InlineData("formula")]
+    public void Same_paise_values_with_different_G15_source_representation_remain_blocked(string mutation)
+    {
+        var f = SourceRepresentationFixture("22680", "22679.999999999998");
+        switch (mutation)
+        {
+            case "saved-component":
+                f.Batch.Rows[0].Earnings[1].Amount = 22680.0000000001m;
+                f.Batch.Rows[0].DeclaredGross = f.Batch.Rows[0].Earnings.Sum(line => line.Amount);
+                break;
+            case "captured-component": f.Source.Rows[0].Cells[4]!.Value = "22680.0000000001"; break;
+            case "saved-net": f.Batch.Rows[0].NetPay = 167680.00000001m; break;
+            case "captured-net": f.Source.Rows[0].Cells[7]!.Value = "167680.00000001"; break;
+            case "formula": f.Source.Rows[0].Cells[7]!.FormulaText = "D9+E9+0.00000001"; break;
+        }
+        var before = f.Snapshot();
+        Assert.Throws<SelectedPayRunConflictException>(() => f.Review());
+        Assert.Equal(before, f.Snapshot());
+    }
+
+    [Theory]
+    [InlineData("unsupported-formula")]
+    [InlineData("missing-cache")]
+    [InlineData("cache-error")]
+    [InlineData("data-type")]
+    [InlineData("source-hash")]
+    public void Source_representation_boundary_does_not_waive_cache_type_formula_or_stale_transfer_provenance(string mutation)
+    {
+        var f = SourceRepresentationFixture("22680", "22679.999999999998");
+        f.Original.TransferReviewVersion = 1;
+        f.Receipt.Transfer = new()
+        {
+            SourceBatchId = f.Batch.Id, SourceMonth = f.Batch.Month,
+            SourceHash = ExcelPayslipRepository.EmploymentSourceHash(f.Batch, f.Source)
+        };
+        f.Receipt.TransferRows = [new(RowId, 11, 30, null, 30, f.Batch.Rows[0].NetPay, [])];
+        switch (mutation)
+        {
+            case "unsupported-formula": f.Source.Rows[0].Cells[7]!.FormulaText = "UNKNOWN(D9,E9)"; break;
+            case "missing-cache": f.Source.Rows[0].Cells[4]!.MissingCachedValue = true; break;
+            case "cache-error": f.Source.Rows[0].Cells[4]!.Error = "#VALUE!"; break;
+            case "data-type": f.Source.Rows[0].Cells[4]!.DataType = "Image"; break;
+            case "source-hash": f.Receipt.Transfer.SourceHash = new string('d', 64); break;
+        }
+        // Non-provenance mutations get their own current witness so the test
+        // reaches the real formula/cache/type validator rather than stale-hash rejection.
+        if (mutation != "source-hash")
+            f.Receipt.Transfer.SourceHash = ExcelPayslipRepository.EmploymentSourceHash(f.Batch, f.Source);
+        var before = f.Snapshot();
+        Assert.Throws<SelectedPayRunConflictException>(() => f.Review());
+        Assert.Equal(before, f.Snapshot());
+    }
+
+    [Fact]
+    public void Source_representation_boundary_keeps_zero_payable_period_and_monthly_wages_separate()
+    {
+        var f = new Fixture();
+        f.Source.Rows[0].Cells[1]!.Value = "0";
+        f.Source.Rows[0].Cells[3]!.Value = "0";
+        f.Source.Rows[0].Cells[4]!.Value = "0";
+        f.Source.Rows[0].Cells[7]!.Value = "0";
+        f.Batch.Rows[0].Information[1].Value = "0";
+        foreach (var line in f.Batch.Rows[0].Earnings) line.Amount = 0;
+        f.Batch.Rows[0].DeclaredGross = 0;
+        f.Batch.Rows[0].NetPay = 0;
+        var before = f.Snapshot();
+        var review = f.Review();
+        Assert.Equal(0m, review.PayableDays);
+        Assert.Equal(1740000m, review.Arithmetic.AnnualCtc);
+        Assert.All(review.Lines, line => Assert.Equal(0m, line.CoreAmount));
+        Assert.Equal(before, f.Snapshot());
+    }
+
+    [Theory]
+    [InlineData("-0.0000000000000000000000000001")]
+    [InlineData("-0.0000000001")]
+    [InlineData("-1")]
+    public void Source_representation_boundary_does_not_normalize_negative_source_amounts_to_zero(string amount)
+    {
+        var f = new Fixture();
+        f.Batch.Rows[0].Earnings[1].Amount = decimal.Parse(amount, System.Globalization.CultureInfo.InvariantCulture);
+        f.Source.Rows[0].Cells[4]!.Value = amount;
+        Assert.Throws<SelectedPayRunConflictException>(() => f.Review());
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-0.0000000000000000000000000001")]
+    [InlineData("-1")]
+    public void Source_representation_boundary_does_not_establish_monthly_salary_from_zero_or_negative_CTC(string monthly)
+    {
+        var f = new Fixture();
+        f.Original.MonthlyCtcColumnIndex = 2;
+        f.Source.Rows[0].Cells[2]!.Value = monthly;
+        var before = f.Snapshot();
+        Assert.Contains("positive bounded", Assert.Throws<InvalidOperationException>(() =>
+            ExcelPayrollSetupRepository.ReviewedSourceAnnualCtc(f.Original, f.Source, f.Source.Rows[0], f.Batch.Rows[0])).Message);
+        Assert.Throws<SelectedPayRunConflictException>(() => f.Review());
+        Assert.Equal(before, f.Snapshot());
+    }
+
+    [Fact]
+    public void Even_G15_equivalent_source_edits_invalidate_the_original_immutable_transfer_hash()
+    {
+        var f = SourceRepresentationFixture("22680", "22679.999999999998");
+        f.Original.TransferReviewVersion = 1;
+        f.Receipt.Transfer = new()
+        {
+            SourceBatchId = f.Batch.Id, SourceMonth = f.Batch.Month,
+            SourceHash = ExcelPayslipRepository.EmploymentSourceHash(f.Batch, f.Source)
+        };
+        f.Receipt.TransferRows = [new(RowId, 11, 30, null, 30, f.Batch.Rows[0].NetPay, [])];
+        f.Source.Rows[0].Cells[4]!.Value = "22679.999999999999";
+        Assert.Equal(ExcelPayrollSetupRepository.SourceDisplayPrecision(22679.999999999998m),
+            ExcelPayrollSetupRepository.SourceDisplayPrecision(22679.999999999999m));
+        Assert.NotEqual(f.Receipt.Transfer.SourceHash, ExcelPayslipRepository.EmploymentSourceHash(f.Batch, f.Source));
+        Assert.Throws<SelectedPayRunConflictException>(() => f.Review());
+    }
+
+    [Fact]
+    public void Captured_value_helper_still_requires_the_exact_original_same_cell_cache()
+    {
+        var f = SourceRepresentationFixture("22680", "22679.999999999998");
+        var helper = typeof(ExcelPayrollSetupRepository).GetMethod("RequireAppliedCapturedValue",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        var failure = Assert.Throws<System.Reflection.TargetInvocationException>(() =>
+            helper.Invoke(null, [f.Source, 9, 4, 22680m, null]));
+        Assert.IsType<SelectedPayRunConflictException>(failure.InnerException);
+        Assert.Equal(22679.999999999998m, helper.Invoke(null, [f.Source, 9, 4, 22679.999999999998m, null]));
+    }
+
+    private static Fixture ReviewedUanFixture()
+    {
+        var f = new Fixture();
+        f.Source.ColumnCount = 11;
+        f.Source.Columns.Add(new() { ColumnIndex = 9, Label = "UAN", SourceHeader = "UAN", Kind = "info" });
+        f.Source.Columns.Add(new() { ColumnIndex = 10, Label = "UAN (K)", SourceHeader = "UAN", Kind = "info" });
+        f.Source.Rows[0].Cells.Add(new() { DataType = "Text", Value = "100000000002" });
+        f.Source.Rows[0].Cells.Add(new() { DataType = "Text", Value = "100000000001" });
+        f.Batch.Rows[0].Information.Add(new() { Label = "UAN", Value = "100000000002" });
+        f.Batch.Rows[0].Information.Add(new() { Label = "UAN (K)", Value = "100000000001" });
+        f.Current.PersonalDetails.UanNumber = "100000000001";
+        f.Original.TransferReviewVersion = 1;
+        RebindReviewedUan(f);
+        return f;
+    }
+
+    private static void RebindReviewedUan(Fixture f)
+    {
+        var candidate = ExcelPayrollSetupRepository.IdentityColumnCandidates(f.Batch, f.Source, f.Original.RowIds)
+            .Single(c => c.ColumnIndex == 10);
+        f.Original.IdentityColumnReview = new()
+        {
+            ColumnIndex = 10, SourceHash = candidate.SourceHash, SelectionFingerprint = candidate.SelectionFingerprint,
+            Reason = "Original source header and canonical UAN column were independently reviewed.", Reviewed = true
+        };
+        f.Receipt.Transfer = new() { SourceBatchId = f.Batch.Id, SourceMonth = f.Batch.Month, SourceHash = candidate.SourceHash };
+        f.Receipt.TransferRows = [new(RowId, 11, 30, null, 30, f.Batch.Rows[0].NetPay, [])];
+    }
+
+    [Fact]
+    public void Applied_source_review_consumes_existing_validated_UAN_role_without_changing_identity_or_source()
+    {
+        var f = ReviewedUanFixture();
+        var before = f.Snapshot();
+        var review = f.Review();
+        Assert.Equal(167680m, review.Arithmetic.Net);
+        Assert.Equal(ExcelPayslipRepository.EmploymentSourceHash(f.Batch, f.Source), review.SourceHash);
+        Assert.Equal("100000000002", f.Source.Rows[0].Cells[9]!.Value);
+        Assert.Equal("100000000001", f.Current.PersonalDetails.UanNumber);
+        Assert.Equal(before, f.Snapshot());
+    }
+
+    [Theory]
+    [InlineData("missing-review")]
+    [InlineData("unreviewed")]
+    [InlineData("source-hash")]
+    [InlineData("selection")]
+    [InlineData("changed-original-selection")]
+    [InlineData("legacy-version")]
+    [InlineData("missing-binding")]
+    [InlineData("duplicate-binding")]
+    [InlineData("conflicting-binding")]
+    [InlineData("foreign-client")]
+    [InlineData("different-owner")]
+    [InlineData("source-code-alias")]
+    public void Applied_UAN_role_still_requires_original_scope_receipt_binding_and_unique_owner(string mutation)
+    {
+        var f = ReviewedUanFixture();
+        switch (mutation)
+        {
+            case "missing-review": f.Original.IdentityColumnReview = null; break;
+            case "unreviewed": f.Original.IdentityColumnReview!.Reviewed = false; break;
+            case "source-hash": f.Original.IdentityColumnReview!.SourceHash = new string('c', 64); break;
+            case "selection": f.Original.IdentityColumnReview!.SelectionFingerprint = new string('c', 64); break;
+            case "changed-original-selection": f.Original.RowIds.Add("22222222-2222-4222-8222-222222222222"); break;
+            case "legacy-version": f.Original.TransferReviewVersion = 0; break;
+            case "missing-binding": f.Receipt.TransferRows.Clear(); break;
+            case "duplicate-binding": f.Receipt.TransferRows.Add(f.Receipt.TransferRows[0]); break;
+            case "conflicting-binding": f.Receipt.TransferRows[0] = f.Receipt.TransferRows[0] with { EmployeeId = 12 }; break;
+            case "foreign-client": f.Current.ClientId = 8; break;
+            case "source-code-alias": f.Current.EmployeeCode = "NATIVE011"; break;
+            case "different-owner":
+                f.Identities.Add(new() { Id = 12, ClientId = 7, EmployeeCode = "SYN12", FirstName = "Other", LastName = "Person",
+                    PersonalDetails = new() { UanNumber = "100000000001" } });
+                break;
+        }
+        var before = f.Snapshot();
+        Assert.Throws<SelectedPayRunConflictException>(() => f.Review());
+        Assert.Equal(before, f.Snapshot());
+    }
+
+    [Theory]
+    [InlineData("formula")]
+    [InlineData("invalid-literal")]
+    [InlineData("missing-cache")]
+    [InlineData("header")]
+    [InlineData("data-type")]
+    [InlineData("strong-identity-conflict")]
+    public void Applied_UAN_role_never_infers_or_repairs_invalid_literals_even_when_source_hash_is_current(string mutation)
+    {
+        var f = ReviewedUanFixture();
+        switch (mutation)
+        {
+            case "formula": f.Source.Rows[0].Cells[10]!.FormulaText = "100000000001+0"; break;
+            case "invalid-literal": f.Source.Rows[0].Cells[10]!.Value = "NEW"; break;
+            case "missing-cache": f.Source.Rows[0].Cells[10]!.MissingCachedValue = true; break;
+            case "header": f.Source.Columns[10].SourceHeader = "Unrelated identity"; break;
+            case "data-type": f.Source.Rows[0].Cells[10]!.DataType = "Boolean"; break;
+            case "strong-identity-conflict": f.Current.PersonalDetails.UanNumber = "100000000003"; break;
+        }
+        if (mutation != "header") RebindReviewedUan(f);
+        else
+        {
+            var hash = ExcelPayslipRepository.EmploymentSourceHash(f.Batch, f.Source);
+            f.Receipt.Transfer!.SourceHash = hash;
+            f.Original.IdentityColumnReview!.SourceHash = hash;
+        }
+        var before = f.Snapshot();
+        Assert.Throws<SelectedPayRunConflictException>(() => f.Review());
+        Assert.Equal(before, f.Snapshot());
+    }
+
     private static Fixture ConditionalFixture()
     {
         var f=new Fixture();

@@ -9,12 +9,13 @@ namespace Payroll.API.Repositories;
 
 public sealed partial class ExcelPayslipRepository
 {
-    internal static async Task AnnotateEmploymentAsync(MySqlConnection db, ExcelPayslipBatch batch, MySqlTransaction? tx = null, IConfiguration? configuration = null, bool annotateMasterDetails = true)
+    internal static async Task AnnotateEmploymentAsync(MySqlConnection db, ExcelPayslipBatch batch, MySqlTransaction? tx = null, IConfiguration? configuration = null, bool annotateMasterDetails = true,
+        IReadOnlySet<string>? salaryDetailRowIds = null)
     {
         if(tx is null)
         {
             await using var snapshot=await db.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead,isReadOnly:true);
-            await AnnotateEmploymentAsync(db,batch,snapshot,configuration,annotateMasterDetails);
+            await AnnotateEmploymentAsync(db,batch,snapshot,configuration,annotateMasterDetails,salaryDetailRowIds);
             await snapshot.RollbackAsync();
             return;
         }
@@ -41,7 +42,7 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@Id AND 
         if (!annotateMasterDetails) return;
         await PayrollDataTableStore.ApplyEmployeeTablesAsync(db,masters,tx);
         AnnotateCurrentProfiles(batch,source,masters);
-        await AnnotateCurrentMasterAsync(db,tx,batch,source,configuration);
+        await AnnotateCurrentMasterAsync(db,tx,batch,source,configuration,salaryDetailRowIds:salaryDetailRowIds);
         AnnotateWarningReviews(batch);
     }
 

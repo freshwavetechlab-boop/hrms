@@ -1,5 +1,5 @@
-export type XlsxCell = string | number | { value: string | number; formula?: string; type?: 'text' | 'number' | 'error'; missingCachedValue?: boolean; style?: 'input' | 'header' | 'currency' | 'text' }
-export type XlsxSheet = { name: string; rows: XlsxCell[][]; rowNumbers?: number[]; hidden?: boolean; dateSystem?: '1900' | '1904'; columnWidths?: number[]; freezeRows?: number; freezeColumns?: number }
+export type XlsxCell = string | number | { value: string | number; formula?: string; type?: 'text' | 'number' | 'error'; missingCachedValue?: boolean; style?: 'input' | 'header' | 'currency' | 'text' | 'operand' }
+export type XlsxSheet = { name: string; rows: XlsxCell[][]; rowNumbers?: number[]; hidden?: boolean; dateSystem?: '1900' | '1904'; columnWidths?: number[]; freezeRows?: number; freezeColumns?: number; headerRowHeight?: number }
 
 const encoder = new TextEncoder()
 const crcTable = Array.from({ length: 256 }, (_, n) => {
@@ -17,6 +17,12 @@ export function buildXlsxBlob(sheets: XlsxSheet[]) {
     'xl/workbook.xml': workbookXml(sheets),
     ...Object.fromEntries(sheets.map((sheet, index) => [`xl/worksheets/sheet${index + 1}.xml`, sheetXml(sheet)]))
   }
+  // Named formula operands retain their declared precision, without changing
+  // the existing two-decimal amount-input style or any legacy workbook bytes.
+  if (sheets.some(sheet => sheet.rows.some(row => row.some(cell => typeof cell === 'object' && cell.style === 'operand'))))
+    files['xl/styles.xml'] = files['xl/styles.xml']
+      .replace('<cellXfs count="5">', '<cellXfs count="6">')
+      .replace('</cellXfs>', '<xf numFmtId="0" fillId="3" applyNumberFormat="1" applyFill="1"/></cellXfs>')
   return new Blob([zip(files)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
 }
 
@@ -62,10 +68,10 @@ function col(n: number) { let s = ''; while (n > 0) { n--; s = String.fromCharCo
 function contentTypes(count: number) { return `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${Array.from({ length: count }, (_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>` }
 function workbookRels(count: number) { return `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${Array.from({ length: count }, (_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${count + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` }
 function workbookXml(sheets: XlsxSheet[]) { return `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><workbookPr date1904="${sheets[0]?.dateSystem === '1904' ? 1 : 0}"/><sheets>${sheets.map((sheet, i) => `<sheet name="${esc(sheet.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"${sheet.hidden ? ' state="hidden"' : ''}/>`).join('')}</sheets><calcPr calcMode="auto" fullCalcOnLoad="1"/></workbook>` }
-function sheetXml(sheet: XlsxSheet) { return `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${sheetViewXml(sheet)}${sheet.columnWidths?.length ? `<cols>${sheet.columnWidths.map((width,index)=>`<col min="${index+1}" max="${index+1}" width="${width}" customWidth="1"/>`).join('')}</cols>` : ''}<sheetData>${sheet.rows.map((row, r) => { const number = sheet.rowNumbers?.[r] ?? r + 1; return `<row r="${number}"${row.some(cell=>typeof cell === 'object' && cell.style === 'header') ? ' ht="34" customHeight="1"' : ''}>${row.map((cell, c) => cellXml(cell, `${col(c + 1)}${number}`)).join('')}</row>` }).join('')}</sheetData></worksheet>` }
+function sheetXml(sheet: XlsxSheet) { return `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${sheetViewXml(sheet)}${sheet.columnWidths?.length ? `<cols>${sheet.columnWidths.map((width,index)=>`<col min="${index+1}" max="${index+1}" width="${width}" customWidth="1"/>`).join('')}</cols>` : ''}<sheetData>${sheet.rows.map((row, r) => { const number = sheet.rowNumbers?.[r] ?? r + 1; return `<row r="${number}"${row.some(cell=>typeof cell === 'object' && cell.style === 'header') ? ` ht="${sheet.headerRowHeight || 34}" customHeight="1"` : ''}>${row.map((cell, c) => cellXml(cell, `${col(c + 1)}${number}`)).join('')}</row>` }).join('')}</sheetData></worksheet>` }
 function cellXml(cell: XlsxCell, reference: string) {
   const data = typeof cell === 'object' ? cell : { value: cell }, type = data.type ?? (typeof data.value === 'number' ? 'number' : 'text')
-  const style = data.style ? ` s="${({ header: 1, input: 2, currency: 3, text: 4 })[data.style]}"` : ''
+  const style = data.style ? ` s="${({ header: 1, input: 2, currency: 3, text: 4, operand: 5 })[data.style]}"` : ''
   if (data.formula) return `<c r="${reference}"${style}${type === 'error' ? ' t="e"' : type === 'text' ? ' t="str"' : ''}><f>${esc(data.formula.replace(/^=/, ''))}</f>${data.missingCachedValue ? '' : `<v>${esc(String(data.value))}</v>`}</c>`
   if (type !== 'text') return `<c r="${reference}"${style}${type === 'error' ? ' t="e"' : ''}><v>${esc(String(data.value))}</v></c>`
   return `<c r="${reference}"${style} t="inlineStr"><is><t xml:space="preserve">${esc(String(data.value))}</t></is></c>`

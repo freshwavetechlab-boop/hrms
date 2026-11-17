@@ -9,6 +9,7 @@ import type { AttendanceGroup, Client, Component, Employee, EmployeeMonthlyAtten
 import { setup0 } from '../data/payrollDefaults'
 import { canCreateSelectedPayRunDraft, matchesSelectedPayRunDraftResponse, selectedPayRunDraftRequest, selectedDraftApplicableAdjustments, selectedDraftAdjustmentReviewKey, selectedDraftSourceReviewKey, withSelectedDraftSourceReview, type SelectedDraftSourceReviewChoice } from '../utils/selectedPayRunDraft'
 import { presentDayText, presentDayTotal } from '../utils/payrollAttendanceDisplay'
+import { matchesPayRunReviewScope } from '../utils/payRunReviewScope'
 import { money } from '../utils/salary'
 import PageTabs from './PageTabs'
 import DataTable, { type Column } from './DataTable'
@@ -46,7 +47,6 @@ type AttendancePolicyBatch = { id: string; name: string; groups: AttendanceGroup
 const stageItems: readonly PayrollStage[] = ['Employees', 'Setup', 'Review']
 const adjustmentStages: readonly AdjustmentStage[] = ['Entry', 'Import']
 const processingStatuses = new Set(['Queued', 'Processing'])
-const reviewStatuses = new Set(['AwaitingProcessing', 'Draft', 'Queued', 'Processing', 'Failed', 'Pending Approval', 'Approved'])
 const regularRunCodeFor = (policyBatchId: string, ids: number[]) => {
   const batchId = policyBatchId.trim()
   if (batchId) return `REG-B-${stableRunHash(batchId)}`
@@ -102,6 +102,8 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   const [diagnostics, setDiagnostics] = useState<PayRunDiagnostics | null>(null)
   const [clientId, setClientId] = useState(scopedClientId), [period, setPeriod] = useState(currentPeriod), [workingDays] = useState(30)
   const [includedIds, setIncludedIds] = useState<number[]>([]), [attendancePolicyBatchId, setAttendancePolicyBatchId] = useState(''), [offcycleEmployeeIds, setOffcycleEmployeeIds] = useState<number[]>([]), [offcycleAdjustmentIds, setOffcycleAdjustmentIds] = useState<number[]>([])
+  const scopeChoice = useRef({ clientId: scopedClientId, policyBatchId: '' })
+  const loadSequence = useRef(0)
   const [adjustments, setAdjustments] = useState<PayrollAdjustment[]>([]), [adjustment, setAdjustment] = useState<PayrollAdjustment>(adjustment0)
   const [tab] = useState<PayrollTab>(mode === 'adjustments' ? 'Adjustments' : initialRunType), [busy, setBusy] = useState(false), [message, setMessage] = useState('Select client, verify employees, then run payroll.')
   const [stage, setStage] = useState<PayrollStage>('Employees')
@@ -171,14 +173,13 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   const rosterMismatch = includedIds.some(id => !regularEmployees.some(employee => employee.id === id))
   const attendanceIssues = missingAttendance + attendanceRows.filter(row => includedIds.includes(row.employeeId) && attendanceIssue(row)).length + locationAttendanceIssues
   const attendanceReady = !locationLoading && !rosterMismatch && includedCount > 0 && attendanceRows.length > 0 && attendanceIssues === 0
-  const reviewRuns = useMemo(() => runs.filter(run => {
-    if (run.clientId !== clientId || !reviewStatuses.has(run.status)) return false
-    if (tab === 'Off-cycle Run') return run.runType === 'Off Cycle'
-    if (run.runType === 'Off Cycle') return false
-    return selectedPolicyBatch?.id
-      ? (run.attendancePolicyBatchId ? run.attendancePolicyBatchId === selectedPolicyBatch.id : [selectedRegularRunCode, selectedLegacyRegularRunCode].includes(run.runCode))
-      : run.runCode === selectedRegularRunCode
-  }), [clientId, runs, selectedLegacyRegularRunCode, selectedRegularRunCode, selectedPolicyBatch?.id, tab])
+  const reviewRuns = useMemo(() => runs.filter(run => matchesPayRunReviewScope(run, {
+    clientId,
+    offCycle: tab === 'Off-cycle Run',
+    policyBatchId: selectedPolicyBatch?.id,
+    regularRunCode: selectedRegularRunCode,
+    legacyRegularRunCode: selectedLegacyRegularRunCode,
+  })), [clientId, runs, selectedLegacyRegularRunCode, selectedRegularRunCode, selectedPolicyBatch?.id, tab])
   const attendanceReviewLink = useMemo(() => {
     const params = new URLSearchParams()
     if (clientId) params.set('clientId', String(clientId))
@@ -197,18 +198,22 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   }
 
   const load = async () => {
+    const sequence = ++loadSequence.current
     const [clientRows, employeeRows, runRows, setupRow, adjustmentRows, groupRows] = await Promise.all([getClients(), getPayrollEmployeeOptions(), getPayRuns(), getSetup(setup0), getPayrollAdjustments(), getAttendanceGroups()])
-    const nextClientId = clientScoped ? scopedClientId : clientId || clientRows[0]?.id || 0
+    if (sequence !== loadSequence.current) return
+    const choice = scopeChoice.current
+    const nextClientId = clientScoped ? scopedClientId : choice.clientId || clientRows[0]?.id || 0
     const activeGroups = groupRows.filter(group => group.isActive)
     const nextBatches = buildPolicyBatches(activeGroups.filter(group => group.clientId === nextClientId))
-    const nextBatch = nextBatches.find(batch => batch.id === attendancePolicyBatchId) || null
+    const nextBatch = nextBatches.find(batch => batch.id === choice.policyBatchId) || null
     const fallbackBatch = nextBatches[0] || null
     setClients(clientRows)
-    if (!clientId && nextClientId) setClientId(nextClientId)
+    if (!choice.clientId && nextClientId) setClientId(nextClientId)
     setEmployees(employeeRows)
     setAttendanceGroups(groupRows)
-    if (nextClientId && (!attendancePolicyBatchId || !clientId)) {
+    if (nextClientId && (!choice.policyBatchId || !choice.clientId)) {
       const selectedBatch = nextBatch || fallbackBatch
+      scopeChoice.current = { clientId: nextClientId, policyBatchId: selectedBatch?.id || '' }
       setAttendancePolicyBatchId(selectedBatch?.id || '')
       setIncludedIds(employeeIdsForGroups(selectedBatch?.groups ?? [], employeeRows))
     }
@@ -255,6 +260,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   const changeClient = (id: number) => {
     setSelectedAdjustmentReview({ key: '', ids: [] })
     const nextBatch = buildPolicyBatches(attendanceGroups.filter(group => group.clientId === id && group.isActive))[0] || null
+    scopeChoice.current = { clientId: id, policyBatchId: nextBatch?.id || '' }
     setClientId(id)
     setAttendancePolicyBatchId(nextBatch?.id || '')
     setIncludedIds(employeeIdsForGroups(nextBatch?.groups ?? []))
@@ -267,6 +273,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   const changeAttendancePolicyBatch = (id: string) => {
     setSelectedAdjustmentReview({ key: '', ids: [] })
     const nextBatch = attendancePolicyBatches.find(batch => batch.id === id) || null
+    scopeChoice.current = { clientId, policyBatchId: nextBatch?.id || '' }
     setAttendancePolicyBatchId(nextBatch?.id || '')
     setIncludedIds(employeeIdsForGroups(nextBatch?.groups ?? []))
     setSelected(null)

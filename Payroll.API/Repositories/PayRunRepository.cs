@@ -9,7 +9,8 @@ using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
-public partial class PayRunRepository(IConfiguration configuration, TaxEngineRepository taxEngineRepository, EngineRuntimeMonitor? engineMonitor = null)
+public partial class PayRunRepository(IConfiguration configuration, TaxEngineRepository taxEngineRepository, EngineRuntimeMonitor? engineMonitor = null,
+    PortableIntegrationCredentialProtector? nativeCurrencyProtector = null)
 {
     private MySqlConnection CreateConnection()
     {
@@ -428,6 +429,8 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
             return await GetAsync(payRunId);
         }
 
+        var currencyContext = await BeginCurrencyProcessingAsync(connection, transaction, payRunId, request, runType,
+            setupJson, employees.Where(employee => includedEmployeeIds.Contains(employee.Id)).ToList(), attendance);
         foreach (var employee in employees.Where(employee => includedEmployeeIds.Contains(employee.Id)))
         {
             var attendanceRow = attendance.GetValueOrDefault(employee.Id);
@@ -437,15 +440,32 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
             employee.AttendancePolicySnapshot = attendanceRow?.PolicySnapshot;
             employee.PayableOnlyAttendance = attendanceRow?.PayableOnlyEvidence;
             var employeeAdjustments = adjustmentByEmployee.GetValueOrDefault(employee.Id) ?? [];
-            var row = BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, -1, false);
+            List<PayrollSimulationLine>? currencyTrace = currencyContext is null ? null : [];
+            List<object>? currencyTaxInputs = currencyContext is null ? null : [];
+            var row = currencyTrace is null
+                ? BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, -1, false)
+                : BuildEmployeeWithCurrencyTrace(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, -1, false, currencyTrace);
             if (runType == "Regular")
             {
-                var projectedTds = await CalculateMonthlyTdsAsync(connection, transaction, employee, row, request.PayPeriod);
+                var projectedTds = await CalculateMonthlyTdsAsync(connection, transaction, employee, row, request.PayPeriod,
+                    recordInputs: currencyTaxInputs is null ? null : currencyTaxInputs.Add, setupJson: setupJson);
                 if (projectedTds.Calculated)
-                    row = BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, projectedTds.Amount, false, projectedTds.ComponentCode);
+                {
+                    currencyTrace?.Clear();
+                    row = currencyTrace is null
+                        ? BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, projectedTds.Amount, false, projectedTds.ComponentCode)
+                        : BuildEmployeeWithCurrencyTrace(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, projectedTds.Amount, false, currencyTrace, projectedTds.ComponentCode);
+                    row = WithSourceTdsEvidence(row, projectedTds);
+                }
             }
             await SaveEmployeeAsync(connection, transaction, row);
-            await WriteCalculationTracesAsync(connection, transaction, row, employeeWorkingDays);
+            if (currencyContext is null) await WriteCalculationTracesAsync(connection, transaction, row, employeeWorkingDays);
+            else
+            {
+                var captured = await ReviewCurrencyProcessingRowAsync(connection, transaction, currencyContext, employee, row,
+                    employeeWorkingDays, presentDays, payableDays, employeeAdjustments, currencyTaxInputs!, currencyTrace!);
+                await WriteCurrencyCalculationTracesAsync(connection, transaction, row, employeeWorkingDays, currencyContext, captured);
+            }
         }
         if (adjustments.Count > 0)
         {
@@ -455,6 +475,7 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
 
         await RefreshTotalsAsync(connection, transaction, payRunId);
         await WriteReconciliationResultsAsync(connection, transaction, payRunId);
+        await FinishCurrencyProcessingAsync(connection, transaction, payRunId, currencyContext);
         await transaction.CommitAsync();
         return await GetAsync(payRunId);
     }
@@ -571,6 +592,8 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
             return await GetAsync(payRunId);
         }
 
+        var currencyContext = await BeginCurrencyProcessingAsync(connection, transaction, payRunId, request, runType,
+            setupJson, employees.Where(employee => includedEmployeeIds.Contains(employee.Id)).ToList(), attendance);
         foreach (var employee in employees.Where(employee => includedEmployeeIds.Contains(employee.Id)))
         {
             var attendanceRow = attendance.GetValueOrDefault(employee.Id);
@@ -580,15 +603,32 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
             employee.AttendancePolicySnapshot = attendanceRow?.PolicySnapshot;
             employee.PayableOnlyAttendance = attendanceRow?.PayableOnlyEvidence;
             var employeeAdjustments = adjustmentByEmployee.GetValueOrDefault(employee.Id) ?? [];
-            var row = BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, -1, false);
+            List<PayrollSimulationLine>? currencyTrace = currencyContext is null ? null : [];
+            List<object>? currencyTaxInputs = currencyContext is null ? null : [];
+            var row = currencyTrace is null
+                ? BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, -1, false)
+                : BuildEmployeeWithCurrencyTrace(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, -1, false, currencyTrace);
             if (runType == "Regular")
             {
-                var projectedTds = await CalculateMonthlyTdsAsync(connection, transaction, employee, row, request.PayPeriod);
+                var projectedTds = await CalculateMonthlyTdsAsync(connection, transaction, employee, row, request.PayPeriod,
+                    recordInputs: currencyTaxInputs is null ? null : currencyTaxInputs.Add, setupJson: setupJson);
                 if (projectedTds.Calculated)
-                    row = BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, projectedTds.Amount, false, projectedTds.ComponentCode);
+                {
+                    currencyTrace?.Clear();
+                    row = currencyTrace is null
+                        ? BuildEmployee(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, projectedTds.Amount, false, projectedTds.ComponentCode)
+                        : BuildEmployeeWithCurrencyTrace(payRunId, employee, setupJson, request.PayPeriod, employeeWorkingDays, presentDays, payableDays, employeeAdjustments, 0, 0, projectedTds.Amount, false, currencyTrace, projectedTds.ComponentCode);
+                    row = WithSourceTdsEvidence(row, projectedTds);
+                }
             }
             await SaveEmployeeAsync(connection, transaction, row);
-            await WriteCalculationTracesAsync(connection, transaction, row, employeeWorkingDays);
+            if (currencyContext is null) await WriteCalculationTracesAsync(connection, transaction, row, employeeWorkingDays);
+            else
+            {
+                var captured = await ReviewCurrencyProcessingRowAsync(connection, transaction, currencyContext, employee, row,
+                    employeeWorkingDays, presentDays, payableDays, employeeAdjustments, currencyTaxInputs!, currencyTrace!);
+                await WriteCurrencyCalculationTracesAsync(connection, transaction, row, employeeWorkingDays, currencyContext, captured);
+            }
         }
         if (adjustments.Count > 0)
         {
@@ -602,6 +642,7 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         await RefreshTotalsAsync(connection, transaction, payRunId);
         await WriteReconciliationResultsAsync(connection, transaction, payRunId);
         await connection.ExecuteAsync("UPDATE payruns SET Status='Draft', ProcessingCompletedAt=UTC_TIMESTAMP(), ProcessingError='' WHERE Id=@PayRunId", new { PayRunId = payRunId }, transaction);
+        await FinishCurrencyProcessingAsync(connection, transaction, payRunId, currencyContext);
         await transaction.CommitAsync();
         return await GetAsync(payRunId);
     }
@@ -641,10 +682,13 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         var row = BuildEmployee(payRunId, employee, setupJson, payRun.PayPeriod, payRun.TotalWorkingDays, presentDays, presentDays, adjustments, manualEarnings, manualDeductions, tds > 0 ? tds : -1, request.IsSkipped);
         if (!request.IsSkipped && tds == 0 && payRun.RunType == "Regular")
         {
-            var projectedTds = await CalculateMonthlyTdsAsync(connection, transaction, employee, row, payRun.PayPeriod);
+            var projectedTds = await CalculateMonthlyTdsAsync(connection, transaction, employee, row, payRun.PayPeriod, setupJson: setupJson);
             tds = projectedTds.Amount;
             if (projectedTds.Calculated)
+            {
                 row = BuildEmployee(payRunId, employee, setupJson, payRun.PayPeriod, payRun.TotalWorkingDays, presentDays, presentDays, adjustments, manualEarnings, manualDeductions, tds, false, projectedTds.ComponentCode);
+                row = WithSourceTdsEvidence(row, projectedTds);
+            }
         }
         await SaveEmployeeAsync(connection, transaction, row);
         await connection.ExecuteAsync("DELETE FROM payroll_calculation_traces WHERE PayRunId=@PayRunId AND EmployeeId=@EmployeeId", new { PayRunId = payRunId, EmployeeId = employeeId }, transaction);
@@ -788,19 +832,42 @@ AND NOT EXISTS (
     }
 
     private static PayRunEmployee BuildEmployee(int payRunId, PayRunSourceEmployee employee, string setupJson, string payPeriod, int totalWorkingDays, decimal? presentDays, decimal payableDays, IEnumerable<PayrollAdjustment> adjustments, decimal manualOneTimeEarnings, decimal manualOneTimeDeductions, decimal manualTds, bool isSkipped, string tdsComponentCode = "TDS")
+        => BuildEmployeeCore(payRunId, employee, setupJson, payPeriod, totalWorkingDays, presentDays, payableDays,
+            adjustments, manualOneTimeEarnings, manualOneTimeDeductions, manualTds, isSkipped, tdsComponentCode, null);
+
+    private static PayRunEmployee BuildEmployeeWithCurrencyTrace(int payRunId, PayRunSourceEmployee employee, string setupJson,
+        string payPeriod, int totalWorkingDays, decimal? presentDays, decimal payableDays, IEnumerable<PayrollAdjustment> adjustments,
+        decimal manualOneTimeEarnings, decimal manualOneTimeDeductions, decimal manualTds, bool isSkipped,
+        List<PayrollSimulationLine> nativeTrace, string tdsComponentCode = "TDS")
+        => BuildEmployeeCore(payRunId, employee, setupJson, payPeriod, totalWorkingDays, presentDays, payableDays,
+            adjustments, manualOneTimeEarnings, manualOneTimeDeductions, manualTds, isSkipped, tdsComponentCode, nativeTrace);
+
+    private static PayRunEmployee BuildEmployeeCore(int payRunId, PayRunSourceEmployee employee, string setupJson, string payPeriod,
+        int totalWorkingDays, decimal? presentDays, decimal payableDays, IEnumerable<PayrollAdjustment> adjustments,
+        decimal manualOneTimeEarnings, decimal manualOneTimeDeductions, decimal manualTds, bool isSkipped,
+        string tdsComponentCode, List<PayrollSimulationLine>? nativeTrace)
     {
         if (employee.LocationParts is { } locationPeriod && locationPeriod.PayPeriod != payPeriod)
             throw new InvalidOperationException("Location attendance allocations belong to another payroll period.");
-        if(!presentDays.HasValue&&employee.PayableOnlyAttendance?.PayPeriod!=payPeriod)
+        if(!presentDays.HasValue&&employee.PayableOnlyAttendance?.PayPeriod!=payPeriod&&employee.ReportedPendingSeed?.PayPeriod!=payPeriod)
             throw new InvalidOperationException("Unknown actual presence requires reviewed payable-only attendance for this exact payroll period.");
         var setup = ReadPayrollSetup(setupJson);
-        var salary = CalculateConfiguredSalary(employee, setup, totalWorkingDays, presentDays, payableDays);
+        var salary = CalculateConfiguredSalary(employee, setup, totalWorkingDays, presentDays, payableDays, nativeTrace);
+        var reviewedPt = employee.ReviewedProfessionalTax;
         var replaceTds = manualTds >= 0;
         var salaryDeductionCodes = salary.Where(row => IsDeductionCategory(row.Component.Category) && (row.EarnedOverride ?? row.Monthly) > 0).Select(row => row.Component.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var salaryDeductionStatutoryTypes = salary.Where(row => IsDeductionCategory(row.Component.Category) && (row.EarnedOverride ?? row.Monthly) > 0 && !string.IsNullOrWhiteSpace(row.Component.StatutoryType)).Select(row => row.Component.StatutoryType).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var combinedLevy = AuthoritativeCombinedLevy(employee,salary);
         var factor = totalWorkingDays == 0 || isSkipped ? 0 : (decimal)payableDays / totalWorkingDays;
         var lines = new List<object>();
-        if (!presentDays.HasValue)
+        if (reviewedPt is not null)
+            lines.Add(new { Id = "REVIEWED_PT_INPUT", Name = "Reviewed period Professional Tax amount", Category = "Summary",
+                monthlyAmount = 0, amount = 0, reviewedProfessionalTax = reviewedPt });
+        if (!presentDays.HasValue && employee.ReportedPendingSeed is not null)
+            lines.Add(new { Id="ATTENDANCE_INPUT",Name="Proposed closed-source payable seed; no native monthly row saved yet",Category="Summary",
+                monthlyAmount=0,amount=0,ProRata=false,actualPresentDays=(decimal?)null,payableDays,payrollDays=totalWorkingDays,
+                sourceType="ProposedClosedReportedSourceSeed",proposedNativeInput=employee.ReportedPendingSeed.PendingNativeInput });
+        else if (!presentDays.HasValue)
             lines.Add(new { Id="ATTENDANCE_INPUT",Name="Reviewed payable-only source; actual presence not supplied",Category="Summary",
                 monthlyAmount=0,amount=0,ProRata=false,actualPresentDays=(decimal?)null,payableDays,payrollDays=totalWorkingDays,
                 sourceType=SourcePayableAttendance.SourceType,sourceEvidence=employee.PayableOnlyAttendance });
@@ -809,7 +876,11 @@ AND NOT EXISTS (
         foreach (var row in salary)
         {
             var isTds = row.Component.StatutoryType.Equals("TDS", StringComparison.OrdinalIgnoreCase) || row.Component.Code.Equals(tdsComponentCode, StringComparison.OrdinalIgnoreCase) || row.Component.Code == "TDS";
-            if (replaceTds && IsDeductionCategory(row.Component.Category) && isTds) continue;
+            if (replaceTds && IsDeductionCategory(row.Component.Category) && isTds)
+            {
+                nativeTrace?.RemoveAll(line => line.Code == row.Component.Code);
+                continue;
+            }
             var amount = isSkipped ? 0 : row.EarnedOverride ?? (row.DailyRate is decimal rate ? decimal.Round(rate * payableDays, 2) : row.Component.ProRata ? decimal.Round(row.Monthly * factor, 2) : row.Monthly);
             if (row.LocationParts is not null)
                 lines.Add(new { Id = row.Component.Code, row.Component.Name, row.Component.Category, row.Component.ComponentRole, row.Component.StatutoryType, monthlyAmount = row.Monthly, amount, ProRata = false, locationParts = row.LocationParts });
@@ -833,9 +904,17 @@ AND NOT EXISTS (
         }
 
         var seededDeductions = ReadSeededPayrollDeductions(employee);
+        if (reviewedPt is not null && seededDeductions.Any(row => row.Code is "PT" or "PT_LWF_WC"))
+            throw new InvalidOperationException("A positive seeded PT input conflicts with reviewed period PT. Review the existing evidence; no deduction is silently removed.");
         foreach (var seededDeduction in seededDeductions)
         {
             if (replaceTds && seededDeduction.StatutoryType == "TDS") continue;
+            if (combinedLevy is not null && seededDeduction.Code == "PT")
+            {
+                lines.Add(new { Id="COMBINED_LEVY_INPUT",Name="Legacy combined deduction replaced by effective salary component",Category="Summary",
+                    monthlyAmount=0,amount=0,componentCode=combinedLevy.Component.Code,legacySeededAmount=seededDeduction.Amount });
+                continue;
+            }
             if (salaryDeductionCodes.Contains(seededDeduction.Code)) continue;
             if (!string.IsNullOrWhiteSpace(seededDeduction.StatutoryType) && salaryDeductionStatutoryTypes.Contains(seededDeduction.StatutoryType)) continue;
             var amount = isSkipped ? 0 : seededDeduction.Amount;
@@ -843,9 +922,19 @@ AND NOT EXISTS (
             deductions += amount;
             if (seededDeduction.StatutoryType == "TDS") totalTds += amount;
             lines.Add(new { Id = seededDeduction.Code, Name = seededDeduction.Name, Category = "Deduction", ComponentRole = "Statutory Deduction", StatutoryType = seededDeduction.StatutoryType, monthlyAmount = seededDeduction.Amount, amount, ProRata = false });
+            AddNativeScalarCurrencyStage(nativeTrace, seededDeduction.Code, seededDeduction.Name, "Deduction", seededDeduction.Amount, amount, "Native saved personal deduction");
         }
 
-        var hasProfessionalTaxLine = salaryDeductionCodes.Contains("PT") || salaryDeductionCodes.Contains("PT_LWF_WC") || seededDeductions.Any(row => row.Code.Equals("PT", StringComparison.OrdinalIgnoreCase) || row.Code.Equals("PT_LWF_WC", StringComparison.OrdinalIgnoreCase))
+        var configuredPt = salary.Any(row => IsDeductionCategory(row.Component.Category) && ReviewedPeriodProfessionalTax.IsPt(row.Component.Code, row.Component.StatutoryType));
+        if (reviewedPt is not null && !configuredPt)
+        {
+            var periodAmount = isSkipped ? 0 : reviewedPt.Amount!.Value;
+            deductions += periodAmount;
+            lines.Add(new { Id = "PT", Name = "Professional Tax", Category = "Deduction", ComponentRole = "Statutory Deduction", StatutoryType = "Professional Tax",
+                monthlyAmount = periodAmount, amount = periodAmount, ProRata = false, reviewedProfessionalTax = reviewedPt });
+            AddNativeScalarCurrencyStage(nativeTrace, "PT", "Professional Tax", "Deduction", periodAmount, periodAmount, "Native reviewed period Professional Tax");
+        }
+        var hasProfessionalTaxLine = reviewedPt is not null || combinedLevy is not null || salaryDeductionCodes.Contains("PT") || salaryDeductionCodes.Contains("PT_LWF_WC") || seededDeductions.Any(row => row.Code.Equals("PT", StringComparison.OrdinalIgnoreCase) || row.Code.Equals("PT_LWF_WC", StringComparison.OrdinalIgnoreCase))
             || employee.LocationParts is not null && salary.Any(row=>IsDeductionCategory(row.Component.Category)
                 && (row.Component.StatutoryType.Equals("Professional Tax",StringComparison.OrdinalIgnoreCase)||row.Component.Code is "PT" or "PT_LWF_WC"));
         if(employee.LocationParts is not null&&setup.ProfessionalTax.Enabled&&!hasProfessionalTaxLine
@@ -858,6 +947,7 @@ AND NOT EXISTS (
             {
                 deductions += professionalTax;
                 lines.Add(new { Id = "PT", Name = "Professional Tax", Category = "Deduction", ComponentRole = "Statutory Deduction", StatutoryType = "Professional Tax", monthlyAmount = professionalTax, amount = professionalTax, ProRata = false });
+                AddNativeScalarCurrencyStage(nativeTrace, "PT", "Professional Tax", "Deduction", professionalTax, professionalTax, "Native statutory policy result");
             }
         }
 
@@ -871,6 +961,7 @@ AND NOT EXISTS (
             totalTds += tds;
             var code = FirstText(tdsComponentCode, "TDS").ToUpperInvariant();
             lines.Add(new { Id = code, Name = "Income Tax (TDS)", Category = "Deduction", ComponentRole = "Statutory Deduction", StatutoryType = "TDS", monthlyAmount = tds, amount = tds, ProRata = false });
+            AddNativeScalarCurrencyStage(nativeTrace, code, "Income Tax (TDS)", "Deduction", tds, tds, "Native projected period tax result");
         }
         foreach (var group in adjustmentRows.GroupBy(item => new { item.ComponentId, item.ComponentCode, item.ComponentName, Category = NormalizeAdjustmentType(item.AdjustmentType) }))
         {
@@ -886,6 +977,10 @@ AND NOT EXISTS (
                 ProRata = false,
                 draftEmployerCost = group.Key.Category == "Benefit"
             });
+            AddNativeScalarCurrencyStage(nativeTrace,
+                string.IsNullOrWhiteSpace(group.Key.ComponentCode) ? $"ADJ_{group.Key.ComponentId}" : group.Key.ComponentCode,
+                string.IsNullOrWhiteSpace(group.Key.ComponentName) ? "Payroll adjustment" : group.Key.ComponentName,
+                group.Key.Category, amount, amount, "Native approved period adjustment");
         }
 
         var net = Math.Max(0, grossPay + oneTimeEarnings - deductions - oneTimeDeductions);
@@ -921,11 +1016,15 @@ AND NOT EXISTS (
 
     private static List<CalculatedPayrollComponent> CalculateConfiguredSalary(PayRunSourceEmployee employee, PayrollSetupData setup, int payrollDays, decimal? presentDays, decimal payableDays, List<PayrollSimulationLine>? trace = null)
     {
+        if (employee.ReviewedProfessionalTax is not null && employee.LocationParts is not null)
+            throw new InvalidOperationException("Reviewed period PT cannot replace effective location allocations.");
         if (!presentDays.HasValue) ValidatePayableOnlyCalculation(employee, setup, payrollDays, payableDays);
         ValidateSourcePayableTemplate(employee, setup);
         if (employee.LocationParts is not null)
             return CalculateLocationPartSalary(employee, setup, payrollDays, presentDays!.Value, payableDays, trace);
         var salaryJson = employee.SalaryComponents.Count > 0 ? new Dictionary<string, decimal>(employee.SalaryComponents, StringComparer.OrdinalIgnoreCase) : JsonSerializer.Deserialize<Dictionary<string, decimal>>(employee.SalaryJson, new JsonSerializerOptions { NumberHandling = JsonNumberHandling.AllowReadingFromString }) ?? [];
+        if (employee.ReviewedProfessionalTax is not null && (employee.LocationParts is not null || string.IsNullOrWhiteSpace(employee.SalaryStructureId)))
+            throw new InvalidOperationException("Reviewed period PT requires one explicit ordinary salary assignment; effective location allocations cannot be replaced.");
         var componentById = setup.Components.ToDictionary(component => component.Id);
         var activeStructures = setup.Structures.Where(item => item.Active).ToList();
         bool MatchesClient(SalaryStructureSetup item) => item.ClientId.Split([';', ',', '|']).Any(value => value.Split(':')[0].Trim() == employee.ClientId.ToString(CultureInfo.InvariantCulture));
@@ -945,12 +1044,17 @@ AND NOT EXISTS (
             ValidateRuntimePfMappings(setup.Components, structure, employee.PfPolicyPeriod);
             var overrides = new Dictionary<string, decimal>();
             // Legacy employee salary maps contain calculated values as well as overrides. Compare sequential full-month values, not earned-period values.
-            CalculateStructureLines(setup.Components, structure, monthlyTarget, 30, 30, 30, storedAmounts: salaryJson, inferredOverrides: overrides);
+            if (ReportedPeriodCalculationContext.IsReported(employee.NamedInputs))
+            {
+                if (salaryJson.Count != 0)
+                    throw new InvalidOperationException("Reported-period templates require exact independent sidecar operands, not legacy calculated salary-map overrides.");
+            }
+            else CalculateStructureLines(setup.Components, structure, monthlyTarget, 30, 30, 30, storedAmounts: salaryJson, inferredOverrides: overrides, namedInputs: employee.NamedInputs);
             // Unknown presence has been explicitly proved irrelevant to every
             // effective expression above. This unused arithmetic operand is not
             // stored, exposed, or permitted to resolve a PRESENT_DAYS formula.
             return CalculateStructureLines(setup.Components, structure, monthlyTarget, payrollDays, presentDays.GetValueOrDefault(), payableDays, employee.PfPolicyPeriod, overrides, trace: trace,
-                reviewedExtraDutyUnits: employee.PayableOnlyAttendance?.ReviewedExtraDutyUnits == true);
+                reviewedExtraDutyUnits: employee.PayableOnlyAttendance?.ReviewedExtraDutyUnits == true, reviewedProfessionalTax: employee.ReviewedProfessionalTax?.Amount, namedInputs: employee.NamedInputs);
         }
         if (employee.PfPolicyPeriod is not null)
             throw new InvalidOperationException("The published PF policy requires its salary template and a positive monthly salary base.");
@@ -1033,16 +1137,27 @@ AND NOT EXISTS (
                 r.DailyRate is decimal rate ? decimal.Round(rate * payableDays, 2) : r.Component.ProRata ? decimal.Round(r.Monthly * payableDays / payrollDays, 2) : r.Monthly)).ToList();
     }
 
-    private static List<CalculatedPayrollComponent> CalculateStructureLines(List<PayrollComponent> components, SalaryStructureSetup structure, decimal monthlyTarget, int payrollDays, decimal presentDays, decimal payableDays, PfPolicyPeriod? pfPeriod = null, Dictionary<string, decimal>? overrides = null, Dictionary<string, decimal>? storedAmounts = null, Dictionary<string, decimal>? inferredOverrides = null, List<PayrollSimulationLine>? trace = null, bool reviewedExtraDutyUnits = false)
+    private static List<CalculatedPayrollComponent> CalculateStructureLines(List<PayrollComponent> components, SalaryStructureSetup structure, decimal monthlyTarget, int payrollDays, decimal presentDays, decimal payableDays, PfPolicyPeriod? pfPeriod = null, Dictionary<string, decimal>? overrides = null, Dictionary<string, decimal>? storedAmounts = null, Dictionary<string, decimal>? inferredOverrides = null, List<PayrollSimulationLine>? trace = null, bool reviewedExtraDutyUnits = false, decimal? reviewedProfessionalTax = null, NamedFormulaInputContext? namedInputs = null)
     {
         var componentById = components.ToDictionary(component => component.Id);
         var values = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+        if(namedInputs is not null)
+        {
+            if (ReportedPeriodCalculationContext.IsReported(namedInputs))
+                ReportedPeriodCalculationContext.Validate(namedInputs, components.SelectMany(c=>new[]{c.Id,c.Code}), payrollDays, payableDays);
+            else ReviewedNamedFormulaInputs.ValidateContext(namedInputs,components.SelectMany(c=>new[]{c.Id,c.Code}));
+            foreach(var item in namedInputs.Values) values.Add(item.Key,item.Value);
+        }
         var rows = new List<CalculatedPayrollComponent>();
 
         if (structure.Lines.Any(line => !componentById.TryGetValue(line.ComponentId, out var component) || !component.Active))
             throw new InvalidOperationException($"Salary template {structure.Id} contains an inactive or missing component.");
         if (structure.Lines.Select(line => line.ComponentId).Distinct().Count() != structure.Lines.Count)
             throw new InvalidOperationException($"Salary template {structure.Id} contains duplicate components.");
+        if (reviewedProfessionalTax.HasValue && (structure.Lines.Count(line => IsDeductionCategory(componentById[line.ComponentId].Category)
+                && ReviewedPeriodProfessionalTax.IsPt(componentById[line.ComponentId].Code, componentById[line.ComponentId].StatutoryType)) > 1
+            || structure.Lines.Any(line => componentById[line.ComponentId].Code.Equals("PT_LWF_WC", StringComparison.OrdinalIgnoreCase))))
+            throw new InvalidOperationException("Duplicate or mixed PT configuration needs an explicit statutory review.");
         var orderedLines = structure.Lines
             .Select((line, index) => new { line, index, component = componentById.GetValueOrDefault(line.ComponentId) })
             .Where(item => item.component is not null && item.component.Active)
@@ -1066,7 +1181,7 @@ AND NOT EXISTS (
                     ? new[] { FirstText(line.BaseComponent, component.BaseComponent, "GROSS").ToUpperInvariant() } : FormulaReferences(formula);
                 foreach (var token in references)
                 {
-                    if (KnownFormulaTokens.Contains(token) || token == "GROSS_EARNED") continue;
+                    if (KnownFormulaTokens.Contains(token) || token == "GROSS_EARNED" || namedInputs?.Values.ContainsKey(token)==true) continue;
                     var dependency = orderedLines.FirstOrDefault(other => other.component!.Code.Equals(token, StringComparison.OrdinalIgnoreCase) || other.component.Id == token)
                         ?? orderedLines.FirstOrDefault(other => other.component!.Code.Equals(BaseComponentToken(token), StringComparison.OrdinalIgnoreCase) || other.component.Id == BaseComponentToken(token));
                     if (dependency is null) throw new InvalidOperationException($"{component.Code}: reference {token} is not in this salary template.");
@@ -1118,6 +1233,8 @@ AND NOT EXISTS (
                 dailyRate = rate;
                 effectiveComponent = effectiveComponent with { ProRata = false };
             }
+            var reviewedPtComponent = reviewedProfessionalTax.HasValue && IsDeductionCategory(component.Category)
+                && ReviewedPeriodProfessionalTax.IsPt(component.Code, component.StatutoryType);
             var monthly = type switch
             {
                 "Daily Rate" => dailyRate!.Value * payrollDays,
@@ -1125,8 +1242,11 @@ AND NOT EXISTS (
                 "Slab Based" => SlabValue(formula, values.GetValueOrDefault("GROSS_EARNED", monthlyTarget)),
                 "Residual / Balancing" => CalculateResidual(effectiveComponent, formula, monthlyTarget, payrollDays, presentDays, payableDays, values),
                 "Formula" => EvaluateComponentFormula(effectiveComponent, formula, monthlyTarget, payrollDays, presentDays, payableDays, values),
-                _ => ReadRequiredAmount(component, formula, overrides, storedAmounts)
+                _ => ReadRequiredAmount(component, formula, reviewedPtComponent ? null : overrides, reviewedPtComponent ? null : storedAmounts)
             };
+            if (reviewedProfessionalTax.HasValue && IsDeductionCategory(component.Category)
+                && ReviewedPeriodProfessionalTax.IsPt(component.Code, component.StatutoryType) && monthly > 0)
+                throw new InvalidOperationException("A positive configured PT rule cannot be hidden by a zero employee override or reviewed period amount.");
             if (dailyRate is null && storedAmounts is not null && (storedAmounts.TryGetValue(component.Id, out var stored) || storedAmounts.TryGetValue(component.Code, out stored))
                 && !new[] { "GROSS_EARNED", "NET_PAY", "EMPLOYER_COST" }.Contains(component.Code)
                 && ((Math.Abs(stored - monthly) > 0.009m && stored != Math.Round(monthly, 0, MidpointRounding.AwayFromZero))
@@ -1143,6 +1263,18 @@ AND NOT EXISTS (
                 monthly = pfSnapshot.Contribution;
                 effectiveComponent = effectiveComponent with { ProRata = false };
             }
+            var reviewedPtLine = reviewedProfessionalTax.HasValue && IsDeductionCategory(component.Category)
+                && ReviewedPeriodProfessionalTax.IsPt(component.Code, component.StatutoryType);
+            if (reviewedPtLine)
+            {
+                var ptComponents = structure.Lines.Select(line => components.SingleOrDefault(item => item.Id == line.ComponentId && item.Active))
+                    .Where(item => item is not null && IsDeductionCategory(item.Category) && ReviewedPeriodProfessionalTax.IsPt(item.Code, item.StatutoryType)).ToArray();
+                if (ptComponents.Length != 1 || structure.Lines.Any(line => components.Any(item => item.Id == line.ComponentId && item.Code == "PT_LWF_WC")) || monthly > 0)
+                    throw new InvalidOperationException("Positive, mixed or duplicate configured Professional Tax conflicts with the reviewed period amount.");
+                monthly = reviewedProfessionalTax!.Value;
+                effectiveComponent = effectiveComponent with { ProRata = false, CalculationType = "Fixed Amount", Formula = monthly.ToString(CultureInfo.InvariantCulture), Value = monthly.ToString(CultureInfo.InvariantCulture) };
+                dailyRate = null;
+            }
             var raw = monthly;
             monthly = Math.Max(0, decimal.Round(monthly, 2));
             values[component.Id] = monthly;
@@ -1153,9 +1285,11 @@ AND NOT EXISTS (
             values[$"{component.Id}_EARNED"] = earned;
             values[$"{component.Code}_EARNED"] = earned;
             rows.Add(new CalculatedPayrollComponent(effectiveComponent, monthly, pfSnapshot, dailyRate));
-            if (trace is not null) trace.Add(CreateSimulationTrace(effectiveComponent, formula, raw, monthly, earned, dailyRate, payableDays, pfSnapshot is not null, overrides?.ContainsKey(component.Id) == true, traceInputs!) with
+            if (trace is not null) trace.Add(CreateSimulationTrace(effectiveComponent, reviewedPtLine ? effectiveComponent.Formula : formula, raw, monthly, earned, dailyRate, payableDays, pfSnapshot is not null, overrides?.ContainsKey(component.Id) == true, traceInputs!) with
             {
+                Source = reviewedPtLine ? "Reviewed source-bound period Professional Tax amount" : pfSnapshot is not null ? "Effective-dated PF policy (overrides formula)" : overrides?.ContainsKey(component.Id) == true ? "Employee / what-if amount override" : "Component / template default",
                 // Observational trace only: retain the actual input to the earned currency-rounding stage.
+                NamedOperands = namedInputs,
                 UnroundedEarned = dailyRate is decimal tracedRate ? tracedRate * payableDays
                     : effectiveComponent.ProRata && payrollDays > 0 ? monthly * payableDays / payrollDays : raw
             });
@@ -1607,7 +1741,7 @@ VALUES (@PayRunId,@EmployeeId,@EmployeeCode,@ComponentCode,@ComponentName,@Paren
         return new(clientId,financialYear,setting,active);
     }
 
-    private async Task<TdsProjectionResult> CalculateMonthlyTdsAsync(MySqlConnection connection, MySqlTransaction transaction, PayRunSourceEmployee employee, PayRunEmployee preliminaryRow, string payPeriod, bool persistSnapshot = true, Action<object>? recordInputs = null, TdsProjectionAvailability? availability = null)
+    private async Task<TdsProjectionResult> CalculateMonthlyTdsAsync(MySqlConnection connection, MySqlTransaction transaction, PayRunSourceEmployee employee, PayRunEmployee preliminaryRow, string payPeriod, bool persistSnapshot = true, Action<object>? recordInputs = null, TdsProjectionAvailability? availability = null, string? setupJson = null)
     {
         var financialYear = FinancialYearFromPayPeriod(payPeriod);
         availability ??= await LoadTdsProjectionAvailabilityAsync(connection,transaction,employee.ClientId,payPeriod);
@@ -1650,14 +1784,23 @@ WHERE p.EmployeeId=@EmployeeId
             TdsAlreadyDeducted = tdsAlreadyDeducted
         }, connection, transaction, persistSnapshot);
         if (result is null) throw new InvalidOperationException($"No effective published tax rule exists for {financialYear}, period {payPeriod}.");
+        var remainingMonths = RemainingFinancialYearMonths(payPeriod, financialYear);
+        var amount = Math.Max(0, remainingMonths <= 0 ? result.MonthlyTds : Math.Round(result.RemainingTax / remainingMonths, 0, MidpointRounding.AwayFromZero));
+        var sourceTds = await ReadSourceTdsAsync(connection, transaction, employee, payPeriod,
+            setupJson ?? await PayrollDataTableStore.GetSetupJsonAsync(connection, transaction));
+        if (sourceTds is not null)
+        {
+            sourceTds = sourceTds with { ProjectedMonthlyTds = amount };
+            result.SnapshotJson = await RecordSourceTdsAsync(connection, transaction, preliminaryRow, result.SnapshotJson, sourceTds, persistSnapshot);
+            amount = sourceTds.Amount;
+            componentCode = sourceTds.ComponentCode;
+        }
         if(recordInputs is not null)
         {
             var taxSnapshot=StableProjectedTaxInputs(result.SnapshotJson);
             recordInputs(new {history,tdsAlreadyDeducted,annualGross,months,taxSnapshot});
         }
-        var remainingMonths = RemainingFinancialYearMonths(payPeriod, financialYear);
-        var amount = remainingMonths <= 0 ? result.MonthlyTds : Math.Round(result.RemainingTax / remainingMonths, 0, MidpointRounding.AwayFromZero);
-        return new TdsProjectionResult(Math.Max(0, amount), componentCode, true);
+        return new TdsProjectionResult(amount, componentCode, true, sourceTds);
     }
 
     private static decimal TaxableSnapshotValue(PayRunEmployee row, bool monthly)
@@ -1734,14 +1877,30 @@ GROUP BY l.ComponentCode, l.StatutoryType;", new { PayRunId = payRunId }, transa
         Check("ESI employer", ["ESIC_ER", "ESI_ER"], ["ESI Employer"]);
         Check("PT/LWF/WC", ["PT_LWF_WC", "PT", "LWF", "WC"], ["Professional Tax", "LWF Employee", "LWF Employer", "Workmen Compensation"]);
         Check("TDS", ["TDS"], ["TDS"]);
-        var taxRows = await connection.QueryAsync<(int EmployeeId, decimal Expected, decimal Actual)>(@"
-SELECT t.employee_id, t.monthly_tds, COALESCE(SUM(CASE WHEN l.StatutoryType='TDS' OR l.ComponentCode='TDS' THEN l.Amount ELSE 0 END),0)
+        var taxRows = (await connection.QueryAsync<(int EmployeeId, decimal Expected, decimal Actual, long SnapshotId)>(@"
+SELECT t.employee_id, t.monthly_tds, COALESCE(SUM(CASE WHEN l.StatutoryType='TDS' OR l.ComponentCode='TDS' THEN l.Amount ELSE 0 END),0),t.id
 FROM tax_computation_snapshots t
 JOIN (SELECT employee_id,MAX(id) id FROM tax_computation_snapshots WHERE pay_run_id=@PayRunId GROUP BY employee_id) latest ON latest.id=t.id
 JOIN payrunemployees p ON p.PayRunId=t.pay_run_id AND p.EmployeeId=t.employee_id AND p.IsSkipped=FALSE
 LEFT JOIN payrunemployeelines l ON l.PayRunEmployeeId=p.Id
-GROUP BY t.id,t.employee_id,t.monthly_tds", new { PayRunId = payRunId }, transaction);
-        foreach (var row in taxRows) rows.Add(Recon(payRunId, $"TDS projection - employee {row.EmployeeId}", row.Expected, row.Actual, new { row.EmployeeId }));
+GROUP BY t.id,t.employee_id,t.monthly_tds", new { PayRunId = payRunId }, transaction)).ToArray();
+        var withholding = taxRows.Length == 0 ? new Dictionary<long, string?>() :
+            (await connection.QueryAsync<(long Id, string? Json)>(@"SELECT id Id,CAST(JSON_EXTRACT(snapshot_json,'$.payrollWithholding') AS CHAR) Json
+FROM tax_computation_snapshots WHERE pay_run_id=@PayRunId AND id IN @Ids",
+                new { PayRunId = payRunId, Ids = taxRows.Select(row => row.SnapshotId).ToArray() }, transaction)).ToDictionary(row => row.Id, row => row.Json);
+        foreach (var row in taxRows)
+        {
+            var json = withholding.GetValueOrDefault(row.SnapshotId);
+            var source = string.IsNullOrEmpty(json) || json == "null" ? null : JsonSerializer.Deserialize<ReviewedSourceTdsEvidence>(json, ExcelPayslipRepository.JsonOptions);
+            if (source is null) rows.Add(Recon(payRunId, $"TDS projection - employee {row.EmployeeId}", row.Expected, row.Actual, new { row.EmployeeId }));
+            else
+            {
+                if (source.EmployeeId != row.EmployeeId || decimal.Round(source.Amount, 2, MidpointRounding.AwayFromZero) != row.Expected)
+                    throw new InvalidOperationException("The reviewed source withholding differs from the native tax snapshot. Review the draft before approval.");
+                rows.Add(Recon(payRunId, $"TDS reviewed withholding - employee {row.EmployeeId}", row.Expected, row.Actual,
+                    new { row.EmployeeId, source.Amount, source.ProjectedMonthlyTds, source.SourceBatchId, source.SourceRowId, source.ImportId }));
+            }
+        }
     }
 
     private static async Task EnsureReconciledAsync(MySqlConnection connection, MySqlTransaction transaction, int payRunId)
@@ -1882,14 +2041,41 @@ WHERE a.client_id = @ClientId
         Math.Min(Math.Max(1, day), DateTime.DaysInMonth(month.Year, month.Month));
 
     private static async Task<List<PayRunAttendance>> GetPayRunAttendanceAsync(MySqlConnection connection, MySqlTransaction transaction, int clientId, string payPeriod, int? employeeId = null)
+        => await GetPayRunAttendanceCoreAsync(connection,transaction,clientId,payPeriod,employeeId,null);
+
+    private static Task<List<PayRunAttendance>> GetSelectedPayRunAttendanceAsync(MySqlConnection connection,MySqlTransaction transaction,
+        int clientId,string payPeriod,IReadOnlyList<int> employeeIds)
     {
+        if(employeeIds.Count is <1 or >100 || employeeIds.Any(id=>id<=0) || employeeIds.Distinct().Count()!=employeeIds.Count)
+            throw new InvalidOperationException("Select 1–100 distinct employee attendance inputs.");
+        return GetPayRunAttendanceCoreAsync(connection,transaction,clientId,payPeriod,null,employeeIds);
+    }
+
+    private static async Task<List<PayRunAttendance>> GetPayRunAttendanceCoreAsync(MySqlConnection connection,MySqlTransaction transaction,
+        int clientId,string payPeriod,int? employeeId,IReadOnlyList<int>? selectedEmployeeIds)
+    {
+        // Only the explicit batch-proof path filters a selected roster. Null
+        // preserves the original SQL and client-level monthly/daily choice.
+        var monthlySelection=selectedEmployeeIds is null?"":" AND employee_id IN @SelectedEmployeeIds";
         var monthlyRows = (await connection.QueryAsync<PayRunAttendance>(@"SELECT employee_id AS EmployeeId, working_days AS WorkingDays, present_days AS PresentDays, payable_days AS PayableDays, source_type AS SourceType,COALESCE(remarks,'') AS Remarks, 'Monthly snapshot' AS InputSource
-FROM employee_monthly_attendance WHERE client_id=@ClientId AND attendance_month=@Month AND (@EmployeeId IS NULL OR employee_id=@EmployeeId)", new { ClientId = clientId, Month = payPeriod, EmployeeId = employeeId }, transaction)).ToList();
-        foreach(var monthly in monthlyRows)ReadPayableOnlyAttendance(monthly,clientId,payPeriod);
-        var sourceValidation=new SourcePayableValidationCache();
-        foreach (var monthly in monthlyRows) await ValidateSourcePayableOverrideAsync(connection, transaction, clientId, payPeriod, monthly,sourceValidation);
+FROM employee_monthly_attendance WHERE client_id=@ClientId AND attendance_month=@Month AND (@EmployeeId IS NULL OR employee_id=@EmployeeId)"+monthlySelection, new { ClientId = clientId, Month = payPeriod, EmployeeId = employeeId, SelectedEmployeeIds=selectedEmployeeIds }, transaction)).ToList();
+        if(selectedEmployeeIds is null)
+        {
+            foreach(var monthly in monthlyRows)ReadPayableOnlyAttendance(monthly,clientId,payPeriod);
+            var sourceValidation=new SourcePayableValidationCache();
+            foreach (var monthly in monthlyRows) await ValidateSourcePayableOverrideAsync(connection, transaction, clientId, payPeriod, monthly,sourceValidation);
+        }
+        else foreach(var selectedId in selectedEmployeeIds)
+        {
+            // Match the singleton oracle's first failure in requested-ID order,
+            // including different invalid source/provenance branches.
+            var selectedRows=monthlyRows.Where(row=>row.EmployeeId==selectedId).ToArray();
+            foreach(var monthly in selectedRows)ReadPayableOnlyAttendance(monthly,clientId,payPeriod);
+            var sourceValidation=new SourcePayableValidationCache();
+            foreach(var monthly in selectedRows)await ValidateSourcePayableOverrideAsync(connection,transaction,clientId,payPeriod,monthly,sourceValidation);
+        }
         // Preserve the regular engine's client-level monthly/daily source choice when previewing one employee.
-        var hasMonthly = monthlyRows.Count > 0 || employeeId.HasValue && await connection.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM employee_monthly_attendance WHERE client_id=@ClientId AND attendance_month=@Month)", new { ClientId = clientId, Month = payPeriod }, transaction);
+        var hasMonthly = monthlyRows.Count > 0 || (employeeId.HasValue||selectedEmployeeIds is not null) && await connection.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM employee_monthly_attendance WHERE client_id=@ClientId AND attendance_month=@Month)", new { ClientId = clientId, Month = payPeriod }, transaction);
         var periodStart = PayPeriodStart(payPeriod);
         var periodEnd = periodStart.AddMonths(1).AddDays(-1);
         var woVersions = (await AttendanceIntegrationRepository.ReadAsync(connection, transaction, clientId)).WeeklyOffRuleVersions;
@@ -1904,8 +2090,8 @@ SELECT employee_id AS EmployeeId,
        COALESCE(SUM(CASE WHEN status='WO' THEN 1 ELSE 0 END),0) AS WeeklyOffPayableUnits,
        COALESCE(SUM(CASE WHEN status='H' THEN 1 ELSE 0 END),0) AS HolidayPayableUnits
 FROM employee_daily_attendance
-WHERE client_id=@ClientId AND DATE_FORMAT(attendance_date, '%Y-%m')=@Month AND (@EmployeeId IS NULL OR employee_id=@EmployeeId)
-GROUP BY employee_id;", new { ClientId = clientId, Month = payPeriod, EmployeeId = employeeId }, transaction)).ToList();
+WHERE client_id=@ClientId AND DATE_FORMAT(attendance_date, '%Y-%m')=@Month AND (@EmployeeId IS NULL OR employee_id=@EmployeeId)"+monthlySelection+@"
+GROUP BY employee_id;", new { ClientId = clientId, Month = payPeriod, EmployeeId = employeeId, SelectedEmployeeIds=selectedEmployeeIds }, transaction)).ToList();
         if (!applicable) return legacyDaily;
 
         var cycles = (await connection.QueryAsync<EmployeeCycleRow>(@"
@@ -1915,7 +2101,7 @@ FROM employees e
 LEFT JOIN (SELECT membership.employee_id,MIN(g.id) AS group_id FROM attendance_group_employees membership
 JOIN attendance_groups g ON g.id=membership.attendance_group_id AND g.client_id=@ClientId AND g.is_active=TRUE GROUP BY membership.employee_id) current_group ON current_group.employee_id=e.Id
 LEFT JOIN attendance_groups g ON g.id=current_group.group_id
-WHERE e.ClientId=@ClientId AND " + EmployeeEmploymentRules.EligibleInMonth("e", "@PayPeriod") + " AND (@EmployeeId IS NULL OR e.Id=@EmployeeId)", new { ClientId = clientId, PayPeriod = payPeriod, EmployeeId = employeeId }, transaction)).ToList();
+WHERE e.ClientId=@ClientId AND " + EmployeeEmploymentRules.EligibleInMonth("e", "@PayPeriod") + " AND (@EmployeeId IS NULL OR e.Id=@EmployeeId)"+(selectedEmployeeIds is null?"":" AND e.Id IN @SelectedEmployeeIds"), new { ClientId = clientId, PayPeriod = payPeriod, EmployeeId = employeeId, SelectedEmployeeIds=selectedEmployeeIds }, transaction)).ToList();
         if (cycles.Count == 0) return monthlyRows.Count > 0 ? monthlyRows : legacyDaily;
         var ranges = cycles.ToDictionary(c => c.EmployeeId, c => CycleRangeFor(payPeriod, (int)c.StartDay, (int)c.EndDay));
         var resolved = await WeeklyOffAttendanceService.ResolveAsync(connection, transaction, clientId, cycles.Select(c => c.EmployeeId).ToArray(), ranges.Values.Min(r => r.Start), ranges.Values.Max(r => r.End));
@@ -2126,14 +2312,22 @@ LIMIT 1;", new { request.ClientId, GroupIds = groupIds }, transaction) ?? string
     private sealed record StatutoryLineTotal(string ComponentCode, string StatutoryType, decimal Amount);
     private sealed record ExistingPayRunRow(int Id, string Status);
     private sealed record TaxProjectionSetting(bool Enabled, bool ProjectMonthlyTds, string TaxDeductionComponentCode);
-    private sealed record TdsProjectionResult(decimal Amount, string ComponentCode, bool Calculated = false);
+    private sealed record TdsProjectionResult(decimal Amount, string ComponentCode, bool Calculated = false, ReviewedSourceTdsEvidence? ReviewedSource = null);
     private sealed record EmployeeSalaryTableRow(int EmployeeId, string ComponentId, decimal Amount);
-    private sealed record EmployeeBasicPayInfotypeRow(int EmployeeId, string SalaryStructureId, decimal AnnualCtc, string SalaryJson);
+    private sealed record EmployeeBasicPayInfotypeRow(long Id,int EmployeeId, string SalaryStructureId, decimal AnnualCtc, string SalaryJson);
     private sealed record EmployeePersonalPayrollRow(int EmployeeId, string State, string PanNumber, string UanNumber, string EsicNumber, decimal EsicEmployee, decimal PtLwfWorkmenComp, decimal Tds, decimal Recovery);
     private sealed record EmployeePaymentPayrollRow(int EmployeeId, string BankAccountNo, string IfscCode);
     private sealed class PayRunSourceEmployee : Employee
     {
+        internal PayRunSourceEmployee HistoricalContextClone()
+        {
+            var clone=(PayRunSourceEmployee)MemberwiseClone();
+            clone.SalaryComponents=new Dictionary<string,decimal>(SalaryComponents,StringComparer.OrdinalIgnoreCase);
+            if(NamedInputs is{} named)clone.NamedInputs=ReportedPeriodCalculationContext.Clone(named);
+            return clone;
+        }
         [JsonIgnore] public SourcePayableAttendanceEvidence? PayableOnlyAttendance { get; set; }
+        [JsonIgnore] internal ExcelPayrollSetupRepository.HistoricalPayableOnlySeedPlan? ReportedPendingSeed { get; set; }
         [JsonIgnore] public decimal? SimulationAnnualCtc { get; set; }
         [JsonIgnore] public PfPolicyPeriod? PfPolicyPeriod { get; set; }
         [JsonIgnore] public PayrollAttendanceSnapshot? AttendancePolicySnapshot { get; set; }
@@ -2152,6 +2346,10 @@ LIMIT 1;", new { request.ClientId, GroupIds = groupIds }, transaction) ?? string
         public string EsicNumber { get; set; } = string.Empty;
         public string BankAccountNo { get; set; } = string.Empty;
         public string IfscCode { get; set; } = string.Empty;
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public ReviewedProfessionalTaxControl? ReviewedProfessionalTax { get; set; }
+        [JsonIgnore] public NamedFormulaInputContext? NamedInputs { get; set; }
+        [JsonIgnore] public long EffectiveSalaryHistoryId { get; set; }
     }
 
     internal static bool HasPfPolicySnapshot(string? detailsJson)
@@ -2223,7 +2421,7 @@ WHERE e.ClientId=@ClientId AND e.Id IN @EmployeeIds", new { ClientId = clientId,
         }
     }
 
-    private static async Task LoadEmployeeTablesAsync(MySqlConnection connection, MySqlTransaction transaction, List<PayRunSourceEmployee> employees, string payPeriod)
+    private async Task LoadEmployeeTablesAsync(MySqlConnection connection, MySqlTransaction transaction, List<PayRunSourceEmployee> employees, string payPeriod, bool loadReviewedProfessionalTax = true)
     {
         if (employees.Count == 0) return;
         var employeeIds = employees.Select(employee => employee.Id).ToArray();
@@ -2231,7 +2429,7 @@ WHERE e.ClientId=@ClientId AND e.Id IN @EmployeeIds", new { ClientId = clientId,
         var periodStart = PayPeriodStart(payPeriod);
         var periodEnd = periodStart.AddMonths(1).AddDays(-1);
         var basicPayRows = (await connection.QueryAsync<EmployeeBasicPayInfotypeRow>(@"
-SELECT EmployeeId, SalaryStructureId, AnnualCtc, CAST(SalaryJson AS CHAR) SalaryJson
+SELECT Id, EmployeeId, SalaryStructureId, AnnualCtc, CAST(SalaryJson AS CHAR) SalaryJson
 FROM employee_it0008_basic_pay
 WHERE EmployeeId IN @EmployeeIds
   AND EffectiveFrom <= @PeriodEnd
@@ -2275,9 +2473,11 @@ LEFT JOIN (
 ) it9 ON it9.EmployeeId=base.EmployeeId", new { EmployeeIds = employeeIds }, transaction)).ToDictionary(row => row.EmployeeId);
         foreach (var employee in employees)
         {
+            employee.EffectiveSalaryHistoryId=0;
             employee.SalaryComponents = salaryRows.GetValueOrDefault(employee.Id) ?? [];
             if (basicPayRows.TryGetValue(employee.Id, out var basicPay))
             {
+                employee.EffectiveSalaryHistoryId=basicPay.Id;
                 employee.SalaryStructureId = basicPay.SalaryStructureId;
                 employee.AnnualCtc = basicPay.AnnualCtc;
                 employee.SalaryJson = string.IsNullOrWhiteSpace(basicPay.SalaryJson) ? "{}" : basicPay.SalaryJson;
@@ -2302,6 +2502,9 @@ LEFT JOIN (
             employee.IfscCode = payment.IfscCode;
         }
         await LoadLocationPartPeriodsAsync(connection, transaction, employees, payPeriod);
+        await LoadHistoricalNamedInputsAsync(connection,transaction,employees,payPeriod);
+        await LoadReportedPeriodInputsAsync(connection,transaction,employees,payPeriod);
+        if (loadReviewedProfessionalTax) await LoadReviewedProfessionalTaxAsync(connection, transaction, employees, payPeriod);
     }
 
     private static DateTime PayPeriodStart(string payPeriod) =>

@@ -13,7 +13,8 @@ public sealed partial class ExcelPayrollSetupRepository
     internal static decimal SourceCurrencyDisplay(decimal value) => decimal.Round(SourceDisplayPrecision(value), 2, MidpointRounding.AwayFromZero);
 
     internal static ExcelPayrollTransferAmountReview ClassifyTransferAmounts(Plan plan, PlannedRow row,
-        ExcelPayrollSetupRequest request, string sourceHash, IReadOnlyList<ExcelPayrollTransferFormula> formulas)
+        ExcelPayrollSetupRequest request, string sourceHash, IReadOnlyList<ExcelPayrollTransferFormula> formulas,
+        NamedFormulaInputContext? namedInputs = null)
     {
         var source = plan.Batch.Rows.Single(r => r.Id == row.RowId);
         var preview = row.Preview;
@@ -45,7 +46,7 @@ public sealed partial class ExcelPayrollSetupRepository
             try {
                 var cells=plan.Source.Rows.Single(r=>r.SourceRow==row.SourceRow);
                 var fresh=CalculateRow(plan.Batch.ClientId,request,row.Components,cells,source,
-                    plan.Source.Columns.Where(c=>c.BlankAsZero).Select(c=>c.ColumnIndex).ToHashSet(),plan.Source).Preview;
+                    plan.Source.Columns.Where(c=>c.BlankAsZero).Select(c=>c.ColumnIndex).ToHashSet(),plan.Source,namedInputs:namedInputs).Preview;
                 sourceArithmetic=fresh.Gross==preview.Gross&&fresh.Deductions==preview.Deductions&&fresh.Benefits==preview.Benefits
                     &&fresh.Net==preview.Net&&fresh.Lines.Count==preview.Lines.Count
                     &&fresh.Lines.All(l=>preview.Lines.SingleOrDefault(p=>p.Code==l.Code) is {} actual

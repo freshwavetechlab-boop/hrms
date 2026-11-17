@@ -842,6 +842,8 @@ FROM paysliptemplates
 WHERE Active=TRUE AND (ClientId=@ClientId OR ClientId=0)
 ORDER BY CASE WHEN ClientId=@ClientId THEN 0 ELSE 1 END, Id DESC
 LIMIT 1", new { row.ClientId }) ?? new EssPayslipTemplate();
+        var referenceSelection = await GuardReferenceInformationTemplateAsync(db, template, row.ClientId, payRunId);
+        template = referenceSelection.Manifested ? referenceSelection.Template : await ResolvePayslipPeriodTemplateAsync(db, template, row.ClientId, row.PayPeriod);
         var ytd = template.ShowYtd ? await db.QueryFirstOrDefaultAsync<EssPayslipYtd>(@"SELECT COALESCE(SUM(p.GrossPay+p.OneTimeEarnings),0) Gross,COALESCE(SUM(p.StatutoryDeductions+p.OneTimeDeductions),0) Deductions,COALESCE(SUM(p.NetPay),0) NetPay
 FROM payrunemployees p JOIN payruns r ON r.Id=p.PayRunId
 WHERE p.EmployeeId=@EmployeeId AND p.ClientId=@ClientId AND p.IsSkipped=FALSE AND r.PayPeriod<=@PayPeriod AND LEFT(r.PayPeriod,4)=LEFT(@PayPeriod,4) AND r.Status IN ('Approved','Partially Paid','Paid')", new { row.EmployeeId, row.ClientId, row.PayPeriod }) ?? new EssPayslipYtd() : new EssPayslipYtd();
@@ -849,7 +851,8 @@ WHERE p.EmployeeId=@EmployeeId AND p.ClientId=@ClientId AND p.IsSkipped=FALSE AN
         var attendance = new PayRun { ClientId = row.ClientId, PayPeriod = row.PayPeriod, RunType = row.RunType, Employees = [new PayRunEmployee { EmployeeId = row.EmployeeId }] };
         await PayRunRepository.ApplyLeaveBreakdownAsync(db, attendance);
         var html = BuildPayslipHtml(organization, template, row, ytd, PayslipPresentation.LeaveDays(attendance.Employees[0].LeaveBreakdown));
-        return new EssPayslipDocument { PayRunId = row.PayRunId, PayPeriod = row.PayPeriod, EmployeeCode = row.EmployeeCode, FileName = $"payslip-{SafeFile(row.EmployeeCode)}-{SafeFile(row.PayPeriod)}.html", Html = html };
+        return new EssPayslipDocument { PayRunId = row.PayRunId, PayPeriod = row.PayPeriod, EmployeeCode = row.EmployeeCode, FileName = $"payslip-{SafeFile(row.EmployeeCode)}-{SafeFile(row.PayPeriod)}.html", Html = html,
+            PdfPreferred = template.ClientId == row.ClientId && template.Theme == NativePayslipDesignService.Theme };
     }
     public async Task<EssTaxPortal> GetTaxPortalAsync(int employeeId, int? clientId)
     {
@@ -3008,8 +3011,14 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @Table AND COLUMN_NAME = @Colum
         var lines = ParsePayslipLines(row.DetailsJson);
         var earnings = lines.Where(line => line.Amount > 0 && (line.Category.Equals("Earning", StringComparison.OrdinalIgnoreCase) || line.Category.Equals("Reimbursement", StringComparison.OrdinalIgnoreCase))).ToList();
         var deductions = lines.Where(line => line.Amount > 0 && line.Category.Contains("Deduction", StringComparison.OrdinalIgnoreCase)).ToList();
-        if (row.OneTimeEarnings > 0 && !earnings.Any(line => line.Id == "ONE_TIME_EARNINGS")) earnings.Add(new("ONE_TIME_EARNINGS", "One Time Earnings", "Earning", row.OneTimeEarnings, row.OneTimeEarnings));
-        if (row.OneTimeDeductions > 0 && !deductions.Any(line => line.Id == "ONE_TIME_DEDUCTIONS")) deductions.Add(new("ONE_TIME_DEDUCTIONS", "One Time Deductions", "Deduction", row.OneTimeDeductions, row.OneTimeDeductions));
+        // Approved period adjustments are already itemized in DetailsJson. Add only
+        // an unrepresented aggregate/manual remainder, never the adjustment twice.
+        // Bound the fallback by the saved period aggregate so a missing regular line
+        // cannot be disguised as another one-time payment.
+        var unrepresentedEarnings = Math.Min(row.OneTimeEarnings, Math.Max(0, row.GrossPay + row.OneTimeEarnings - earnings.Sum(line => line.Amount)));
+        var unrepresentedDeductions = Math.Min(row.OneTimeDeductions, Math.Max(0, row.StatutoryDeductions + row.OneTimeDeductions - deductions.Sum(line => line.Amount)));
+        if (unrepresentedEarnings > 0) earnings.Add(new("ONE_TIME_EARNINGS", "One Time Earnings", "Earning", unrepresentedEarnings, unrepresentedEarnings));
+        if (unrepresentedDeductions > 0) deductions.Add(new("ONE_TIME_DEDUCTIONS", "One Time Deductions", "Deduction", unrepresentedDeductions, unrepresentedDeductions));
         var companyName = CleanText(org.LegalName, org.Name, row.ClientName, "Organization");
         var companyAddress = string.Join(", ", new[] { org.AddressLine1, org.AddressLine2, org.City, org.State, org.PostalCode }.Where(value => !string.IsNullOrWhiteSpace(value)));
         var logo = template.ShowLogo && !string.IsNullOrWhiteSpace(org.LogoDataUrl) ? $@"<img src=""{Attr(org.LogoDataUrl)}"" alt=""Logo"" />" : "<b>LOGO</b>";

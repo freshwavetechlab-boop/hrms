@@ -130,10 +130,11 @@ LEFT JOIN recruitment_templates t ON t.Id=r.TemplateId WHERE r.ClientId=@ClientI
                 }
                 else result.ReusedProfiles++;
                 await using var tx = await db.BeginTransactionAsync();
+                await db.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@Id AND IsActive=TRUE FOR UPDATE", new { Id = request.ClientId }, tx);
                 var old = await db.QuerySingleOrDefaultAsync<RosterStored>("SELECT Id,WorkLocationId,CAST(ValuesJson AS CHAR) ValuesJson FROM recruitment_document_roster WHERE ClientId=@ClientId AND CandidateId=@CandidateId AND TemplateId=@TemplateId AND SourceGroup=@SourceGroup FOR UPDATE", new { request.ClientId, CandidateId = candidateId, request.TemplateId, SourceGroup = request.SourceGroup.Trim() }, tx);
                 if ((old is null ? "" : RowRevision(old.ValuesJson, old.WorkLocationId)) != row.ExistingRevision)
                     throw new InvalidOperationException("An employee list row changed after preview. Preview the current list before saving.");
-                if (row.WorkLocationId.HasValue) await ActiveLocationAsync(db, request.ClientId, row.WorkLocationId.Value, tx);
+                var createdLocation = await SaveImportLocationAsync(db, tx, request.ClientId, user, row);
                 var values = MergeValues(old?.ValuesJson, row.Values);
                 var serialized = SerializeValues(values);
                 var id = await db.ExecuteScalarAsync<long>("""
@@ -145,7 +146,10 @@ SELECT LAST_INSERT_ID();
 """, new { request.ClientId, CandidateId = candidateId, request.TemplateId, row.WorkLocationId, SourceGroup = request.SourceGroup.Trim(), FileName = preview.FileName, preview.FileHash, SheetName = preview.SheetName, row.SourceRow, TemplateHash = Hash(template.BodyTemplate), ValuesJson = serialized, SourceValuesJson = SerializeValues(row.SourceValues), UserId = user.Id }, tx);
                 if (old is null || SerializeValues(ReadValues(old.ValuesJson)) != serialized)
                     await db.ExecuteAsync("INSERT INTO recruitment_document_roster_audit(RosterId,ClientId,Action,OldValuesJson,NewValuesJson,ActorUserId) VALUES(@Id,@ClientId,@Action,@Old,@New,@UserId)", new { Id = id, request.ClientId, Action = old is null ? "Import" : "Update from source", Old = old?.ValuesJson, New = serialized, UserId = user.Id }, tx);
+                if (createdLocation)
+                    await db.ExecuteAsync("INSERT INTO recruitment_document_roster_audit(RosterId,ClientId,Action,NewValuesJson,ActorUserId) VALUES(@Id,@ClientId,'Work location created from import',@Receipt,@UserId)", new { Id = id, request.ClientId, Receipt = JsonSerializer.Serialize(new { row.WorkLocationId, row.WorkLocation, row.SourceRow, preview.FileName, Source = "Reviewed employee list import" }, Json), UserId = user.Id }, tx);
                 await tx.CommitAsync(); result.SavedRows++;
+                if (createdLocation) result.CreatedWorkLocations++;
             }
             return result;
         }

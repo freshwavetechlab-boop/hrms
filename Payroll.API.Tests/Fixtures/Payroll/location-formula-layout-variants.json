@@ -1,0 +1,65 @@
+{
+  "description": "Anonymized recurring payroll expressions with grouping and omitted ROUND-zero syntax differences. No employee or client data.",
+  "pairs": [
+    {
+      "case": "synthetic-layout-1",
+      "configured": "ROUND((ROUND((+((52000)+((52000)*5%))+(+((52000)+((52000)*5%))*5%))*45%,0))*(PAYABLE_DAYS)/(PAYROLL_DAYS),0)",
+      "captured": "ROUND((ROUND((+(52000+(52000*5%))+(+(52000+(52000*5%))*5%))*45%))*PAYABLE_DAYS/PAYROLL_DAYS)"
+    },
+    {
+      "case": "synthetic-layout-2",
+      "configured": "ROUND((ROUND((ROUND((+((52000)+((52000)*5%))+(+((52000)+((52000)*5%))*5%))*45%,0))*50%,0))*(PAYABLE_DAYS)/(PAYROLL_DAYS),0)",
+      "captured": "ROUND((ROUND((ROUND((+(52000+(52000*5%))+(+(52000+(52000*5%))*5%))*45%))*50%))*PAYABLE_DAYS/PAYROLL_DAYS)"
+    },
+    {
+      "case": "synthetic-layout-3",
+      "configured": "ROUND((1200)*(PAYABLE_DAYS)/(PAYROLL_DAYS),0)",
+      "captured": "ROUND(1200*PAYABLE_DAYS/PAYROLL_DAYS)"
+    },
+    {
+      "case": "synthetic-layout-4",
+      "configured": "ROUND((1500)*(PAYABLE_DAYS)/(PAYROLL_DAYS),0)",
+      "captured": "ROUND(1500*PAYABLE_DAYS/PAYROLL_DAYS)"
+    },
+    {
+      "case": "synthetic-layout-5",
+      "configured": "ROUND((12345.67)*(PAYABLE_DAYS)/(PAYROLL_DAYS),0)",
+      "captured": "ROUND(12345.67*PAYABLE_DAYS/PAYROLL_DAYS)"
+    },
+    {
+      "case": "synthetic-layout-6",
+      "configured": "+ROUND((0)/(PAYROLL_DAYS)*(PAYABLE_DAYS),0)",
+      "captured": "+ROUND(0/PAYROLL_DAYS*PAYABLE_DAYS)"
+    },
+    {
+      "case": "synthetic-layout-7",
+      "configured": "+ROUND(((48000)*(20)%)/(PAYROLL_DAYS)*(PAYABLE_DAYS),0)",
+      "captured": "+ROUND((48000*20%)/PAYROLL_DAYS*PAYABLE_DAYS)"
+    },
+    {
+      "case": "synthetic-layout-8",
+      "configured": "(900)/(PAYROLL_DAYS)*(PAYABLE_DAYS)",
+      "captured": "900/PAYROLL_DAYS*PAYABLE_DAYS"
+    },
+    {
+      "case": "synthetic-layout-9",
+      "configured": "ROUND((ROUND((ROUND((+((52000)+((52000)*5%))+(+((52000)+((52000)*5%))*5%))*45%,0))*(PAYABLE_DAYS)/(PAYROLL_DAYS),0))*12%,0)",
+      "captured": "ROUND((ROUND((ROUND((+(52000+(52000*5%))+(+(52000+(52000*5%))*5%))*45%))*PAYABLE_DAYS/PAYROLL_DAYS))*12%)"
+    },
+    {
+      "case": "synthetic-layout-10",
+      "configured": "ROUND((ROUND((ROUND((ROUND((+((52000)+((52000)*5%))+(+((52000)+((52000)*5%))*5%))*45%,0))*(PAYABLE_DAYS)/(PAYROLL_DAYS),0))*12%,0))*0.5/12,0)",
+      "captured": "ROUND((ROUND((ROUND((ROUND((+(52000+(52000*5%))+(+(52000+(52000*5%))*5%))*45%))*PAYABLE_DAYS/PAYROLL_DAYS))*12%))*0.5/12)"
+    },
+    {
+      "case": "synthetic-layout-11",
+      "configured": "ROUND((ROUND((ROUND((ROUND((+((52000)+((52000)*5%))+(+((52000)+((52000)*5%))*5%))*45%,0))*(PAYABLE_DAYS)/(PAYROLL_DAYS),0))*12%,0))*0.5/12,0)",
+      "captured": "ROUND((ROUND((ROUND((ROUND((+(52000+(52000*5%))+(+(52000+(52000*5%))*5%))*45%))*PAYABLE_DAYS/PAYROLL_DAYS))*12%))*0.5/12)"
+    },
+    {
+      "case": "synthetic-layout-12",
+      "configured": "ROUND((ROUND((ROUND((+((52000)+((52000)*5%))+(+((52000)+((52000)*5%))*5%))*45%,0))*(PAYABLE_DAYS)/(PAYROLL_DAYS),0))*12%,0)",
+      "captured": "ROUND((ROUND((ROUND((+(52000+(52000*5%))+(+(52000+(52000*5%))*5%))*45%))*PAYABLE_DAYS/PAYROLL_DAYS))*12%)"
+    }
+  ]
+}
