@@ -4,7 +4,7 @@ import { getSelectedPayRunProcessingPreview, processSelectedPayRun, selectedAdju
 import type { PayRun } from '../types/payroll'
 import DataTable from './DataTable'
 
-type Props = { run: PayRun; permitted: boolean; onChanged: () => Promise<void> }
+type Props = { run: PayRun; permitted: boolean; onChanged: () => Promise<void>; label?: string }
 
 export default function SelectedPayRunProcessing(props: Props) {
   const { run } = props
@@ -12,7 +12,7 @@ export default function SelectedPayRunProcessing(props: Props) {
   return <SelectedRun key={`${run.id}:${run.clientId}:${run.payPeriod}:${run.status}`} {...props} />
 }
 
-function SelectedRun({ run, permitted, onChanged }: Props) {
+function SelectedRun({ run, permitted, onChanged, label = 'Review selected draft processing' }: Props) {
   const [open, setOpen] = useState(false)
   const [preview, setPreview] = useState<SelectedPayRunProcessingPreview | null>(null)
   const [confirmed, setConfirmed] = useState(false)
@@ -54,7 +54,7 @@ function SelectedRun({ run, permitted, onChanged }: Props) {
   }
   if (!permitted || run.runType !== 'Regular') return null
   return <>
-    <Button onClick={() => { setOpen(true); void refresh() }}>Review selected draft processing</Button>
+    <Button onClick={() => { setOpen(true); void refresh() }}>{label}</Button>
     <Drawer title={<div>Process selected payroll draft<div style={{ fontSize: 12, fontWeight: 400, marginTop: 4, overflowWrap: 'anywhere' }}>{run.clientName || `Client ${run.clientId}`} · {run.payPeriod} · Run {run.id} · {run.runCode}</div></div>} open={open} width="min(640px, 100vw)" onClose={() => { if (!pending.current) { setOpen(false); setPreview(null); setConfirmed(false); setMessage('') } }}
       closable={!busy} maskClosable={!busy} keyboard={!busy}
       footer={<div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>

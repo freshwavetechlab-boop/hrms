@@ -34,6 +34,8 @@ import { getAttendanceGroups } from '../services/leaveAttendanceService'
 import { getClientBillingAdvanced, getClientBillingConfigurations, getClientBillingImportJob, getClientBillingModule, getClientImportJob, getDropdownImportJob, getDropdowns, getOrganization, getSalaryComponentImportJob, getSalaryTemplateImportJob, getSetup, getWorkLocationImportJob, getWorkLocations, saveClient as persistClient, saveClientBillingAdvancedLine, saveClientBillingConfiguration, saveClientBillingModule, saveDropdown, saveOrganization, saveSetup, saveWorkLocation, startClientBillingImport, startClientImport, startDropdownImport, startSalaryComponentImport, startSalaryTemplateImport, startWorkLocationImport, type BulkImportStatus } from '../services/settingsService'
 import type { AttendanceGroup, Client, ClientBillingConfiguration, ClientBillingCostRuleHeader, ClientBillingCostRuleLine, ClientBillingRateCardType, ClientBillingRateType, Component, Drop, Employee, Org, ProfessionalTaxSlab, Setup, Structure, WorkLocation } from '../types/payroll'
 import { money } from '../utils/salary'
+import { mergeSalaryTemplateDraftComponents } from '../utils/salaryTemplateDraftComponents'
+import { isSelectedClientUser } from '../utils/clientAccess'
 import { parseImportPreviewFile, parseImportPreviewSheets, validateImportPreview, type ImportPreviewData, type ImportPreviewIssue, type ImportPreviewRules } from '../utils/importPreview'
 import { downloadXlsx } from '../utils/xlsx'
 import { previewToXlsxFile } from '../utils/previewFile'
@@ -758,7 +760,8 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     notify(response.ok ? billingAdvancedLine.id ? 'Advanced rule line updated.' : 'Advanced rule line saved.' : response.error || 'Unable to save advanced rule line.', response.ok ? 'success' : 'error')
     if (response.ok) { setBillingAdvancedLineDrawerOpen(false); setBillingAdvancedLine(billingAdvancedLine0); const setup = await getClientBillingAdvanced(); setBillingAdvancedHeaders(setup.headers); setBillingAdvancedLines(setup.lines) }
   }
-  const saveStructure = async () => {
+  const saveStructure = async (draftComponents: Component[] = []) => {
+    if (draftComponents.length && (!session?.user.permissions.includes('settings.manage') || isSelectedClientUser(session.originalUser))) { notify('An unrestricted Settings administrator must create the new shared salary components. Existing components can still be reused.', 'error'); return false }
     if (!structure.name.trim()) return notify('Template name is required.', 'error')
     const templateName = structure.name.trim()
     const selectedClientIds = refIds(structure.clientId)
@@ -770,14 +773,18 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     })
     const replacementIds = new Set([structure.id, ...rows.map(item => item.id)].filter(Boolean))
     const replacementKeys = new Set(rows.map(templateKey))
-    const nextSetup = { ...setup, salaryStructures: [...setup.salaryStructures.filter(item => !replacementIds.has(item.id) && !replacementKeys.has(templateKey(item))), ...rows] }
+    let nextComponents: Component[]
+    try { nextComponents = mergeSalaryTemplateDraftComponents(setup.salaryComponents, draftComponents) }
+    catch (error) { notify(error instanceof Error ? error.message : 'Review the extracted component masters.', 'error'); return false }
+    const nextSetup = { ...setup, salaryComponents: nextComponents, salaryStructures: [...setup.salaryStructures.filter(item => !replacementIds.has(item.id) && !replacementKeys.has(templateKey(item))), ...rows] }
     setTemplateSaving(true)
     const response = await saveSetup(nextSetup, { toast: false })
     setTemplateSaving(false)
-    if (!response.ok) return notify(response.error || 'Unable to save salary template.', 'error')
+    if (!response.ok) { notify(response.error || 'Unable to save salary template.', 'error'); return false }
     setSetup(nextSetup)
     setStructure(clientScopedAdmin ? { ...structure0, clientId: String(session?.user.clientId || '') } : structure0)
     notify(rows.length > 1 ? `Salary template saved for ${rows.length} clients.` : rows[0]?.id === structure.id ? 'Salary template updated.' : 'Salary template saved.')
+    return true
   }
   const savePayslip = async () => {
     if (!payslipReady) return notify('Wait for saved payslip settings to load before saving.', 'error')
@@ -907,7 +914,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
 
 
   const pfPolicyTab = tab === 'Statutory Setup' && statutoryTab === 'PF Policy Versions'
-  return <form className={pfPolicyTab ? 'pf-policy-settings-page' : undefined} onSubmit={event => { if (pfPolicyTab || tab === 'Payslip Templates' && payslip.theme === excelPayslipTheme) event.preventDefault(); else void saveAll(event) }}>
+  return <form className={pfPolicyTab ? 'pf-policy-settings-page' : undefined} onSubmit={event => { if (pfPolicyTab || tab === 'Salary Templates' || tab === 'Payslip Templates' && payslip.theme === excelPayslipTheme) event.preventDefault(); else void saveAll(event) }}>
     {tab === 'Organization' && <AntCard size="small" className="settings-panel organization-settings-page" aria-label="Organization configuration"><PageTabs items={organizationTabs} value={organizationTab} onChange={setOrganizationTab} label="Organization sections" />{renderOrganizationBody()}</AntCard>}
     {tab === 'Clients' && <>
       <AntCard size="small" className="settings-panel settings-table-panel" aria-label="Client master">
@@ -962,7 +969,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     {tab === 'Scheduled Jobs' && <ScheduledJobsManager />}
     {tab === 'Attachments' && <AttachmentSettings />}
     {tab === 'Salary Components' && <Card t="Salary components"><PageTabs items={componentTabs} value={componentTab} onChange={item => { setComponentTab(item); setComponent(normalizeComponentForUi({ ...component0, category: item })); setComponentDrawerOpen(false) }} label="Salary component categories" getLabel={item => `${item}s`} /><div className="component-table-head"><div><b>{componentTab}s</b><span>Maintain salary component formulas, flags, and payroll order.</span></div><Space className="settings-master-actions" size={8} wrap><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={downloadSalaryComponentTemplate}>Template</Button><label className={`settings-upload-action ${!componentTemplateDownloaded ? 'disabled' : ''}`} title={componentTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!componentTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadSalaryComponents(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button type="primary" icon={<PlusOutlined />} disabled={componentSaving} onClick={openNewComponent}>Add {componentTab}</Button></Space></div><DataTable rows={componentRows} actions={row => <span className="row-actions"><button type="button" onClick={() => editComponent(row)}>Edit</button><button type="button" className="danger" disabled={componentSaving} onClick={() => void deleteComponent(row)}>Delete</button></span>} emptyText={`No ${componentTab.toLowerCase()} components configured yet.`} exportFileName={`salary-${componentTab.toLowerCase()}-components`} columns={[{ key: 'code', label: 'Code' }, { key: 'name', label: 'Name' }, { key: 'componentType', label: 'Type' }, { key: 'componentRole', label: 'Role' }, { key: 'statutoryType', label: 'Statutory', render: item => item.statutoryType && item.statutoryType !== 'None' ? item.statutoryType : '-' }, { key: 'calculationType', label: 'Calculation' }, { key: 'payType', label: 'Pay Type' }, { key: 'priority', label: 'Priority' }, { key: 'locked', label: 'Lock', render: item => componentUsed(item.id, setup) ? 'Locked' : 'Open' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} /></Card>}
-    {tab === 'Salary Templates' && <SalaryTemplateDesigner fixedClientId={clientScopedAdmin ? Number(session?.user.clientId || 0) : undefined} clients={clients} components={setup.salaryComponents} structure={structure} setStructure={setStructure} templates={setup.salaryStructures.filter(item => !item.clientId || activeClientIds.has(refId(item.clientId)))} saveTemplate={saveStructure} saving={templateSaving} templateDownloaded={salaryTemplateDownloaded} onDownloadTemplate={downloadSalaryTemplateTemplate} onUploadTemplate={uploadSalaryTemplates} />}
+    {tab === 'Salary Templates' && <SalaryTemplateDesigner fixedClientId={clientScopedAdmin ? Number(session?.user.clientId || 0) : undefined} clients={clients} employees={employees} locations={locations} canCreateComponentMasters={!!session?.user.permissions.includes('settings.manage') && !isSelectedClientUser(session.originalUser)} components={setup.salaryComponents} structure={structure} setStructure={setStructure} templates={setup.salaryStructures.filter(item => !item.clientId || activeClientIds.has(refId(item.clientId)))} saveTemplate={saveStructure} saving={templateSaving} templateDownloaded={salaryTemplateDownloaded} onDownloadTemplate={downloadSalaryTemplateTemplate} onUploadTemplate={uploadSalaryTemplates} />}
     {tab === 'Payslip Templates' && <Card t="Payslip templates">
       <section className="payslip-template-settings-form">
         <div className="grid">

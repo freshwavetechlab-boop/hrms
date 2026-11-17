@@ -1,5 +1,17 @@
 # Excel Payslips
 
+## Extracting a salary-template draft from an existing workbook
+
+Salary Templates → Tools → Extract from Excel reuses the Excel Payslips workbook/header classifier and captured dependency review. Source columns, active formulas and cached samples remain distinct. Monthly Basic → Basic Pay aliases become one monthly/earned pair only with an actual source dependency; the monthly basis is not another paid component. Per-employee inputs reuse only uniquely matched blank Fixed Amount components, or propose a separate blank input family, protecting shared zero/formula defaults. Sample amounts are temporary native-simulation inputs, never recurring defaults for other employees. Different source formula patterns and unresolved dependencies require review. Saving a reviewed draft does not import employees, assign salary, record attendance or create a payslip batch. Mapping knowledge v71 retains this anonymized boundary; coverage includes extraction analysis, blank-default safety and structural RAG retrieval.
+
+Formatting-only columns remain in the complete source capture with their original coordinates, but do not appear as active UI columns or consume the extraction request's selected-binding limit. Only selected roles are sent as bindings; excluded source columns remain unbound. This avoids rejecting ordinary small salary tables merely because Excel's formatted used range extends far to the right, without hiding referenced blank/error cells or changing source values.
+
+## Salary Template conditional preview grammar
+
+The browser salary-template evaluator uses the native payroll numeric grammar for comparisons, lazy `IF`/`IFERROR`, `AND`/`OR`, `ABS`, `SUM`, `MIN`/`MAX` and one/two-argument rounding. It validates the whole bounded AST before evaluation; unselected `IF` branches are not resolved, and `IFERROR` catches arithmetic errors without hiding unknown inputs, unsupported syntax or limits. Negative `ROUNDUP` rounds away from zero and `ROUNDDOWN` toward zero, matching the native evaluator. The original source and stored formulas remain unchanged.
+
+Syntax-only dependency inspection identifies variable nodes rather than treating function names as components. This fixes false closing-function and unresolved-ESIC cascades in valid conditional templates. Genuine missing components/input declarations, malformed expressions, unsupported external workbook references and circular dependencies remain review issues; no missing salary input becomes an invented zero. Browser previews are scenarios, not authorization to save salary values or certify native parity. Shared synthetic fixtures are exercised by frontend `salary-formula-parity.test.mjs` and native `SalaryTemplateFrontendFormulaParityTests`; mapping knowledge v70 retains the anonymized diagnostic boundary and retrieval regression.
+
 ## Native Payslip Register design
 
 Regular Run retains the latest chosen client/policy while its metadata refresh completes. An older concurrent load cannot restore the initial client, policy or roster after another load or an explicit user selection. `tools/test-payroll-run-scope-ui.mjs` mounts the actual workspace with intercepted anonymous APIs and a deliberately delayed first response; it verifies All clients, legacy single-client and Selected Clients without database or delivery requests. Set `HRMS_PLAYWRIGHT_MODULE` to the available Playwright entrypoint and point `HRMS_UI_TEST_URL` to the local development UI before running it.

@@ -3784,6 +3784,7 @@ app.MapLocalLlmRecovery();
 app.MapAttendanceApiAdapters();
 app.MapPayrollAdvisor();
 app.MapPayrollCalculation();
+app.MapPayRunEmployeeRecalculation();
 app.MapReviewedProfessionalTax();
 app.MapPayslipDesigns();
 app.MapPayrollReferenceInformation();

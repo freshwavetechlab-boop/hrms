@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { RocketOutlined, WarningOutlined } from '@ant-design/icons'
-import { Button, Checkbox, Select } from 'antd'
+import { MoreOutlined, RocketOutlined, WarningOutlined, ReloadOutlined } from '@ant-design/icons'
+import { Button, Checkbox, Dropdown, Select } from 'antd'
 import { Link } from 'react-router-dom'
 import { getAttendanceGroups, getMonthlyAttendance } from '../services/leaveAttendanceService'
 import { cancelPayrollAdjustment, createPayRun, createSelectedPayRunDraft, deletePayRun, exportPayRunUrl, getClients, getPayrollEmployeeOptions, getPayRun, getPayRunDiagnostics, getPayrollAdjustments, getPayRuns, runPayRunAction, savePayrollAdjustment } from '../services/payrollService'
-import { getSetup } from '../services/settingsService'
-import type { AttendanceGroup, Client, Component, Employee, EmployeeMonthlyAttendance, PayRun, PayRunDiagnostics, PayrollAdjustment, PayRunSalaryLine, RunEmployee, Setup } from '../types/payroll'
+import { getSetup, getWorkLocations } from '../services/settingsService'
+import type { AttendanceGroup, Client, Component, Employee, EmployeeMonthlyAttendance, PayRun, PayRunDiagnostics, PayrollAdjustment, PayRunSalaryLine, RunEmployee, Setup, WorkLocation } from '../types/payroll'
 import { setup0 } from '../data/payrollDefaults'
 import { canCreateSelectedPayRunDraft, matchesSelectedPayRunDraftResponse, selectedPayRunDraftRequest, selectedDraftApplicableAdjustments, selectedDraftAdjustmentReviewKey, selectedDraftSourceReviewKey, withSelectedDraftSourceReview, type SelectedDraftSourceReviewChoice } from '../utils/selectedPayRunDraft'
 import { presentDayText, presentDayTotal } from '../utils/payrollAttendanceDisplay'
@@ -21,6 +21,7 @@ import SelectedPayRunProcessing from './SelectedPayRunProcessing'
 import RegularEmployeeCodeSelection from './RegularEmployeeCodeSelection'
 import SelectedDraftAdjustmentSelection from './SelectedDraftAdjustmentSelection'
 import DraftPayrollAdjustments from './DraftPayrollAdjustments'
+import EmployeePayrollRecalculation from './EmployeePayrollRecalculation'
 import DraftEmployerCosts from './DraftEmployerCosts'
 import type { EmployeeCodeScope } from '../utils/regularEmployeeCodeSelection'
 import { getPayrollFormulaWorkbook } from '../services/payrollCalculationService'
@@ -30,7 +31,14 @@ import { getPayrollLocationAttendance, type LocationAttendanceContext } from '..
 import { payrollLocationOptions } from '../utils/payrollLocationAttendance'
 import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
 import PayrollLocationPayslips from './PayrollLocationPayslips'
+import { PageHeaderPortal } from './layout/AppPageHeader'
+import RegularRunJourney from './RegularRunJourney'
+import PayrollScopeSelect from './PayrollScopeSelect'
+import { buildRegularRunJourney } from '../utils/regularRunJourney'
+import { regularPayrollLocations } from '../utils/regularPayrollLocations'
+import { payrollClientIndicators } from '../utils/payrollScopeIndicators'
 import './PayrollLocationFlow.css'
+import './RegularRunWorkspace.css'
 
 const currentPeriod = (() => {
   const date = new Date()
@@ -98,16 +106,21 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   const scopedClientId = Number(session?.user.clientId || 0)
   const clientScoped = scopedClientId > 0 && !session?.user.permissions.includes('security.manage')
   const [clients, setClients] = useState<Client[]>([]), [employees, setEmployees] = useState<Employee[]>([]), [runs, setRuns] = useState<PayRun[]>([]), [attendanceGroups, setAttendanceGroups] = useState<AttendanceGroup[]>([])
+  const [workLocations, setWorkLocations] = useState<WorkLocation[]>([])
   const [setup, setSetup] = useState<Setup>(setup0), [selected, setSelected] = useState<PayRun | null>(null)
   const [diagnostics, setDiagnostics] = useState<PayRunDiagnostics | null>(null)
-  const [clientId, setClientId] = useState(scopedClientId), [period, setPeriod] = useState(currentPeriod), [workingDays] = useState(30)
+  const [clientId, setClientId] = useSessionPreference(`payroll.context.client:${session?.user.id}:${mode}:${initialRunType}`, scopedClientId)
+  const [period, setPeriod] = useSessionPreference(`payroll.context.period:${session?.user.id}:${mode}:${initialRunType}`, currentPeriod)
+  const [workingDays] = useState(30)
   const [includedIds, setIncludedIds] = useState<number[]>([]), [attendancePolicyBatchId, setAttendancePolicyBatchId] = useState(''), [offcycleEmployeeIds, setOffcycleEmployeeIds] = useState<number[]>([]), [offcycleAdjustmentIds, setOffcycleAdjustmentIds] = useState<number[]>([])
-  const scopeChoice = useRef({ clientId: scopedClientId, policyBatchId: '' })
+  const scopeChoice = useRef({ clientId: clientScoped ? scopedClientId : clientId, policyBatchId: '' })
   const loadSequence = useRef(0)
   const [adjustments, setAdjustments] = useState<PayrollAdjustment[]>([]), [adjustment, setAdjustment] = useState<PayrollAdjustment>(adjustment0)
   const [tab] = useState<PayrollTab>(mode === 'adjustments' ? 'Adjustments' : initialRunType), [busy, setBusy] = useState(false), [message, setMessage] = useState('Select client, verify employees, then run payroll.')
   const [stage, setStage] = useState<PayrollStage>('Employees')
+  const [regularView, setRegularView] = useSessionPreference<'Run payroll' | 'Employees' | 'Locations' | 'Review & correct' | 'Run history'>(`payroll.regular.view:${session?.user.id}:${clientId}`, 'Run payroll')
   const selectedDraftPending = useRef(false)
+  const explicitlyStartedRuns = useRef(new Set<number>())
   const [selectedDraftUncertain, setSelectedDraftUncertain] = useState(false)
   const [selectedAdjustmentReview, setSelectedAdjustmentReview] = useState<{ key: string; ids: number[]; sourceReview?: SelectedDraftSourceReviewChoice }>({ key: '', ids: [] })
   const canCreateSelectedDraft = canCreateSelectedPayRunDraft(session?.user)
@@ -135,7 +148,11 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     })
     return () => { active = false }
   }, [locationScope]) // eslint-disable-line react-hooks/exhaustive-deps
-  const locationOptions = useMemo(() => payrollLocationOptions(locationContext), [locationContext])
+  const locationOptions = useMemo(() => {
+    const existing = payrollLocationOptions(locationContext)
+    const ids = new Set(existing.map(option => option.value))
+    return [...existing, ...workLocations.filter(location => location.clientId === clientId && location.isActive && !ids.has(location.id)).map(location => ({ value: location.id, label: location.name }))]
+  }, [locationContext, workLocations, clientId])
   const selectedPayrollLocationId = locationOptions.some(option => option.value === payrollLocationId) ? payrollLocationId : 0
   const locationEmployeeIds = useMemo(() => new Set(locationContext?.rows.filter(row => !selectedPayrollLocationId || row.workLocationId === selectedPayrollLocationId).map(row => row.employeeId)), [locationContext, selectedPayrollLocationId])
   const locationDefaultScope = useRef('')
@@ -180,6 +197,12 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     regularRunCode: selectedRegularRunCode,
     legacyRegularRunCode: selectedLegacyRegularRunCode,
   })), [clientId, runs, selectedLegacyRegularRunCode, selectedRegularRunCode, selectedPolicyBatch?.id, tab])
+  const scopedReviewRuns = useMemo(() => {
+    if (tab !== 'Regular Run' || !selectedPayrollLocationId) return reviewRuns
+    if (locationLoading || !locationContext) return []
+    const ids = new Set(regularPayrollLocations(clientId, period, workLocations, employees, locationContext, reviewRuns).find(row => row.id === selectedPayrollLocationId)?.runIds ?? [])
+    return reviewRuns.filter(run => ids.has(run.id))
+  }, [tab, selectedPayrollLocationId, reviewRuns, locationLoading, locationContext, clientId, period, workLocations, employees])
   const attendanceReviewLink = useMemo(() => {
     const params = new URLSearchParams()
     if (clientId) params.set('clientId', String(clientId))
@@ -199,19 +222,20 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
 
   const load = async () => {
     const sequence = ++loadSequence.current
-    const [clientRows, employeeRows, runRows, setupRow, adjustmentRows, groupRows] = await Promise.all([getClients(), getPayrollEmployeeOptions(), getPayRuns(), getSetup(setup0), getPayrollAdjustments(), getAttendanceGroups()])
+    const [clientRows, employeeRows, runRows, setupRow, adjustmentRows, groupRows, locationRows] = await Promise.all([getClients(), getPayrollEmployeeOptions(), getPayRuns(), getSetup(setup0), getPayrollAdjustments(), getAttendanceGroups(), tab === 'Regular Run' && mode !== 'adjustments' ? getWorkLocations() : Promise.resolve([])])
     if (sequence !== loadSequence.current) return
     const choice = scopeChoice.current
-    const nextClientId = clientScoped ? scopedClientId : choice.clientId || clientRows[0]?.id || 0
+    const nextClientId = clientScoped ? scopedClientId : clientRows.some(row => row.id === choice.clientId) ? choice.clientId : clientRows[0]?.id || 0
     const activeGroups = groupRows.filter(group => group.isActive)
     const nextBatches = buildPolicyBatches(activeGroups.filter(group => group.clientId === nextClientId))
     const nextBatch = nextBatches.find(batch => batch.id === choice.policyBatchId) || null
     const fallbackBatch = nextBatches[0] || null
     setClients(clientRows)
-    if (!choice.clientId && nextClientId) setClientId(nextClientId)
+    if (nextClientId !== clientId) setClientId(nextClientId)
     setEmployees(employeeRows)
     setAttendanceGroups(groupRows)
-    if (nextClientId && (!choice.policyBatchId || !choice.clientId)) {
+    setWorkLocations(locationRows)
+    if (nextClientId && (!choice.policyBatchId || choice.clientId !== nextClientId)) {
       const selectedBatch = nextBatch || fallbackBatch
       scopeChoice.current = { clientId: nextClientId, policyBatchId: selectedBatch?.id || '' }
       setAttendancePolicyBatchId(selectedBatch?.id || '')
@@ -237,27 +261,31 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     return () => { cancelled = true }
   }, [clientId, period])
   useEffect(() => {
-    if (mode === 'adjustments' || stage !== 'Review' || !clientId || !period) return
-    if (selected?.clientId === clientId && selected.payPeriod === period) return
-    const latest = runs.find(run => run.clientId === clientId && run.payPeriod === period && (tab === 'Off-cycle Run' ? run.runType === 'Off Cycle' : run.runType !== 'Off Cycle' && (selectedPolicyBatch?.id ? (run.attendancePolicyBatchId ? run.attendancePolicyBatchId === selectedPolicyBatch.id : [selectedRegularRunCode, selectedLegacyRegularRunCode].includes(run.runCode)) : run.runCode === selectedRegularRunCode)))
+    if (mode === 'adjustments' || (stage !== 'Review' && tab !== 'Regular Run') || !clientId || !period) return
+    if (selected?.clientId === clientId && selected.payPeriod === period && scopedReviewRuns.some(run => run.id === selected.id)) return
+    const latest = scopedReviewRuns.find(run => run.clientId === clientId && run.payPeriod === period)
     if (latest) void open(latest.id)
-  }, [mode, stage, clientId, period, selected?.id, selected?.clientId, selected?.payPeriod, runs, selectedLegacyRegularRunCode, selectedPolicyBatch?.id, selectedRegularRunCode, tab])
+  }, [mode, stage, clientId, period, selected?.id, selected?.clientId, selected?.payPeriod, scopedReviewRuns, tab])
   useEffect(() => {
     if (!selected || !processingStatuses.has(selected.status)) return
+    let active = true
     const timer = window.setInterval(async () => {
       const payRun = await getPayRun(selected.id)
-      if (!payRun) return
+      if (!payRun || !active) return
+      const nextDiagnostics = await getPayRunDiagnostics(payRun.id)
+      if (!active) return
       setSelected(payRun)
-      setDiagnostics(await getPayRunDiagnostics(payRun.id))
+      setDiagnostics(nextDiagnostics)
       if (!processingStatuses.has(payRun.status)) {
         setMessage(payRun.status === 'Failed' ? 'Payroll failed. Review diagnostics below, fix the issue, then run the draft again.' : 'Payroll draft is ready for review.')
         await load()
       }
     }, 5000)
-    return () => window.clearInterval(timer)
+    return () => { active = false; window.clearInterval(timer) }
   }, [selected?.id, selected?.status])
 
   const changeClient = (id: number) => {
+    setMessage('')
     setSelectedAdjustmentReview({ key: '', ids: [] })
     const nextBatch = buildPolicyBatches(attendanceGroups.filter(group => group.clientId === id && group.isActive))[0] || null
     scopeChoice.current = { clientId: id, policyBatchId: nextBatch?.id || '' }
@@ -271,6 +299,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   }
 
   const changeAttendancePolicyBatch = (id: string) => {
+    setMessage('')
     setSelectedAdjustmentReview({ key: '', ids: [] })
     const nextBatch = attendancePolicyBatches.find(batch => batch.id === id) || null
     scopeChoice.current = { clientId, policyBatchId: nextBatch?.id || '' }
@@ -281,6 +310,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   }
 
   const changePeriod = (value: string) => {
+    setMessage('')
     setSelectedAdjustmentReview({ key: '', ids: [] })
     setPeriod(value)
     setSelected(null)
@@ -320,6 +350,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
         return
       }
       const run = response.data!
+      explicitlyStartedRuns.current.add(run.id)
       setSelected(run); setStage('Review'); setMessage('Run ' + run.id + ' saved as AwaitingProcessing. Review selected draft processing to verify its persisted employee scope, then explicitly process it. No calculation, approval or delivery has run.')
       try { setDiagnostics(await getPayRunDiagnostics(run.id)); await load() }
       catch { setMessage('Run ' + run.id + ' was saved as AwaitingProcessing, but its review context could not be refreshed. Do not create it again; refresh and review this exact saved run before processing.'); setSelectedDraftUncertain(true) }
@@ -337,6 +368,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
 
   const afterCreate = async (response: { ok: boolean; data: PayRun | null; error?: string }, success: string) => {
     if (response.ok && response.data) {
+      explicitlyStartedRuns.current.add(response.data.id)
       setSelected(response.data)
       setDiagnostics(await getPayRunDiagnostics(response.data.id))
       setStage('Review')
@@ -393,6 +425,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   const openReviewRun = async (run: PayRun) => {
     if (run.payPeriod !== period) setPeriod(run.payPeriod)
     await open(run.id)
+    if (tab === 'Regular Run') setRegularView('Run payroll')
   }
 
   const hardDeleteRun = async (run: PayRun) => {
@@ -404,7 +437,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     await load()
   }
 
-  const selectedReviewRun = selected && (reviewRuns.some(run => run.id === selected.id) || selected.status === 'AwaitingProcessing' && selected.clientId === clientId && selected.payPeriod === period && canCreateSelectedDraft) ? selected : null
+  const selectedReviewRun = selected && (scopedReviewRuns.some(run => run.id === selected.id) || selected.status === 'AwaitingProcessing' && selected.clientId === clientId && selected.payPeriod === period && canCreateSelectedDraft) ? selected : null
   const reviewPanel = <>
     <ReviewRunPicker runs={reviewRuns} selectedId={selectedReviewRun?.id} openRun={openReviewRun} deleteRun={hardDeleteRun} />
     {selectedReviewRun && <SelectedPayRunProcessing run={selectedReviewRun}
@@ -461,6 +494,64 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     {!!selectedPayrollLocationId && locationContext?.rows.some(row => row.nativePart) && <p className="payroll-location-hint">Payroll includes all recorded location parts of each selected employee once. Choose All locations for the complete monthly draft.</p>}
     <div className="payroll-kpis"><div><span>{tab === 'Off-cycle Run' ? 'Selected employees' : 'Policy employees'}</span><strong>{tab === 'Off-cycle Run' ? `${offcycleEmployeeIds.length}/${clientEmployees.length}` : `${includedCount}/${regularEmployees.length}`}</strong></div><div><span>{tab === 'Off-cycle Run' ? 'Selected adjustments' : 'Approved adjustments'}</span><strong>{tab === 'Off-cycle Run' ? `${offcycleAdjustmentIds.length}/${offcycleAdjustments.length}` : regularAdjustments.length}</strong></div><div><span>{estimateLabel}</span><strong>{money(selectedEstimate)}</strong></div><div><span>Current draft net</span><strong>{money(selected?.netPay)}</strong></div></div>
   </div>
+
+  if (tab === 'Regular Run' && mode !== 'adjustments') {
+    const run = selectedReviewRun?.payPeriod === period ? selectedReviewRun : null
+    const previouslySaved = !!run && !explicitlyStartedRuns.current.has(run.id)
+    const journey = buildRegularRunJourney({ run, diagnostics: run ? diagnostics : null, clientId,
+      policySelected: !!selectedPolicyBatch, includedCount, attendanceReady, attendanceIssues, locationLoading,
+      adjustmentCount: regularAdjustments.length, workingDays: derivedWorkingDays, policyName: selectedPolicyLabel })
+    const periodLabel = /^\d{4}-\d{2}$/.test(period) ? new Date(`${period}-01T12:00:00`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }) : period
+    const processingPermitted = !!session?.user.isActive && session.user.clientId == null && !!session.user.roles.includes('super_admin') && !!session.user.permissions.includes('payroll.run')
+    const canRun = !!session?.user.permissions.includes('payroll.run')
+    const clientIndicators = payrollClientIndicators(employees, runs)
+    const locationOverview = regularPayrollLocations(clientId, period, workLocations, employees, locationContext, reviewRuns)
+    const scopeLocationOptions = [{ value: 0, label: 'All locations', available: locationOverview.some(row => row.runIds.length > 0), count: new Set((locationContext?.rows ?? []).map(row => row.employeeId)).size || regularEmployees.length, hint: `${periodLabel} · all locations` }, ...locationOverview.filter(row => row.id > 0).map(row => ({ value: row.id, label: row.name, count: row.count, available: row.runIds.length > 0, hint: row.runIds.length ? `${row.runIds.length} saved payroll run${row.runIds.length === 1 ? '' : 's'} · ${periodLabel}` : `No saved payroll · ${periodLabel}` }))]
+    const openLocation = (id: number) => { setPayrollLocationId(id); setSelected(null); setDiagnostics(null); setMessage(''); const ids = new Set(locationContext?.rows.filter(row => !id || row.workLocationId === id).map(row => row.employeeId)); setIncludedIds(clientEmployees.filter(employee => groupEmployeeIds.has(employee.id) && (!id || ids.has(employee.id))).map(employee => employee.id)); setRegularView(id ? 'Run payroll' : 'Locations') }
+    const locationsTable = <DataTable title={`Locations · ${periodLabel}`} rows={locationOverview} getRowId={row => row.id} emptyText={locationLoading ? 'Loading locations for this month…' : 'No locations configured for this client.'} exportFileName={`payroll-locations-${clientId}-${period}`} pageSizeOptions={[10, 25, 50]} columns={[{ key: 'name', label: 'Location', render: row => <span className={row.count ? 'regular-location-available' : ''}>{row.name}</span> }, { key: 'count', label: 'Employees', value: row => row.count }, { key: 'payroll', label: 'This month', value: row => row.runIds.length, render: row => row.runIds.length ? `${row.runIds.length} saved run${row.runIds.length === 1 ? '' : 's'}` : 'Not run' }]} actions={row => <Button size="small" onClick={() => openLocation(row.id)}>Open location</Button>} />
+    const tools = [
+      { key: 'formulas', label: formulaBusy ? 'Preparing Excel…' : 'Excel with formulas', disabled: busy || formulaBusy || !formulaSelection.request, onClick: () => void downloadFormulaWorkbook() },
+      { key: 'refresh', label: 'Refresh run status', disabled: busy || !run, onClick: () => { if (run) void open(run.id) } },
+      { key: 'export', label: 'Export payroll register', disabled: !run, onClick: () => { if (run) window.location.assign(exportPayRunUrl(run.id)) } },
+    ]
+    const primaryAction = run?.status === 'AwaitingProcessing'
+      ? <SelectedPayRunProcessing run={run} permitted={processingPermitted} label="Review & calculate payroll" onChanged={async () => { await load(); await open(run.id) }} />
+      : run && processingStatuses.has(run.status)
+        ? <Button type="primary" loading disabled>Calculating payroll</Button>
+        : run?.status === 'Pending Approval'
+          ? <Button type="primary" loading={busy} disabled={!canRun} onClick={() => void action('approve', 'Payroll approved.')} data-mail-event="PAYRUN.APPROVED" data-mail-resource-type="PayRun" data-mail-resource-id={run.id} data-mail-client-id={run.clientId} data-mail-action-label="Approve payroll">Approve payroll</Button>
+          : run && ['Approved', 'Paid', 'Partially Paid'].includes(run.status)
+            ? <Link className="regular-primary-link" to={`/reports/payroll-reports?report=payslip-register&clientId=${run.clientId}`}>Open payslip register</Link>
+            : run?.status === 'Draft'
+              ? <Button type="primary" onClick={() => setRegularView('Review & correct')}>Review & lock payroll</Button>
+              : journey.status === 'blocked'
+                ? !run && selectedPolicyBatch && includedCount > 0 ? <Link className="regular-primary-link" to={attendanceReviewLink}>Review attendance</Link> : <Button type="primary" onClick={() => setRegularView(run ? 'Review & correct' : 'Employees')}>Review blockers</Button>
+                : <Button type="primary" icon={<RocketOutlined />} loading={busy} disabled={!canRun || !attendanceReady || !clientId} onClick={() => void createRegular()}>Run payroll</Button>
+    const roster = <RosterCard key={JSON.stringify([clientId, period, attendancePolicyBatchId])} selectionScope={{ clientId, period, policyBatchId: attendancePolicyBatchId }} disabled={busy} employees={regularEmployees} includedIds={includedIds} setIncludedIds={ids => { if (!selectedDraftPending.current) { setIncludedIds(ids); setSelectedAdjustmentReview({ key: '', ids: [] }) } }} adjustments={regularAdjustments}
+      selectedDraftAdjustmentReview={canCreateSelectedDraft ? <SelectedDraftAdjustmentSelection rows={applicableSelectedAdjustments} selectedIds={selectedDraftAdjustmentIds} disabled={busy || selectedDraftUncertain} onSelect={ids => { if (!selectedDraftPending.current) setSelectedAdjustmentReview({ key: adjustmentReviewKey, ids }) }} sourceRequest={selectedDraftBase.request} sourceRequestKey={sourceReviewKey} onSourceReviewChange={choice => { if (!selectedDraftPending.current) setSelectedAdjustmentReview(current => current.key === adjustmentReviewKey ? { ...current, sourceReview: choice } : current) }} /> : undefined} />
+    return <section className="regular-run-workspace">
+      <PageHeaderPortal slot="regular-payroll-client-controls">{!clientScoped && <label className="regular-header-client"><span>Client</span><PayrollScopeSelect ariaLabel="Client" disabled={busy} value={clientId} onChange={value => changeClient(Number(value))} options={clients.filter(client => client.isActive).map(client => ({ value: client.id, label: client.name, count: clientIndicators.get(client.id)?.count ?? 0, hasPayroll: clientIndicators.get(client.id)?.hasPayroll ?? false }))} /></label>}</PageHeaderPortal>
+      <PageHeaderPortal slot="regular-payroll-page-controls"><nav className="regular-view-tabs" aria-label="Regular payroll workspace">{(['Run payroll', 'Employees', 'Locations', 'Review & correct', 'Run history'] as const).map(view => <button type="button" key={view} aria-current={regularView === view ? 'page' : undefined} onClick={() => setRegularView(view)}>{view}</button>)}</nav></PageHeaderPortal>
+      <div className="regular-context-bar">
+        <label>Pay period<input disabled={busy} type="month" value={period} onChange={event => changePeriod(event.target.value)} /></label>
+        <label>Attendance policy<Select disabled={busy} className="app-search-select" showSearch optionFilterProp="label" value={attendancePolicyBatchId} onChange={value => changeAttendancePolicyBatch(String(value))} options={attendancePolicyOptions} /></label>
+        <label>Location<PayrollScopeSelect ariaLabel="Location" availabilityKind="monthly-payroll" value={selectedPayrollLocationId} disabled={busy || locationLoading} options={scopeLocationOptions} onChange={value => openLocation(Number(value))} /></label>
+        <Dropdown menu={{ items: tools }} trigger={['click']}><Button aria-label="Payroll tools" icon={<MoreOutlined />}>Tools</Button></Dropdown>
+      </div>
+      <div className="regular-workspace-content">
+        {regularView === 'Run payroll' && <RegularRunJourney title={`${periodLabel} payroll`} preparation={!run} subtitle={previouslySaved ? `Previously saved · ${run!.employeeCount} employees · Run #${run!.id}` : journey.subtitle} status={journey.status} statusLabel={previouslySaved ? `Saved payroll · ${run!.status}` : journey.title} steps={journey.steps.map(step => ({ ...step, content: step.id === 'attendance' ? <Link to={attendanceReviewLink}>Open attendance review →</Link> : step.id === 'scope' ? <Button type="link" onClick={() => setRegularView('Employees')}>Review employee selection →</Button> : step.id === 'validation' && run ? <Button type="link" onClick={() => setRegularView('Review & correct')}>View employee calculations & diagnostics →</Button> : undefined }))} action={primaryAction}
+          notice={<>{journey.blockers.length > 0 && <div className="regular-blockers" role="alert"><strong>{journey.blockers.length} item{journey.blockers.length === 1 ? '' : 's'} need attention</strong>{journey.blockers.slice(0, 3).map((item, index) => <p key={index}>{item.employeeCode && <b>{item.employeeCode} · </b>}{item.message}</p>)}{journey.blockers.length > 3 && <Button type="link" onClick={() => setRegularView('Review & correct')}>View all blockers</Button>}</div>}{message !== 'Select client, verify employees, then run payroll.' && <p className="regular-last-message" role="status">{message}</p>}</>}
+          metrics={[{ label: 'Employees', value: String(run ? run.employeeCount : includedCount), hint: run ? `Saved run #${run.id}` : 'Selected for this cycle' }, { label: 'Gross pay', value: run && run.employees.length ? money(run.employees.filter(row => !row.isSkipped).reduce((sum, row) => sum + row.grossPay, 0)) : 'Not calculated' }, { label: 'Net payable', value: run && run.employees.length ? money(run.netPay) : 'Not calculated' }]}>
+          <div className="regular-cycle-facts"><h3>Cycle details</h3><dl><div><dt>Salary divisor</dt><dd>{run ? run.totalWorkingDays : derivedWorkingDays} days <small>Automatic</small></dd></div><div><dt>{run ? 'Saved run' : 'Attendance policy'}</dt><dd>{run ? run.runName || run.runCode : selectedPolicyLabel || 'Not selected'}</dd></div><div><dt>{run ? 'Employee scope' : 'Location'}</dt><dd>{run ? `${run.employeeCount} saved employees` : locationOptions.find(option => option.value === selectedPayrollLocationId)?.label || 'All locations'}</dd></div>{run && <div><dt>Run status</dt><dd>{run.status}</dd></div>}</dl><Button type="link" onClick={() => setRegularView('Run history')}>View saved runs →</Button></div>
+          {!selectedPayrollLocationId && <div className="regular-location-summary"><h3>Locations this month</h3>{locationOverview.slice(0, 5).map(row => <button type="button" key={row.id} onClick={() => openLocation(row.id)}><span>{row.name}<small>{row.count} employees · {row.runIds.length ? `${row.runIds.length} saved runs` : 'Not run'}</small></span><span aria-hidden="true">→</span></button>)}<Button type="link" onClick={() => setRegularView('Locations')}>View location table →</Button></div>}
+        </RegularRunJourney>}
+        {regularView === 'Employees' && <>{roster}{canCreateSelectedDraft && <details className="regular-advanced"><summary>Advanced · create a draft for an explicit employee selection</summary><p>Review the selected employees and source adjustments before saving.</p><Button loading={busy} disabled={busy || selectedDraftUncertain || !attendanceReady || !selectedDraft.request} onClick={() => { void createSelectedDraft().then(() => setRegularView('Run payroll')) }}>Create selected draft for review</Button>{selectedDraft.error && <p role="status">{selectedDraft.error}</p>}</details>}</>}
+        {regularView === 'Run history' && <ReviewRunPicker runs={scopedReviewRuns.filter(value => value.payPeriod === period)} selectedId={run?.id} openRun={openReviewRun} deleteRun={hardDeleteRun} />}
+        {regularView === 'Locations' && locationsTable}
+        {regularView === 'Review & correct' && <>{run ? <><div className="regular-review-toolbar"><span>Run #{run.id} · {run.status} · {run.employeeCount} employees</span>{run.status === 'Failed' && <Button disabled={busy || !canRun || !attendanceReady} onClick={() => void createRegular()}>Retry calculation</Button>}<Button icon={<ReloadOutlined />} disabled={busy} onClick={() => void open(run.id)}>Refresh</Button><PayrollLocationPayslips key={run.id} run={run} /></div>{['Approved', 'Pending Approval'].includes(run.status) && <p className="regular-correction-help">To correct an employee, recall this unpaid run to Draft, then use that employee’s correction action. Approval is required again after changes.</p>}<PayRunReview selected={run} diagnostics={diagnostics?.payRunId === run.id ? diagnostics : null} busy={busy} action={action} onChanged={canRun ? async () => { await open(run.id); await load() } : undefined} materialVarianceCount={materialVarianceCount} /></> : <div className="regular-empty"><h3>No calculation to review yet</h3><p>Select the period and policy, then run payroll or open a saved run.</p><Button onClick={() => setRegularView('Run history')}>View saved runs</Button></div>}</>}
+      </div>
+    </section>
+  }
 
   return <section className={`pay-runs payroll-cockpit${tab === 'Regular Run' && mode !== 'adjustments' ? ' payroll-location-flow' : ''}`}>
     <div className="payroll-status-strip"><span>{message}</span>{attendanceReady ? <span className="status-chip paid">Attendance ready</span> : <Link className="status-chip pending-approval attendance-review-link" to={attendanceReviewLink} state={{ clientId, period, policyBatchId: selectedPolicyBatch?.id, groupIds: selectedAttendanceGroupIds, employeeIds: includedIds }} title="Open Attendance Review">{`${attendanceIssues || includedCount} attendance issue${(attendanceIssues || includedCount) === 1 ? '' : 's'}`}</Link>}</div>
@@ -549,7 +640,7 @@ export function PayRunReview(p: { selected: PayRun; diagnostics: PayRunDiagnosti
   const salaryRegisterColumns = useMemo(() => buildSalaryRegisterColumns(selected.employees), [selected.employees])
   const componentDetailRows = useMemo(() => buildPayrollComponentDetailRows(selected.employees), [selected.employees])
   const columns: Column<RunEmployee>[] = [
-    ...(selected.status === 'Draft' && p.onChanged ? [{ key: 'draftAdjustments', label: 'Draft', width: '120px', sortable: false, filterable: false, render: (row: RunEmployee) => <DraftPayrollAdjustments run={selected} employee={row} disabled={p.busy} onChanged={p.onChanged!} /> }] : []),
+    ...(selected.status === 'Draft' && p.onChanged ? [{ key: 'draftAdjustments', label: 'Correct employee', width: '210px', sortable: false, filterable: false, render: (row: RunEmployee) => <span className="adjustment-actions"><EmployeePayrollRecalculation key={`${selected.id}:${row.employeeId}:${row.detailsJson}`} run={selected} employee={row} disabled={p.busy} onChanged={p.onChanged!} /><DraftPayrollAdjustments run={selected} employee={row} disabled={p.busy} onChanged={p.onChanged!} /></span> }] : []),
     { key: 'employeeCode', label: 'Code', width: '110px' },
     { key: 'employeeName', label: 'Employee', width: '190px', render: employee => <>{employee.employeeName}<small>{employee.department || employee.employeeCode}</small></>, exportValue: row => `${row.employeeName} ${row.employeeCode}`.trim() },
     { key: 'presentDays', label: 'Present', width: '110px', value: row => row.presentDays, render: row => presentDayText(row.presentDays), exportValue: row => row.presentDays ?? 'Not supplied' },

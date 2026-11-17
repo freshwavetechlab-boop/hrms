@@ -1,0 +1,18 @@
+[
+  { "name": "ESIC earned wages under monthly threshold", "formula": "IF(BASIC_MONTHLY>21000,0,BASIC_EARNED*0.75%)", "values": { "BASIC_MONTHLY": 18000, "BASIC_EARNED": 9000 }, "expected": 67.5 },
+  { "name": "ESIC above monthly threshold", "formula": "IF(BASIC_MONTHLY>21000,0,BASIC_EARNED*0.75%)", "values": { "BASIC_MONTHLY": 24000, "BASIC_EARNED": 12000 }, "expected": 0 },
+  { "name": "PT based on actual source subtotal", "formula": "IF(((BASIC_EARNED+HRA_EARNED+TEL_ALLOW_EARNED+STAT_BONUS_EARNED+MED_ALLOW_EARNED+OTHER_ALLOW_EARNED+(0/PAYROLL_DAYS*PAYABLE_DAYS)))>7500,200,0)", "values": { "BASIC_EARNED": 6000, "HRA_EARNED": 1200, "TEL_ALLOW_EARNED": 50, "STAT_BONUS_EARNED": 500, "MED_ALLOW_EARNED": 250, "OTHER_ALLOW_EARNED": 200, "PAYROLL_DAYS": 30, "PAYABLE_DAYS": 15 }, "expected": 200 },
+  { "name": "PT below source subtotal boundary", "formula": "IF(SUBTOTAL>7500,200,0)", "values": { "SUBTOTAL": 7500 }, "expected": 0 },
+  { "name": "nested conditional and boolean conjunction", "formula": "IF(SUBTOTAL<=11999,0,IF(AND(SUBTOTAL>=12000,SUBTOTAL<=17999),120,IF(AND(SUBTOTAL>=18000,SUBTOTAL<=29999),180,IF(AND(SUBTOTAL>=30000,SUBTOTAL<=44999),300,450))))", "values": { "SUBTOTAL": 32000 }, "expected": 300 },
+  { "name": "numeric OR decision", "formula": "IF(OR(PAYABLE_DAYS=0,ABS(ADJUSTMENT)>200),1,2)", "values": { "PAYABLE_DAYS": 10, "ADJUSTMENT": -250 }, "expected": 1 },
+  { "name": "explicit decimal rounding", "formula": "ROUND(18.375,2)", "values": {}, "expected": 18.38 },
+  { "name": "negative rounding up is away from zero", "formula": "ROUNDUP(-2.31)", "values": {}, "expected": -3 },
+  { "name": "negative rounding down is toward zero", "formula": "ROUNDDOWN(-2.91)", "values": {}, "expected": -2 },
+  { "name": "roundup decimal digits", "formula": "ROUNDUP(-18.371,2)", "values": {}, "expected": -18.38 },
+  { "name": "negative precision", "formula": "ROUND(1250,-2)", "values": {}, "expected": 1300 },
+  { "name": "conditional handled numeric error", "formula": "IFERROR(18/0,ABS(-9))", "values": {}, "expected": 9 },
+  { "name": "explicit sum and percentage", "formula": "=SUM(BASIC,HRA,50)*12%", "values": { "BASIC": 1000, "HRA": 200 }, "expected": 150 },
+  { "name": "scientific literal", "formula": "1.5E2+1e-1", "values": {}, "expected": 150.1 },
+  { "name": "legacy earnings sum", "formula": "SUM(FIXED EARNINGS)*10%", "values": { "FIXED_EARNINGS_BEFORE_THIS": 25000 }, "expected": 2500 },
+  { "name": "legacy percentage of", "formula": "12% of BASIC", "values": { "BASIC": 15000 }, "expected": 1800 }
+]

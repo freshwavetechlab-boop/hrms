@@ -1,0 +1,48 @@
+.salary-worksheet { background: #fff; border: 1px solid #dedfe8; border-radius: 12px; min-width: 0; overflow: hidden; margin: 16px 0; }
+.salary-worksheet-caption { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 11px 14px; color: #55466e; font-size: 12px; background: #f5f2ff; }
+.salary-worksheet-caption > span:first-child { font-weight: 600; }
+.salary-worksheet-caption > span:last-child { margin-left: auto; color: #857c91; }
+.salary-worksheet-formula-bar { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-block: 1px solid #e9e5f0; min-width: 0; }
+.salary-worksheet-formula-bar > .ant-input { flex: 1; min-width: 0; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.salary-worksheet-address { width: 54px; flex-shrink: 0; color: #57466e; font-weight: 600; font-size: 12px; }
+.salary-worksheet-formula-bar > strong { color: #8f859f; font-style: italic; }
+.salary-worksheet-cell-detail { display: flex; flex-wrap: wrap; gap: 5px 14px; font-size: 11px; color: #82798c; min-height: 30px; max-height: 84px; overflow: auto; padding: 7px 12px; }
+.salary-worksheet-cell-detail code { overflow-wrap: anywhere; white-space: normal; }
+.salary-worksheet-scroll { overflow: auto; width: 100%; max-height: 350px; }
+.salary-worksheet table { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
+.salary-worksheet th, .salary-worksheet td { border-right: 1px solid #e5e3ec; border-bottom: 1px solid #e5e3ec; min-width: 130px; max-width: 180px; text-align: left; padding: 0; color: #343044; }
+.salary-worksheet th { background: #f2f3f6; font-weight: 500; padding: 8px 10px; }
+.salary-worksheet thead tr:nth-child(2) th { text-align: center; color: #80768e; background: #f8f7fa; padding: 5px; }
+.salary-worksheet th:first-child { min-width: 38px; width: 38px; max-width: 38px; position: sticky; left: 0; z-index: 2; text-align: center; }
+.salary-worksheet th.salary-worksheet-sheet-title { background: #faf9fc; color: #7a6d89; }
+.salary-worksheet-column { overflow-wrap: anywhere; }
+.salary-worksheet td button { display: block; width: 100%; min-height: 49px; text-align: right; border: 0; border-radius: 0; background: transparent; color: inherit; padding: 11px 12px; box-shadow: none; font: inherit; white-space: nowrap; }
+.salary-worksheet td:nth-of-type(-n+4) button { text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.salary-worksheet .is-input { background: #fff9e8; }
+.salary-worksheet td.is-selected { box-shadow: inset 0 0 0 2px #7756f5; background: #f6f3ff; }
+.salary-worksheet td button:focus-visible { outline: 2px solid #7756f5; outline-offset: -3px; }
+.salary-worksheet td > input { display: block; width: 100%; min-width: 0; height: 49px; min-height: 49px; border: 0; border-radius: 0; padding: 11px 12px; background: transparent; color: #343044; text-align: right; font: inherit; box-shadow: none; }
+.salary-worksheet td > input:focus { outline: 2px solid #7756f5; outline-offset: -2px; box-shadow: none; }
+.salary-worksheet td > input::placeholder { color: #8b753e; font-size: 11px; }
+.salary-worksheet-stale-row > td:not(.is-input) { opacity: .55; }
+.salary-worksheet .is-net { color: #217450; background: #ecf7f0; font-weight: 600; }
+.salary-worksheet-missing { color: #a398ab; font-size: 11px; }
+.salary-worksheet-footer { display: flex; justify-content: space-between; gap: 12px; padding: 8px 12px; background: #f6f4fa; color: #887d96; font-size: 11px; }
+.salary-worksheet-footer > span:first-child { color: #7756f5; font-weight: 600; }
+.salary-worksheet-notice { margin: 0; padding: 10px 12px; color: #8c7c5c; background: #fffbef; font-size: 11px; line-height: 1.6; }
+.salary-worksheet.is-stale tbody { opacity: .55; }
+.salary-present-mode { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.salary-present-mode p { margin: 6px 0 0; color: #667085; font-size: 12px; line-height: 1.6; }
+.salary-present-controls .salary-present-employees { grid-column: span 1; }
+.salary-present-controls .simulation-field > small { color: #667085; font-size: 11px; line-height: 1.5; }
+.salary-present-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; font-size: 12px; color: #667085; }
+.salary-present-status > .ant-btn { margin-left: auto; }
+.salary-present-status > span[role='status'] { display: inline-flex; align-items: center; gap: 8px; }
+.salary-present-explanation { font-size: 11px; line-height: 1.6; color: #667085; padding: 0 3px 14px; }
+.salary-present-empty { padding: 40px 20px; border: 1px dashed #ddd5ef; border-radius: 10px; background: #faf9fd; text-align: center; color: #667085; }
+.salary-present-empty h3 { font-size: 16px; color: #344054; margin: 0 0 8px; }
+.salary-present-selected { display: grid; gap: 12px; padding-top: 14px; border-top: 1px solid #e5e7eb; }
+.salary-present-selected > div:first-child { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.salary-present-selected > div:first-child > span { color: #667085; font-size: 12px; }
+@media(max-width:600px) { .salary-present-mode { align-items: flex-start; flex-direction: column; }.salary-present-mode > .ant-btn { align-self: flex-start; }.salary-present-controls .salary-present-employees { grid-column: 1 / -1; } }
+@media (max-width: 600px) { .salary-worksheet-caption > span:last-child { margin-left: 0; } .salary-worksheet-formula-bar { flex-wrap: wrap; gap: 7px; } .salary-worksheet-formula-bar > .ant-input { min-width: 160px; } .salary-worksheet-footer { flex-wrap: wrap; } }

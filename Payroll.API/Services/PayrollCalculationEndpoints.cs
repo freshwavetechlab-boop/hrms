@@ -34,6 +34,13 @@ public static class PayrollCalculationEndpoints
             PayRunRepository.ValidateSimulationRequest(request);
             return Results.Ok(request.Mode == "Employee" ? await repository.SimulateEmployeeAsync(request, context.RequestAborted) : PayRunRepository.SimulateTemplate(request));
         });
+        group.MapPost("/extract-template", async (SalaryTemplateExcelExtractionRequest request, HttpContext context, SettingsRepository settings) =>
+        {
+            if (context.Items["User"] is not AuthUser user || !SalaryTemplateExcelExtractionService.CanAccess(user, request.ClientId)) return Results.StatusCode(403);
+            var masters = SalaryTemplateExcelExtractionService.ReadMasterCatalogue(await settings.GetForClientAsync(request.ClientId));
+            return Results.Ok(SalaryTemplateExcelExtractionService.Extract(request, masters));
+        })
+            .WithMetadata(new CalculationOnlyPayrollReview(), new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(30_000_000));
         group.MapPost("/formula-workbook",async (PayrollFormulaWorkbookRequest request,HttpContext context,PayRunRepository repository)=>
             context.Items["User"] is AuthUser user && CanAccess(user,request.ClientId,true)
                 ? Results.Ok(await repository.FormulaWorkbookAsync(request,context.RequestAborted)) : Results.StatusCode(403));

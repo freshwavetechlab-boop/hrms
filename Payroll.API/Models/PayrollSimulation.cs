@@ -29,6 +29,7 @@ public sealed record PayrollAttendanceInputEvidence(string SourceKind, string Pa
     public bool ActualPresenceKnown => PresentDays.HasValue;
 }
 public sealed record PayrollSimulationIssue(string Severity, string Component, string Message, string Action);
+public sealed record PayrollSimulationLocation(int WorkLocationId, string WorkLocationName, string TemplateId);
 public sealed record PayrollSimulationLine(string Code, string Name, string Category, string Formula, string Substituted, decimal Raw, decimal Monthly, decimal Earned, bool ProRata, string Source, string Rounding, Dictionary<string, decimal> Inputs)
 {
     public decimal? UnroundedEarned { get; init; }
@@ -70,6 +71,11 @@ public sealed class PayrollSimulationResult
     public PayrollAttendanceInputEvidence? AttendanceEvidence { get; set; }
     public string TemplateId { get; set; } = "";
     public string Employee { get; set; } = "";
+    public string EmployeeCode { get; set; } = "";
+    public string EmployeeName { get; set; } = "";
+    public int WorkLocationId { get; set; }
+    public string WorkLocationName { get; set; } = "";
+    public List<PayrollSimulationLocation> Locations { get; set; } = [];
     public bool Complete => Issues.All(i => i.Severity != "Error");
     public List<PayrollSimulationIssue> Issues { get; set; } = [];
     public List<PayrollSimulationInput> Inputs { get; set; } = [];

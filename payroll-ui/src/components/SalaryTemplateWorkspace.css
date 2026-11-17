@@ -1,0 +1,80 @@
+.hrms-content:has(.salary-template-workspace) { display: flex; overflow: hidden; background: #f7f6fc; }
+.hrms-page-body:has(.salary-template-workspace), .hrms-page-body > form:has(.salary-template-workspace) { display: flex; flex: 1; min-height: 0; min-width: 0; }
+.salary-template-workspace { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
+.salary-workspace-scroll { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 2px 4px 18px 0; scrollbar-gutter: stable; }
+.salary-workspace-scroll:has(.salary-workspace-designer) { display: flex; overflow: hidden; padding-bottom: 0; }
+.salary-template-workspace .salary-workspace-designer { display: flex; flex: 1; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; }
+.salary-workspace-client { display: flex; align-items: center; gap: 8px; width: 360px; max-width: 100%; font-size: 12px; color: #797084; }
+.salary-workspace-client .payroll-scope-select { flex: 1; width: 320px !important; max-width: 100%; }
+.salary-workspace-nav { display: flex; gap: 20px; }
+.salary-workspace-nav button { background: transparent; color: #857990; border: 0; border-radius: 0; padding: 9px 0; border-bottom: 2px solid transparent; font-size: 12px; box-shadow: none; }
+.salary-workspace-nav button[aria-current='page'] { color: #7756f5; border-bottom-color: #7756f5; }
+.salary-workspace-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.salary-workspace-actions .ant-btn-primary:not(:disabled), .salary-saved-template .ant-btn-primary:not(:disabled) { background: #7756f5; border-color: #7756f5; color: #fff; }
+.salary-workspace-actions .ant-btn-primary:not(:disabled):hover, .salary-saved-template .ant-btn-primary:not(:disabled):hover { background: #6546e8; border-color: #6546e8; color: #fff; }
+.salary-workspace-actions .ant-btn-primary:disabled, .salary-saved-template .ant-btn-primary:disabled { background: #f2f4f7; border-color: #d0d5dd; color: #667085; box-shadow: none; }
+.salary-workspace-list-heading { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 20px; }
+.salary-workspace-list-heading > div:first-child { flex: 1; }
+.salary-workspace-list-heading h2 { margin: 0; font-size: 20px; color: #2e233e; }
+.salary-workspace-list-heading p { margin: 6px 0 0; font-size: 12px; color: #887d94; }
+.salary-workspace-list-heading > .ant-input { width: 240px; }
+.salary-workspace-view-toggle { display: flex; gap: 4px; }
+.salary-workspace-view-toggle [aria-pressed='true'] { background: #ede8ff; border-color: #d8cdf9; color: #7756f5; }
+.salary-template-card-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(min(100%,300px),1fr)); gap: 16px; }
+.salary-saved-template { background: #fff; border: 1px solid #e8e2ef; border-radius: 16px; padding: 20px; min-width: 0; display: flex; flex-direction: column; transition: border-color .18s, box-shadow .18s; }
+.salary-saved-template:hover { border-color: #d5c8f4; box-shadow: 0 6px 20px #7756f50a; }
+.salary-saved-template-top { display: flex; justify-content: space-between; align-items: center; }
+.salary-template-icon { display: inline-grid; place-items: center; width: 38px; height: 38px; color: #7756f5; background: #f1edff; border-radius: 11px; font-size: 18px; }
+.salary-template-state { font-size: 11px; border-radius: 6px; background: #f1eff5; color: #8b8295; padding: 4px 8px; }
+.salary-template-state.is-active { color: #258255; background: #edf8f1; }
+.salary-saved-template h3 { font-size: 15px; color: #2d223d; line-height: 1.6; margin: 15px 0 6px; overflow-wrap: anywhere; }
+.salary-saved-template p { font-size: 12px; color: #8b8098; margin: 0 0 16px; }
+.salary-saved-template-types { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 22px; }
+.salary-saved-template-types span { background: #f6f4fa; color: #8a7c9a; font-size: 11px; padding: 3px 6px; border-radius: 5px; }
+.salary-saved-template footer { display: flex; gap: 8px; margin-top: auto; padding-top: 16px; border-top: 1px solid #f0ecf6; }
+.salary-saved-template footer > .ant-btn { flex: 1; }
+.salary-workspace-empty { display: grid; justify-items: center; text-align: center; padding: 60px 20px; gap: 12px; min-width: 0; }
+.salary-workspace-empty h2,.salary-workspace-empty h3 { color: #342640; margin: 0; font-size: 20px; }
+.salary-workspace-empty p { color: #8a7e96; font-size: 13px; max-width: 460px; line-height: 1.8; margin: 0; }
+.salary-workspace-empty-icon { background: #eee8ff; color: #7756f5; padding: 18px; border-radius: 18px; font-size: 28px; }
+.salary-template-contextbar { display: flex; align-items: flex-end; gap: 12px; padding: 12px 16px; background: #fff; border: 1px solid #e7e4ef; border-radius: 12px; flex-shrink: 0; }
+.salary-template-contextbar > label { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; font-size: 11px; color: #475467; }
+.salary-template-contextbar > label > span { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; margin: 0; width: 100px; flex-shrink: 0; font-size: 11px; }
+.salary-template-contextbar small { color: #667085; font-weight: 400; font-size: 10px; }
+.salary-template-contextbar .ant-select { flex: 1; min-width: 0; width: 100%; }
+.salary-template-contextbar > .ant-btn { height: 34px; flex-shrink: 0; }
+.salary-workspace-editor-heading { display: flex; gap: 18px; align-items: center; padding: 0 4px; flex-shrink: 0; flex-wrap: wrap; }
+.salary-workspace-editor-heading > label:not(.ant-checkbox-wrapper) { display: flex; align-items: center; flex: 1; min-width: min(300px,100%); gap: 12px; color: #475467; font-size: 11px; white-space: nowrap; }
+.salary-workspace-editor-heading > label > .ant-input { flex: 1; min-width: 0; max-width: 650px; }
+.salary-workspace-editor-heading > .ant-checkbox-wrapper { display: inline-flex; align-items: center; gap: 6px; margin-top: 0; }
+.salary-template-edit-state { color: #667085; font-size: 10px; white-space: nowrap; }
+.salary-template-edit-state.is-dirty { color: #9a6700; }
+.salary-workspace-designer > .ant-alert { flex-shrink: 0; max-height: 110px; overflow: auto; }
+.salary-template-chooser { display: flex; flex-direction: column; gap: 16px; flex: 1; min-height: 0; padding: 20px; background: #fff; border: 1px solid #e7e4ef; border-radius: 12px; }
+.salary-template-chooser-heading { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.salary-template-chooser-heading h2 { margin: 0; color: #253047; font-size: 16px; }
+.salary-template-chooser-heading p { color: #667085; font-size: 12px; line-height: 1.6; margin: 4px 0 0; }
+.salary-template-choices { display: flex; flex-direction: column; min-height: 0; overflow: auto; scrollbar-width: thin; }
+.salary-template-choice { display: flex; align-items: center; gap: 14px; text-align: left; padding: 14px 10px; background: #fff; color: #344054; border: 0; border-bottom: 1px solid #eaecf0; border-radius: 0; box-shadow: none; }
+.salary-template-choice:hover, .salary-template-choice:focus-visible { background: #f7f5ff; }
+.salary-template-choice:focus-visible { outline: 2px solid #7756f5; outline-offset: -2px; }
+.salary-template-choice-icon { width: 30px; height: 30px; display: inline-grid; place-items: center; background: #f3f0ff; border: 1px solid #eae3ff; border-radius: 8px; color: #7756f5; flex-shrink: 0; }
+.salary-template-choice-copy { display: grid; gap: 5px; flex: 1; min-width: 0; }
+.salary-template-choice-copy > strong { color: #344054; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.salary-template-choice-copy > small { color: #667085; font-size: 10px; }
+.salary-template-choice > .salary-template-state { flex-shrink: 0; }
+.salary-template-choice > .anticon { color: #98a2b3; }
+.salary-workspace-step-hint { font-size: 12px; color: #9684ac; }
+.salary-workspace-advanced { background: #fff; border: 1px solid #e8e2ef; border-radius: 9px; padding: 10px 14px; font-size: 11px; color: #667085; flex-shrink: 0; max-height: 150px; overflow: auto; }
+.salary-workspace-advanced summary { cursor: pointer; color: #655374; }
+.salary-workspace-advanced p { line-height: 1.8; }
+.salary-workspace-advanced label { display: flex; gap: 12px; align-items: center; }
+.salary-workspace-advanced input { max-width: 170px; }
+.salary-template-source-formulas { display: grid; gap: 10px; }
+.salary-template-source-formulas > div { display: grid; gap: 4px; padding-bottom: 8px; border-bottom: 1px solid #eef0f5; }
+.salary-template-source-formulas code { white-space: pre-wrap; overflow-wrap: anywhere; color: #475467; font-size: 11px; }
+.salary-template-workspace .formula-modal { z-index: 1; }
+@media(max-width:700px) { .salary-workspace-client { width: min(340px,100%); }.salary-workspace-client .payroll-scope-select { width: 100% !important; }.salary-workspace-list-heading > .ant-input { width: 100%; order: 3; }.salary-workspace-step-hint { display: none; }.salary-saved-template { padding: 16px; }.salary-workspace-actions { gap: 5px; }.salary-workspace-actions .ant-btn { padding-inline: 9px; } }
+@media(max-width:850px) { .salary-workspace-scroll:has(.salary-workspace-designer) { display: block; overflow: auto; padding-bottom: 12px; }.salary-template-workspace .salary-workspace-designer { min-height: 100%; }.salary-workspace-designer > .salary-template-components { flex: none; height: 560px; min-height: 480px; } }
+@media(max-width:580px) { .salary-template-contextbar { padding: 10px; gap: 8px; }.salary-template-contextbar > label { display: grid; gap: 6px; }.salary-template-contextbar > label > span { flex-direction: row; gap: 8px; width: auto; }.salary-template-contextbar > .ant-btn { padding-inline: 8px; font-size: 11px; }.salary-workspace-editor-heading { gap: 8px; }.salary-workspace-editor-heading > label:not(.ant-checkbox-wrapper) { min-width: 100%; gap: 8px; }.salary-template-chooser { padding: 12px; }.salary-template-chooser-heading .salary-template-icon { display: none; }.salary-template-choice { gap: 8px; padding: 12px 4px; }.salary-template-choice-icon { display: none; }.salary-workspace-designer { gap: 8px; } }
+@media(prefers-reduced-motion:reduce) { .salary-saved-template { transition: none; } }

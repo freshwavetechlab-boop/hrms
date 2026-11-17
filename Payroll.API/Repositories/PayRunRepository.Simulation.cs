@@ -39,7 +39,7 @@ public partial class PayRunRepository
     public static PayrollSimulationResult SimulateTemplate(PayrollSimulationRequest request)
     {
         ValidateSimulationRequest(request);
-        var result = new PayrollSimulationResult { Mode = "Template", TemplateId = request.TemplateId, Coverage = "Draft template arithmetic using the payroll engine. Employee amounts, approved adjustments, dated PF, professional tax and projected TDS are included only in Employee mode. No data is saved." };
+        var result = new PayrollSimulationResult { Mode = "Template", ClientId = request.ClientId, PayPeriod = request.PayPeriod, TemplateId = request.TemplateId, Coverage = "Draft template arithmetic using the payroll engine. Employee amounts, approved adjustments, dated PF, professional tax and projected TDS are included only in Employee mode. No data is saved." };
         var (components, structure) = SimulationSetup(request.Snapshot!, request.TemplateId);
         if (!CheckDays(result, request.PayrollDays, request.PresentDays, request.PayableDays, extraDutyUnits: request.ReviewedExtraDutyUnits)) return result;
         var usesCtc = structure.Lines.Any(l => {
@@ -214,6 +214,26 @@ public partial class PayRunRepository
             else if(historicalData is null)await LoadReviewedProfessionalTaxAsync(db, tx, [employee], request.PayPeriod);
         }
         result.LocationAllocations=employee.LocationParts;
+        result.EmployeeCode = employee.EmployeeCode;
+        result.EmployeeName = $"{employee.FirstName} {employee.LastName}".Trim();
+        // IDs come from the same effective employee / reviewed parts used below
+        // by the native calculator. Never display a current-Master substitute.
+        var simulationLocations = employee.LocationParts is { Parts.Count: > 0 }
+            ? employee.LocationParts.Parts.Select(part => (part.WorkLocationId, TemplateId: part.SalaryStructureId)).Distinct().ToArray()
+            : [(employee.WorkLocationId, TemplateId: employee.SalaryStructureId)];
+        var locationNames = new Dictionary<int, string>();
+        // Bulk/workbook contexts already carry their own location metadata. Keep
+        // this UI-only name lookup out of their employee loop.
+        if (shared is null)
+        {
+            var locationIds = simulationLocations.Select(item => item.WorkLocationId).Where(id => id > 0).Distinct().ToArray();
+            if (locationIds.Length > 0)
+                locationNames = (await db.QueryAsync<(int Id, string Name)>(new CommandDefinition(
+                    "SELECT Id,Name FROM worklocations WHERE ClientId=@ClientId AND Id IN @Ids", new { request.ClientId, Ids = locationIds }, tx, cancellationToken: token)))
+                    .ToDictionary(item => item.Id, item => item.Name);
+        }
+        SetSimulationLocations(result, simulationLocations.Select(item => new PayrollSimulationLocation(item.WorkLocationId,
+            locationNames.GetValueOrDefault(item.WorkLocationId, ""), item.TemplateId)).ToList());
         if(employee.LocationParts is not null && (request.PayrollDays.HasValue||request.PresentDays.HasValue||request.PayableDays.HasValue||request.AnnualCtc.HasValue||request.AmountOverrides.Count>0))
         {
             result.Issues.Add(new("Error","Location allocation","Aggregate what-if overrides cannot redistribute reviewed location attendance/rate inputs.","Review the per-location assignment and allocation inputs, then simulate their saved native totals."));
@@ -296,5 +316,13 @@ public partial class PayRunRepository
         }
         catch (Exception e) when (e is InvalidOperationException or FormatException or OverflowException) { result.Lines.Clear(); result.Issues.Add(new("Error", "Calculation", e.Message, "Correct the indicated salary, attendance or policy input, then simulate again.")); }
         return result;
+    }
+
+    internal static void SetSimulationLocations(PayrollSimulationResult result, IReadOnlyList<PayrollSimulationLocation> locations)
+    {
+        result.Locations = locations.Distinct().ToList();
+        var ids = locations.Select(location => location.WorkLocationId).Distinct().ToArray();
+        result.WorkLocationId = ids.Length == 1 ? ids[0] : 0;
+        result.WorkLocationName = ids.Length == 1 ? locations.Select(location => location.WorkLocationName).FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? "" : "";
     }
 }

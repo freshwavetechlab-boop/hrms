@@ -246,5 +246,17 @@ DELETE FROM salarycomponents WHERE Id BETWEEN 9796101 AND 9796112;DELETE FROM wo
         var draft=await F.Runs.CreateAsync(new(){ClientId=Client,PayPeriod="2026-10",PayDate=new(2026,11,1),TotalWorkingDays=30,AttendanceGroupId=Client,IncludedEmployeeIds=[One,Two]},"Synthetic closed reported payroll");
         Assert.NotNull(draft);Assert.Equal("Draft",draft!.Status);Assert.Equal(2,draft.Employees.Count);Assert.All(draft.Employees,e=>Assert.Null(e.PresentDays));
         Assert.Equal(ready.Rows.Sum(r=>r.NetPay),draft.NetPay);Assert.Equal(preserved,await PreservedAsync());
+        // The generic target-only action must consume the same authenticated v2
+        // closed-history/source/native-attendance proof, never replace null with
+        // payable units, and leave the other employee's frozen lines untouched.
+        var otherBefore=JsonSerializer.Serialize(await db.QueryAsync("SELECT * FROM payrunemployeelines WHERE PayRunId=@Id AND EmployeeId=@EmployeeId ORDER BY Id",new{Id=draft.Id,EmployeeId=Two}));
+        var targetBefore=Assert.Single(draft.Employees,row=>row.EmployeeId==One);
+        var recalc=await F.Runs.PreviewEmployeeRecalculationAsync(draft.Id,One);
+        Assert.NotNull(recalc);Assert.True(recalc!.CanApply,string.Join(" ",recalc.Blockers));Assert.Null(recalc.After!.PresentDays);
+        var corrected=await F.Runs.RecalculateEmployeeAsync(draft.Id,One,new(recalc.ExpectedFingerprint,true,"Synthetic confirmed closed-source native recalculation"),"Synthetic closed reported payroll");
+        var targetAfter=Assert.Single(corrected!.Employees,row=>row.EmployeeId==One);
+        Assert.Equal(targetBefore.Id,targetAfter.Id);Assert.Null(targetAfter.PresentDays);Assert.Equal(targetBefore.NetPay,targetAfter.NetPay);
+        Assert.Equal(otherBefore,JsonSerializer.Serialize(await db.QueryAsync("SELECT * FROM payrunemployeelines WHERE PayRunId=@Id AND EmployeeId=@EmployeeId ORDER BY Id",new{Id=draft.Id,EmployeeId=Two})));
+        Assert.Equal(preserved,await PreservedAsync());
     }
 }

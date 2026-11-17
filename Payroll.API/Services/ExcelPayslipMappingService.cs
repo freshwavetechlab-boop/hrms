@@ -9,7 +9,7 @@ namespace Payroll.API.Services;
 public sealed class ExcelPayslipMappingService(RecruitmentAiScoringService ai,
     IWebHostEnvironment environment, ILogger<ExcelPayslipMappingService> logger)
 {
-    internal const string KnowledgeVersion = "excel-payroll-mapping-v69";
+    internal const string KnowledgeVersion = "excel-payroll-mapping-v71";
     internal static readonly HashSet<string> Kinds = ["employeeName", "employeeCode", "email", "info", "earning", "deduction", "employer", "netPay", "grossTotal", "deductionTotal", "ignore"];
     private static readonly HashSet<string> Functions = ["SUM", "ROUND", "ROUNDUP", "ROUNDDOWN", "IF", "IFERROR", "MIN", "MAX", "SUMIF", "SUMIFS", "COUNT", "COUNTA", "COUNTIF", "COUNTIFS", "AND", "OR", "ABS", "CEILING", "FLOOR", "VLOOKUP", "HLOOKUP", "XLOOKUP", "INDEX", "MATCH"];
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -88,8 +88,17 @@ public sealed class ExcelPayslipMappingService(RecruitmentAiScoringService ai,
     internal static IReadOnlyList<Reference> Retrieve(IReadOnlyList<ExcelPayslipMappingColumn> columns, string knowledge,
         IReadOnlyList<ExcelPayslipMappingExample> examples)
     {
+        static string HeaderKey(string value) => Regex.Replace(value.ToUpperInvariant(), "[^A-Z0-9]", "");
+        var monthlyInputAliases = columns.Any(c => Regex.IsMatch(HeaderKey(c.SourceHeader), "^(?:TOTAL|PAYROLL|CALCULATION)DAYS?$"))
+            && columns.Any(c => Regex.IsMatch(HeaderKey(c.SourceHeader), "^(?:PAYABLE|PAYBLE|PAID)DAYS?$"))
+            && columns.Any(output => output.Kind == "earning" && output.HasFormula
+                && Regex.IsMatch(HeaderKey(output.SourceHeader), "^(?:EARNED)?BASIC(?:PAY|SALARY|WAGES)?$")
+                && columns.Any(input => input.Kind is "info" or "ignore" && input.HasNumbers && !input.HasFormula
+                    && Regex.IsMatch(HeaderKey(input.SourceHeader), "^MONTHLYBASIC(?:PAY|SALARY|WAGES)?$")
+                    && output.FormulaDependencies.Contains(input.ColumnIndex)));
         var query = Tokens(string.Join(" ", columns.Select(c => SafeText(c.SourceHeader))));
-        var chunks = Regex.Split(knowledge, @"\r?\n(?=## )").Where(c => c.StartsWith("## "))
+        var chunks = Regex.Split(knowledge, @"\r?\n(?=## )").Where(c => c.StartsWith("## ")
+                && (monthlyInputAliases || !c.StartsWith("## Monthly Basic Basic Pay: dependency-bound blank template inputs")))
             .Select((c, i) => new Reference("excel-payroll-mapping.md#" + (i + 1), c.Split('\n')[0].TrimStart('#', ' ', '\r'), c.Trim()))
             .Select(r => (Item: r, Score: Tokens(r.Content).Count(query.Contains)))
             .OrderByDescending(r => r.Score).ThenBy(r => r.Item.Source).Take(5).Select(r => r.Item).ToList();
@@ -102,6 +111,16 @@ public sealed class ExcelPayslipMappingService(RecruitmentAiScoringService ai,
             var dependencyRule = Regex.Split(knowledge, @"\r?\n(?=## )").FirstOrDefault(c => c.StartsWith("## Cross-sheet formula inputs"));
             if (dependencyRule is not null && !chunks.Any(c => c.Content == dependencyRule.Trim()))
                 chunks.Add(new("excel-payroll-mapping.md#dependencies", "Cross-sheet formula inputs", dependencyRule.Trim()));
+        }
+        // An alias alone cannot establish a source input. Retain this lesson only
+        // for an observed monthly-basis -> earned-output dependency with day inputs.
+        // Retrieval adds guidance; it never changes classifications or approves a write.
+        if (monthlyInputAliases)
+        {
+            var inputRule = Regex.Split(knowledge, @"\r?\n(?=## )")
+                .FirstOrDefault(c => c.StartsWith("## Monthly Basic Basic Pay: dependency-bound blank template inputs"));
+            if (inputRule is not null && !chunks.Any(c => c.Content == inputRule.Trim()))
+                chunks.Add(new("excel-payroll-mapping.md#monthly-input-aliases", inputRule.Split('\n')[0].TrimStart('#', ' ', '\r'), inputRule.Trim()));
         }
         // Header scoring cannot recognize an unlabelled auxiliary dependency.
         // Supply its review boundary from structural metadata only; this does

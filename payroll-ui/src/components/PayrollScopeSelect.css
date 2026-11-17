@@ -1,0 +1,26 @@
+.payroll-scope-select { width: 100%; min-width: 0; }
+.payroll-scope-select.ant-select-single .ant-select-selector .ant-select-selection-item { min-width: 0; display: flex; align-items: center; line-height: normal; }
+.payroll-scope-select.ant-select-single .ant-select-selector { align-items: center; }
+.payroll-scope-select.ant-select-single .ant-select-selection-search { top: 0; bottom: 0; display: flex; align-items: center; }
+.payroll-scope-selected { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.payroll-scope-selected-name { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.payroll-scope-count { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; min-width: 25px; padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 600; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.payroll-scope-count.has-employees { background: #e2f2e9; color: #23744f; }
+.payroll-scope-count.is-empty { background: var(--hrms-canvas, #f5f8fc); color: var(--hrms-muted, #667085); }
+.payroll-scope-count.is-selected-label { min-width: 23px; padding: 1px 5px; font-size: 10px; line-height: 1.5; }
+.payroll-scope-select-popup { min-width: min(320px, calc(100vw - 24px)) !important; max-width: calc(100vw - 24px) !important; background: var(--hrms-panel, #fff); padding: 5px; }
+.payroll-scope-select-popup .ant-select-item-option { min-height: 0; padding: 0; margin: 3px 0; border-radius: 7px; }
+.payroll-scope-select-popup .ant-select-item-option-content { min-width: 0; white-space: normal; }
+.payroll-scope-option { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; column-gap: 9px; min-width: 0; padding: 10px 11px; border-radius: 7px; background: var(--hrms-panel, #fff); color: var(--hrms-ink, #172136); }
+.payroll-scope-option.has-employees { background: #f0f8f3; }
+.payroll-scope-markers { display: inline-flex; flex: 0 0 18px; align-items: center; gap: 4px; width: 18px; }
+.payroll-scope-dot { display: block; flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--hrms-line, #dbe3ec); }
+.payroll-scope-dot.payroll-scope-availability-dot.has-employees { background: #26945f; }
+.payroll-scope-dot.payroll-scope-payroll-dot { background: #dc4c92; }
+.payroll-scope-option-copy { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; min-width: 0; white-space: normal; }
+.payroll-scope-select-popup .payroll-scope-option-name { min-width: 0; color: var(--hrms-ink, #172136); font-size: 12px; font-weight: 500; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
+.payroll-scope-select-popup .payroll-scope-option-hint { min-width: 0; color: var(--hrms-muted, #667085); font-size: 11px; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
+.payroll-scope-select-popup .ant-select-item-option-active .payroll-scope-option { box-shadow: inset 0 0 0 1px var(--hrms-line, #dbe3ec); }
+.payroll-scope-select-popup .ant-select-item-option-selected .payroll-scope-option.has-employees { background: #e4f3e9; box-shadow: inset 0 0 0 1px #b6ddc4; }
+.payroll-scope-select-popup .ant-select-item-option-selected .payroll-scope-option.is-empty { background: var(--hrms-panel, #fff); box-shadow: inset 0 0 0 1px var(--hrms-brand, #0b6fad); }
+.payroll-scope-select-popup .ant-select-item-option-state { align-self: center; color: #23744f; margin-right: 6px; }

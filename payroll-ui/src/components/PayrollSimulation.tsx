@@ -1,82 +1,79 @@
-import { useEffect, useRef, useState } from 'react'
-import { Alert, Button, Collapse, Input, Modal, Select, Tag } from 'antd'
-import { CalculatorOutlined, DeleteOutlined } from '@ant-design/icons'
+import { useEffect, useState } from 'react'
+import { Alert, Button, Collapse, Modal, Select, Spin, Tag } from 'antd'
 import type { Client, Component, Structure } from '../types/payroll'
-import { calculateSalaryDetails, calculateSalaryTotals } from '../utils/salary'
 import { simulateSalary, type SimulationResult, type SourceSalaryScenario } from '../services/payrollCalculationService'
-import SalaryFieldHelp from './SalaryFieldHelp'
 import EmployeePayrollSimulation from './EmployeePayrollSimulation'
+import SalarySimulationWorksheet from './SalarySimulationWorksheet'
+import { simulationUsesCtc } from '../utils/salarySimulationWorksheet'
 import './PayrollSimulation.css'
 import './SalaryFormControls.css'
 
-const amount = (n: number | null) => n === null || !Number.isFinite(n) ? '-' : n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-const numeric = (s: string) => s.trim() === '' ? null : Number(s)
 export type PayrollSimulationProps = { template: Structure; components: Component[]; clients: Client[]; fixedClientId?: number; sourceScenario?: SourceSalaryScenario; preferEmployeeSalary?: boolean; onClose: () => void }
 export default function PayrollSimulation(props: PayrollSimulationProps) {
-  const [employeeMode, setEmployeeMode] = useState(!!props.preferEmployeeSalary && !props.sourceScenario && !Number(props.template.annualCtc || 0))
+  const [employeeMode, setEmployeeMode] = useState(!!props.preferEmployeeSalary && !props.sourceScenario)
   return employeeMode && !props.sourceScenario
     ? <EmployeePayrollSimulation {...props} onTemplateMode={() => setEmployeeMode(false)} />
     : <TemplatePayrollSimulation {...props} onEmployeeMode={props.sourceScenario ? undefined : () => setEmployeeMode(true)} />
 }
 function TemplatePayrollSimulation({ template, components, clients, fixedClientId, sourceScenario, onClose, onEmployeeMode }: PayrollSimulationProps & { onEmployeeMode?: () => void }) {
-  const ids = String(template.clientId || '').split(/[;,|]/).map(s => Number(s.split(':')[0])).filter(n => n > 0)
+  const ids = String(template.clientId || '').split(/[;,|]/).map(value => Number(value.split(':')[0])).filter(value => value > 0)
   const [clientId, setClientId] = useState<number | undefined>(fixedClientId || (ids.length === 1 ? ids[0] : undefined))
-  const [days, setDays] = useState(String(sourceScenario?.payrollDays ?? 30)), [present, setPresent] = useState(sourceScenario ? String(sourceScenario.presentDays) : ''), [payable, setPayable] = useState(String(sourceScenario?.payableDays ?? 30)), [ctc, setCtc] = useState(String(sourceScenario?.annualCtc ?? template.annualCtc ?? ''))
-  const [overrides, setOverrides] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(sourceScenario?.amountOverrides ?? {}).map(([id, value]) => [id, String(value)]))), [overrideId, setOverrideId] = useState<string>()
-  const [result, setResult] = useState<SimulationResult | null>(null), [resultKey, setResultKey] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('')
-  const requestId = useRef(0)
-  useEffect(() => () => { requestId.current++ }, [])
-  const key = JSON.stringify({ clientId, days, present, payable, ctc, overrides, template, components, sourceScenario })
-  const stale = !!result && resultKey !== key
-  const invalid = [days, present, payable, ctc, ...Object.values(overrides)].some(s => s.trim() !== '' && (!Number.isFinite(Number(s)) || Number(s) < 0)) || (days.trim() !== '' && (!Number.isInteger(Number(days)) || Number(days) < 1 || Number(days) > 31)) || (days.trim() !== '' && (Number(payable) > Number(days) || Number(present) > Number(days))) || Object.values(overrides).some(s => s.trim() === '')
-  const available = components.filter(c => template.lines.some(l => String(l.componentId) === String(c.id)))
-  const effectivePresent = !present.trim() ? payable : present
-  const previewRows = calculateSalaryDetails(Number(ctc || 0), components, template, overrides, { payrollDays: Number(days), payableDays: Number(payable), presentDays: Number(effectivePresent) })
-  const previewIssues = previewRows.filter(r => r.error).map(r => `${r.component.code}: ${r.error}`)
-  if (invalid || !days.trim() || !payable.trim()) previewIssues.push('Enter valid payroll and payable days. Zero payable days is allowed.')
-  if (template.lines.some(l => !available.some(c => c.active && String(c.id) === String(l.componentId)))) previewIssues.push('The template includes a missing or inactive component.')
-  const previewTotals = calculateSalaryTotals(previewRows.map(r => ({ ...r, monthly: r.earned ?? r.monthly })))
-  const previewValid = previewIssues.length === 0 && previewRows.length > 0
-  const totals = (gross: number | null, deductions: number | null, benefits: number | null, net: number | null) => <div className="simulation-totals">{([['Gross earned', gross], ['Deductions', deductions], ['Employer benefits', benefits], ['Net payable', net]] as const).map(([label, value]) => <div key={label}><span>{label}</span><strong>Rs {amount(value)}</strong></div>)}</div>
-  const table = (rows: { code: string; name: string; category: string; formula: string; monthly: number; earned: number; proRata: boolean; error?: string }[]) => <div className="simulation-table-scroll" tabIndex={0} role="region" aria-label="Component-wise salary calculation"><table className="simulation-table"><thead><tr><th>Component</th><th>Type</th><th>Formula / value</th><th>Monthly</th><th>Earned</th><th>Pro-rata</th></tr></thead><tbody>{rows.map((r, i) => <tr key={`${r.code}-${i}`}><td><strong>{r.code}</strong><small>{r.name}</small></td><td>{r.category}</td><td><code>{r.formula || '-'}</code>{r.error && <small className="simulation-row-error">{r.error}</small>}</td><td className="simulation-number">{r.error ? '-' : `Rs ${amount(r.monthly)}`}</td><td className="simulation-number">{r.error ? '-' : `Rs ${amount(r.earned)}`}</td><td>{r.proRata ? 'Yes' : 'No'}</td></tr>)}</tbody></table>{!rows.length && <p>No components in this template.</p>}</div>
-  const run = async () => {
-    if (!clientId || invalid || !days.trim() || !payable.trim()) return
-    const id = ++requestId.current, snapshotKey = key; setBusy(true); setError(''); setResult(null)
-    const response = await simulateSalary({ mode: 'Template', clientId, template, components, ...(sourceScenario ? { snapshot: sourceScenario.snapshot, reviewedExtraDutyUnits: sourceScenario.reviewedExtraDutyUnits } : {}), payPeriod: '', payrollDays: numeric(days), presentDays: numeric(effectivePresent), payableDays: numeric(payable), annualCtc: numeric(ctc), amountOverrides: Object.fromEntries(Object.entries(overrides).map(([id, v]) => [id, Number(v)])) })
-    if (id !== requestId.current) return
-    setBusy(false); if (response.ok && response.data) { setResult(response.data); setResultKey(snapshotKey) } else setError(response.error || 'Simulation returned no result.')
-  }
-  return <Modal open title={`Salary simulation: ${template.name}`} width={1200} zIndex={1600} className="payroll-simulation salary-form-controls" onCancel={onClose} footer={<Button onClick={onClose}>Close</Button>}>
-    {onEmployeeMode && <div className="simulation-run"><Tag>Template inputs</Tag><Button onClick={event => { event.currentTarget.blur(); onEmployeeMode() }}>Use Employee Master salary</Button><span>Employee-specific amounts and saved attendance are available in Employee Master mode.</span></div>}
-    {sourceScenario && <Alert type="info" showIcon message="Try CTC and attendance with these source rules" description="Change CTC, days and monthly inputs, then verify with payroll engine. Fixed Basic/HRA do not scale automatically with CTC. Source-period amounts such as TA/DA apply once to this test. These temporary inputs leave saved data unchanged; actual Employee policies and a saved Regular Draft are checked separately." />}
+  const [month, setMonth] = useState(() => { if (sourceScenario?.payPeriod) return sourceScenario.payPeriod; const date = new Date(); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}` })
+  const initialEdits = () => ({ PAYROLL_DAYS: String(sourceScenario?.payrollDays ?? 30), PAYABLE_DAYS: String(sourceScenario?.payableDays ?? 30),
+    ...(sourceScenario ? { PRESENT_DAYS: String(sourceScenario.presentDays), ANNUAL_CTC: String(sourceScenario.annualCtc) } : template.annualCtc.trim() ? { ANNUAL_CTC: template.annualCtc } : {}),
+    ...Object.fromEntries(Object.entries(sourceScenario?.amountOverrides ?? {}).map(([id, value]) => [`COMPONENT:${id}`, String(value)])) })
+  const [edits, setEdits] = useState<Record<string, string>>(initialEdits), [rules, setRules] = useState<Record<string, string>>({})
+  const [retry, setRetry] = useState(0), [loading, setLoading] = useState(false)
+  const [state, setState] = useState<{ key: string; scope: string; result: SimulationResult | null; error: string }>({ key: '', scope: '', result: null, error: '' })
+  const numeric = (key: string) => !edits[key]?.trim() ? null : Number(edits[key])
+  const days = numeric('PAYROLL_DAYS'), payable = numeric('PAYABLE_DAYS'), present = numeric('PRESENT_DAYS') ?? payable, annual = numeric('ANNUAL_CTC')
+  const overrides = Object.fromEntries(Object.entries(edits).filter(([key, value]) => key.startsWith('COMPONENT:') && value.trim() !== '').map(([key, value]) => [key.slice(10), Number(value)]))
+  const valid = !!clientId && days !== null && payable !== null && Number.isInteger(days) && days >= 1 && days <= 31
+    && [present, payable, annual, ...Object.values(overrides)].every(value => value === null || Number.isFinite(value) && value >= 0)
+    && present !== null && present <= days && payable <= (sourceScenario?.reviewedExtraDutyUnits ? 999.99 : days)
+  const draft = { ...template, lines: template.lines.map(line => Object.hasOwn(rules, String(line.componentId)) ? { ...line, value: '', calculationType: 'Formula', formula: rules[String(line.componentId)] } : line) }
+  const snapshot = sourceScenario ? { ...sourceScenario.snapshot, lines: sourceScenario.snapshot.lines.map(line => Object.hasOwn(rules, line.componentId) ? { ...line, value: '', calculationType: 'Formula', formula: rules[line.componentId] } : line) } : undefined
+  const scope = `${clientId}:${month}`
+  const key = JSON.stringify({ clientId, month, edits, draft, components, snapshot, retry })
+  const responseCurrent = state.key === key, current = responseCurrent && !state.error, result = state.scope === scope ? state.result : null
+  useEffect(() => {
+    if (!valid || !clientId) { setLoading(false); return }
+    let active = true
+    setLoading(true)
+    const timer = window.setTimeout(() => {
+      void simulateSalary({ mode: 'Template', clientId, template: draft, components,
+        ...(snapshot ? { snapshot, reviewedExtraDutyUnits: sourceScenario?.reviewedExtraDutyUnits } : {}), payPeriod: month,
+        payrollDays: days, presentDays: present, payableDays: payable, annualCtc: annual, amountOverrides: overrides }).then(response => {
+        if (!active) return
+        setLoading(false)
+        setState(previous => ({ key, scope, result: response.ok && response.data ? response.data : previous.scope === scope ? previous.result : null, error: response.ok && response.data ? '' : response.error || 'Simulation returned no result.' }))
+      })
+    }, 400)
+    return () => { active = false; window.clearTimeout(timer) }
+    // The exact serialized snapshot is the request identity; stale responses are discarded.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, valid])
+  const changeRule = (componentId: string, formula: string) => { setRules(current => ({ ...current, [componentId]: formula.trim().replace(/^=/, '') })); setEdits(current => Object.fromEntries(Object.entries(current).filter(([key]) => key !== `COMPONENT:${componentId}`))) }
+  const previewLines = template.lines.map(line => { const component = components.find(item => String(item.id) === String(line.componentId)); return `${line.formula || line.value || component?.formula || component?.value || ''} ${line.baseComponent || component?.baseComponent || ''}` }).join(' ')
+  const usesCtc = simulationUsesCtc(result) || /\b(?:CTC|GROSS|MONTHLY_CTC|ANNUAL_CTC)\b/i.test(previewLines)
+  return <Modal open title={`Payroll worksheet · ${template.name}`} width={1400} zIndex={1600} className="payroll-simulation salary-form-controls salary-worksheet-modal" onCancel={onClose} footer={<Button onClick={onClose}>Close</Button>}>
+    <div className="simulation-run"><Tag color="purple">Template draft · what-if only</Tag>{onEmployeeMode && <Button onClick={event => { event.currentTarget.blur(); onEmployeeMode() }}>Use employee & saved attendance</Button>}<Button onClick={() => { setEdits(initialEdits()); setRules({}); setRetry(value => value + 1) }}>Reset worksheet</Button></div>
     <div className="payroll-simulation-controls">
-      {([['Payroll days', days, setDays], ['Payable days', payable, setPayable]] as const).map(([label, value, set]) => <label className="simulation-field" key={label}><span>{label}<SalaryFieldHelp label={`Simulation ${label}`} text="Template values recalculate when you change days. Zero payable days means no payable attendance." example="Wages 15,414 x 14 payable days / 30 payroll days = 7,193.20." /></span><Input aria-label={`Simulation ${label}`} inputMode="decimal" value={value} placeholder="Required input" onChange={e => set(e.target.value)} /></label>)}
-      {sourceScenario && <><label className="simulation-field">Annual CTC<Input aria-label="Simulation Annual CTC" inputMode="decimal" value={ctc} onChange={e => setCtc(e.target.value)} /></label><label className="simulation-field">Present days (scenario input)<Input aria-label="Simulation Present days" inputMode="decimal" value={present} onChange={e => setPresent(e.target.value)} /></label></>}
+      {!fixedClientId && <label className="simulation-field">Client<Select aria-label="Simulation client" value={clientId} options={clients.filter(client => !ids.length || ids.includes(client.id)).map(client => ({ value: client.id, label: client.name }))} onChange={setClientId} /></label>}
+      <label className="simulation-field">Pay month<input aria-label="Template simulation month" type="month" value={month} onChange={event => setMonth(event.target.value)} /></label>
+      <div className="simulation-field"><span>Template</span><b>{template.name}</b></div>
     </div>
-    {sourceScenario && <section aria-label="Source scenario amounts"><h4>Monthly inputs and source-period amounts</h4><div className="payroll-simulation-controls">{Object.entries(overrides).map(([id, value]) => <label className="simulation-field" key={id}>{available.find(c => String(c.id) === id)?.name || id}<Input aria-label={`Source scenario amount ${available.find(c => String(c.id) === id)?.code || id}`} inputMode="decimal" value={value} onChange={e => setOverrides({ ...overrides, [id]: e.target.value })} /></label>)}</div><Button aria-label="Run source salary simulation" type="primary" loading={busy} disabled={!clientId || invalid || !days.trim() || !payable.trim()} onClick={() => void run()}>Verify with payroll engine</Button></section>}
-    <section className="simulation-preview" aria-label="Template calculation preview">
-      {previewIssues.length > 0 && <Alert type="error" showIcon message="Check simulation inputs" description={previewIssues.join(' ')} />}
-      {totals(previewValid ? previewTotals.gross : null, previewValid ? previewTotals.deductions : null, previewValid ? previewTotals.employerCost : null, previewValid ? previewTotals.net : null)}
-      {table(previewRows.map(r => ({ code: r.component.code, name: r.component.name, category: r.component.category, formula: r.dailyRate !== undefined ? `${r.dailyRate} x ${r.units} payable days` : r.source || r.calculationType || '', monthly: r.monthly, earned: r.earned ?? r.monthly, proRata: !!r.proRata, error: r.error || (!previewValid ? 'Check simulation inputs' : undefined) })))}
-    </section>
-    <Collapse className="simulation-options"><Collapse.Panel key="options" header="Additional inputs and payroll verification">
-      <div className="payroll-simulation-controls">
-        <label className="simulation-field">Verification client<Select aria-label="Simulation client" disabled={!!fixedClientId} value={clientId} dropdownStyle={{ zIndex: 1700 }} options={clients.filter(c => !ids.length || ids.includes(c.id)).map(c => ({ value: c.id, label: c.name }))} onChange={setClientId} /></label>
-        {!sourceScenario && ([['Present days', present, setPresent], ['Annual CTC', ctc, setCtc]] as const).map(([label, value, set]) => <label className="simulation-field" key={label}><span>{label}<SalaryFieldHelp label={`Simulation ${label}`} text={label === 'Present days' ? 'For formulas using PRESENT_DAYS. Blank follows payable days in template simulation.' : 'Annual salary target used by CTC formulas. This temporary input does not change the template.'} example={label === 'Present days' ? '20 present days plus 2 paid leave days can mean 22 payable days.' : '300000 annually supplies a monthly target of 25000.'} /></span><Input aria-label={`Simulation ${label}`} inputMode="decimal" value={value} placeholder={label === 'Present days' ? 'Same as payable days' : 'Annual target'} onChange={e => set(e.target.value)} /></label>)}
-      </div>
-    <Collapse><Collapse.Panel key="amounts" header="Temporary component amounts"><div className="simulation-overrides"><Select aria-label="Override component" dropdownStyle={{ zIndex: 1700 }} value={overrideId} placeholder="Select component" options={available.map(c => ({ value: String(c.id), label: `${c.code} (${c.calculationType === 'Daily Rate' ? 'per day' : 'full-period amount'})` }))} onChange={setOverrideId} /><Button disabled={!overrideId || Object.hasOwn(overrides, overrideId)} onClick={() => { if (overrideId) setOverrides({ ...overrides, [overrideId]: '' }) }}>Add override</Button></div>{Object.entries(overrides).map(([id, v]) => <div className="simulation-overrides" key={id}><label className="simulation-field">{available.find(c => String(c.id) === id)?.code}<Input aria-label={`Override ${id}`} inputMode="decimal" value={v} onChange={e => setOverrides({ ...overrides, [id]: e.target.value })} /></label><Button aria-label={`Remove override ${id}`} icon={<DeleteOutlined />} onClick={() => setOverrides(Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== id)))} /></div>)}</Collapse.Panel></Collapse>
-    <div className="simulation-run"><Button aria-label="Run salary simulation" icon={<CalculatorOutlined />} loading={busy} disabled={!clientId || invalid || !days.trim() || !payable.trim()} onClick={() => void run()}>Verify with payroll engine</Button></div>
-    </Collapse.Panel></Collapse>
-    {invalid && <Alert type="error" message="Enter valid non-negative numbers. An added override cannot be blank." />}
-    {error && <Alert type="error" showIcon message={error} />}
-    {stale && <Alert type="warning" showIcon message="Inputs changed. Run simulation again; the result below is from previous inputs." />}
-    {result && <div className={stale ? 'simulation-stale' : ''}>
-      <Alert type={result.complete ? 'info' : 'error'} message={result.complete ? 'Calculated by payroll engine' : 'Simulation incomplete'} description={result.coverage} />
-      {result.issues.map((issue, i) => <Alert key={i} type={issue.severity === 'Error' ? 'error' : issue.severity === 'Warning' ? 'warning' : 'info'} showIcon message={`${issue.component}: ${issue.message}`} description={issue.action} />)}
-      {result.complete && totals(result.gross, result.deductions, result.benefits, result.net)}
-      {result.lines.length > 0 && table(result.lines.map(line => ({ ...line, name: components.find(c => c.code === line.code)?.name || line.name })))}
-      <Collapse><Collapse.Panel key="inputs" header={`Resolved inputs${result.employee ? `: ${result.employee}` : ''}`}><div className="simulation-inputs">{result.inputs.map(input => <div key={input.name}><strong>{input.name}</strong><span>{input.value === null ? 'Missing' : input.value} {input.unit}</span><small>{input.source}</small></div>)}</div></Collapse.Panel></Collapse>
-      {result.lines.length > 0 && <Collapse>{result.lines.map((line, i) => <Collapse.Panel key={i} header={<div className="simulation-line-title"><strong>{line.code}</strong><Tag>{line.category}</Tag><span>Rs {amount(line.earned)}</span></div>}><dl className="simulation-trace"><dt>Source</dt><dd>{line.source}</dd><dt>Configured formula / value</dt><dd><code>{line.formula || 'Resolved policy / transaction amount'}</code></dd><dt>Substituted calculation</dt><dd><code>{line.substituted}</code></dd><dt>Before component rounding</dt><dd>{line.raw}</dd><dt>Full-period / resolved amount</dt><dd>{amount(line.monthly)}</dd><dt>Attendance adjustment</dt><dd>{line.proRata ? 'Amount x payable days / payroll days' : 'No second adjustment'}</dd><dt>Earned result</dt><dd>{amount(line.earned)}</dd><dt>Rounding</dt><dd>{line.rounding}</dd></dl>{Object.entries(line.inputs).map(([name, v]) => <Tag key={name}>{name} = {v}</Tag>)}</Collapse.Panel>)}</Collapse>}
-    </div>}
+    <p className="salary-worksheet-context-note">Select a highlighted input cell and change its value in the formula bar. All dependent values recalculate with the native engine. Template mode tests draft rules; employee policies and saved attendance are available in employee mode.</p>
+    {!valid && <Alert type="error" message="Check worksheet inputs" description="Payroll days must be 1–31. Enter valid non-negative days and amounts; blank present days in this hypothetical template scenario follow payable days." />}
+    {loading && <p role="status"><Spin size="small" /> Recalculating worksheet with payroll engine…</p>}
+    {responseCurrent && state.error && <Alert type="error" showIcon message={state.error} />}
+    {result && <>
+      {result.issues.filter(issue => issue.severity !== 'Info').map((issue, index) => <Alert key={index} type={issue.severity === 'Error' ? 'error' : 'warning'} showIcon message={`${issue.component}: ${issue.message}`} description={issue.action} />)}
+      <SalarySimulationWorksheet result={result} employeeName="Template scenario" month={month} clientName={clients.find(client => client.id === clientId)?.name || ''} edits={edits} onEdit={(field, value) => setEdits(current => ({ ...current, [field]: value }))} onRuleEdit={changeRule} stale={!current} />
+      <Collapse><Collapse.Panel key="notes" header={`Calculation notes (${result.issues.filter(issue => issue.severity === 'Info').length})`}>{result.issues.filter(issue => issue.severity === 'Info').map((issue, index) => <p key={index}><b>{issue.component}:</b> {issue.message} {issue.action}</p>)}</Collapse.Panel><Collapse.Panel key="context" header="Scenario inputs & native calculation coverage"><p>{result.coverage}</p><div className="payroll-simulation-controls">
+        {(['PAYROLL_DAYS', 'PRESENT_DAYS', 'PAYABLE_DAYS', ...(usesCtc ? ['ANNUAL_CTC'] : [])]).map(field => <label className="simulation-field" key={field}>{field.replace(/_/g, ' ')}<input aria-label={`Template scenario ${field}`} inputMode="decimal" value={edits[field] ?? ''} placeholder={field === 'PRESENT_DAYS' ? 'Same as payable days (scenario)' : 'Required input'} onChange={event => setEdits(current => ({ ...current, [field]: event.target.value }))} /></label>)}
+      </div>{Object.entries(rules).length > 0 && <Alert type="info" message="Formula changes are temporary and apply only to this worksheet. Save template changes separately in the designer after review." />}</Collapse.Panel></Collapse>
+    </>}
+    {!result && <section className="salary-worksheet-empty"><h3>Worksheet inputs</h3><div className="payroll-simulation-controls">{(['PAYROLL_DAYS', 'PRESENT_DAYS', 'PAYABLE_DAYS', ...(usesCtc ? ['ANNUAL_CTC'] : [])]).map(field => <label className="simulation-field" key={field}>{field.replace(/_/g, ' ')}<input aria-label={`Template scenario ${field}`} inputMode="decimal" value={edits[field] ?? ''} placeholder={field === 'PRESENT_DAYS' ? 'Same as payable days (scenario)' : 'Required input'} onChange={event => setEdits(current => ({ ...current, [field]: event.target.value }))} /></label>)}</div></section>}
   </Modal>
 }
