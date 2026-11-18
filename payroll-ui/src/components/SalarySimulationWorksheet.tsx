@@ -1,18 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Input, Tag } from 'antd'
 import type { SimulationResult } from '../services/payrollCalculationService'
+import type { Component, Structure } from '../types/payroll'
 import { alignSalaryWorksheetRows, resolveSalaryWorksheetSelection, salaryColumnLetter, salarySimulationWorksheet, type SalaryWorksheetSelection } from '../utils/salarySimulationWorksheet'
 import './SalarySimulationWorksheet.css'
 
 export type SalaryWorksheetEmployeeRow = { key: string; result: SimulationResult; employeeCode?: string; employeeName?: string; edits: Record<string, string>; onEdit: (key: string, value: string) => void; stale?: boolean; status?: string }
 const display = (value: number | string | null) => value == null ? '' : typeof value === 'number' ? value.toLocaleString('en-IN', { maximumFractionDigits: 8 }) : value
-export default function SalarySimulationWorksheet({ result, employeeCode, employeeName, month, clientName, edits, onEdit, onRuleEdit, stale = false, rows, presentOnly = false, onRowSelect }: {
+export default function SalarySimulationWorksheet({ result, employeeCode, employeeName, month, clientName, edits, onEdit, onRuleEdit, stale = false, rows, presentOnly = false, onRowSelect, template, components }: {
   result: SimulationResult; employeeCode?: string; employeeName?: string; month: string; clientName: string;
   edits: Record<string, string>; onEdit: (key: string, value: string) => void; onRuleEdit?: (componentId: string, formula: string) => void; stale?: boolean;
   rows?: SalaryWorksheetEmployeeRow[]; presentOnly?: boolean; onRowSelect?: (key: string) => void;
+  template?: Structure; components?: Component[];
 }) {
   const sources: SalaryWorksheetEmployeeRow[] = rows ?? [{ key: String(result.employeeId || 'scenario'), result, employeeCode, employeeName, edits, onEdit, stale }]
-  const models = useMemo(() => sources.map(source => salarySimulationWorksheet(source.result, { employeeCode: source.employeeCode, employeeName: source.employeeName, month, clientName })), [rows, result, employeeCode, employeeName, month, clientName]) // eslint-disable-line react-hooks/exhaustive-deps
+  const models = useMemo(() => sources.map(source => salarySimulationWorksheet(source.result, { employeeCode: source.employeeCode, employeeName: source.employeeName, month, clientName, template, components })), [rows, result, employeeCode, employeeName, month, clientName, template, components]) // eslint-disable-line react-hooks/exhaustive-deps
   const aligned = useMemo(() => alignSalaryWorksheetRows(models), [models])
   const [selection, setSelection] = useState<SalaryWorksheetSelection>({ row: 0, column: 0 }), [formulaDraft, setFormulaDraft] = useState('')
   const [ruleEditing, setRuleEditing] = useState(false)
@@ -42,8 +44,8 @@ export default function SalarySimulationWorksheet({ result, employeeCode, employ
           const editable = canEdit(item.inputKey), selected = row === rowIndex && index === columnIndex
           return <td key={item.address} className={`${selected ? 'is-selected' : ''} ${editable ? 'is-input' : ''} ${item.label === 'Net pay' || item.label === 'Net pay earned' ? 'is-net' : ''}`}>
             {editable ? <input ref={element => { if (element) refs.current.set(`${row}:${index}`, element); else refs.current.delete(`${row}:${index}`) }} aria-label={`${sources[row].employeeCode || 'Scenario'} ${item.label}`} inputMode="decimal" value={sources[row].edits[item.inputKey!] ?? String(item.value ?? '')} placeholder={item.inputKey === 'PRESENT_DAYS' ? 'Enter days' : 'Not supplied'} onFocus={() => select(row, index)} onChange={event => sources[row].onEdit(item.inputKey!, event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); select(row + 1, index, true) } }} /> :
-              <button type="button" ref={element => { if (element) refs.current.set(`${row}:${index}`, element); else refs.current.delete(`${row}:${index}`) }} tabIndex={selected ? 0 : -1} aria-label={`${item.address} ${item.label}: ${item.value ?? 'Not supplied'}`} aria-pressed={selected} onClick={() => select(row, index)} onKeyDown={event => { if (event.key === 'ArrowRight') { event.preventDefault(); select(row, index + 1, true) } if (event.key === 'ArrowLeft') { event.preventDefault(); select(row, index - 1, true) } if (event.key === 'ArrowUp') { event.preventDefault(); select(row - 1, index, true) } if (event.key === 'ArrowDown') { event.preventDefault(); select(row + 1, index, true) } }}>
-                {display(item.value) || <span className="salary-worksheet-missing">Not supplied</span>}
+              <button type="button" ref={element => { if (element) refs.current.set(`${row}:${index}`, element); else refs.current.delete(`${row}:${index}`) }} tabIndex={selected ? 0 : -1} aria-label={`${item.address} ${item.label}: ${item.value ?? (item.pending ? 'Pending' : 'Not supplied')}`} aria-pressed={selected} onClick={() => select(row, index)} onKeyDown={event => { if (event.key === 'ArrowRight') { event.preventDefault(); select(row, index + 1, true) } if (event.key === 'ArrowLeft') { event.preventDefault(); select(row, index - 1, true) } if (event.key === 'ArrowUp') { event.preventDefault(); select(row - 1, index, true) } if (event.key === 'ArrowDown') { event.preventDefault(); select(row + 1, index, true) } }}>
+                {display(item.value) || <span className="salary-worksheet-missing">{item.pending ? 'Pending' : 'Not supplied'}</span>}
               </button>}
           </td>
         })}</tr>)}</tbody></table>

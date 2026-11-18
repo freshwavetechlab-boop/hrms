@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { DownloadOutlined, UploadOutlined, MoreOutlined, PlusOutlined, AppstoreOutlined, UnorderedListOutlined, ArrowRightOutlined, FileExcelOutlined } from '@ant-design/icons'
-import { Alert, Button, Checkbox, Dropdown, Input, Select } from 'antd'
-import DataTable from './DataTable'
+import { DownloadOutlined, UploadOutlined, MoreOutlined, PlusOutlined, AppstoreOutlined, ArrowRightOutlined, FileExcelOutlined } from '@ant-design/icons'
+import { Alert, Button, Checkbox, Dropdown, Input, Segmented, Select } from 'antd'
+import RecruitmentRecordList from './RecruitmentRecordList'
 import type { Client, Component, Employee, Structure, StructureLine, WorkLocation } from '../types/payroll'
 import { calculateSalaryDetails } from '../utils/salary'
 import { PageHeaderPortal } from './layout/AppPageHeader'
 import PayrollScopeSelect from './PayrollScopeSelect'
 import { useAuthSession } from './AuthGate'
-import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
+import { RecruitmentViewContext, useSessionPreference } from '../hooks/useRecruitmentPreferences'
 import SalaryTemplateComponents from './SalaryTemplateComponents'
 import { moveSalaryTemplateLine } from '../utils/salaryTemplateComponentOrder'
 import { validateSalaryTemplateFormula } from '../utils/salaryTemplateFormulaValidation'
 import { salaryTemplateClientIds, scopeSalaryTemplates, preferredSalaryTemplate, templateForClient } from '../utils/salaryTemplateContext'
+import { salaryTemplateReadiness } from '../utils/salaryTemplateReadiness'
 import SalaryFieldHelp from './SalaryFieldHelp'
 import PayrollAdvisor from './PayrollAdvisor'
 import PayrollSimulation from './PayrollSimulation'
@@ -20,6 +21,7 @@ import { reviewSnapshot } from '../services/payrollAdvisorService'
 import { usePayrollCatalogue, valueOptions, valueHints, type SourceSalaryScenario } from '../services/payrollCalculationService'
 import { attendanceHelp, formulaStyleHelp } from '../utils/salaryFieldGuides'
 import '../TemplateDesigner.css'
+import '../RecruitmentViewport.css'
 import './SalaryTemplateWorkspace.css'
 
 type FormulaMode = 'default' | 'fixed' | 'percent' | 'ceiling' | 'advanced'
@@ -60,7 +62,7 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
   const clientId = fixedClientId || (clients.some(client => client.id === chosenClientId) ? chosenClientId : 0)
   const [view, setView] = useState<'Templates' | 'Designer'>('Templates')
   const [listView, setListView] = useSessionPreference<'Cards' | 'Table'>(`salary-templates.view:${session?.user.id}`, 'Cards')
-  const [search, setSearch] = useState('')
+  const [search, setSearch] = useSessionPreference(`salary-templates.search:${session?.user.id}:${clientId}`, '')
   const uploadInput = useRef<HTMLInputElement>(null)
   const editorBaseline = useRef(JSON.stringify(structure))
   const [openedTemplateId, setOpenedTemplateId] = useState('')
@@ -144,7 +146,8 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
   }
 
   const scopeTemplates = scopeSalaryTemplates(templates, clientId)
-  const filteredTemplates = scopeTemplates.filter(row => row.name.toLowerCase().includes(search.trim().toLowerCase()))
+  const templateReadiness = useMemo(() => new Map(templates.map(row => [String(row.id), salaryTemplateReadiness(row, savedComponents)])), [templates, savedComponents])
+  const readinessFor = (row: Structure) => templateReadiness.get(String(row.id)) ?? salaryTemplateReadiness(row, savedComponents)
   const clientOptions = clients.map(client => ({ value: client.id, label: client.name,
     count: new Set(employees.filter(employee => employee.clientId === client.id && employee.isActive).map(employee => employee.id)).size,
     hasTemplate: templates.some(row => row.active && row.lines.length > 0 && idsFor(row.clientId).includes(client.id)) }))
@@ -179,7 +182,7 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
     clearExtractedDraft()
     editorBaseline.current = JSON.stringify(next)
     contextClient.current = id
-    setChosenClientId(id); setStructure(next); setOpenedTemplateId(''); setEditorIntent('existing'); setSearch(''); resetDialogs()
+    setChosenClientId(id); setStructure(next); setOpenedTemplateId(''); setEditorIntent('existing'); resetDialogs()
   }
   // Resolve only an unambiguous saved context; never replace a draft or guess a location.
   useEffect(() => {
@@ -206,9 +209,9 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
     editorBaseline.current = JSON.stringify(newDraft(clientId))
     setStructure(draft.structure); setOpenedTemplateId(''); setEditorIntent('new'); setView('Designer')
   }
-  return <section className="salary-template-workspace">
+  return <section className="salary-template-workspace recruitment-viewport">
     <PageHeaderPortal slot="salary-templates-client-controls">{!fixedClientId && <label className="salary-workspace-client"><span>Client</span><PayrollScopeSelect ariaLabel="Salary template client" value={clientId} options={clientOptions} disabled={saving} onChange={value => changeClient(Number(value))} /></label>}</PageHeaderPortal>
-    <PageHeaderPortal slot="salary-templates-view-controls"><nav className="salary-workspace-nav" aria-label="Salary template workspace">{(['Templates', 'Designer'] as const).map(item => <button type="button" key={item} disabled={saving} aria-current={view === item ? 'page' : undefined} onClick={() => setView(item)}>{item === 'Designer' ? 'Components & formulas' : 'Saved templates'}</button>)}</nav></PageHeaderPortal>
+    <PageHeaderPortal slot="salary-templates-view-controls"><div className="salary-workspace-view-controls"><nav className="salary-workspace-nav" aria-label="Salary template workspace">{(['Templates', 'Designer'] as const).map(item => <button type="button" key={item} disabled={saving} aria-current={view === item ? 'page' : undefined} onClick={() => setView(item)}>{item === 'Designer' ? 'Components & formulas' : 'Saved templates'}</button>)}</nav>{view === 'Templates' && <Segmented aria-label="Salary template display view" options={[{ label: 'Card view', value: 'Cards' }, { label: 'Table view', value: 'Table' }]} value={listView} onChange={value => setListView(value as 'Cards' | 'Table')} />}</div></PageHeaderPortal>
     <PageHeaderPortal slot="salary-templates-page-controls"><div className="salary-workspace-actions">
       {view === 'Designer' && editorReady && <><Button disabled={!structure.lines.length} onClick={event => { event.currentTarget.blur(); openSimulation(structure, !!structure.id && JSON.stringify(structure) === editorBaseline.current) }}>Excel simulation</Button><PayrollAdvisor components={components} template={structure} clients={clients} fixedClientId={clientId || fixedClientId} onDisableProration={code => { const c = components.find(item => item.code === code); if (c) updateLine(String(c.id), { proRataOverride: 'false' }) }} /><Button type="primary" loading={saving} disabled={!clientId || !structure.name.trim() || !lines.length || calculationErrors.length > 0} onClick={() => void saveAndClose()}>Save template</Button></>}
       {(view === 'Templates' || !editorReady) && <Button type="primary" icon={<PlusOutlined />} disabled={!clientId || saving} onClick={createTemplate}>Create template</Button>}
@@ -220,11 +223,35 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
       ] }}><Button aria-label="Salary template tools" icon={<MoreOutlined />}>Tools</Button></Dropdown>
       <input ref={uploadInput} hidden type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void onUploadTemplate?.(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} />
     </div></PageHeaderPortal>
-    <div className="salary-workspace-scroll">
+    <div className={`salary-workspace-scroll${clientId && view === 'Templates' ? ' is-template-list' : ''}`}>
       {!clientId ? <div className="salary-workspace-empty"><span className="salary-workspace-empty-icon"><AppstoreOutlined /></span><h2>Start with a client</h2><p>Choose a client above to see their saved templates and configure salary formulas.</p></div> : view === 'Templates' ? <>
-        <div className="salary-workspace-list-heading"><div><h2>Salary templates</h2><p>{scopeTemplates.length} saved templates · {clientName(clientId)}</p></div><Input aria-label="Search salary templates" placeholder="Find a template…" value={search} onChange={event => setSearch(event.target.value)} /><div className="salary-workspace-view-toggle"><Button aria-label="Template cards" aria-pressed={listView === 'Cards'} icon={<AppstoreOutlined />} onClick={() => setListView('Cards')} /><Button aria-label="Template table" aria-pressed={listView === 'Table'} icon={<UnorderedListOutlined />} onClick={() => setListView('Table')} /></div></div>
-        {listView === 'Table' ? <DataTable rows={filteredTemplates} title="Saved salary templates" getRowId={row => row.id} columns={[{ key: 'name', label: 'Template' }, { key: 'components', label: 'Components', value: row => row.lines.length }, { key: 'active', label: 'Status', render: row => row.active ? 'Active' : 'Inactive' }]} actions={row => <><Button size="small" onClick={() => editTemplate(row)}>{idsFor(row.clientId).length === 1 ? 'Edit' : 'Use for client'}</Button><Button size="small" disabled={!row.lines.length} onClick={() => openSimulation(row, true)}>Simulate</Button></>} /> : <div className="salary-template-card-grid">{filteredTemplates.map(row => <article className="salary-saved-template" key={row.id}><div className="salary-saved-template-top"><span className="salary-template-icon"><AppstoreOutlined /></span><span className={`salary-template-state ${row.active ? 'is-active' : ''}`}>{row.active ? 'Active' : 'Inactive'}</span></div><h3>{row.name}</h3><p>{row.lines.length} components · {idsFor(row.clientId).length === 1 ? clientName(row.clientId) : 'Shared template'}</p><div className="salary-saved-template-types">{[...new Set(row.lines.map(line => componentById.get(String(line.componentId))?.category).filter(Boolean))].map(category => <span key={category}>{category}</span>)}</div><footer><Button onClick={() => editTemplate(row)}>{idsFor(row.clientId).length === 1 ? 'Edit formulas' : 'Use for client'}</Button><Button type="primary" disabled={!row.lines.length} onClick={() => openSimulation(row, true)}>Simulate</Button></footer></article>)}</div>}
-        {!filteredTemplates.length && <div className="salary-workspace-empty"><h3>{search ? 'No matching templates' : 'Create this client’s first template'}</h3><p>Add the salary components, configure their formulas and try an employee in Excel simulation.</p></div>}
+        <RecruitmentViewContext.Provider value={{ view: listView, scope: `${session?.user.id}:${clientId}`, namespace: 'salary-templates.ui' }}>
+          <RecruitmentRecordList rows={scopeTemplates} view={listView} title={row => row.name || 'Untitled template'}
+            subtitle={row => idsFor(row.clientId).length === 1 ? clientName(row.clientId) : 'Shared template'}
+            searchValue={search} onSearchChange={setSearch} searchPlaceholder="Search salary templates"
+            exportFileName={`salary-templates-${clientId}`} hiddenCardColumns={['name', 'client', 'review']}
+            cardSummaryColumns={['status', 'components', 'categories']}
+            rowClassName={row => `salary-template-record is-${readinessFor(row).status.toLowerCase()}`}
+            columns={[
+              { key: 'name', label: 'Template', width: 300, wrap: true },
+              { key: 'client', label: 'Client', value: row => idsFor(row.clientId).length === 1 ? clientName(row.clientId) : 'Shared template' },
+              { key: 'status', label: 'Configuration', width: 140, value: row => readinessFor(row).status, render: row => <span className={`salary-template-state is-${readinessFor(row).status.toLowerCase()}`} title={readinessFor(row).reason}>{readinessFor(row).status}</span> },
+              { key: 'components', label: 'Components', width: 120, value: row => row.lines.length },
+              { key: 'categories', label: 'Component types', width: 220, wrap: true, value: row => [...new Set(row.lines.map(line => componentById.get(String(line.componentId))?.category).filter(Boolean))].join(' · ') || 'Not configured' },
+              { key: 'review', label: 'Configuration details', width: 280, wrap: true, value: row => readinessFor(row).reason },
+            ]}
+            quickFilters={[
+              { key: 'configured', label: 'Configured', tone: 'purple', matches: row => readinessFor(row).status === 'Configured' },
+              { key: 'draft', label: 'Draft', tone: 'orange', matches: row => readinessFor(row).status === 'Draft' },
+              { key: 'inactive', label: 'Inactive', tone: 'blue', matches: row => readinessFor(row).status === 'Inactive' },
+            ]}
+            filters={[{ key: 'configuration', label: 'Configuration', value: row => readinessFor(row).status, options: ['Configured', 'Draft', 'Inactive'] }]}
+            cardExtra={row => readinessFor(row).status === 'Draft' ? <p className="salary-template-draft-reason">{readinessFor(row).reason}</p> : null}
+            actionsWidth={240}
+            actions={row => <><Button size="small" disabled={saving} onClick={() => editTemplate(row)}>{idsFor(row.clientId).length === 1 ? 'Edit formulas' : 'Use for client'}</Button><Button size="small" type="primary" disabled={saving || !row.lines.length} onClick={() => openSimulation(row, true)}>Simulate</Button></>}
+            emptyText={scopeTemplates.length ? 'No salary templates match your search or filters.' : 'No saved templates for this client. Select Create template to add components and formulas.'}
+          />
+        </RecruitmentViewContext.Provider>
       </> : <div className="salary-template-designer salary-workspace-designer">
         <div className="salary-template-contextbar"><label><span>Saved template <small>{scopeTemplates.length} available</small></span><Select aria-label="Choose saved salary template" showSearch optionFilterProp="label" value={openedTemplateId || undefined} placeholder={editorIntent === 'new' ? 'New template — unsaved' : 'Select a template to view its components & formulas'} disabled={saving} options={scopeTemplates.map(row => ({ value: String(row.id), label: `${row.name}${row.active ? '' : ' · Inactive'}${idsFor(row.clientId).length === 1 ? '' : ' · Shared'}` }))} onChange={value => { const row = scopeTemplates.find(row => String(row.id) === value); if (row) editTemplate(row) }} /></label>{editorReady && <Button icon={<PlusOutlined />} disabled={saving} onClick={createTemplate}>New template</Button>}</div>
         {!editorReady ? <section className="salary-template-chooser"><div className="salary-template-chooser-heading"><span className="salary-template-icon"><AppstoreOutlined /></span><div><h2>{scopeTemplates.length ? 'Open an existing template' : 'No saved template for this client'}</h2><p>{scopeTemplates.length ? 'Choose the template you want to work on. Its saved components and formulas will open here.' : 'Create a template to add components and set their formulas.'}</p></div></div><div className="salary-template-choices">{scopeTemplates.map(row => <button type="button" className="salary-template-choice" key={row.id} onClick={() => editTemplate(row)}><span className="salary-template-choice-icon"><AppstoreOutlined /></span><span className="salary-template-choice-copy"><strong>{row.name}</strong><small>{row.lines.length} components{idsFor(row.clientId).length !== 1 ? ' · Shared — creates a client copy' : ''}</small></span><span className={`salary-template-state ${row.active ? 'is-active' : ''}`}>{row.active ? 'Active' : 'Inactive'}</span><ArrowRightOutlined /></button>)}</div></section> : <>

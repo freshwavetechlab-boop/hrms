@@ -1,8 +1,27 @@
 .hrms-content:has(.salary-template-workspace) { display: flex; overflow: hidden; background: #f7f6fc; }
 .hrms-page-body:has(.salary-template-workspace), .hrms-page-body > form:has(.salary-template-workspace) { display: flex; flex: 1; min-height: 0; min-width: 0; }
-.salary-template-workspace { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
+.salary-template-workspace { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; container-name: recruitment-workspace; container-type: inline-size; }
 .salary-workspace-scroll { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 2px 4px 18px 0; scrollbar-gutter: stable; }
 .salary-workspace-scroll:has(.salary-workspace-designer) { display: flex; overflow: hidden; padding-bottom: 0; }
+.salary-workspace-scroll.is-template-list { display: flex; overflow: hidden; padding-bottom: 0; }
+.salary-workspace-view-controls { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.salary-template-workspace .recruitment-record-workspace { width: 100%; }
+.salary-template-workspace .recruitment-record-status { grid-template-columns: repeat(4,minmax(0,1fr)); background: #f4f0ff; border-color: #e3dafb; }
+.salary-template-workspace .recruitment-record-status button.is-active { background: #7756f5; box-shadow: none; }
+.salary-template-workspace .recruitment-record-status button:not(.is-active) .tone-blue { color: #7756f5; }
+.salary-template-workspace .recruitment-record-card.salary-template-record { border-inline-start-width: 4px; }
+.salary-template-workspace .recruitment-record-card.is-configured { background: #fbf9ff; border-color: #ddd2fa; border-inline-start-color: #7756f5; }
+.salary-template-workspace .recruitment-record-card.is-configured > .ant-avatar { color: #6941c6; background: #eee7ff; }
+.salary-template-workspace .recruitment-record-card.is-draft { background: #fffbea; border-color: #f2d777; border-inline-start-color: #d4a017; }
+.salary-template-workspace .recruitment-record-card.is-draft > .ant-avatar { color: #875d0a; background: #fce9a7; }
+.salary-template-workspace .recruitment-record-card.is-inactive { background: #f8f9fb; border-color: #e2e5eb; border-inline-start-color: #98a2b3; }
+.salary-template-workspace .recruitment-record-card.is-inactive > .ant-avatar { color: #667085; background: #eaecf0; }
+.salary-template-workspace .ant-table-row.salary-template-record.is-draft > td { background: #fffbea; }
+.salary-template-workspace .salary-template-state.is-configured { color: #6941c6; background: #eee7ff; }
+.salary-template-workspace .salary-template-state.is-draft { color: #805b00; background: #ffecaa; }
+.salary-template-workspace .salary-template-state.is-inactive { color: #667085; background: #eaecf0; }
+.salary-template-workspace .salary-template-draft-reason { margin: 3px 0; color: #805b00; font-size: 12px; line-height: 1.6; }
+.salary-template-workspace .recruitment-record-actions .ant-btn-primary:not(:disabled) { background: #7756f5; border-color: #7756f5; color: #fff; }
 .salary-template-workspace .salary-workspace-designer { display: flex; flex: 1; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; }
 .salary-workspace-client { display: flex; align-items: center; gap: 8px; width: 360px; max-width: 100%; font-size: 12px; color: #797084; }
 .salary-workspace-client .payroll-scope-select { flex: 1; width: 320px !important; max-width: 100%; }

@@ -22,9 +22,9 @@ public static class PayrollCalculationEndpoints
             catch (MySqlConnector.MySqlException) { return Results.Json(new { error = "Simulation data is unavailable. Check database connectivity and schema. No payroll has been created." }, statusCode: 503); }
         });
         group.MapPost("/catalogue", (PayrollCatalogueRequest request) => Results.Ok(PayrollValueCatalogue.Build(request)));
-        group.MapGet("/employees", async (int clientId, string? search, HttpContext context, PayRunRepository repository) =>
+        group.MapGet("/employees", async (int clientId, string? search, string? templateId, string? payPeriod, HttpContext context, PayRunRepository repository) =>
             context.Items["User"] is AuthUser user && CanAccess(user, clientId, true)
-                ? Results.Ok(await repository.SimulationEmployeesAsync(clientId, search?.Length > 100 ? search[..100] : search, context.RequestAborted)) : Results.StatusCode(403));
+                ? Results.Ok(await repository.SimulationEmployeesAsync(clientId, search?.Length > 100 ? search[..100] : search, templateId, payPeriod, context.RequestAborted)) : Results.StatusCode(403));
         group.MapGet("/template-snapshots",async (int clientId,HttpContext context,PayRunRepository repository) =>
             context.Items["User"] is AuthUser user && CanAccess(user,clientId)
                 ? Results.Ok(await repository.SimulationTemplatesAsync(clientId,context.RequestAborted)) : Results.StatusCode(403));

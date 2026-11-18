@@ -1,8 +1,9 @@
 import type { SimulationResult } from '../services/payrollCalculationService'
 import { buildPayrollFormulaWorkbook } from './payrollFormulaWorkbook'
 import type { XlsxCell } from './xlsx'
+import type { Component, Structure } from '../types/payroll'
 
-export type SalaryWorksheetCell = { address: string; label: string; value: string | number | null; formula: string; configuredFormula?: string; source?: string; inputKey?: string; ruleComponentId?: string; category?: string }
+export type SalaryWorksheetCell = { address: string; label: string; value: string | number | null; formula: string; configuredFormula?: string; source?: string; inputKey?: string; ruleComponentId?: string; category?: string; pending?: boolean }
 export const salaryColumnLetter = (index: number) => { let result = ''; for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) result = String.fromCharCode(65 + (n - 1) % 26) + result; return result }
 const columnIndex = (letter: string) => [...letter].reduce((value, char) => value * 26 + char.charCodeAt(0) - 64, 0) - 1
 const value = (cell: XlsxCell): string | number => typeof cell === 'object' ? cell.value : cell
@@ -70,7 +71,29 @@ export function salarySimulationOperands(result: SimulationResult): Omit<SalaryW
 }
 
 /** Display model only: every amount comes from native simulation, never a second JS payroll engine. */
-export function salarySimulationWorksheet(result: SimulationResult, context: { employeeCode?: string; employeeName?: string; month: string; clientName: string }): { cells: SalaryWorksheetCell[]; notice: string } {
+export function salarySimulationWorksheet(result: SimulationResult, context: { employeeCode?: string; employeeName?: string; month: string; clientName: string; template?: Structure; components?: Component[] }): { cells: SalaryWorksheetCell[]; notice: string } {
+  // Schema comes from the selected template even when the native engine cannot
+  // calculate yet. These are display-only blanks, never synthetic salary lines.
+  const finish = (nativeCells: Omit<SalaryWorksheetCell, 'address'>[], notice: string) => {
+    const cells = [...nativeCells]
+    for (const configured of context.template?.lines ?? []) {
+      const component = context.components?.find(item => String(item.id) === String(configured.componentId))
+      const code = component?.code || `COMPONENT_${configured.componentId}`
+      const native = result.lines.find(line => String(line.componentId) === String(configured.componentId) || !!component?.code && line.code === component.code)
+      const warning = !component ? 'Component master not available' : !component.active ? 'Component is inactive' : ''
+      const description = `${component?.name || `Component #${configured.componentId}`} · ${component?.category || 'Component'}`
+      if (native) {
+        if (warning) for (const cell of cells) if (cell.label.startsWith(`${native.code} `) || cell.label.startsWith(`${native.name} ·`)) cell.source = [cell.source, description, warning].filter(Boolean).join(' · ')
+        continue
+      }
+      const configuredFormula = configured.formula || configured.value || component?.formula || component?.value || ''
+      for (const suffix of ['input / raw', 'monthly', 'earned']) cells.push({
+        label: `${code} ${suffix}`, value: null, formula: '', configuredFormula, category: component?.category,
+        pending: true, source: `${description} · Needs review: ${warning || 'native calculation pending'}. No amount has been assumed.`,
+      })
+    }
+    return { cells: cells.map((cell, index) => ({ ...cell, address: `${salaryColumnLetter(index)}2` })), notice }
+  }
   const code = result.employeeCode || context.employeeCode || '', name = result.employeeName || context.employeeName || result.employee || 'Template scenario'
   const location = result.locations?.length ? [...new Set(result.locations.map(item => item.workLocationName || (item.workLocationId ? `Location #${item.workLocationId}` : 'Not supplied')))].join(' / ') : result.workLocationName || (result.mode === 'Template' ? 'Template scenario · no employee location' : 'Location not provided by current API')
   const input = (token: string) => result.inputs.find(item => item.name === token)?.value ?? null
@@ -115,7 +138,7 @@ export function salarySimulationWorksheet(result: SimulationResult, context: { e
     // Normally the exporter already included declared operands. Retain any
     // additional resolved dependency without inventing a new editable binding.
     for (const operand of sourceOperands) if (!cells.some(cell => cell.label === operand.label || cell.label.includes(operand.label.match(/\[[^\]]+\]/)?.[0] || operand.label))) cells.push(operand)
-    return { cells: cells.map((cell, index) => ({ ...cell, address: `${salaryColumnLetter(index)}2` })), notice: [sourceNotice, result.lines.some((line, index) => safeLines[index] !== line) ? 'Dated PF/TDS policy outputs recalculate on the server; their resolved amount cells are read-only.' : ''].filter(Boolean).join(' ') }
+    return finish(cells, [sourceNotice, result.lines.some((line, index) => safeLines[index] !== line) ? 'Dated PF/TDS policy outputs recalculate on the server; their resolved amount cells are read-only.' : ''].filter(Boolean).join(' '))
   } catch {
     // An unsupported offline representation never becomes a false template error.
     // Preserve the actual native result and its configured rule in the formula bar.
@@ -131,6 +154,6 @@ export function salarySimulationWorksheet(result: SimulationResult, context: { e
       ]),
       { label: 'Gross earnings', value: result.gross, formula: '' }, { label: 'Deductions', value: result.deductions, formula: '' }, { label: 'Employer benefits', value: result.benefits, formula: '' }, { label: 'Net pay', value: result.net, formula: '' },
     ]
-    return { cells: cells.map((cell, index) => ({ ...cell, address: `${salaryColumnLetter(index)}2` })), notice: [sourceNotice, 'Native payroll rules shown in the formula bar. This result contains rules without a safe offline Excel equivalent; all what-if amounts still recalculate through the payroll engine.'].filter(Boolean).join(' ') }
+    return finish(cells, [sourceNotice, 'Native payroll rules shown in the formula bar. This result contains rules without a safe offline Excel equivalent; all what-if amounts still recalculate through the payroll engine.'].filter(Boolean).join(' '))
   }
 }

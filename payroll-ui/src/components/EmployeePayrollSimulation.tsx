@@ -71,8 +71,16 @@ export default function EmployeePayrollSimulation({ template, components, client
   const [selectedEmployees, setSelectedEmployees] = useState<SimulationEmployee[]>([]), [search, setSearch] = useState(''), [employees, setEmployees] = useState<SimulationEmployee[]>([]), [searchError, setSearchError] = useState(''), [searching, setSearching] = useState(false)
   const [payPeriod, setPayPeriod] = useState(() => { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}` })
   const periodChosen = useRef(false)
+  const employeeScope = `${clientId}:${template.id}:${payPeriod}`
+  const [loadedEmployeeScope, setLoadedEmployeeScope] = useState('')
+  const previousEmployeeScope = useRef(employeeScope)
   const [editsByEmployee, setEditsByEmployee] = useState<Record<number, Record<string, string>>>({}), [states, setStates] = useState<Record<number, RowState>>({})
   const [retry, setRetry] = useState(0), [activeEmployeeId, setActiveEmployeeId] = useState<number>(), [advanced, setAdvanced] = useState(false)
+  useEffect(() => {
+    if (previousEmployeeScope.current === employeeScope) return
+    previousEmployeeScope.current = employeeScope
+    setSelectedEmployees([]); setEmployees([]); setSearch(''); setStates({}); setEditsByEmployee({}); setActiveEmployeeId(undefined); setLoadedEmployeeScope('')
+  }, [employeeScope])
   useEffect(() => {
     if (!clientId) return
     let active = true
@@ -83,20 +91,20 @@ export default function EmployeePayrollSimulation({ template, components, client
     return () => { active = false }
   }, [clientId])
   useEffect(() => {
-    if (!clientId) return
+    if (!clientId || !calendarDaysForSimulation(payPeriod) || !template.id) { setEmployees([]); setLoadedEmployeeScope(''); setSearching(false); return }
     let cancelled = false
     const timer = window.setTimeout(() => {
       setSearching(true); setSearchError('')
-      void simulationEmployees(clientId, search).then(response => {
+      void simulationEmployees(clientId, search, String(template.id), payPeriod).then(response => {
         if (cancelled) return
         setSearching(false)
-        if (response.ok && Array.isArray(response.data)) setEmployees(response.data)
-        else { setEmployees([]); setSearchError(response.error || 'Employee search is unavailable.') }
+        if (response.ok && Array.isArray(response.data)) { setEmployees(response.data); setLoadedEmployeeScope(employeeScope) }
+        else { setEmployees([]); setLoadedEmployeeScope(employeeScope); setSearchError(response.error || 'Employee search is unavailable.') }
       })
     }, 250)
     return () => { cancelled = true; window.clearTimeout(timer) }
-  }, [clientId, search])
-  const choices = [...new Map([...selectedEmployees, ...employees].map(employee => [employee.id, employee])).values()]
+  }, [clientId, search, template.id, payPeriod, employeeScope])
+  const choices = loadedEmployeeScope === employeeScope ? [...new Map([...selectedEmployees, ...employees].map(employee => [employee.id, employee])).values()] : []
   const activeEmployee = selectedEmployees.find(employee => employee.id === activeEmployeeId) ?? selectedEmployees[0]
   const activeState = activeEmployee ? states[activeEmployee.id] : undefined
   const result = activeState?.result
@@ -110,7 +118,7 @@ export default function EmployeePayrollSimulation({ template, components, client
     <div className="salary-present-mode"><div><Tag color="purple">Employee salary simulation</Tag><p>Select employees, choose a month and edit their yellow <b>Present days</b> cells.</p></div><Button onClick={event => { event.currentTarget.blur(); onTemplateMode() }}>Try template draft instead</Button></div>
     <div className="payroll-simulation-controls salary-present-controls">
       {!fixedClientId && <label className="simulation-field">Client<Select aria-label="Employee simulation client" value={clientId} options={clients.filter(client => !ids.length || ids.includes(client.id)).map(client => ({ value: client.id, label: client.name }))} onChange={value => { setClientId(value); setSelectedEmployees([]); setEmployees([]); setSearch(''); setEditsByEmployee({}); setStates({}); periodChosen.current = false }} /></label>}
-      <label className="simulation-field salary-present-employees">Employees<Select mode="multiple" aria-label="Simulation employees" showSearch filterOption={false} disabled={!clientId} value={selectedEmployees.map(employee => employee.id)} loading={searching} maxTagCount="responsive" placeholder="Select employees by name or code" options={choices.map(employee => ({ value: employee.id, label: `${employee.code} · ${employee.name}` }))} onSearch={setSearch} onChange={selected => {
+      <label className="simulation-field salary-present-employees">Employees<Select mode="multiple" aria-label="Simulation employees" showSearch filterOption={false} disabled={!clientId || !calendarDaysForSimulation(payPeriod) || !template.id} value={previousEmployeeScope.current === employeeScope ? selectedEmployees.map(employee => employee.id) : []} loading={searching || loadedEmployeeScope !== employeeScope} maxTagCount="responsive" placeholder="Search employees assigned to this template and month" notFoundContent={searching ? 'Loading matching employees…' : 'No employees assigned to this template for the selected month'} options={choices.map(employee => ({ value: employee.id, label: `${employee.code} · ${employee.name}` }))} onSearch={setSearch} onChange={selected => {
         const bounded = selected.slice(0, 25)
         setSelectedEmployees(bounded.map(id => choices.find(employee => employee.id === id)!).filter(Boolean))
         setActiveEmployeeId(current => current && bounded.includes(current) ? current : bounded[0])
@@ -123,7 +131,7 @@ export default function EmployeePayrollSimulation({ template, components, client
     {!selectedEmployees.length ? <div className="salary-present-empty"><h3>Compare employee salaries in one worksheet</h3><p>Select up to 25 employees. Saved salary, location, payroll days and attendance load automatically.</p></div> : <>
       <div className="salary-present-status"><Tag color="green">{complete} ready</Tag>{loading > 0 && <span role="status"><Spin size="small" /> Calculating {loading}…</span>}<span>{selectedEmployees.length - complete - loading > 0 ? `${selectedEmployees.length - complete - loading} need input or review` : `${selectedEmployees.length} selected`}</span><Button size="small" type="text" onClick={() => setAdvanced(value => !value)}>{advanced ? 'Present days only' : 'Advanced inputs'}</Button></div>
       {clientId && selectedEmployees.map(employee => <EmployeeRowCalculation key={`${clientId}:${payPeriod}:${employee.id}:${template.id}:${retry}`} clientId={clientId} employeeId={employee.id} payPeriod={payPeriod} template={template} components={components} edits={editsByEmployee[employee.id] ?? {}} onState={row => setStates(current => ({ ...current, [employee.id]: row }))} />)}
-      <SalarySimulationWorksheet result={rows[0].result} month={payPeriod} clientName={clients.find(client => client.id === clientId)?.name || ''} edits={rows[0].edits} onEdit={rows[0].onEdit} rows={rows} presentOnly={!advanced} onRowSelect={key => setActiveEmployeeId(Number(key))} />
+      <SalarySimulationWorksheet result={rows[0].result} template={template} components={components} month={payPeriod} clientName={clients.find(client => client.id === clientId)?.name || ''} edits={rows[0].edits} onEdit={rows[0].onEdit} rows={rows} presentOnly={!advanced} onRowSelect={key => setActiveEmployeeId(Number(key))} />
       <div className="salary-present-explanation">Present-day edits are temporary. Known saved paid-credit / extra-duty differences are retained; a payable-only source keeps its separately reviewed salary units. Without saved attendance, payable days follow your present-days entry as a calendar-month what-if; no leave or weekly-off entitlement is invented.</div>
       {activeEmployee && <section className="salary-present-selected" aria-label="Selected employee calculation details"><div><strong>{activeEmployee.code} · {activeEmployee.name}</strong><span>{activeState?.loading ? 'Recalculating' : activeState?.current && result?.complete ? 'Ready' : 'Needs input or review'}</span></div>
         {activeState?.error && <Alert type="error" showIcon message={activeState.error} />}

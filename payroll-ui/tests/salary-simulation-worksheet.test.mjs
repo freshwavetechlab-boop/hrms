@@ -16,6 +16,42 @@ const { salarySimulationWorksheet, salaryColumnLetter, salarySimulationOperands,
 const context = { employeeCode: 'OLD-CODE', employeeName: 'Old name', month: '2026-11', clientName: 'Client one' }
 const line = (patch = {}) => ({ code: 'BASIC', name: 'Basic salary', category: 'Earning', formula: '10000', substituted: '10000', raw: 10000, monthly: 10000, earned: 8833.33, proRata: true, source: 'Component / template default', rounding: 'Native', inputs: {}, componentId: '1', calculationType: 'Fixed Amount', payType: 'Fixed Pay', ...patch })
 const result = { clientId: 7, employeeId: 11, employeeCode: 'EMP-11', employeeName: 'Employee Eleven', workLocationId: 19, workLocationName: 'Effective Mumbai', payPeriod: '2026-10', mode: 'Employee', templateId: 't1', employee: 'EMP-11 - Employee Eleven', complete: true, coverage: 'Native', issues: [], inputs: [{ name: 'ANNUAL_CTC', value: 300000 }, { name: 'PAYROLL_DAYS', value: 30 }, { name: 'PRESENT_DAYS', value: null }, { name: 'PAYABLE_DAYS', value: 26.5 }], lines: [line(), line({ code: 'HRA', name: 'HRA', componentId: '2', formula: 'BASIC * 40 / 100', calculationType: 'Formula', raw: 4000, monthly: 4000, earned: 3533.33 })], gross: 12366.66, deductions: 0, benefits: 0, net: 12366.66 }
+
+const configuredContext = { ...context, template: { lines: [{ componentId: '1', formula: '10000' }, { componentId: '2', formula: 'BASIC * 40 / 100' }, { componentId: '3', formula: 'BASIC * 12 / 100' }, { componentId: '404', formula: '17' }] }, components: [{ id: 1, code: 'BASIC', name: 'Basic salary', category: 'Earning', active: true }, { id: 2, code: 'HRA', name: 'House rent', category: 'Earning', active: true }, { id: 3, code: 'PF', name: 'Provident fund', category: 'Deduction', active: false }] }
+
+test('empty failed native result still exposes every configured component and formula without invented amounts', () => {
+  const r = { ...result, complete: false, lines: [], inputs: [], gross: null, deductions: null, benefits: null, net: null, issues: [{ message: 'Different salary assignment' }] }
+  const before = JSON.stringify(r)
+  const model = salarySimulationWorksheet(r, configuredContext)
+  for (const code of ['BASIC', 'HRA', 'PF', 'COMPONENT_404']) for (const suffix of ['input / raw', 'monthly', 'earned']) {
+    const cell = model.cells.find(item => item.label === `${code} ${suffix}`)
+    assert.equal(cell.value, null); assert.equal(cell.pending, true); assert.equal(cell.inputKey, undefined)
+  }
+  assert.match(model.cells.find(cell => cell.label === 'PF earned').source, /inactive/)
+  assert.match(model.cells.find(cell => cell.label === 'COMPONENT_404 earned').source, /master not available/)
+  assert.equal(model.cells.find(cell => cell.label === 'HRA input / raw').configuredFormula, 'BASIC * 40 / 100')
+  assert.equal(JSON.stringify(r), before)
+})
+
+test('adding template schema preserves successful native values, formulas, zero and additional adjustments', () => {
+  const r = { ...result, lines: [...result.lines, line({ code: 'ADJUSTMENT', componentId: '99', raw: 0, monthly: 0, earned: 0 })] }
+  const native = salarySimulationWorksheet(r, context), expanded = salarySimulationWorksheet(r, configuredContext)
+  for (const original of native.cells) assert.deepEqual(expanded.cells.find(cell => cell.address === original.address), original)
+  assert.equal(expanded.cells.find(cell => cell.label === 'ADJUSTMENT earned').value, 0)
+  assert.equal(expanded.cells.filter(cell => cell.label === 'BASIC earned').length, 1)
+  assert.equal(expanded.cells.find(cell => cell.label === 'PF earned').value, null)
+})
+
+test('pending and complete employee rows align template columns and retain Excel references', () => {
+  const pending = salarySimulationWorksheet({ ...result, complete: false, lines: [], gross: null, deductions: null, benefits: null, net: null }, configuredContext)
+  const complete = salarySimulationWorksheet(result, configuredContext)
+  const aligned = alignSalaryWorksheetRows([pending, complete])
+  const earnedIndex = aligned.labels.indexOf('BASIC earned'), payableIndex = aligned.labels.indexOf('Payable days')
+  assert.equal(aligned.rows[0][earnedIndex].value, null)
+  assert.equal(aligned.rows[1][earnedIndex].value, 8833.33)
+  assert.ok(aligned.rows[1][earnedIndex].formula.includes(`${salaryColumnLetter(payableIndex)}3`))
+  assert.equal(aligned.labels.filter(label => label === 'PF earned').length, 1)
+})
 test('worksheet identities, month and work location come from the native result', () => {
   const model = salarySimulationWorksheet(result, context)
   assert.deepEqual(model.cells.slice(0, 4).map(cell => cell.value), ['EMP-11', 'Employee Eleven', '2026-10', 'Effective Mumbai'])
