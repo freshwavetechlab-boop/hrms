@@ -15,7 +15,7 @@ public sealed class ReviewedSourceMonthIdentityTests
         var text=File.ReadAllText(Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md"));
         var lesson=Assert.Single(ExcelPayslipMappingService.Retrieve(columns,text,[]),reference=>reference.Title.StartsWith("Bio Metric ID AADHAR NO PAN Employee code:"));
         Assert.True(lesson.Content.Length<2600);Assert.Contains("generated display code",lesson.Content);
-        Assert.Contains("physical presence stays unknown",lesson.Content);Assert.Equal("excel-payroll-mapping-v75",ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Contains("physical presence stays unknown",lesson.Content);Assert.Equal("excel-payroll-mapping-v76",ExcelPayslipMappingService.KnowledgeVersion);
     }
     private static ExcelPayslipBatch Batch()=>new(){Id=new('a',32),ClientId=11,Month="2026-10",
         Rows=[new(){Id="row-7",SourceRow=7,EmployeeCode="DISPLAY008",EmployeeName="Example Employee"}]};
@@ -36,6 +36,32 @@ public sealed class ReviewedSourceMonthIdentityTests
         Review(batch,source,master,other);
         Assert.Equal(7,batch.Rows[0].Employment?.EmployeeId);Assert.Equal("NATIVE007",batch.Rows[0].Employment?.EmployeeCode);
         Assert.Equal("DISPLAY008",batch.Rows[0].EmployeeCode);Assert.Equal(before,JsonSerializer.Serialize(new{source,master,other}));
+    }
+
+    [Theory]
+    [InlineData("valid")][InlineData("supplied-code")][InlineData("legacy")][InlineData("incomplete")]
+    [InlineData("disabled-generation")][InlineData("missing-pan")][InlineData("calculated-pan")][InlineData("missing-aadhaar")]
+    [InlineData("different-name")][InlineData("conflicting-government-owner")]
+    public void Actual_generated_code_producer_keeps_typed_source_conflicts_and_requires_two_captured_identifiers(string change)
+    {
+        var batch=Batch();batch.Rows[0].EmployeeCode="";batch.EmployeeCodeGeneration=new(true,3);
+        var source=Source();source.CaptureVersion=1;source.CompleteSheetCapture=true;
+        ExcelPayslipRepository.AssignEmployeeCodes(batch,source,"DISPLAY",["DISPLAY007"]);
+        Assert.Equal("DISPLAY008",batch.Rows[0].EmployeeCode);Assert.Equal("",source.Rows[0].Cells[0]!.DataType);
+        var master=Master();var other=Master(8,"DISPLAY008");other.FirstName="Other";other.Pan="FGHIJ5678K";other.Aadhaar="345678901234";
+        if(change=="supplied-code")source.Rows[0].Cells[0]!.DataType="Text";
+        if(change=="legacy")source.CaptureVersion=0;
+        if(change=="incomplete")source.CompleteSheetCapture=false;
+        if(change=="disabled-generation")batch.EmployeeCodeGeneration=new(false,3);
+        if(change=="missing-pan")source.Rows[0].Cells[1]!.Value="N/A";
+        if(change=="calculated-pan")source.Rows[0].Cells[1]!.FormulaText="=A1";
+        if(change=="missing-aadhaar")source.Rows[0].Cells[2]!.Value="N/A";
+        if(change=="different-name")master.FirstName="Different";
+        if(change=="conflicting-government-owner")other.Aadhaar=master.Aadhaar;
+        var snapshot=JsonSerializer.Serialize(new{source,master,other});
+        Review(batch,source,master,other);
+        if(change=="valid")Assert.Equal(7,batch.Rows[0].Employment?.EmployeeId);else Assert.Null(batch.Rows[0].Employment?.EmployeeId);
+        Assert.Equal("DISPLAY008",batch.Rows[0].EmployeeCode);Assert.Equal(snapshot,JsonSerializer.Serialize(new{source,master,other}));
     }
     [Theory]
     [InlineData("real-code")][InlineData("no-code-column")][InlineData("code-formula")][InlineData("duplicate-code-column")]

@@ -71,7 +71,7 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@Id AND 
             var ids = bound.SelectMany(r => r.Result.TransferRows.Where(v => v.RowId == row.Id).Select(v => v.EmployeeId)).Distinct().ToArray();
             var issues = new List<ExcelPayrollSetupIssue>();
             var matchingRow = capturedIdentityRows?.Contains(row.Id) == true
-                ? CapturedSourceIdentity(row, source, information, issues) : row;
+                ? CapturedSourceIdentity(row, source, information, issues, batch.EmployeeCodeGeneration) : row;
             var selected = ExcelPayrollSetupRepository.MatchIdentity(matchingRow, information, identities,
                 ids.Length == 1 ? new() { RowId=row.Id, MatchedEmployeeId=ids[0] } : null, issues);
             if (selected is null) continue;
