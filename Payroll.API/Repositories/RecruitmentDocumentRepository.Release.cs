@@ -171,11 +171,9 @@ ON DUPLICATE KEY UPDATE FileName=VALUES(FileName),ContentType=VALUES(ContentType
         IssueAccess(user, clientId); ValidateIds(request.Ids);
         if (request.Revisions is { Count: > 200 }) throw new InvalidOperationException("Select fewer rows to release.");
         await using var db = Db(); await db.OpenAsync(); await EnsureAsync(db);
-        await EmployeeRepository.PrepareRecruitmentSaveAsync(db);
         var allowed = await RecruitmentAccessScope.WorkLocationsAsync(db, user, clientId);
         await using var tx = await db.BeginTransactionAsync();
         await db.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@ClientId AND IsActive=TRUE FOR UPDATE",new {ClientId=clientId},tx);
-        var currentEmployees=await EmployeeRepository.ReadExcelPayrollIdentitySnapshotAsync(db,tx,clientId);
         var rows = (await db.QueryAsync<RecruitmentDocumentRosterRow>("""
 SELECT r.*,CAST(r.ValuesJson AS CHAR) ValuesJson,c.CandidateCode,TRIM(CONCAT(c.FirstName,' ',c.LastName)) CandidateName,c.Email,c.Phone
 FROM recruitment_document_roster r JOIN recruitment_candidates c ON c.Id=r.CandidateId AND c.ClientId=r.ClientId AND c.ProfileStatus<>'Archived'
@@ -218,7 +216,6 @@ VALUES(@Id,@ClientId,@OfferNumber,@RevisionKey,@TemplateHash,@InputsHash,@Locati
                 await db.ExecuteAsync("UPDATE recruitment_document_roster SET OfferNumber=@OfferNumber WHERE Id=@Id AND ClientId=@ClientId AND OfferNumber=''", new { OfferNumber = offerNumber, row.Id, ClientId = clientId }, tx);
                 await db.ExecuteAsync("INSERT INTO recruitment_document_roster_audit(RosterId,ClientId,Action,NewValuesJson,ActorUserId) VALUES(@Id,@ClientId,'Offer released',@Receipt,@UserId)", new { row.Id, ClientId = clientId, Receipt = JsonSerializer.Serialize(new { OfferNumber = offerNumber, RevisionKey = revisionKey, PdfHash = BytesHash(receipt.Bytes), SignatureHash = signatureHash, ReleasedAt = now }, Json), UserId = user.Id }, tx);
             }
-            await LinkReleasedEmployeeAsync(db,tx,row,values,location!,currentEmployees,user,offerNumber,allowed.Select(item=>item.Id).ToHashSet());
             size += receipt.Bytes.Length; if (size > 32 * 1024 * 1024) throw new InvalidOperationException("Release fewer letters at a time (32 MB limit).");
             results.Add(new(row.Id, receipt.Bytes, receipt.FileName, client.Name));
         }

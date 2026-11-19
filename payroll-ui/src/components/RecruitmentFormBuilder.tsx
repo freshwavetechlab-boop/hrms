@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
 import dayjs from 'dayjs'
 import {
-  AppstoreAddOutlined, ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, EditOutlined, FileAddOutlined, HolderOutlined, PlusOutlined,
+  AppstoreAddOutlined, ArrowDownOutlined, ArrowUpOutlined, CopyOutlined, DeleteOutlined, EditOutlined, FileAddOutlined, HolderOutlined, PlusOutlined,
 } from '@ant-design/icons'
 import { Alert, Button, Card, DatePicker, Drawer, Dropdown, Empty, Form, Input, InputNumber, List, Modal, Popconfirm, Select, Space, Switch, Tag, Tooltip, message } from 'antd'
 import { useAuthSession } from './AuthGate'
 import { useToast } from './ToastProvider'
 import { getClients } from '../services/payrollService'
+import { getJsonResult } from '../services/apiClient'
+import RecruitmentOfferClientSelect from './RecruitmentOfferClientSelect'
 import {
   deleteRecruitmentFormDefinition, getRecruitmentForm, getRecruitmentForms, getRecruitmentOrchestrationLookups, publishRecruitmentFormVersion,
-  saveRecruitmentFormDefinition, saveRecruitmentFormVersion,
+  saveRecruitmentFormDefinition, saveRecruitmentFormVersion, createSimilarRecruitmentForm,
 } from '../services/recruitmentOrchestrationService'
 import type { Client } from '../types/payroll'
 import type {
@@ -19,10 +21,13 @@ import type {
 import { employeeCoreFields } from '../utils/employeeFields'
 import DataTable from './DataTable'
 import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
+import { isSelectedClientUser } from '../utils/clientAccess'
 import './RecruitmentOrchestration.css'
 import './RecruitmentFormBuilder.css'
 
 type Props = { initialClientId?: number; clientScopeManaged?: boolean; employeeMode?: boolean; onSaved?: (form: DynamicFormDefinition) => void }
+type SimilarFormDraft = { sourceClientId: number; source: DynamicFormDefinition | null; sourceVersionId: number; targetClientId: number; formName: string; formCode: string }
+type SimilarFormResult = { definition: DynamicFormDefinition; version: DynamicFormVersion; warnings: string[] }
 
 type BuilderDragPayload =
   | { kind: 'palette'; fieldTypeCode: DynamicFormFieldTypeCode }
@@ -47,6 +52,8 @@ const semanticOptions = ['FIRST_NAME', 'LAST_NAME', 'FATHERS_NAME', 'EMAIL', 'PH
 const emptyLookups: RecruitmentOrchestrationLookups = { lookupSources: [], attachmentConfigurations: [], attachmentFieldConfigurations: [], workflows: [], forms: [], positions: [], atsProfiles: [] }
 const localId = () => -Math.floor(Date.now() + Math.random() * 100000)
 const code = (value: string) => value.toUpperCase().trim().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+const isRecruitmentCandidateForm = (form: DynamicFormDefinition) => form.moduleCode.toUpperCase() === 'RECRUITMENT'
+  && form.entityType.toUpperCase() === 'CANDIDATE' && !form.purposeCode.toUpperCase().startsWith('EMPLOYEE')
 const isChoice = (type: DynamicFormFieldTypeCode) => ['SEARCH_SELECT', 'MULTI_SELECT', 'RADIO'].includes(type)
 const isText = (type: DynamicFormFieldTypeCode) => ['TEXT', 'TEXTAREA', 'EMAIL', 'PHONE'].includes(type)
 const isDate = (type: DynamicFormFieldTypeCode) => ['DATE', 'DATETIME'].includes(type)
@@ -86,8 +93,10 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
   const toast = useToast()
   const apiBase = employeeMode ? '/api/employees/field-configuration' : '/api/recruitment-orchestration'
   const canDelete = !employeeMode && Boolean(session?.user.permissions.includes('settings.manage'))
+  const scopeUser = session?.originalUser || session?.user
+  const boundClientId = isSelectedClientUser(scopeUser) ? 0 : Number(scopeUser?.clientId || 0)
   const [clients, setClients] = useState<Client[]>([])
-  const [clientId, setClientId] = useState(initialClientId)
+  const [clientId, setClientId] = useState(employeeMode ? initialClientId : boundClientId || initialClientId)
   const [employeeType, setEmployeeType] = useSessionPreference<string>(`employees.fields:${session?.user.id}:${clientId}:infotype`, '0002')
   const [forms, setForms] = useState<DynamicFormDefinition[]>([])
   const [lookups, setLookups] = useState(emptyLookups)
@@ -103,6 +112,15 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
   const [publishing, setPublishing] = useState(false)
   const [dragging, setDragging] = useState<BuilderDragPayload | null>(null)
   const [dropSectionId, setDropSectionId] = useState<number | null>(null)
+  const [similar, setSimilar] = useState<SimilarFormDraft | null>(null)
+  const [similarSources, setSimilarSources] = useState<DynamicFormDefinition[]>([])
+  const [copyLoading, setCopyLoading] = useState(false)
+  const [copying, setCopying] = useState(false)
+  const [copyError, setCopyError] = useState('')
+  const [copyWarnings, setCopyWarnings] = useState<string[]>([])
+  const copyRequestRef = useRef(0)
+  const copyAbortRef = useRef<AbortController | null>(null)
+  const pendingCopyRef = useRef<SimilarFormResult | null>(null)
   const selectionRequestRef = useRef(0)
   const canvasScrollRef = useRef<HTMLDivElement | null>(null)
   const paletteScrollRef = useRef<HTMLDivElement | null>(null)
@@ -113,7 +131,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     const requestId = ++selectionRequestRef.current
     const [rows, options] = await Promise.all([getRecruitmentForms(scope, apiBase), getRecruitmentOrchestrationLookups(scope, apiBase)])
     if (requestId !== selectionRequestRef.current) return
-    setForms(rows); setLookups(options)
+    setForms(employeeMode ? rows : rows.filter(isRecruitmentCandidateForm)); setLookups(options)
     if (employeeMode) {
       const matches = rows.filter(row => row.purposeCode === `EMPLOYEE_INFOTYPE_${employeeType}`)
       const existing = matches.find(row => row.id === (preferredId ?? definition?.id)) ?? matches.find(row => row.status === 'Active') ?? matches[0]
@@ -128,9 +146,9 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
   }
 
   useEffect(() => {
-    void getClients().then(rows => {
+    void (employeeMode ? getClients() : getClients(false, true)).then(rows => {
       setClients(rows)
-      if (rows.length) setClientId(current => current || rows[0].id)
+      if (employeeMode && rows.length) setClientId(current => current || rows[0].id)
     })
   }, [])
   useEffect(() => {
@@ -138,8 +156,82 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     setSelectingFormId(null)
     if (clientId) void load(clientId)
     setDefinition(null); setVersion(null); setSelectedSectionId(null); setSelectedFieldId(null); setFieldDrawer(false); setSectionEditor(null)
+    setCopyWarnings([])
+    const pending = pendingCopyRef.current
+    if (!employeeMode && pending?.definition.clientId === clientId) {
+      pendingCopyRef.current = null
+      installCopy(pending)
+    }
   }, [clientId, employeeMode ? employeeType : ''])
   useEffect(() => () => { selectionRequestRef.current += 1 }, [])
+  useEffect(() => () => { ++copyRequestRef.current; copyAbortRef.current?.abort() }, [])
+
+  const cancelCopyReads = () => { ++copyRequestRef.current; copyAbortRef.current?.abort(); copyAbortRef.current = null }
+  const selectSimilarSource = async (source: DynamicFormDefinition | undefined) => {
+    cancelCopyReads(); setCopyError('')
+    setSimilar(current => current ? { ...current, source: source ?? null, sourceVersionId: 0, formName: source ? `${source.formName.slice(0, 175)} copy` : '', formCode: source ? `${source.formCode.slice(0, 75)}_COPY` : '' } : current)
+    if (!source) { setCopyLoading(false); return }
+    const request = copyRequestRef.current
+    const controller = new AbortController(); copyAbortRef.current = controller
+    setCopyLoading(true)
+    const response = await getJsonResult<DynamicFormDefinition | null>(`${apiBase}/forms/${source.id}`, null, { signal: controller.signal, toast: false, loader: false })
+    if (request !== copyRequestRef.current || controller.signal.aborted) return
+    setCopyLoading(false)
+    if (!response.ok || !response.data) { setCopyError(response.error || 'The source form could not be loaded. Please try again.'); return }
+    const versions = [...(response.data.versions || [])].sort((left, right) => right.versionNumber - left.versionNumber)
+    const selected = versions.find(row => row.id === response.data!.currentPublishedVersionId) ?? versions.find(row => row.status !== 'Retired') ?? versions[0]
+    if (!selected?.id) { setCopyError('This form has no saved version to copy. Choose another form.'); return }
+    setSimilar(current => current?.source?.id === source.id ? { ...current, sourceVersionId: selected.id } : current)
+  }
+  const loadSimilarSources = async (sourceClientId: number, preselected?: DynamicFormDefinition) => {
+    cancelCopyReads()
+    const request = copyRequestRef.current
+    const controller = new AbortController(); copyAbortRef.current = controller
+    setCopyError(''); setSimilarSources([]); setCopyLoading(true)
+    setSimilar(current => current ? { ...current, sourceClientId, source: null, sourceVersionId: 0, formName: '', formCode: '' } : current)
+    const response = await getJsonResult<DynamicFormDefinition[]>(`${apiBase}/forms${sourceClientId ? `?clientId=${sourceClientId}` : ''}`, [], { signal: controller.signal, toast: false, loader: false })
+    if (request !== copyRequestRef.current || controller.signal.aborted) return
+    setCopyLoading(false)
+    if (!response.ok) { setCopyError(response.error || 'Source forms could not be loaded. Please try again.'); return }
+    const rows = response.data.filter(row => isRecruitmentCandidateForm(row)
+      && (!sourceClientId || row.clientId === 0 || row.clientId === sourceClientId))
+    setSimilarSources(rows)
+    if (preselected) {
+      const source = rows.find(row => row.id === preselected.id)
+      if (source) await selectSimilarSource(source)
+      else setCopyError('The source form is no longer available in your permitted clients.')
+    }
+  }
+  const openSimilar = (source?: DynamicFormDefinition) => {
+    cancelCopyReads()
+    const sourceClientId = source?.clientId || boundClientId || 0
+    setCopyError('')
+    setSimilar({ sourceClientId, source: null, sourceVersionId: 0, targetClientId: clientId || source?.clientId || boundClientId, formName: '', formCode: '' })
+    void loadSimilarSources(sourceClientId, source)
+  }
+  const closeSimilar = () => {
+    if (copying) return
+    cancelCopyReads(); setSimilar(null); setSimilarSources([]); setCopyLoading(false); setCopyError('')
+  }
+  const installCopy = (copy: SimilarFormResult) => {
+    setDefinition(copy.definition); setVersion(copy.version)
+    setSelectedSectionId(copy.version.sections[0]?.id ?? null); setSelectedFieldId(null)
+    setFieldDrawer(false); setSectionEditor(null); setCopyWarnings(copy.warnings || [])
+  }
+  const createSimilar = async () => {
+    if (!similar?.source || !similar.sourceVersionId || !similar.targetClientId || !similar.formName.trim() || !code(similar.formCode) || copyLoading || copying) return
+    setCopying(true); setCopyError('')
+    try {
+      const response = await createSimilarRecruitmentForm(similar.source.id, { sourceVersionId: similar.sourceVersionId, targetClientId: similar.targetClientId, formName: similar.formName.trim(), formCode: code(similar.formCode) })
+      if (!response.ok || !response.data) { setCopyError(response.error || 'The form could not be copied. Please try again.'); return }
+      const copy = response.data
+      cancelCopyReads(); setSimilar(null); setSimilarSources([]); setCopyLoading(false)
+      if (copy.definition.clientId !== clientId) { pendingCopyRef.current = copy; setClientId(copy.definition.clientId) }
+      else { installCopy(copy); setForms(current => [...current.filter(row => row.id !== copy.definition.id), copy.definition]) }
+      onSaved?.(copy.definition)
+    } catch { setCopyError('The form could not be copied. Please try again.') }
+    finally { setCopying(false) }
+  }
 
   const selectedSection = version?.sections.find(row => row.id === selectedSectionId) ?? null
   const selectedField = selectedSection?.fields.find(row => row.id === selectedFieldId)
@@ -151,6 +243,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     const requestId = ++selectionRequestRef.current
     setSelectingFormId(id)
     setDefinition(null); setVersion(null); setSelectedSectionId(null); setSelectedFieldId(null); setFieldDrawer(false); setSectionEditor(null)
+    setCopyWarnings([])
     try {
       const row = await getRecruitmentForm(id, apiBase)
       if (requestId !== selectionRequestRef.current) return
@@ -178,6 +271,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     if (!clientId) return message.warning('Select a client first.')
     selectionRequestRef.current += 1
     setSelectingFormId(null)
+    setCopyWarnings([])
     const next = blankDefinition(clientId, clients.find(row => row.id === clientId)?.name ?? '')
     const resumeConfiguration = lookups.attachmentConfigurations
       .filter(row => row.isActive && code(row.attributeCode) === 'RESUME' && (row.clientId === 0 || row.clientId === clientId))
@@ -450,7 +544,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
       }, apiBase)
       if (!definitionResponse.ok || !definitionResponse.data) return false
       if (employeeMode) setDefinition(definitionResponse.data)
-      const versionResponse = await saveRecruitmentFormVersion(definitionResponse.data.id, { ...preparedVersion, formDefinitionId: definitionResponse.data.id }, apiBase)
+      const versionResponse = await saveRecruitmentFormVersion(definitionResponse.data.id, { ...preparedVersion, formDefinitionId: definitionResponse.data.id }, apiBase, employeeMode ? undefined : definition.clientId)
       if (!versionResponse.ok || !versionResponse.data) return false
       if (employeeMode) {
         const published = await publishRecruitmentFormVersion(versionResponse.data.id, apiBase, definitionResponse.data.id)
@@ -474,7 +568,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
   const confirmPublish = async () => {
     if (!definition || !version?.id || publishing) return
     setPublishing(true)
-    const response = await publishRecruitmentFormVersion(version.id, apiBase, definition!.id)
+    const response = await publishRecruitmentFormVersion(version.id, apiBase, definition!.id, employeeMode ? undefined : definition.clientId)
     if (response.ok) {
       setPublishOpen(false)
       onSaved?.(definition)
@@ -489,7 +583,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
       selectionRequestRef.current += 1
       setSelectingFormId(null)
     }
-    const response = await deleteRecruitmentFormDefinition(row.id)
+    const response = await deleteRecruitmentFormDefinition(row.id, row.clientId)
     if (!response.ok) return
     if (definition?.id === row.id) {
       setDefinition(null); setVersion(null); setSelectedSectionId(null); setSelectedFieldId(null)
@@ -523,11 +617,14 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
   }
   return <section className={`orchestration-shell recruitment-form-builder${employeeMode ? ' employee-field-builder' : ''}`}>
     <div className="orchestration-toolbar form-builder-page-toolbar">
-      <Space wrap className="form-builder-top-actions"><span className="recruitment-command-label">Client</span><Select data-testid="form-builder-client" disabled={clientScopeManaged} value={clientId || undefined} placeholder="Select client" options={clientOptions} onChange={setClientId} showSearch optionFilterProp="label" /><Button data-testid="form-builder-new" icon={<PlusOutlined />} type="primary" onClick={startNew}>New form</Button></Space>
+      <Space wrap className="form-builder-top-actions"><span className="recruitment-command-label">Client</span><RecruitmentOfferClientSelect includeSetup aria-label="Candidate form client" data-testid="form-builder-client" disabled={clientScopeManaged || !!boundClientId} value={clientId || undefined} placeholder="Select client" options={clientOptions} onChange={value => setClientId(value || 0)} /><Button data-testid="form-builder-new" icon={<PlusOutlined />} type="primary" onClick={startNew}>New form</Button><Button data-testid="form-builder-create-similar" icon={<CopyOutlined />} onClick={() => openSimilar()}>Create similar</Button></Space>
     </div>
     <div className="form-builder-layout">
       <aside className="form-builder-side-rail" aria-label="Form designer tools">
-        <Card size="small" className="form-builder-library" title={`Forms (${forms.length})`}><List dataSource={forms} locale={{ emptyText: 'No forms for this client.' }} renderItem={row => <List.Item className={selectingFormId === row.id || definition?.id === row.id ? 'active' : ''} aria-busy={selectingFormId === row.id} onClick={() => void chooseForm(row.id)} actions={canDelete ? [<Popconfirm key="delete" title="Delete this form?" description="Published or draft versions are removed only when no posting, pipeline stage or submission uses them." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeDefinition(row)}><Button aria-label={`Delete ${row.formName}`} size="small" danger type="text" icon={<DeleteOutlined />} onClick={event => event.stopPropagation()} /></Popconfirm>] : []}><List.Item.Meta title={<span title={row.formName}>{row.formName}</span>} description={<div className="form-builder-list-meta"><span title={row.formCode}>{row.formCode}</span><Tag color={row.currentPublishedVersionId ? 'green' : 'orange'}>{row.currentPublishedVersionId ? 'Published' : 'Draft only'}</Tag></div>} /></List.Item>} /></Card>
+        <Card size="small" className="form-builder-library" title={`Forms (${forms.length})`}><List dataSource={forms} locale={{ emptyText: 'No forms for this client.' }} renderItem={row => <List.Item className={selectingFormId === row.id || definition?.id === row.id ? 'active' : ''} aria-busy={selectingFormId === row.id} onClick={() => void chooseForm(row.id)} actions={[
+          ...(row.moduleCode === 'RECRUITMENT' ? [<Tooltip key="similar" title="Create a similar form"><Button aria-label={`Create similar ${row.formName}`} size="small" type="text" icon={<CopyOutlined />} onClick={event => { event.stopPropagation(); openSimilar(row) }} /></Tooltip>] : []),
+          ...(canDelete ? [<Popconfirm key="delete" title="Delete this form?" description="Published or draft versions are removed only when no posting, pipeline stage or submission uses them." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeDefinition(row)}><Button aria-label={`Delete ${row.formName}`} size="small" danger type="text" icon={<DeleteOutlined />} onClick={event => event.stopPropagation()} /></Popconfirm>] : []),
+        ]}><List.Item.Meta title={<span title={row.formName}>{row.formName}</span>} description={<div className="form-builder-list-meta"><span title={row.formCode}>{row.formCode}</span><Tag color={row.currentPublishedVersionId ? 'green' : 'orange'}>{row.currentPublishedVersionId ? 'Published' : 'Draft only'}</Tag></div>} /></List.Item>} /></Card>
         {definition && version && <Card size="small" className="form-builder-palette-card" title={<Space size={7}><AppstoreAddOutlined /><span>Field palette</span></Space>} extra={<Tooltip title="Add a new section"><Button aria-label="Add section" size="small" icon={<PlusOutlined />} disabled={readOnly} onClick={addSection}>Section</Button></Tooltip>}>
           {!readOnly && <p className="form-builder-palette-help">Choose a section, then click a field. You can also drag it to an exact position.</p>}
           <Select
@@ -544,6 +641,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
         </Card>}
       </aside>
       {selectingFormId !== null ? <Card data-testid="form-builder-selection-loading" className="form-builder-start-card" loading aria-busy="true" aria-label="Loading selected form" /> : !definition || !version ? <Card className="form-builder-start-card"><Empty description="Select a form from the left or create a new one." /></Card> : <div ref={canvasScrollRef} className="form-builder-canvas" onDragOver={autoScrollCanvas}>
+        {copyWarnings.length > 0 && <Alert type="warning" showIcon message="Review copied form settings" description={<ul>{copyWarnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>} />}
         <Card size="small" className="form-builder-settings-card"><div className="orchestration-toolbar form-builder-version-toolbar"><Space wrap><Tag color={version.status === 'Published' ? 'green' : version.status === 'Retired' ? 'default' : 'gold'}>v{version.versionNumber} · {version.status}</Tag><Switch disabled={readOnly} checked={definition.status === 'Active'} onChange={active => patchDefinition({ status: active ? 'Active' : 'Inactive' })} checkedChildren="Active" unCheckedChildren="Inactive" /></Space></div>
           <div className="form-builder-meta"><Form.Item label="Form name" required><Input data-testid="form-builder-name" disabled={readOnly} value={definition.formName} onChange={event => patchDefinition({ formName: event.target.value })} /></Form.Item><Form.Item label="Form code" required><Input data-testid="form-builder-code" disabled={readOnly || (employeeMode && !!definition.currentPublishedVersionId)} value={definition.formCode} onChange={event => patchDefinition({ formCode: code(event.target.value) })} /></Form.Item><Form.Item label="Use this form for" extra="Employee forms appear automatically in the matching Employee infotype after publishing."><Select data-testid="form-builder-module" disabled={readOnly || employeeMode} value={definition.moduleCode || 'RECRUITMENT'} onChange={chooseModule} options={employeeMode ? [{ value: 'EMPLOYEE', label: 'Employee additional fields' }] : [{ value: 'RECRUITMENT', label: 'Recruitment / Candidate' }, { value: 'EMPLOYEE', label: 'Employee additional fields' }]} /></Form.Item>{definition.moduleCode === 'EMPLOYEE' && <Form.Item label="Employee infotype"><Select data-testid="form-builder-employee-infotype" disabled={readOnly || (employeeMode && !!definition.currentPublishedVersionId)} value={employeeInfotype} onChange={value => patchDefinition({ purposeCode: `EMPLOYEE_INFOTYPE_${value}`, entityType: 'EMPLOYEE' })} options={[{ value: '0001', label: '0001 - Organizational Assignment' }, { value: '0002', label: '0002 - Personal Data' }, { value: '0006', label: '0006 - Addresses' }, { value: '0008', label: '0008 - Basic Pay' }, { value: '0009', label: '0009 - Bank Details' }]} /></Form.Item>}<Form.Item label="Purpose code"><Input data-testid="form-builder-purpose" disabled={readOnly || employeeMode} value={definition.purposeCode} onChange={event => patchDefinition({ purposeCode: code(event.target.value) })} /></Form.Item><Form.Item label="Entity type"><Input data-testid="form-builder-entity" disabled={readOnly || employeeMode} value={definition.entityType} onChange={event => patchDefinition({ entityType: code(event.target.value) })} /></Form.Item></div>
         </Card>
@@ -605,6 +703,19 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
         </div>
       </div>}
     </div>
+    <Modal className="recruitment-form-copy-modal" title="Create a similar candidate form" open={!!similar} width={680} okText="Create copy" confirmLoading={copying} maskClosable={!copying} closable={!copying} cancelButtonProps={{ disabled: copying }} onCancel={closeSimilar} onOk={() => void createSimilar()} okButtonProps={{ disabled: !similar?.source || !similar.sourceVersionId || !similar.targetClientId || !similar.formName.trim() || !code(similar.formCode) || copyLoading }}>
+      {similar && <Form layout="vertical" className="form-copy-form">
+        <Alert type="info" showIcon message="Start from an existing candidate form" description="Copies fields, options and validations into a separate draft. Review the copy before publishing it for applications." />
+        <div className="form-copy-grid">
+          <Form.Item label="Source client"><RecruitmentOfferClientSelect includeSetup aria-label="Form source client" allowClear={false} disabled={copying || !!boundClientId} value={similar.sourceClientId} options={[...(!boundClientId ? [{ value: 0, label: 'All permitted clients' }] : []), ...clientOptions]} onChange={value => void loadSimilarSources(value || 0)} /></Form.Item>
+          <Form.Item label="Source form" required><Select aria-label="Source candidate form" showSearch optionFilterProp="label" allowClear disabled={copying} loading={copyLoading} value={similar.source?.id} placeholder={copyLoading ? 'Loading forms…' : 'Choose a saved form'} options={similarSources.map(row => ({ value: row.id, label: `${row.formName}${row.clientId === 0 ? ' · Reusable form' : similar.sourceClientId ? '' : ` · ${clients.find(client => client.id === row.clientId)?.name || row.clientName}`}` }))} notFoundContent={copyLoading ? 'Loading forms…' : 'No saved candidate forms in this scope.'} onChange={value => void selectSimilarSource(similarSources.find(row => row.id === value))} /></Form.Item>
+          <Form.Item label="Target client" required><RecruitmentOfferClientSelect includeSetup aria-label="Form target client" allowClear={false} disabled={copying || !!boundClientId} value={similar.targetClientId || undefined} options={clientOptions} placeholder="Select target client" onChange={value => setSimilar(current => current ? { ...current, targetClientId: value || 0 } : current)} /></Form.Item>
+          <Form.Item label="New form name" required><Input aria-label="Similar form name" disabled={copying} maxLength={180} value={similar.formName} onChange={event => setSimilar(current => current ? { ...current, formName: event.target.value } : current)} /></Form.Item>
+          <Form.Item label="New form code" required><Input aria-label="Similar form code" disabled={copying} maxLength={80} value={similar.formCode} onChange={event => setSimilar(current => current ? { ...current, formCode: code(event.target.value) } : current)} /></Form.Item>
+        </div>
+        {copyError && <Alert type="error" showIcon message={copyError} action={<Button size="small" disabled={copying || copyLoading} onClick={() => void (similar.source ? selectSimilarSource(similar.source) : loadSimilarSources(similar.sourceClientId))}>Retry</Button>} />}
+      </Form>}
+    </Modal>
     <Modal title="Publish this form version?" open={publishOpen} okText="Publish version" confirmLoading={publishing} onCancel={() => setPublishOpen(false)} onOk={() => void confirmPublish()}>
       Published versions are immutable. Existing application links keep their assigned version.
     </Modal>

@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 const read = file => readFileSync(new URL(`../../Payroll.API/Repositories/${file}.cs`, import.meta.url), 'utf8')
 const cases = read('RecruitmentCaseRepository')
 const historical = cases.match(/HistoricalHiringCaseSql = @"([\s\S]*?)";/)[1]
-const postInterview = cases.match(/CurrentStakeholderCode,\s*(\(hiringCase.PositionId[\s\S]*?) IsPostInterviewStage/)[1]
+const postInterview = cases.match(/^(\(hiringCase\.PositionId IS NOT NULL[\s\S]*?) IsPostInterviewStage/m)[1]
 const negotiation = read('RecruitmentTalentRepository').match(/var inPipeline = await db.ExecuteScalarAsync<bool>\(@"([\s\S]*?)", application\)/)[1]
 
 function fixture() {

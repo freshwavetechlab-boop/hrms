@@ -123,11 +123,16 @@ SET Status='Failed',ErrorMessage=@Error,CompletedAtUtc=UTC_TIMESTAMP(6) WHERE Id
     {
         await using var db = Db();
         await db.OpenAsync();
-        return (await db.QueryAsync<RecruitmentStageActionExecution>(@"SELECT execution.*
+        if (!await RecruitmentPipelineStageAccess.AllowsApplicationAsync(db, applicationId, user)) return [];
+        var executions = (await db.QueryAsync<RecruitmentStageActionExecution>(@"SELECT execution.*
 FROM recruitment_stage_action_executions execution
 JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=execution.ApplicationId
 WHERE execution.ApplicationId=@ApplicationId AND (@ClientId IS NULL OR applicationRow.ClientId=@ClientId)
 ORDER BY execution.StartedAtUtc DESC,execution.Id DESC", new { ApplicationId = applicationId, user.ClientId })).ToList();
+        if (executions.Count == 0 || !await RecruitmentPipelineStageAccess.HasPoliciesAsync(db)) return executions;
+        var visits = (await db.QueryAsync<RecruitmentPipelineStageAccess.ApplicationReference>("SELECT Id,PipelineStageId StageId FROM recruitment_application_stage_instances WHERE Id IN @Ids", new { Ids = executions.Select(e => e.StageInstanceId).Distinct().ToArray() })).ToDictionary(v => v.Id);
+        var allowedStages = await RecruitmentPipelineStageAccess.AllowedStageIdsAsync(db, visits.Values.Where(v => v.StageId > 0).Select(v => v.StageId!.Value), user);
+        return executions.Where(e => visits.TryGetValue(e.StageInstanceId, out var visit) && visit.StageId.HasValue && allowedStages.Contains(visit.StageId.Value)).ToList();
     }
 
     public async Task<(long ApplicationId, long StageInstanceId, bool Approved, bool ResumeSubmission)> CompleteWorkflowAsync(long workflowInstanceId, string workflowStatus)
@@ -227,6 +232,7 @@ ORDER BY stageInstance.ApplicationId", cancellationToken: cancellationToken))).T
     {
         await using var db = Db();
         await db.OpenAsync();
+        if (!await RecruitmentPipelineStageAccess.AllowsApplicationAsync(db, applicationId, user)) return false;
         const string query = @"SELECT stage.Id FROM recruitment_application_pipeline_instances pipeline
 JOIN recruitment_application_stage_instances stage ON stage.Id=pipeline.CurrentStageInstanceId AND stage.Status='Active'
 JOIN recruitment_pipeline_stages definition ON definition.Id=stage.PipelineStageId AND definition.StageType='ATS'

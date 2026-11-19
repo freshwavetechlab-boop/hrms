@@ -1,9 +1,11 @@
 .salary-excel-extractor { --sxe-purple: #7756f5; --sxe-ink: #273248; --sxe-muted: #697386; --sxe-border: #e5e7ef; }
-.salary-excel-extractor .ant-modal-content { padding: 0; overflow: hidden; border-radius: 14px; }
+.salary-excel-extractor.ant-modal { top: 24px; padding-bottom: 24px; }
+.salary-excel-extractor .ant-modal-content { display: flex; flex-direction: column; max-height: calc(100dvh - 48px); padding: 0; overflow: hidden; border-radius: 14px; }
+.salary-excel-extractor .ant-modal-header, .salary-excel-extractor .ant-modal-footer { flex-shrink: 0; }
 .salary-excel-extractor .ant-modal-header { padding: 20px 24px 14px; margin: 0; border-bottom: 1px solid var(--sxe-border); }
 .salary-excel-extractor .ant-modal-title { color: var(--sxe-ink); font-size: 16px; }
 .salary-excel-extractor .ant-modal-close { top: 17px; right: 18px; }
-.salary-excel-extractor .ant-modal-body { display: flex; flex-direction: column; min-height: 0; max-height: 72vh; overflow: auto; padding: 18px 24px; color: var(--sxe-ink); }
+.salary-excel-extractor .ant-modal-body { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; max-height: 72vh; overflow: auto; padding: 18px 24px; color: var(--sxe-ink); }
 .salary-excel-extractor .ant-modal-footer { margin: 0; padding: 14px 24px; border-top: 1px solid var(--sxe-border); background: #fafbfe; }
 .salary-excel-extractor .ant-modal-footer .ant-btn-primary:not(:disabled) { color: #fff; background: var(--sxe-purple); border-color: var(--sxe-purple); }
 .salary-excel-extractor .ant-modal-footer .ant-btn-primary:disabled { color: #667085; background: #f2f4f7; border-color: #d0d5dd; box-shadow: none; }
@@ -66,6 +68,10 @@
 .salary-excel-column-name strong { font-size: 11px; color: #344054; font-weight: 600; overflow-wrap: anywhere; }
 .salary-excel-column-name small { color: #8a93a3; font-size: 10px; }
 .salary-excel-columns-table td > .ant-select { width: 165px; }
+.salary-excel-component-choice { display: grid; gap: 8px; min-width: 185px; max-width: 240px; }
+.salary-excel-component-choice > .ant-select { width: 100%; }
+.salary-excel-component-choice > label:not(.ant-checkbox-wrapper) { display: grid; gap: 4px; font-size: 10px; color: var(--sxe-muted); }
+.salary-excel-component-choice .ant-checkbox-wrapper { align-items: flex-start; font-size: 10px; line-height: 1.5; }
 .salary-excel-role { display: grid; gap: 6px; width: 185px; }
 .salary-excel-role > .ant-select { width: 100%; min-width: 0; }
 .salary-excel-role > small { color: #8490a2; font-size: 9px; line-height: 1.5; }
@@ -100,6 +106,8 @@
 .salary-excel-divisor-review > label { width: 150px; }
 @media(max-width:600px) { .salary-excel-divisor-review { flex-wrap: wrap; }.salary-excel-divisor-review > div { flex-basis: 100%; }.salary-excel-divisor-review > label { width: auto; flex: 1; min-width: 120px; } }
 .salary-excel-empty-columns { text-align: center; padding: 30px; color: #7d8798; font-size: 12px; }
+.salary-template-download-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-bottom: 16px; }
+@media (max-width: 550px) { .salary-template-download-fields { grid-template-columns: minmax(0, 1fr); } }
 .salary-excel-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
 .salary-excel-footer > span { color: #7c8797; font-size: 10px; text-align: left; }
 .salary-excel-footer > div { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }

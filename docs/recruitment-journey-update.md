@@ -60,3 +60,11 @@ Use the existing role editor: scheduling uses `recruitment.interview.schedule`; 
 - Individual candidates continue even if a position lacks enough candidates. Position auto-movement holds; admins can explicitly move a position with a reason without manufacturing document signatures or candidate approvals.
 
 Build/unit checks do not verify these database-backed scenarios. No candidate emails, signatures, approvals or sample hiring records were created during local verification.
+
+## Bulk offer acceptance and Employee Master import
+
+Offers & Pre-onboarding retains **All offers** and adds **Released letters** plus **Selected for joining**. Select the client, select/deselect released letters, and use **Mark selected accepted** once. Acceptance is recorded by HR against the current offer/release; it does not fabricate a candidate signature. Normal offers and document-roster releases use separate source identities, so coincident numeric IDs never select the wrong letter. The accepted list is read from persisted status/audit records and remains available after refresh.
+
+New document-roster releases produce the released letter without creating or linking Employee Master. Existing employee links remain intact. In Employees, choose the client and **Import selected from Talent Acquisition**, deselect anyone who has not joined, then **Import selected**. The accepted candidate's existing profile, location, joining and salary inputs feed the normal employee conversion/linking path. Previously imported rows show their employee code and cannot create another employee. Current table filters limit bulk submission to visible selected rows. Repeated clicks/retries reuse existing links; candidate/client identity and configured onboarding requirements remain enforced with per-row reasons, without a new per-candidate input form.
+
+The bulk actions do not call offer-letter email release/resend and do not change existing payroll, salary templates or source workbooks. Configured pipeline automations retain their existing behavior. Existing single-candidate offer/conversion actions remain available. No new database table is needed; roster acceptance uses the existing release/audit tables and explicit import reuses the existing employee-link routine.

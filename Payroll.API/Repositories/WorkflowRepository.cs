@@ -237,9 +237,11 @@ SELECT Id FROM workflow_action_rules WHERE ActivityCode=@ActivityCode AND HttpMe
 
     internal async Task<WorkflowInstance?> StartInTransactionAsync(MySqlConnection db,MySqlTransaction tx,StartWorkflowRequest r,int requestor,int? expectedClientId=null)
     {
+        if (r.ResourceType.Equals(AttendanceApprovalStore.ResourceType, StringComparison.OrdinalIgnoreCase)) return null; // Attendance must be snapshotted and scope-checked by its submission endpoint.
         // Paired with SaveAsync's master-row lock; keep it until every start record is committed.
         var master=await db.QueryFirstOrDefaultAsync<WorkflowMaster>("SELECT * FROM workflowmasters WHERE Id=@WorkflowId AND IsActive=TRUE FOR UPDATE",r,tx);
         if(master is null){return null;}
+        if (master.ResourceType.Equals(AttendanceApprovalStore.ResourceType, StringComparison.OrdinalIgnoreCase)) return null;
         var owner = await ReadPayrollWorkflowOwnerAsync(db, tx, r.ResourceType, r.ResourceId);
         try { WorkflowClientScope.RequireStartScope(master, expectedClientId, owner.Known, owner.ClientId); }
         catch (InvalidOperationException) { return null; }
@@ -290,12 +292,14 @@ LIMIT 250",new{UserId=userId,All=all});}
     public async Task<WorkflowInstance?> GetInstanceAsync(long instanceId){await using var db=Db();await db.OpenAsync();return await db.QueryFirstOrDefaultAsync<WorkflowInstance>("SELECT * FROM workflowinstances WHERE Id=@Id",new{Id=instanceId});}
     public async Task<WorkflowInstance?> GetInstanceForTaskAsync(long taskId){await using var db=Db();await db.OpenAsync();return await db.QueryFirstOrDefaultAsync<WorkflowInstance>("SELECT i.*,m.Code ActivityCode,m.ClientId FROM workflowinstances i JOIN workflowtasks t ON t.InstanceId=i.Id JOIN workflowmasters m ON m.Id=i.WorkflowId WHERE t.Id=@TaskId",new{TaskId=taskId});}
     public async Task<bool> CanReviewTaskAsync(long taskId,int userId){await using var db=Db();await db.OpenAsync();return await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM workflowtasks WHERE Id=@TaskId AND ApproverUserId=@UserId",new{TaskId=taskId,UserId=userId})>0;}
-    public async Task<bool> ActionAsync(long taskId, int actor, string action, string comment)
+    public async Task<bool> ActionAsync(long taskId, int actor, string action, string comment, bool projectRollVerified = false)
     {
         await using var db=Db(); await db.OpenAsync(); await using var tx=await db.BeginTransactionAsync();
         var instance=await db.QueryFirstOrDefaultAsync<WorkflowInstance>("SELECT i.* FROM workflowinstances i JOIN workflowtasks t ON t.InstanceId=i.Id WHERE t.Id=@TaskId",new{TaskId=taskId},tx);
         if(instance?.ResourceType==EssMssRepository.ProfileEditResource)
             await db.ExecuteScalarAsync<int>("SELECT Id FROM employees WHERE Id=@Id FOR UPDATE",new{Id=instance.ResourceId},tx);
+        if (instance?.ResourceType == AttendanceApprovalStore.ResourceType)
+            await db.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@Id FOR UPDATE", new { Id = AttendanceApprovalStore.ReadSnapshot(instance).ClientId }, tx);
         var leaveId = 0L;
         if (instance?.ResourceType is "LeaveRequest" or "AttendanceRegularization" && long.TryParse(instance.ResourceId, out leaveId))
         {
@@ -306,6 +310,17 @@ LIMIT 250",new{UserId=userId,All=all});}
         }
         var task=await db.QueryFirstOrDefaultAsync<WorkflowTask>("SELECT * FROM workflowtasks WHERE Id=@Id AND ApproverUserId=@Actor AND Status='Pending' FOR UPDATE",new{Id=taskId,Actor=actor},tx);
         if(task is null || instance is null) return false;
+        if (instance.ResourceType == AttendanceApprovalStore.ResourceType)
+        {
+            await AttendanceApprovalStore.ValidateActionAsync(db, tx, instance, task, actor, action, projectRollVerified);
+            if (action == "Approved" && projectRollVerified)
+            {
+                var snapshot = AttendanceApprovalStore.ReadSnapshot(instance);
+                if (actor == snapshot.ProjectCellUserId)
+                    await db.ExecuteAsync("UPDATE workflowinstances SET PayloadJson=JSON_SET(PayloadJson,'$.projectRollVerified',CAST('true' AS JSON),'$.projectRollVerifiedBy',@Actor) WHERE Id=@Id", new { Actor = actor, Id = instance.Id }, tx);
+                comment = "Project roll and employment/contract period verified. " + comment;
+            }
+        }
         await db.ExecuteAsync("UPDATE workflowtasks SET Status=@Action,ActionedAt=UTC_TIMESTAMP(),Comment=@Comment WHERE Id=@Id",new{Action=action,Comment=comment,Id=taskId},tx);
         await db.ExecuteAsync("INSERT INTO workflowhistory (InstanceId,TaskId,Action,ActorUserId,Comment) VALUES (@InstanceId,@TaskId,@Action,@Actor,@Comment)",new{task.InstanceId,TaskId=taskId,Action=action,Actor=actor,Comment=comment},tx);
         if(action=="Approved") await AdvanceAsync(db,task.InstanceId,task.StageId,actor,tx);

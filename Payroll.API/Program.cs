@@ -129,6 +129,7 @@ builder.Services.AddSingleton<ExcelPayslipMappingService>();
 builder.Services.AddSingleton<ExcelPayrollSetupRepository>();
 builder.Services.AddSingleton<ExcelPayslipPdfService>();
 builder.Services.AddScoped<PayslipDesignRepository>();
+builder.Services.AddScoped<AttendanceApprovalRepository>();
 builder.Services.AddSingleton<AuthRepository>();
 builder.Services.AddSingleton<LeaveAttendanceRepository>();
 builder.Services.AddSingleton<AttendanceIntegrationRepository>();
@@ -1065,12 +1066,17 @@ app.MapPost("/api/workflows/tasks/{taskId:long}/{action}", async (WorkflowReposi
 {
     if(action is not ("Approved" or "Rejected" or "Sent Back")) return Results.BadRequest();
     var user=CurrentUser(context);
+    if (!await recruitmentPipeline.CanActOnStageWorkflowAsync(await repository.GetInstanceForTaskAsync(taskId), user)) return Results.StatusCode(403);
     bool task;
     try
     {
-        task = await repository.ActionAsync(taskId,user.Id,action,request.Comment);
+        task = await repository.ActionAsync(taskId,user.Id,action,request.Comment,request.ProjectRollVerified);
     }
     catch (AttendancePeriodLockedException exception)
+    {
+        return Results.Conflict(new { error = exception.Message });
+    }
+    catch (AttendanceApprovalException exception)
     {
         return Results.Conflict(new { error = exception.Message });
     }
@@ -1239,6 +1245,7 @@ app.MapGet("/api/ess/attendance/today", async (EssMssRepository repository, Http
 app.MapPost("/api/ess/attendance/punch/validate", async (EssMssRepository repository, ValidateAttendancePunchRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||!user.Permissions.Contains("ess.attendance.mark",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); return Results.Ok(await repository.ValidateAttendancePunchAsync(user.EmployeeId.Value,user.ClientId,request)); });
 app.MapPost("/api/ess/attendance/punch", async (EssMssRepository repository, ValidateAttendancePunchRequest request, HttpContext context) => { var user=CurrentUser(context); if(!user.Permissions.Contains("ess.self",StringComparer.OrdinalIgnoreCase)||!user.Permissions.Contains("ess.attendance.mark",StringComparer.OrdinalIgnoreCase)||user.EmployeeId is null)return Results.StatusCode(403); var result=await repository.RecordAttendancePunchAsync(user.EmployeeId.Value,user.ClientId,request); return result.PunchRecorded ? Results.Created($"/api/ess/attendance/punch/{result.PunchId}",result) : Results.BadRequest(result); });
 BrowserAttendanceEndpoints.Map(app, CurrentUser);
+AttendanceApprovalEndpoints.Map(app, CurrentUser);
 app.MapGet("/api/ess/mss/attendance/groups", async (LeaveAttendanceRepository repository, HttpContext context) =>
 {
     var user = CurrentUser(context);
@@ -2490,6 +2497,16 @@ recruitmentOrchestration.MapDelete("/job-postings/{id:long}", async (Recruitment
     return ok ? Results.NoContent() : Results.BadRequest(new { error });
 });
 
+RecruitmentPipelineCloneEndpoints.Map(app, CurrentUser);
+RecruitmentPipelineConfigurationEndpoints.Map(app, CurrentUser);
+RecruitmentClientConfigurationEndpoints.Map(app, CurrentUser);
+RecruitmentJoiningEndpoints.Map(app, CurrentUser, async (context, applicationId, decision, user) =>
+    await ApplyRecruitmentDecisionAsync(applicationId, decision, user,
+        context.RequestServices.GetRequiredService<RecruitmentPipelineRepository>(),
+        context.RequestServices.GetRequiredService<RecruitmentPipelineActionService>(),
+        context.RequestServices.GetRequiredService<RecruitmentCandidateActionRepository>(),
+        context.RequestServices.GetRequiredService<RecruitmentCaseRepository>()));
+RecruitmentConfigurationCloneEndpoints.Map(app, CurrentUser);
 recruitmentOrchestration.MapGet("/pipelines", async (RecruitmentPipelineRepository repository, int? clientId, HttpContext context) =>
     !HasRecruitmentConfiguration(context) ? Results.StatusCode(403) : Results.Ok(await repository.GetPipelinesAsync(clientId, CurrentUser(context))));
 recruitmentOrchestration.MapGet("/pipelines/{id:long}", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
@@ -2559,8 +2576,12 @@ recruitmentOrchestration.MapGet("/interview-competencies", async (RecruitmentPip
 recruitmentOrchestration.MapPost("/interview-competencies", async (RecruitmentPipelineRepository repository, RecruitmentInterviewCompetencyDefinition request, HttpContext context) =>
 {
     if (!HasRecruitmentConfiguration(context)) return Results.StatusCode(403);
-    var (row, error) = await repository.SaveInterviewCompetencyAsync(request, CurrentUser(context));
-    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+    try
+    {
+        var (row, error) = await repository.SaveInterviewCompetencyAsync(request, CurrentUser(context));
+        return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+    }
+    catch (UnauthorizedAccessException) { return Results.StatusCode(403); }
 });
 
 recruitmentOrchestration.MapPost("/applications/{applicationId:long}/pipeline", async (RecruitmentPipelineRepository repository, RecruitmentPipelineActionService actions, RecruitmentCandidateActionRepository candidateActions, long applicationId, HttpContext context) =>
@@ -2584,9 +2605,10 @@ recruitmentOrchestration.MapGet("/pipeline-stages/{stageId:long}/actions", async
     !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await repository.GetStageActionsAsync(stageId, triggerEvent ?? "OnEntry", CurrentUser(context))));
 recruitmentOrchestration.MapGet("/applications/{applicationId:long}/stage-action-executions", async (RecruitmentPipelineActionService actions, long applicationId, HttpContext context) =>
     !HasRecruitmentManagement(context) ? Results.StatusCode(403) : Results.Ok(await actions.GetExecutionsAsync(applicationId, CurrentUser(context))));
-recruitmentOrchestration.MapPost("/applications/{applicationId:long}/stage-actions/{triggerEvent}", async (RecruitmentPipelineActionService actions, long applicationId, string triggerEvent, HttpContext context) =>
+recruitmentOrchestration.MapPost("/applications/{applicationId:long}/stage-actions/{triggerEvent}", async (RecruitmentPipelineActionService actions, RecruitmentPipelineRepository repository, long applicationId, string triggerEvent, HttpContext context) =>
 {
     if (!HasRecruitmentManagement(context)) return Results.StatusCode(403);
+    if (!await repository.CanExecuteStageActionsAsync(applicationId, CurrentUser(context))) return Results.StatusCode(403);
     var result = await actions.ExecuteAsync(applicationId, triggerEvent, CurrentUser(context));
     return string.IsNullOrWhiteSpace(result.TriggerEvent) ? Results.BadRequest(new { error = "Unsupported stage action trigger." }) : Results.Ok(result);
 });

@@ -1,3 +1,11 @@
+.hiring-template-copy-form { display:grid;gap:12px;min-width:0; }
+.hiring-template-copy-form > p { margin:0;color:#667085;font-size:13px; }
+.hiring-template-copy-form .ant-form-item { margin-bottom:0;min-width:0; }
+.hiring-template-copy-form .ant-select { width:100%;min-width:0; }
+.hiring-template-copy-source { display:grid;gap:12px;padding:14px;background:#faf9fe;border:1px solid #e6e1f2;border-radius:10px;min-width:0; }
+.hiring-template-copy-identity { display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:12px; }
+@media (max-width:600px) { .hiring-template-copy-identity { grid-template-columns:minmax(0,1fr); } }
+
 /* Recruitment Administration owns a compact, Ant Design-native visual system.
    Everything is scoped so legacy Settings overrides cannot stretch its controls. */
 .recruitment-admin {

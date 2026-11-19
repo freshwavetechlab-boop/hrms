@@ -271,6 +271,9 @@ export type SaveRecruitmentPipelineDefinition = Pick<RecruitmentPipelineDefiniti
   'id' | 'clientId' | 'pipelineCode' | 'pipelineName' | 'description' | 'isActive'>
 
 export type RecruitmentPipelineVersion = {
+  configurationHash?: string
+  cloneWarnings?: string[]
+  acknowledgeCloneWarnings?: boolean
   allRejectedRollback?: { enabled: boolean; targetStageCode: string }
   runtimeUpdate?: { applicationsUpdated: number; hiringJourneysUpdated: number; waiting: string[] } | null
   id: number
@@ -288,7 +291,16 @@ export type RecruitmentPipelineVersion = {
   transitions: RecruitmentPipelineTransition[]
 }
 
+export type RecruitmentPipelineStageAccessPolicy = {
+  ownerType: 'Unassigned' | 'GAD' | 'Client' | 'Shared'
+  departmentLabel: string
+  restricted: boolean
+  allowedRoleCodes: string[]
+  allowedUserIds: number[]
+}
+
 export type RecruitmentPipelineStage = {
+  accessPolicy?: RecruitmentPipelineStageAccessPolicy | null
   id: number
   pipelineVersionId: number
   stageCode: string
@@ -485,6 +497,7 @@ export type RecruitmentPipelineBoard = {
 }
 
 export type RecruitmentPipelineBoardLane = {
+  accessPolicy?: RecruitmentPipelineStageAccessPolicy | null
   stageId: number
   stageCode: string
   stageName: string
@@ -579,6 +592,8 @@ export type RecruitmentPipelineDemandCard = {
 }
 
 export type RecruitmentUnifiedPipelineLane = {
+  accessPolicy?: RecruitmentPipelineStageAccessPolicy | null
+  pipelineDefinitionId?: number
   pipelineVersionId: number
   pipelineVersionNumber: number
   pipelineName: string

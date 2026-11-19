@@ -34,7 +34,7 @@ ORDER BY event.Id LIMIT 100", cancellationToken: cancellationToken))).ToList();
                     ["workOrderNumber"] = row.WorkOrderNumber, ["stageName"] = row.EventTitle };
                 await QueueAsync(db, key, recipients, Render(rule.SubjectTemplate, tokens), Render(rule.InternalBodyTemplate, tokens),
                     "RECRUITMENT_HIRING_STAGE_MOVED", "RecruitmentHiringStageEvent", row.Id.ToString(), row.ClientId,
-                    new AuthUser { Id = 0, DisplayName = "Recruitment automation" });
+                    new AuthUser { Id = 0, DisplayName = "Recruitment automation", IsActive = true });
                 // Queue failure remains retryable; previously queued recipients are deduplicated.
                 var queued = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_lifecycle_notification_deliveries WHERE EventKey=@Key AND RecipientEmail IN @Recipients AND Status='Queued'",
                     new { Key = key, Recipients = recipients });

@@ -608,6 +608,7 @@ WHERE line.Id=@WorkOrderLineId AND line.Status<>'Superseded' AND version.Id=@Pip
 FROM recruitment_pipeline_stages WHERE PipelineVersionId=@Id AND CardScope='Position' AND IsActive=TRUE ORDER BY DisplayOrder,Id", new { Id = request.PipelineVersionId })).ToList();
         var initial = stages.SingleOrDefault(row => row.IsInitial);
         if (initial is null) return (null, "The pipeline needs exactly one active initial Position stage.");
+        if (!await RecruitmentPipelineStageAccess.AllowsStageAsync(db, initial.Id, user)) return (null, "The initial hiring stage is not assigned to your roles or login.");
 
         await using var transaction = await db.BeginTransactionAsync();
         var overallMinutes = source.PipelineOverallSlaMinutes;
@@ -894,7 +895,8 @@ PositionId=COALESCE(@PositionId,PositionId) WHERE WorkOrderLineId=@LineId OR Req
         await using var db = Db();
         await db.OpenAsync();
         var rows = await HiringCaseRowsAsync(db, user.ClientId ?? clientId, null);
-        return await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.Location);
+        var permitted = await RecruitmentPipelineStageAccess.AllowedCaseIdsAsync(db, rows.Select(r => r.Id), user);
+        return await RecruitmentAccessScope.FilterAsync(db, user, rows.Where(r => permitted.Contains(r.Id)), row => row.ClientId, row => row.Location);
     }
 
     public async Task<RecruitmentHiringCase?> GetHiringCaseAsync(long id, AuthUser user)
@@ -903,6 +905,7 @@ PositionId=COALESCE(@PositionId,PositionId) WHERE WorkOrderLineId=@LineId OR Req
         await db.OpenAsync();
         var row = (await HiringCaseRowsAsync(db, user.ClientId, id)).FirstOrDefault();
         if (row is null || !await RecruitmentAccessScope.CanAccessLocationAsync(db, user, row.ClientId, row.Location)) return null;
+        if (!await RecruitmentPipelineStageAccess.AllowsCaseAsync(db, id, user)) return null;
         row.Stages = (await db.QueryAsync<RecruitmentHiringCaseStage>(@"SELECT instance.*,stage.StageCode,stage.StageName,stage.DisplayOrder,stage.StakeholderCode,stage.TargetOffsetMinutes,
 stage.AllowPause,stage.PauseBehavior,stage.RequiresApproval,stage.ApprovalWorkflowId,stage.IsTerminal,
 EXISTS(SELECT 1 FROM recruitment_position_stage_pause_periods pauseRow WHERE pauseRow.PositionStageInstanceId=instance.Id AND pauseRow.ResumedAtUtc IS NULL) IsPaused,
@@ -936,6 +939,10 @@ FROM recruitment_position_stage_events eventRow
 LEFT JOIN authusers actor ON actor.Id=eventRow.ActorUserId
 WHERE eventRow.PositionPipelineInstanceId=@Id
 ORDER BY eventRow.CreatedAtUtc,eventRow.Id", new { Id = id })).ToList();
+        var permittedStages = await RecruitmentPipelineStageAccess.AllowedStageIdsAsync(db, row.Stages.Select(s => s.PipelineStageId), user);
+        row.Stages = row.Stages.Where(s => permittedStages.Contains(s.PipelineStageId)).ToList();
+        var permittedVisits = row.Stages.Select(s => s.Id).ToHashSet();
+        row.Events = row.Events.Where(e => e.PositionStageInstanceId is null || permittedVisits.Contains(e.PositionStageInstanceId.Value)).ToList();
         if (row.CurrentStageInstanceId is > 0)
         {
             var pending = await db.QueryFirstOrDefaultAsync<HiringCaseAdvanceState>(@"SELECT Id,Status FROM recruitment_hiring_case_advance_requests
@@ -950,6 +957,7 @@ WHERE HiringCaseId=@CaseId AND PositionStageInstanceId=@StageInstanceId AND Stat
     {
         await using var db = Db();
         await db.OpenAsync();
+        if (!await RecruitmentPipelineStageAccess.AllowsCaseAsync(db, id, user)) return [];
         var rows = (await db.QueryAsync<RecruitmentPipelineTransition>(@"SELECT transitionRow.*,fromStage.StageCode FromStageCode,toStage.StageCode ToStageCode
 FROM recruitment_position_pipeline_instances hiringCase
 JOIN recruitment_position_stage_instances currentStage ON currentStage.Id=hiringCase.CurrentStageInstanceId AND currentStage.Status IN ('Active','Paused')
@@ -1007,6 +1015,7 @@ JOIN recruitment_position_stage_instances currentStage ON currentStage.Id=hiring
 JOIN recruitment_pipeline_stages stage ON stage.Id=currentStage.PipelineStageId
 WHERE hiringCase.Id=@Id AND (hiringCase.Status='Active' OR (@AdminManual AND hiringCase.Status IN ('Completed','Rejected','Withdrawn','Candidate Flow'))) AND (@ClientId IS NULL OR hiringCase.ClientId=@ClientId) FOR UPDATE", new { Id = id, user.ClientId, AdminManual = manual && RecruitmentPermissions.IsAdmin(user) }, transaction);
         if (current is null) return (null, "Active hiring case was not found.");
+        if (!await RecruitmentPipelineStageAccess.AllowsStageAsync(db, current.PipelineStageId, user, transaction)) return (null, "This hiring stage is not assigned to your roles or login.");
         if (await db.ExecuteScalarAsync<bool>("SELECT " + HistoricalHiringCaseSql + " FROM recruitment_position_pipeline_instances hiringCase WHERE hiringCase.Id=@Id", new { Id = id }, transaction))
             return (null, "This is an earlier duplicate journey retained for history. Open the currently linked hiring journey instead.");
         var outcome = string.IsNullOrWhiteSpace(request.OutcomeCode) ? "ADVANCE" : request.OutcomeCode.Trim().ToUpperInvariant();
@@ -1576,6 +1585,7 @@ VALUES (@CaseId,@StageId,'Active',UTC_TIMESTAMP(6),@DueAtUtc);SELECT LAST_INSERT
         if (reason.Length < 3) return (null, "Pause reason is required.");
         await using var db = Db();
         await db.OpenAsync();
+        if (!await RecruitmentPipelineStageAccess.AllowsCaseAsync(db, id, user)) return (null, "This hiring stage is not assigned to your roles or login.");
         var stage = await ActiveCaseStageAsync(db, id, user.ClientId);
         if (stage is null) return (null, "Active hiring case stage was not found.");
         if (!stage.AllowPause) return (null, "SLA pause is disabled for this stage.");
@@ -1594,6 +1604,7 @@ VALUES (@CaseId,@StageId,'SlaPaused','SLA paused',@Reason,@UserId)", new { CaseI
     {
         await using var db = Db();
         await db.OpenAsync();
+        if (!await RecruitmentPipelineStageAccess.AllowsCaseAsync(db, id, user)) return (null, "This hiring stage is not assigned to your roles or login.");
         await using var transaction = await db.BeginTransactionAsync();
         var stage = await ActiveCaseStageAsync(db, id, user.ClientId, transaction);
         if (stage is null) return (null, "Active hiring case stage was not found.");
@@ -1617,6 +1628,7 @@ VALUES (@CaseId,@StageId,'SlaResumed','SLA resumed',@Details,@UserId)", new { Ca
     {
         await using var db = Db();
         await db.OpenAsync();
+        if (!await RecruitmentPipelineStageAccess.AllowsDocumentAsync(db, documentId, user)) return [];
         var allowed = await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_process_documents documentRow
 WHERE documentRow.Id=@Id AND (@ClientId IS NULL OR documentRow.ClientId=@ClientId)
 AND (@ViewAll OR (documentRow.DocumentType IN ('MOM','SIGNED_MOM') AND @UserId IN (" + RecruitmentPanelSignatures.MembersSql + ")))",
@@ -1658,6 +1670,7 @@ FROM recruitment_process_document_signatures WHERE ProcessDocumentId=@Id ORDER B
 
         await using var db = Db();
         await db.OpenAsync();
+        if (!await RecruitmentPipelineStageAccess.AllowsDocumentAsync(db, documentId, user)) return (null, "Document was not found in your assigned pipeline stages.");
         var document = await db.QueryFirstOrDefaultAsync<RecruitmentProcessDocument>(@"SELECT * FROM recruitment_process_documents
 WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = documentId, user.ClientId });
         if (document is null) return (null, "Recruitment process document was not found.");
@@ -1791,7 +1804,7 @@ FROM recruitment_process_documents documentRow WHERE documentRow.Id=@Id", new { 
    WHERE panel.PipelineStageId=documentRow.PipelineStageId AND panel.IsRequired=TRUE),0),1)) END";
         var captured = "CASE WHEN documentRow.DocumentType IN ('MOM','SIGNED_MOM') THEN " + RecruitmentPanelSignatures.CapturedSql
             + " ELSE (SELECT COUNT(*) FROM recruitment_process_document_signatures signatureRow WHERE signatureRow.ProcessDocumentId=documentRow.Id) END";
-        return (await db.QueryAsync<RecruitmentProcessDocument>(@"SELECT documentRow.*,
+        var documents = (await db.QueryAsync<RecruitmentProcessDocument>(@"SELECT documentRow.*,
 " + RecruitmentJobMom.CurrentFor("documentRow") + @" IsCurrentJobMom,
 EXISTS (SELECT 1 FROM entity_attachments attachment
     WHERE attachment.entity_type='RECRUITMENT_PROCESS_DOCUMENT' AND attachment.entity_id=documentRow.Id
@@ -1808,6 +1821,10 @@ AND (@ViewAll OR (documentRow.DocumentType IN ('MOM','SIGNED_MOM') AND @UserId I
 ORDER BY documentRow.DocumentType,documentRow.VersionNumber DESC,documentRow.Id DESC",
             new { user.ClientId, HiringCaseId = hiringCaseId, ApplicationId = applicationId, UserId = user.Id,
                 ViewAll = RecruitmentPermissions.Has(user, "recruitment.document.view", "recruitment.document.manage") })).ToList();
+        if (!await RecruitmentPipelineStageAccess.HasPoliciesAsync(db)) return documents;
+        var visible = new List<RecruitmentProcessDocument>();
+        foreach (var document in documents) if (await RecruitmentPipelineStageAccess.AllowsDocumentAsync(db, document.Id, user)) visible.Add(document);
+        return visible;
     }
 
     public async Task<(RecruitmentProcessDocument? Row, string Error)> SaveProcessDocumentAsync(SaveRecruitmentProcessDocument request, AuthUser user)
@@ -1821,6 +1838,9 @@ ORDER BY documentRow.DocumentType,documentRow.VersionNumber DESC,documentRow.Id 
         if (!request.HiringCaseId.HasValue && !request.ApplicationId.HasValue && !request.InterviewId.HasValue) return (null, "Link the document to a hiring case, application or interview.");
         await using var db = Db();
         await db.OpenAsync();
+        if (request.ApplicationId > 0 && !await RecruitmentPipelineStageAccess.AllowsApplicationAsync(db, request.ApplicationId.Value, user)) return (null, "Application was not found in your assigned pipeline stages.");
+        if (request.PipelineStageId > 0 && !await RecruitmentPipelineStageAccess.AllowsStageAsync(db, request.PipelineStageId.Value, user)) return (null, "Document stage is not assigned to your roles or login.");
+        if (request.HiringCaseId > 0 && !await RecruitmentPipelineStageAccess.AllowsCaseAsync(db, request.HiringCaseId.Value, user)) return (null, "Hiring case was not found in your assigned pipeline stages.");
         if (request.HiringCaseId.HasValue && await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_position_pipeline_instances WHERE Id=@Id AND ClientId=@ClientId", new { Id = request.HiringCaseId.Value, request.ClientId }) == 0)
             return (null, "The linked hiring case is outside this client.");
         if (request.ApplicationId.HasValue && await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_candidate_applications WHERE Id=@Id AND ClientId=@ClientId", new { Id = request.ApplicationId.Value, request.ClientId }) == 0)
@@ -1930,6 +1950,7 @@ WHERE documentRow.Id=@Id AND (@ClientId IS NULL OR documentRow.ClientId=@ClientI
     {
         await using var db = Db();
         await db.OpenAsync(cancellationToken);
+        if (!await RecruitmentPipelineStageAccess.AllowsDocumentAsync(db, id, user)) return (null, "Document was not found in your assigned pipeline stages.");
         var context = await ReadGenerationContextAsync(db, id, user);
         if (context is null) return (null, "Process document was not found.");
         if (context.Status.Equals("Signed", StringComparison.OrdinalIgnoreCase)) return (null, "A signed process document cannot be regenerated.");
@@ -2196,6 +2217,7 @@ GROUP BY feedback.InterviewId,score.InterviewStageCompetencyId", new { Ids = int
         if (request.HiringCaseId <= 0 || applicationIds.Length == 0) return (null, "Select a hiring case and at least one candidate application.");
         await using var db = Db();
         await db.OpenAsync();
+        if (request.HiringCaseId > 0 && !await RecruitmentPipelineStageAccess.AllowsCaseAsync(db, request.HiringCaseId, user)) return (null, "Hiring case was not found in your assigned pipeline stages.");
         var hiringCase = await db.QueryFirstOrDefaultAsync<(int ClientId, long? PositionId)>("SELECT ClientId,PositionId FROM recruitment_position_pipeline_instances WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = request.HiringCaseId, user.ClientId });
         if (hiringCase == default) return (null, "Hiring case was not found.");
         if (!hiringCase.PositionId.HasValue) return (null, "Link this work-order line to its open position before batching candidate applications.");
@@ -2203,6 +2225,7 @@ GROUP BY feedback.InterviewId,score.InterviewStageCompetencyId", new { Ids = int
 (SELECT score.Id FROM recruitment_application_scores score WHERE score.ApplicationId=applicationRow.Id ORDER BY score.Id DESC LIMIT 1) ApplicationScoreId
 FROM recruitment_candidate_applications applicationRow WHERE applicationRow.Id IN @Ids AND applicationRow.ClientId=@ClientId", new { Ids = applicationIds, hiringCase.ClientId })).ToList();
         if (applications.Count != applicationIds.Length) return (null, "One or more applications are outside this client.");
+        if ((await RecruitmentPipelineStageAccess.AllowedApplicationIdsAsync(db, applicationIds, user)).Count != applicationIds.Length) return (null, "One or more applications are outside your assigned pipeline stages.");
         if (applications.Any(row => row.PositionId != hiringCase.PositionId.Value)) return (null, "All selected candidates must belong to this hiring case position.");
         if (applications.Any(row => new[] { "Rejected", "Withdrawn", "Joined" }.Contains(row.CurrentStage, StringComparer.OrdinalIgnoreCase))) return (null, "Rejected, withdrawn or joined applications cannot be included in a client shortlist.");
         await using var transaction = await db.BeginTransactionAsync();
@@ -2227,6 +2250,7 @@ JOIN recruitment_position_pipeline_instances hiringCase ON hiringCase.Id=batch.H
     {
         await using var db = Db();
         await db.OpenAsync();
+        if (!await RecruitmentPipelineStageAccess.AllowsCaseAsync(db, hiringCaseId, user)) return [];
         var ids = (await db.QueryAsync<long>(@"SELECT batch.Id FROM recruitment_profile_submission_batches batch
 JOIN recruitment_position_pipeline_instances hiringCase ON hiringCase.Id=batch.HiringCaseId
 WHERE batch.HiringCaseId=@HiringCaseId AND (@ClientId IS NULL OR hiringCase.ClientId=@ClientId)
@@ -2250,6 +2274,7 @@ FROM recruitment_profile_submission_batches batch
 JOIN recruitment_position_pipeline_instances hiringCase ON hiringCase.Id=batch.HiringCaseId
 WHERE batch.Id=@Id AND (@ClientId IS NULL OR hiringCase.ClientId=@ClientId) FOR UPDATE", new { Id = id, user.ClientId }, transaction);
         if (source is null) return (null, "Candidate shortlist batch was not found.");
+        if (!await RecruitmentPipelineStageAccess.AllowsCaseAsync(db, source.HiringCaseId, user, transaction)) return (null, "Shortlist batch was not found in your assigned pipeline stages.");
         if (!source.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase)) return (null, "Only a draft shortlist batch can be approved.");
         await RefreshProfileBatchReadinessAsync(db, id, transaction);
         var incomplete = (await db.QueryAsync<string>(@"SELECT CONCAT(candidate.FirstName,' ',candidate.LastName)
@@ -2282,6 +2307,7 @@ LEFT JOIN recruitment_position_stage_instances stageInstance ON stageInstance.Id
 LEFT JOIN recruitment_pipeline_stages stage ON stage.Id=stageInstance.PipelineStageId
 WHERE batch.Id=@Id AND (@ClientId IS NULL OR batch.ClientId=@ClientId)", new { Id = id, user.ClientId });
         if (source is null) return (null, "Candidate shortlist batch was not found.");
+        if (!await RecruitmentPipelineStageAccess.AllowsCaseAsync(db, source.HiringCaseId, user)) return (null, "Shortlist batch was not found in your assigned pipeline stages.");
         if (!source.Status.Equals("Approved", StringComparison.OrdinalIgnoreCase) && !source.Status.Equals("Forwarded", StringComparison.OrdinalIgnoreCase))
             return (null, "Approve the shortlist batch before forwarding it.");
         if (source.Status.Equals("Forwarded", StringComparison.OrdinalIgnoreCase)) return (await GetProfileBatchAsync(db, id), "");

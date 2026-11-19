@@ -1660,6 +1660,7 @@ WHERE Id=@EntityId AND CreatedByUserId=@UserId AND Status='Draft'", new { Entity
 
     private async Task<bool> HasEntityClientAccessAsync(AuthUser user, string entityType, long entityId, int storedClientId)
     {
+        if (!await HasRecruitmentStageAccessAsync(user, entityType, entityId)) return false;
         if (user.ClientId is null || user.ClientId == storedClientId) return true;
         if (entityType != "CANDIDATE") return false;
         await using var db = Connection();

@@ -1,0 +1,5 @@
+.recruitment-client-configured.ant-select:not(.ant-select-disabled) .ant-select-selector {
+  background-color: #edf9e8;
+  border-color: #b7dba4;
+  color: #135200;
+}

@@ -83,7 +83,9 @@ WHERE Id IN @LocationIds AND ClientId=@ClientId AND IsActive=TRUE", new { Locati
 
     public static async Task<List<T>> FilterAsync<T>(MySqlConnection db, AuthUser user, IEnumerable<T> rows, Func<T, int> clientId, Func<T, string?> location)
     {
-        var source = rows.ToList();
+        // Client assignment is independent from institute/location restrictions.
+        // Aggregate recruitment reads retain the original Selected identity.
+        var source = rows.Where(row => HasClientContext(user, clientId(row))).ToList();
         if (!IsRestricted(user)) return source;
         var result = new List<T>(source.Count);
         foreach (var row in source)

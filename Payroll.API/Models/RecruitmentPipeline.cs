@@ -219,6 +219,8 @@ public class SaveRecruitmentPipelineDefinition
 
 public class RecruitmentPipelineVersion
 {
+    public string ConfigurationHash { get; set; } = "";
+    public List<string> CloneWarnings { get; set; } = [];
     public RecruitmentAllRejectedRollback AllRejectedRollback { get; set; } = new();
     public RecruitmentPipelineRevisionSync? RuntimeUpdate { get; set; }
     public long Id { get; set; }
@@ -240,6 +242,7 @@ public sealed record RecruitmentPipelineRevisionSync(int ApplicationsUpdated, in
 
 public class SaveRecruitmentPipelineVersion
 {
+    public bool AcknowledgeCloneWarnings { get; set; }
     public RecruitmentAllRejectedRollback AllRejectedRollback { get; set; } = new();
     public long Id { get; set; }
     public long PipelineDefinitionId { get; set; }
@@ -252,6 +255,7 @@ public class SaveRecruitmentPipelineVersion
 
 public class RecruitmentPipelineStage
 {
+    public RecruitmentStageAccessPolicy? AccessPolicy { get; set; }
     public long Id { get; set; }
     public long PipelineVersionId { get; set; }
     public string StageCode { get; set; } = "";
@@ -529,6 +533,7 @@ public class RecruitmentPipelineBoard
 
 public class RecruitmentPipelineBoardLane
 {
+    public RecruitmentStageAccessPolicy? AccessPolicy { get; set; }
     public long StageId { get; set; }
     public string StageCode { get; set; } = "";
     public string StageName { get; set; } = "";
@@ -546,6 +551,7 @@ public class RecruitmentPipelineBoardLane
 
 public class RecruitmentPipelineWorkspace
 {
+    public bool StageAccessRestricted { get; set; }
     public int? ClientId { get; set; }
     public List<RecruitmentPipelineWorkspaceLane> Lanes { get; set; } = [];
     public List<RecruitmentPipelineDemandCard> UnassignedDemandCards { get; set; } = [];
@@ -553,6 +559,8 @@ public class RecruitmentPipelineWorkspace
 
 public class RecruitmentPipelineWorkspaceLane
 {
+    public RecruitmentStageAccessPolicy? AccessPolicy { get; set; }
+    public long PipelineDefinitionId { get; set; }
     public long PipelineVersionId { get; set; }
     public int PipelineVersionNumber { get; set; }
     public string PipelineName { get; set; } = "";

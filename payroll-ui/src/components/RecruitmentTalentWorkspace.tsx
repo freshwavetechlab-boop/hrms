@@ -31,6 +31,7 @@ import RecruitmentBatchInterviewEditor from './RecruitmentBatchInterviewEditor'
 import RecruitmentInterviewRounds from './RecruitmentInterviewRounds'
 import RecruitmentEditorDrawer from './RecruitmentEditorDrawer'
 import RecruitmentGlobalTalentPool from './RecruitmentGlobalTalentPool'
+import RecruitmentOfferJoiningWorkspace from './RecruitmentOfferJoiningWorkspace'
 import RecruitmentInternalCandidateForm from './RecruitmentInternalCandidateForm'
 import RecruitmentResumeIntake, { type RecruitmentResumeIntakeMode } from './RecruitmentResumeIntake'
 import SearchSelect, { selectOptions } from './SearchSelect'
@@ -535,7 +536,7 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0, 
       {negotiationMode ? <Tabs className="negotiation-list-tabs" items={[
         { key: 'candidates', label: 'Candidate terms', children: <RecruitmentRecordList rows={applications} title={row => row.candidateName} subtitle={row => row.positionTitle} exportFileName="candidate-negotiation" filters={[{ key: 'job', label: 'Job', value: row => row.positionTitle }]} actions={row => <RecruitmentNegotiationAction applicationId={row.id} onSaved={refreshInterviewData} />} columns={[{ key: 'candidateName', label: 'Candidate' }, { key: 'positionTitle', label: 'Job' }, { key: 'currentStage', label: 'Stage' }]} /> },
         { key: 'offers', label: 'Offers & approvals', children: offerList },
-      ]} /> : offerList}
+      ]} /> : <RecruitmentOfferJoiningWorkspace key={`joining:${initialClientId}`} clientId={initialClientId} offers={offerList} onChanged={load} canAccept={!!session && (session.user.clientId == null && session.user.roles.includes('super_admin') || session.user.permissions.some(permission => ['recruitment.manage', 'settings.manage', 'recruitment.offer.issue'].includes(permission)))} />}
     </>}
 
     <CandidateEditorDrawer draft={candidateDraft} clients={clients} onChange={setCandidateDraft} onClose={() => setCandidateDraft(null)} onSubmit={() => void saveCandidateDraft()} />

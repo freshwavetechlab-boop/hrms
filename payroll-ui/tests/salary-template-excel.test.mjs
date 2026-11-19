@@ -59,6 +59,20 @@ test('monthly and earned Basic pair by existing classification and dependencies,
   assert.deepEqual(source, original, 'analysis never changes source caches, formulas, or employee values')
 })
 
+test('monthly deduction/employer helpers pair only with the matching dependent output and retain employee/employer identity', () => {
+  const source = sheet(['Employee Name', 'Payroll days', 'Payable days', 'Monthly Basic', 'Basic', 'Monthly Employee PF', 'Employee PF', 'Monthly Employer PF', 'Employer PF'], [
+    { sourceRow: 2, cells: [text('Synthetic employee'), number(30), number(15), number(10000), formula('D2/B2*C2', 5000), formula('E2*12%', 600), formula('F2', 600), formula('E2*13%', 650), formula('H2', 650)] },
+  ])
+  const result = analyzeSalaryTemplateSheet(source, 1)
+  assert.equal(result.columns[5].suggestedRole, 'input')
+  assert.equal(result.columns[7].suggestedRole, 'input')
+  assert.equal(result.columns[5].suggestedCode, result.columns[6].suggestedCode)
+  assert.equal(result.columns[7].suggestedCode, result.columns[8].suggestedCode)
+  assert.notEqual(result.columns[5].suggestedCode, result.columns[7].suggestedCode)
+  assert.equal(result.columns[6].suggestedRole, 'deduction')
+  assert.equal(result.columns[8].suggestedRole, 'employer')
+})
+
 test('late employee formula variants remain visible rather than being sampled away or freezing IF branches', () => {
   const source = monthly()
   for (let sourceRow = 9; sourceRow <= 250; sourceRow++) source.rows.push({ sourceRow, cells: [text(`Synthetic ${sourceRow}`), number('19000'), number('26'), number('17'), formula(`B${sourceRow}/C${sourceRow}*D${sourceRow}`, '12423.0769230769'), formula(sourceRow === 250 ? `IF(E${sourceRow}>15000,15000*12%,E${sourceRow}*12%)` : `MIN(E${sourceRow},15000)*12%`, '1490.76923076923'), formula(`E${sourceRow}`, '12423.0769230769'), formula(`G${sourceRow}-F${sourceRow}`, '10932.3076923077')] })

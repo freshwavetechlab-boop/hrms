@@ -946,9 +946,10 @@ AND (p.MaximumApplications IS NULL OR p.ApplicationCount<p.MaximumApplications)"
         var scope = user.ClientId ?? clientId;
         await using var db = Db();
         await db.OpenAsync();
-        return await db.QueryAsync<RecruitmentPipelineDefinition>(@"SELECT d.*,COALESCE(c.Name,'') ClientName
+        var rows = await db.QueryAsync<RecruitmentPipelineDefinition>(@"SELECT d.*,COALESCE(c.Name,'') ClientName
 FROM recruitment_pipeline_definitions d LEFT JOIN clients c ON c.Id=d.ClientId
 WHERE (@ClientId IS NULL OR d.ClientId=@ClientId) ORDER BY d.IsActive DESC,d.PipelineName", new { ClientId = scope });
+        return rows.Where(row => SelectedClientAccess.Allows(user, row.ClientId)).ToList();
     }
 
     public async Task<(RecruitmentPipelineDefinition? Row, string Error)> SavePipelineAsync(SaveRecruitmentPipelineDefinition request, AuthUser user)
@@ -958,6 +959,7 @@ WHERE (@ClientId IS NULL OR d.ClientId=@ClientId) ORDER BY d.IsActive DESC,d.Pip
         if (string.IsNullOrWhiteSpace(request.PipelineName)) return (null, "Pipeline name is required.");
         var clientId = user.ClientId ?? request.ClientId;
         if (clientId <= 0 || (user.ClientId is not null && request.ClientId > 0 && request.ClientId != user.ClientId)) return (null, "A valid client is required.");
+        if (!SelectedClientAccess.Allows(user, clientId)) return (null, "A permitted client is required.");
         await using var db = Db();
         await db.OpenAsync();
         long id = request.Id;
@@ -990,9 +992,13 @@ Description=@Description,IsActive=@IsActive,UpdatedAtUtc=UTC_TIMESTAMP() WHERE I
         var version = await db.QueryFirstOrDefaultAsync<RecruitmentPipelineVersion>(@"SELECT v.* FROM recruitment_pipeline_versions v
 JOIN recruitment_pipeline_definitions d ON d.Id=v.PipelineDefinitionId WHERE v.Id=@Id AND (@ClientId IS NULL OR d.ClientId=@ClientId)", new { Id = id, user.ClientId });
         if (version is null) return null;
-        var clientId = await db.ExecuteScalarAsync<int>("SELECT ClientId FROM recruitment_pipeline_definitions WHERE Id=@Id", new { Id = version.PipelineDefinitionId });
+        var configurationDefinition = await db.QuerySingleAsync<RecruitmentPipelineDefinition>("SELECT * FROM recruitment_pipeline_definitions WHERE Id=@Id", new { Id = version.PipelineDefinitionId });
+        var clientId = configurationDefinition.ClientId;
+        if (!SelectedClientAccess.Allows(user, clientId)) return null;
         version.AllRejectedRollback = await RecruitmentRollbackRules.ReadAsync(db, clientId, version.Id);
         version.Stages = (await db.QueryAsync<RecruitmentPipelineStage>("SELECT * FROM recruitment_pipeline_stages WHERE PipelineVersionId=@Id ORDER BY DisplayOrder,Id", new { Id = id })).ToList();
+        var stageAccess = await RecruitmentPipelineStageAccess.ReadAsync(db, clientId, id);
+        foreach (var stage in version.Stages) stage.AccessPolicy = stageAccess.GetValueOrDefault(stage.StageCode);
         version.Transitions = (await db.QueryAsync<RecruitmentPipelineTransition>(@"SELECT t.*,f.StageCode FromStageCode,n.StageCode ToStageCode
 FROM recruitment_pipeline_transitions t JOIN recruitment_pipeline_stages f ON f.Id=t.FromStageId JOIN recruitment_pipeline_stages n ON n.Id=t.ToStageId
 WHERE t.PipelineVersionId=@Id ORDER BY t.DisplayOrder,t.Id", new { Id = id })).ToList();
@@ -1019,6 +1025,8 @@ WHERE panel.PipelineStageId=@Id ORDER BY panel.DisplayOrder,panel.Id", new { sta
                 stage.InterviewConfiguration.Competencies = (await db.QueryAsync<RecruitmentInterviewStageCompetency>(@"SELECT m.*,c.CompetencyName FROM recruitment_interview_stage_competencies m
 JOIN recruitment_interview_competency_definitions c ON c.Id=m.CompetencyId WHERE m.InterviewStageConfigurationId=@Id ORDER BY m.DisplayOrder,m.Id", new { Id = stage.InterviewConfiguration.Id })).ToList();
         }
+        await HydrateCloneReviewAsync(db, clientId, version);
+        version.ConfigurationHash = CrudConfigurationHash(configurationDefinition, version);
         return version;
     }
 
@@ -1039,6 +1047,7 @@ ORDER BY v.VersionNumber DESC", new { Id = pipelineDefinitionId, user.ClientId }
         var definition = await db.QueryFirstOrDefaultAsync<(long Id, int ClientId, string PipelineName)>(@"SELECT Id,ClientId,PipelineName
 FROM recruitment_pipeline_definitions WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)", new { Id = id, user.ClientId });
         if (definition.Id <= 0) return (false, "Pipeline definition was not found in your client scope.");
+        if (!SelectedClientAccess.Allows(user, definition.ClientId)) return (false, "Pipeline definition was not found in your client scope.");
 
         var versions = (await db.QueryAsync<long>("SELECT Id FROM recruitment_pipeline_versions WHERE PipelineDefinitionId=@Id", new { Id = id })).ToArray();
         if (versions.Length == 0)
@@ -1050,17 +1059,17 @@ FROM recruitment_pipeline_definitions WHERE Id=@Id AND (@ClientId IS NULL OR Cli
         var assignments = await db.ExecuteScalarAsync<int>(
             "SELECT COUNT(*) FROM recruitment_position_pipeline_assignments WHERE PipelineVersionId IN @Ids", new { Ids = versions });
         if (assignments > 0)
-            return (false, $"This pipeline is assigned to {assignments} position/posting record(s). Delete those hiring records or assignments first.");
+            return (false, $"This pipeline is assigned to {assignments} position/posting record(s). Deactivate it to retain those mappings and their history.");
 
         var applicationInstances = await db.ExecuteScalarAsync<int>(
             "SELECT COUNT(*) FROM recruitment_application_pipeline_instances WHERE PipelineVersionId IN @Ids", new { Ids = versions });
         if (applicationInstances > 0)
-            return (false, $"This pipeline contains {applicationInstances} candidate journey instance(s). Delete their applications first.");
+            return (false, $"This pipeline contains {applicationInstances} candidate journey record(s). Deactivate it to retain their mappings and history.");
 
         var positionInstances = await db.ExecuteScalarAsync<int>(
             "SELECT COUNT(*) FROM recruitment_position_pipeline_instances WHERE PipelineVersionId IN @Ids", new { Ids = versions });
         if (positionInstances > 0)
-            return (false, $"This pipeline contains {positionInstances} live cumulative hiring case(s). Delete those cases first.");
+            return (false, $"This pipeline contains {positionInstances} hiring case(s). Deactivate it to retain their mappings and history.");
 
         await using var tx = await db.BeginTransactionAsync();
         try
@@ -1084,12 +1093,14 @@ FROM recruitment_pipeline_definitions WHERE Id=@Id AND (@ClientId IS NULL OR Cli
         catch (MySqlException)
         {
             await tx.RollbackAsync();
-            return (false, "This pipeline still has linked configuration or transaction data. Remove its dependent records first, then retry.");
+            return (false, "This pipeline has linked records. Deactivate it to retain their mappings and history.");
         }
     }
 
     public async Task<(RecruitmentPipelineVersion? Row, string Error)> SavePipelineVersionAsync(SaveRecruitmentPipelineVersion request, AuthUser user)
     {
+        var cloneReferenceError = CloneReferenceError(request.Stages, request.Transitions);
+        if (cloneReferenceError.Length > 0) return (null, cloneReferenceError);
         request.ScopeType = Canonical(new[] { "Application", "Position", "Hybrid" }, request.ScopeType, "Application");
         request.SlaMode = Canonical(new[] { "StageEntry", "CumulativeFromAnchor" }, request.SlaMode, "StageEntry");
         request.OverallSlaMinutes = Math.Max(0, request.OverallSlaMinutes);
@@ -1104,6 +1115,9 @@ FROM recruitment_pipeline_definitions WHERE Id=@Id AND (@ClientId IS NULL OR Cli
         await db.OpenAsync();
         var definition = await db.QueryFirstOrDefaultAsync<RecruitmentPipelineDefinition>("SELECT * FROM recruitment_pipeline_definitions WHERE Id=@Id", new { Id = request.PipelineDefinitionId });
         if (definition is null || (user.ClientId is not null && user.ClientId != definition.ClientId)) return (null, "Pipeline definition was not found.");
+        if (!SelectedClientAccess.Allows(user, definition.ClientId)) return (null, "Pipeline definition was not found.");
+        var accessError = await RecruitmentPipelineStageAccess.ValidateSaveAsync(db, definition.ClientId, request.Id > 0 ? request.Id : definition.CurrentPublishedVersionId ?? 0, request.Stages, user);
+        if (accessError.Length > 0) return (null, accessError);
         var competencyIds = request.Stages.SelectMany(x => x.InterviewConfiguration?.Competencies ?? []).Select(x => x.CompetencyId).Distinct().ToArray();
         if (competencyIds.Length > 0)
         {
@@ -1240,7 +1254,9 @@ VALUES (@PipelineVersionId,@FromStageId,@ToStageId,@OutcomeCode,@ActionLabel,@Ap
 VALUES (@TransitionId,@RuleType,@ComparisonOperator,@TextValue,@IntegerValue,@DecimalValue,@BooleanValue,@IsMandatory,@ErrorMessage,@DisplayOrder)",
                     new { TransitionId = transitionId, RuleType = rule.RuleType.Trim().ToUpperInvariant(), ComparisonOperator = rule.ComparisonOperator.Trim().ToUpperInvariant(), rule.TextValue, rule.IntegerValue, rule.DecimalValue, rule.BooleanValue, rule.IsMandatory, rule.ErrorMessage, rule.DisplayOrder }, tx);
         }
+        await ReviewCloneWarningsOnSaveAsync(db, tx, definition.ClientId, versionId, request.AcknowledgeCloneWarnings);
         var previousRollback = await RecruitmentRollbackRules.ReadAsync(db, definition.ClientId, versionId, tx);
+        await RecruitmentPipelineStageAccess.SaveAsync(db, tx, definition.ClientId, versionId, request.Stages);
         var rollbackJson = JsonSerializer.Serialize(request.AllRejectedRollback);
         await db.ExecuteAsync(@"INSERT INTO modulesettings(client_id,ModuleCode,IsEnabled,SettingsJson)
 VALUES(@ClientId,@Key,TRUE,@Json)
@@ -1258,6 +1274,11 @@ VALUES('RecruitmentPipelineRollbackRule',@VersionId,'Configure all-candidate rol
     {
         var version = await GetPipelineVersionAsync(id, user);
         if (version is null) return (null, "Pipeline version was not found.");
+        if (version.Stages.Any(s => s.AccessPolicy?.Restricted == true) && !RecruitmentPipelineStageAccess.IsAdministrator(user))
+            return (null, "A platform administrator must publish restricted stage access.");
+        if (version.CloneWarnings.Count > 0) return (null, "Review the copied client mappings and access, then acknowledge the copy review and save the draft before publishing.");
+        var cloneReferenceError = CloneReferenceError(version.Stages, version.Transitions);
+        if (cloneReferenceError.Length > 0) return (null, cloneReferenceError);
         if (!version.Status.Equals("Draft", StringComparison.OrdinalIgnoreCase)) return (null, "Only a draft pipeline version can be published.");
         var rollbackValidation = RecruitmentRollbackRules.Validate(version.AllRejectedRollback, version.Stages);
         if (rollbackValidation.Length > 0) return (null, rollbackValidation);
@@ -1335,6 +1356,7 @@ ORDER BY a.AssignedAtUtc DESC,a.Id DESC LIMIT 1", new { PositionId = positionId,
     {
         await using var db = Db();
         await db.OpenAsync();
+        if (!await RecruitmentPipelineStageAccess.AllowsStageAsync(db, stageId, user)) return [];
         return await db.QueryAsync<RecruitmentPipelineStageAction>(@"SELECT a.* FROM recruitment_pipeline_stage_actions a
 JOIN recruitment_pipeline_stages s ON s.Id=a.PipelineStageId
 JOIN recruitment_pipeline_versions v ON v.Id=s.PipelineVersionId
@@ -1346,21 +1368,27 @@ AND (@ClientId IS NULL OR d.ClientId=@ClientId) ORDER BY a.ExecutionOrder,a.Id",
 
     public async Task<(RecruitmentInterviewCompetencyDefinition? Row, string Error)> SaveInterviewCompetencyAsync(RecruitmentInterviewCompetencyDefinition request, AuthUser user)
     {
-        var clientId = user.ClientId ?? request.ClientId;
+        if (user.Id <= 0 || !user.IsActive || user.MustChangePassword || !RecruitmentPermissions.CanConfigure(user)
+            || !SelectedClientAccess.Allows(user, request.ClientId)) throw new UnauthorizedAccessException();
+        // The score-component editor has an explicit client. A selected-client
+        // user's remembered shell client must never redirect this write.
+        var clientId = request.ClientId;
         var code = Regex.Replace((request.CompetencyCode ?? "").Trim().ToUpperInvariant(), "\\s+", "_");
         if (clientId <= 0 || !Regex.IsMatch(code, "^[A-Z0-9_-]{2,80}$") || string.IsNullOrWhiteSpace(request.CompetencyName)) return (null, "Client, competency code and name are required.");
         await using var db = Db();
         await db.OpenAsync();
+        if (!await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM clients WHERE Id=@Id AND IsActive=TRUE)", new { Id = clientId }))
+            return (null, "Select an active client for this score component.");
         try
         {
             if (request.Id == 0)
                 request.Id = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_interview_competency_definitions
 (ClientId,CompetencyCode,CompetencyName,Description,IsActive) VALUES (@ClientId,@Code,@Name,@Description,@IsActive);SELECT LAST_INSERT_ID();",
-                    new { ClientId = clientId, Code = code, Name = request.CompetencyName.Trim(), Description = request.Description.Trim(), request.IsActive });
+                    new { ClientId = clientId, Code = code, Name = request.CompetencyName.Trim(), Description = request.Description?.Trim() ?? "", request.IsActive });
             else
             {
                 var updated = await db.ExecuteAsync(@"UPDATE recruitment_interview_competency_definitions SET CompetencyCode=@Code,CompetencyName=@Name,
-Description=@Description,IsActive=@IsActive WHERE Id=@Id AND ClientId=@ClientId", new { request.Id, ClientId = clientId, Code = code, Name = request.CompetencyName.Trim(), Description = request.Description.Trim(), request.IsActive });
+Description=@Description,IsActive=@IsActive WHERE Id=@Id AND ClientId=@ClientId", new { request.Id, ClientId = clientId, Code = code, Name = request.CompetencyName.Trim(), Description = request.Description?.Trim() ?? "", request.IsActive });
                 if (updated == 0) return (null, "Interview competency was not found.");
             }
         }
@@ -1374,6 +1402,7 @@ Description=@Description,IsActive=@IsActive WHERE Id=@Id AND ClientId=@ClientId"
         await db.OpenAsync();
         var application = await db.QueryFirstOrDefaultAsync<ApplicationSourceRow>("SELECT Id,PositionId,ClientId,JobPostingId FROM recruitment_candidate_applications WHERE Id=@Id", new { Id = applicationId });
         if (application is null || (user.ClientId is not null && user.ClientId != application.ClientId)) return (null, "Candidate application was not found.");
+        if (!await RecruitmentPipelineStageAccess.AllowsApplicationAsync(db, applicationId, user)) return (null, "Candidate application was not found in your assigned pipeline stages.");
         if (RecruitmentAccessScope.IsRestricted(user) && !await RecruitmentAccessScope.CanAccessApplicationWorkLocationAsync(db, user, applicationId)) return (null, "Candidate application was not found in your work location scope.");
         var existing = await db.ExecuteScalarAsync<long?>("SELECT Id FROM recruitment_application_pipeline_instances WHERE ApplicationId=@Id", new { Id = applicationId });
         if (existing is not null) return (existing, "");
@@ -1383,6 +1412,7 @@ Description=@Description,IsActive=@IsActive WHERE Id=@Id AND ClientId=@ClientId"
 WHERE PipelineVersionId=@PipelineVersionId AND CardScope='Application' AND IsActive=TRUE
 ORDER BY IsInitial DESC,DisplayOrder,Id LIMIT 1", assignment);
         if (initial is null) return (null, "Assigned pipeline does not have an active application stage.");
+        if (!await RecruitmentPipelineStageAccess.AllowsStageAsync(db, initial.Id, user)) return (null, "The initial candidate stage is not assigned to your roles or login.");
         await using var tx = await db.BeginTransactionAsync();
         var pipelineId = await db.ExecuteScalarAsync<long>(@"INSERT INTO recruitment_application_pipeline_instances
 (ApplicationId,PipelineVersionId,PositionPipelineAssignmentId,Status) VALUES (@ApplicationId,@PipelineVersionId,@AssignmentId,'Active');SELECT LAST_INSERT_ID();",
@@ -1509,6 +1539,7 @@ ORDER BY s.EnteredAtUtc", new { PositionId = positionId, assignment.PipelineVers
         foreach (var lane in board.Lanes)
             lane.Applications = cards.Where(x => x.StageId == lane.StageId
                 && RecruitmentEligibility.CanEnterPipeline(x.Card.EligibilityStatus, x.Card.AtsScore, x.Card.AtsShortlistThreshold)).Select(x => x.Card).ToList();
+        await ApplyBoardStageAccessAsync(db, board, user);
         return board;
     }
 
@@ -1707,6 +1738,8 @@ WHERE versionRow.Status='Published' AND definition.IsActive=TRUE
             .Concat(publishedApplicationVersions)
             .Distinct().ToArray();
         var progressCandidates = await RecruitmentHiringProgress.ReadCandidatesAsync(db, demandCards.Select(card => card.PositionId ?? 0), user, authoritativeWorkLocation: true);
+        var permittedProgress = await RecruitmentPipelineStageAccess.AllowedApplicationIdsAsync(db, progressCandidates.Select(c => c.ApplicationId), user);
+        progressCandidates = progressCandidates.Where(c => permittedProgress.Contains(c.ApplicationId)).ToList();
         var workspace = new RecruitmentPipelineWorkspace { ClientId = effectiveClientId };
         if (versionIds.Length == 0)
         {
@@ -1719,7 +1752,7 @@ WHERE versionRow.Status='Published' AND definition.IsActive=TRUE
             return workspace;
         }
 
-        workspace.Lanes = (await db.QueryAsync<RecruitmentPipelineWorkspaceLane>(@"SELECT stageRow.PipelineVersionId,versionRow.VersionNumber PipelineVersionNumber,
+        workspace.Lanes = (await db.QueryAsync<RecruitmentPipelineWorkspaceLane>(@"SELECT definition.Id PipelineDefinitionId,stageRow.PipelineVersionId,versionRow.VersionNumber PipelineVersionNumber,
 definition.PipelineName,COALESCE(clientRow.Name,'') ClientName,stageRow.Id StageId,stageRow.StageCode,stageRow.StageName,stageRow.StageType,stageRow.CardScope,
 stageRow.DisplayOrder,versionRow.SlaMode,versionRow.OverallSlaMinutes,
 stageRow.SlaDurationMinutes,stageRow.SlaWarningMinutes,stageRow.TargetOffsetMinutes
@@ -1807,6 +1840,7 @@ ORDER BY stageInstance.EnteredAtUtc",
             var lane = workspace.Lanes.FirstOrDefault(row => row.PipelineVersionId == candidate.PipelineVersionId && row.StageId == candidate.StageId);
             if (lane is not null) lane.Applications.Add(candidate);
         }
+        await ApplyWorkspaceStageAccessAsync(db, workspace, user);
         return workspace;
     }
 
@@ -1824,6 +1858,9 @@ ORDER BY stageInstance.EnteredAtUtc",
 
     private async Task EnsureMissingApplicationPipelinesAsync(int? clientId, long? positionId, long? jobPostingId, AuthUser user, long[]? scopedPositionIds = null)
     {
+        // An aggregate overview is a read. It must not start journeys across
+        // multiple clients merely because their combined pipeline was opened.
+        if (clientId is not > 0 && positionId is not > 0 && jobPostingId is not > 0) return;
         await using var db = Db();
         await db.OpenAsync();
         var applicationIds = (await db.QueryAsync<long>(@"SELECT applicationRow.Id
@@ -1866,6 +1903,7 @@ JOIN recruitment_pipeline_stages fs ON fs.Id=t.FromStageId AND fs.CardScope='App
 JOIN recruitment_pipeline_stages ts ON ts.Id=t.ToStageId AND ts.CardScope='Application' AND ts.IsActive=TRUE
 WHERE a.Id=@ApplicationId", new { ApplicationId = applicationId, request.TransitionId });
         if (context is null || (user.ClientId is not null && user.ClientId != context.ClientId)) return (null, "Transition is not available from the application's current stage.");
+        if (!await RecruitmentPipelineStageAccess.AllowsStageAsync(db, context.CurrentStageId, user)) return (null, "This candidate stage is not assigned to your roles or login.");
         if (context.RequiresReason && string.IsNullOrWhiteSpace(request.Reason)) return (null, "A transition reason is required.");
         var dispositionTransition = context.TargetStageType.Equals("Rejected", StringComparison.OrdinalIgnoreCase)
             || context.TargetStageType.Equals("Withdrawn", StringComparison.OrdinalIgnoreCase)
@@ -1918,6 +1956,7 @@ VALUES (@ApplicationId,@StageInstanceId,@TransitionId,@Reason,@Status,@UserId);S
     {
         await using var db = Db();
         await db.OpenAsync();
+        if (!await RecruitmentPipelineStageAccess.AllowsApplicationAsync(db, applicationId, user)) return [];
         if (RecruitmentAccessScope.IsRestricted(user) && !await RecruitmentAccessScope.CanAccessApplicationWorkLocationAsync(db, user, applicationId)) return [];
         var rows = (await db.QueryAsync<RecruitmentPipelineTransition>(@"SELECT t.*,f.StageCode FromStageCode,n.StageCode ToStageCode
 FROM recruitment_candidate_applications a
@@ -2025,6 +2064,7 @@ LIMIT @Limit", new { Limit = Math.Clamp(limit, 1, 500) })).ToList();
             || normalized.Equals("Withdrawn", StringComparison.OrdinalIgnoreCase);
         await using var db = Db();
         await db.OpenAsync();
+        if (!await RecruitmentPipelineStageAccess.AllowsApplicationAsync(db, applicationId, user)) return (null, "Candidate stage was not found in your assigned pipeline stages.");
         var available = (await db.QueryAsync<DecisionTransitionRow>(@"SELECT transitionRow.Id,transitionRow.OutcomeCode,transitionRow.DisplayOrder,
 sourceStage.StageType FromStageType,targetStage.StageType ToStageType,targetStage.StageName ToStageName
 FROM recruitment_candidate_applications applicationRow
@@ -2070,6 +2110,7 @@ ORDER BY transitionRow.DisplayOrder,transitionRow.Id", new { ApplicationId = app
     {
         await using var db = Db();
         await db.OpenAsync();
+        if (!await RecruitmentPipelineStageAccess.AllowsApplicationAsync(db, applicationId, user)) return (null, "Candidate stage was not found in your assigned pipeline stages.");
         var transitions = (await db.QueryAsync<long>(@"SELECT transitionRow.Id
 FROM recruitment_candidate_applications application
 JOIN recruitment_application_pipeline_instances pipeline ON pipeline.ApplicationId=application.Id AND pipeline.Status='Active'
@@ -2104,8 +2145,9 @@ ORDER BY transitionRow.DisplayOrder,transitionRow.Id", new { Id = applicationId,
     {
         await using var db = Db();
         await db.OpenAsync();
+        if (!await RecruitmentPipelineStageAccess.AllowsApplicationAsync(db, applicationId, user)) return [];
         if (RecruitmentAccessScope.IsRestricted(user) && !await RecruitmentAccessScope.CanAccessApplicationWorkLocationAsync(db, user, applicationId)) return [];
-        return await db.QueryAsync<RecruitmentApplicationStageTimelineItem>(@"SELECT instance.Id,instance.ApplicationPipelineInstanceId,
+        var history = (await db.QueryAsync<RecruitmentApplicationStageTimelineItem>(@"SELECT instance.Id,instance.ApplicationPipelineInstanceId,
 instance.ApplicationId,instance.PipelineStageId,stageRow.StageCode,stageRow.StageName,stageRow.StageType,stageRow.DisplayOrder,
 instance.Status,instance.OutcomeCode,instance.EnteredAtUtc,instance.DueAtUtc,instance.ExitedAtUtc,
 CASE WHEN instance.ExitedAtUtc IS NULL
@@ -2121,13 +2163,16 @@ JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=inst
 JOIN recruitment_pipeline_stages stageRow ON stageRow.Id=instance.PipelineStageId
 LEFT JOIN authusers actor ON actor.Id=instance.EnteredByUserId
 WHERE instance.ApplicationId=@ApplicationId AND (@ClientId IS NULL OR applicationRow.ClientId=@ClientId)
-ORDER BY instance.EnteredAtUtc,instance.Id", new { ApplicationId = applicationId, user.ClientId });
+ORDER BY instance.EnteredAtUtc,instance.Id", new { ApplicationId = applicationId, user.ClientId })).ToList();
+        var allowed = await RecruitmentPipelineStageAccess.AllowedStageIdsAsync(db, history.Select(h => h.PipelineStageId), user);
+        return history.Where(h => allowed.Contains(h.PipelineStageId)).ToList();
     }
 
     public async Task<(RecruitmentPipelineTransitionResult? Result, string Error)> EvaluateAtsStageAutomationAsync(long applicationId, AuthUser user, bool humanConfirmed = false, bool atsOverridden = false)
     {
         await using var db = Db();
         await db.OpenAsync();
+        if (!await RecruitmentPipelineStageAccess.AllowsApplicationAsync(db, applicationId, user)) return (null, "Candidate stage was not found in your assigned pipeline stages.");
         var row = await db.QueryFirstOrDefaultAsync<AtsAutomationRow>(@"SELECT a.ClientId,si.PipelineStageId,c.MinimumAdvanceScore,c.MaximumRejectScore,c.AutoAdvance,c.AutoReject,
 c.RequireHumanConfirmation,c.AdvanceOutcomeCode,c.RejectOutcomeCode,
 COALESCE(posting.AutoRunAts,FALSE) JobAutoRunAts,
@@ -2236,6 +2281,7 @@ JOIN recruitment_candidate_applications a ON a.Id=r.ApplicationId WHERE r.Id=@Id
         if (string.IsNullOrWhiteSpace(request.Reason)) return (null, "Pause reason is required.");
         await using var db = Db();
         await db.OpenAsync();
+        if (!await RecruitmentPipelineStageAccess.AllowsApplicationAsync(db, applicationId, user)) return (null, "This candidate stage is not assigned to your roles or login.");
         if (RecruitmentAccessScope.IsRestricted(user) && !await RecruitmentAccessScope.CanAccessApplicationWorkLocationAsync(db, user, applicationId)) return (null, "Active application stage was not found.");
         var stage = await CurrentStageAsync(db, applicationId, user.ClientId);
         if (stage is null) return (null, "Active application stage was not found.");
@@ -2253,6 +2299,7 @@ JOIN recruitment_candidate_applications a ON a.Id=r.ApplicationId WHERE r.Id=@Id
     {
         await using var db = Db();
         await db.OpenAsync();
+        if (!await RecruitmentPipelineStageAccess.AllowsApplicationAsync(db, applicationId, user)) return (null, "This candidate stage is not assigned to your roles or login.");
         if (RecruitmentAccessScope.IsRestricted(user) && !await RecruitmentAccessScope.CanAccessApplicationWorkLocationAsync(db, user, applicationId)) return (null, "Active application stage was not found.");
         var stage = await CurrentStageAsync(db, applicationId, user.ClientId);
         if (stage is null) return (null, "Active application stage was not found.");
@@ -2531,7 +2578,7 @@ WHERE submission.ApplicationId=@ApplicationId AND submission.Status='Submitted'
         MySqlConnection db,
         IEnumerable<RecruitmentPipelineStage> stages,
         IEnumerable<RecruitmentPipelineTransition> transitions,
-        int clientId)
+        int clientId, MySqlTransaction? tx = null)
     {
         var stageRows = stages.ToList();
         var transitionRows = transitions.ToList();
@@ -2544,7 +2591,7 @@ WHERE submission.ApplicationId=@ApplicationId AND submission.Status='Submitted'
         if (workflowIds.Length == 0) return "";
 
         var workflowRows = (await db.QueryAsync<WorkflowBindingRow>(@"SELECT Id,ResourceType FROM workflowmasters
-WHERE Id IN @Ids AND (ClientId=@ClientId OR ClientId IS NULL) AND IsActive=TRUE", new { Ids = workflowIds, ClientId = clientId })).ToDictionary(row => row.Id);
+WHERE Id IN @Ids AND (ClientId=@ClientId OR ClientId IS NULL) AND IsActive=TRUE", new { Ids = workflowIds, ClientId = clientId }, tx)).ToDictionary(row => row.Id);
         if (workflowRows.Count != workflowIds.Length) return "One or more stage workflows are inactive or belong to another client.";
 
         bool UsesOnly(IEnumerable<long?> ids, string resourceType) => ids.Where(id => id is > 0)

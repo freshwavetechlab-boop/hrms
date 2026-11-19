@@ -65,7 +65,7 @@ WHERE e.ClientId=@ClientId AND e.Id IN @Ids AND "+EmployeeEmploymentRules.Eligib
             new {request.ClientId,request.PayPeriod,Ids=request.EmployeeIds.ToArray()},tx,cancellationToken:token))).ToList();
         if(rows.Count!=request.EmployeeIds.Count)throw new InvalidOperationException("The selected roster includes an unavailable employee or another client's employee. Refresh the roster.");
         await LoadEmployeeTablesAsync(db,tx,rows,request.PayPeriod);
-        var attendance=(await GetPayRunAttendanceAsync(db,tx,request.ClientId,request.PayPeriod)).ToDictionary(row=>row.EmployeeId);
+        var attendance=(await GetPayRunAttendanceAsync(db,tx,request.ClientId,request.PayPeriod,includeApprovalState:false)).ToDictionary(row=>row.EmployeeId);
         var missing=rows.Where(row=>!attendance.ContainsKey(row.Id)).ToArray();
         if(missing.Length>0)throw new InvalidOperationException($"Attendance is missing for {missing.Length} selected employees in {request.PayPeriod}. Save/review attendance before downloading the formula workbook; no days are invented.");
         var json=await PayrollDataTableStore.GetSetupJsonAsync(db,tx);

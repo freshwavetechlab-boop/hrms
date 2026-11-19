@@ -1,4 +1,11 @@
-# Excel payroll mapping knowledge v71
+# Excel payroll mapping knowledge v72
+
+## Monthly PF Monthly PT Employer PF: template helper formula bindings
+Recognition: a reusable configuration workbook contains Monthly PF, Monthly PT or Monthly Employer PF helpers followed by their paid component columns. A matching heading plus a direct same-employee formula dependency can establish an input/output pair for deductions and employer contributions as well as earnings. Strip only the monthly/full-month qualifier for pairing; preserve employee versus employer identity. A computed helper stays a captured expression, not a cached fixed amount or another paid component. Unrelated or similarly valued columns are not a pair.
+
+Follow the complete helper dependency graph. A direct output equal to its paired literal input has no second attendance proration; an ordinary input/divisor*payable formula retains its one proven proration. Nonlinear rules need their actual supported expression. Source totals remain controls. A reviewed common fixed zero may be retained, while employee-specific sample bases stay blank required inputs in the reusable draft. Anchored A1 references remain captured cells; a shared header divisor requires an explicit captured whole-day literal and proof that the earning uses it with payable days. Neither an unresolved workbook name nor a formula cache is a divisor.
+
+Downloading a client/location template exports editable rules and blank employee/attendance inputs. Recalculate and save the workbook before extracting; new or reordered headings need mapping review. Extraction and download do not replace existing templates, change source salary, import employees, approve payroll or authorize a Master write. Unsupported dependencies stay blocked; suggestions cannot grant fixed-value review or turn a sample employee's amount into everyone's salary.
 
 ## Monthly Basic Basic Pay: dependency-bound blank template inputs
 Recognition: a literal Monthly Basic input and a calculated Basic Pay output occur with Total Days and Payable Days. The output's same-employee formula references that monthly input and the day operands. Existing header aliases and structural dependencies establish one monthly/earned pair; matching labels or equal cached amounts alone do not. Keep Monthly Basic as information/input and Basic Pay as the paid earning. Both native bindings use the same component code, with attendance applied once by the proven formula. Do not add the monthly basis as another paid earning.

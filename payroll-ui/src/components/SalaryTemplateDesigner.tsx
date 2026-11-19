@@ -17,6 +17,7 @@ import SalaryFieldHelp from './SalaryFieldHelp'
 import PayrollAdvisor from './PayrollAdvisor'
 import PayrollSimulation from './PayrollSimulation'
 import SalaryTemplateExcelExtractor, { type SalaryTemplateExtractedDraft } from './SalaryTemplateExcelExtractor'
+import SalaryTemplateExcelDownload from './SalaryTemplateExcelDownload'
 import { reviewSnapshot } from '../services/payrollAdvisorService'
 import { usePayrollCatalogue, valueOptions, valueHints, type SourceSalaryScenario } from '../services/payrollCalculationService'
 import { attendanceHelp, formulaStyleHelp } from '../utils/salaryFieldGuides'
@@ -55,6 +56,7 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
   const [draftComponents, setDraftComponents] = useState<Component[]>([])
   const components = useMemo(() => [...savedComponents, ...draftComponents.filter(row => !savedComponents.some(saved => String(saved.id) === String(row.id)))], [savedComponents, draftComponents])
   const [extractOpen, setExtractOpen] = useState(false)
+  const [formulaDownloadOpen, setFormulaDownloadOpen] = useState(false)
   const [extractedScenario, setExtractedScenario] = useState<SourceSalaryScenario | null>(null)
   const [simulationSourceScenario, setSimulationSourceScenario] = useState<SourceSalaryScenario | undefined>()
   const idsFor = salaryTemplateClientIds
@@ -155,7 +157,7 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
   const editorReady = !!clientId && (editorIntent === 'new' || !!openedTemplateId) && idsFor(structure.clientId).includes(clientId)
   const hasUnsavedChanges = (editorIntent === 'new' || !!openedTemplateId) && JSON.stringify(structure) !== editorBaseline.current
   const canLeaveEditor = () => !saving && (!hasUnsavedChanges || window.confirm('Discard unsaved template changes?'))
-  const resetDialogs = () => { setBuilderOpen(false); setSimulationOpen(false); setSimulationTemplate(null); setSimulationSourceScenario(undefined); setSelectedLineId(''); setExtractOpen(false) }
+  const resetDialogs = () => { setBuilderOpen(false); setSimulationOpen(false); setSimulationTemplate(null); setSimulationSourceScenario(undefined); setSelectedLineId(''); setExtractOpen(false); setFormulaDownloadOpen(false) }
   const clearExtractedDraft = () => { setDraftComponents([]); setExtractedScenario(null) }
   const editTemplate = (row: Structure) => {
     if (saving) return
@@ -217,6 +219,7 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
       {(view === 'Templates' || !editorReady) && <Button type="primary" icon={<PlusOutlined />} disabled={!clientId || saving} onClick={createTemplate}>Create template</Button>}
       <Dropdown trigger={['click']} menu={{ items: [
         { key: 'extract-excel', icon: <FileExcelOutlined />, label: 'Extract from Excel', disabled: !clientId || saving, onClick: () => setExtractOpen(true) },
+        { key: 'download-formulas', icon: <DownloadOutlined />, label: 'Download client Excel with formulas', disabled: !clientId || saving || !scopeTemplates.some(template => template.active && template.lines.length > 0), onClick: () => setFormulaDownloadOpen(true) },
         { type: 'divider' as const },
         { key: 'download', icon: <DownloadOutlined />, label: 'Download import template', disabled: !onDownloadTemplate, onClick: onDownloadTemplate },
         { key: 'upload', icon: <UploadOutlined />, label: 'Bulk upload templates', disabled: !onUploadTemplate || !templateDownloaded, onClick: () => uploadInput.current?.click() },
@@ -263,6 +266,7 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
         </>}
       </div>}
       {extractOpen && clientId > 0 && <SalaryTemplateExcelExtractor clientId={clientId} clientName={clientName(clientId)} components={savedComponents} locations={locations.filter(location => location.clientId === clientId && location.isActive)} canCreateComponentMasters={canCreateComponentMasters} onClose={() => setExtractOpen(false)} onUseDraft={useExtractedDraft} />}
+      {formulaDownloadOpen && clientId > 0 && <SalaryTemplateExcelDownload key={`download:${clientId}`} clientId={clientId} clientName={clientName(clientId)} templates={templates} components={savedComponents} locations={locations} preferredTemplateId={openedTemplateId} onClose={() => setFormulaDownloadOpen(false)} />}
       {simulationOpen && <PayrollSimulation template={playerTemplate} components={components} clients={clients} fixedClientId={clientId || fixedClientId} sourceScenario={simulationSourceScenario} preferEmployeeSalary={simulationFromMaster} onClose={() => setSimulationOpen(false)} />}
       {builderOpen && <div className="formula-modal-backdrop" role="dialog" aria-modal="true">
         <section className="salary-formula-builder formula-modal">

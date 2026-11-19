@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type Dispatch, type SetStateAction } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import type { RecruitmentPipelineDisplayMode } from '../types/recruitmentPipelineView'
 
 export type RecruitmentView = 'Cards' | 'Table'
@@ -14,16 +14,21 @@ function readPreference<T>(key: string, fallback: T): T {
 }
 
 export function useSessionPreference<T>(key: string, fallback: T): [T, Dispatch<SetStateAction<T>>] {
+  const fallbackRef = useRef({ key, value: fallback })
+  if (fallbackRef.current.key !== key) fallbackRef.current = { key, value: fallback }
+  else fallbackRef.current.value = fallback
+  const currentFallback = fallbackRef.current
   const [entry, setEntry] = useState(() => ({ key, value: readPreference(key, fallback) }))
   if (entry.key !== key) setEntry({ key, value: readPreference(key, fallback) })
   useEffect(() => {
     if (entry.key !== key) return
     try { sessionStorage.setItem(key, JSON.stringify(entry.value)) } catch { /* Storage can be unavailable. */ }
   }, [entry, key])
-  return [entry.key === key ? entry.value : readPreference(key, fallback), next => setEntry(current => ({
-    key,
-    value: typeof next === 'function' ? (next as (value: T) => T)(current.key === key ? current.value : readPreference(key, fallback)) : next,
-  }))]
+  const setValue = useCallback<Dispatch<SetStateAction<T>>>(next => setEntry(current => {
+    const value = typeof next === 'function' ? (next as (value: T) => T)(current.key === key ? current.value : readPreference(key, currentFallback.value)) : next
+    return current.key === key && Object.is(current.value, value) ? current : { key, value }
+  }), [key, currentFallback])
+  return [entry.key === key ? entry.value : readPreference(key, fallback), setValue]
 }
 
 export function useRecruitmentPreference<T>(name: string, fallback: T) {

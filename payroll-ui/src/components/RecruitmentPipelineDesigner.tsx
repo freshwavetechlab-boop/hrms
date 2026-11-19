@@ -1,14 +1,17 @@
+import RecruitmentOfferClientSelect from './RecruitmentOfferClientSelect'
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
-import { ArrowDownOutlined, ArrowRightOutlined, ArrowUpOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Checkbox, Collapse, Drawer, Empty, Form, Input, InputNumber, List, Modal, Popconfirm, Select, Space, Switch, Tag, message } from 'antd'
+import { ArrowDownOutlined, ArrowRightOutlined, ArrowUpOutlined, CopyOutlined, DeleteOutlined, EditOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons'
+import { Alert, Button, Card, Checkbox, Collapse, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm, Segmented, Select, Space, Switch, Tag, message } from 'antd'
+import DataTable from './DataTable'
 import { useAuthSession } from './AuthGate'
 import { getClients } from '../services/payrollService'
+import { getJsonResult } from '../services/apiClient'
 import { loadSecurityData } from '../services/securityService'
 import RecruitmentMasterSelect from './RecruitmentMasterSelect'
 import RecruitmentRollbackFields from './RecruitmentRollbackFields'
 import {
   deleteRecruitmentPipelineDefinition, getRecruitmentOrchestrationLookups, getRecruitmentPipeline, getRecruitmentPipelines, getRecruitmentPipelineVersion, getRecruitmentPipelineVersions,
-  publishRecruitmentPipelineVersion, saveRecruitmentInterviewCompetency, saveRecruitmentPipelineDefinition, saveRecruitmentPipelineVersion,
+  createSimilarRecruitmentPipeline, saveRecruitmentInterviewCompetency, saveRecruitmentPipelineConfiguration,
 } from '../services/recruitmentOrchestrationService'
 import type { AuthRole, AuthUser, Client, Drop } from '../types/payroll'
 import type {
@@ -17,67 +20,106 @@ import type {
   RecruitmentPipelineTransitionRule, RecruitmentStageAttachmentRequirement, RecruitmentStageProcessDocumentRequirement,
 } from '../types/recruitmentOrchestration'
 import './RecruitmentOrchestration.css'
+import './RecruitmentPipelineDesigner.css'
+import { pipelineOwnershipLegend, pipelineStageOwnership } from '../utils/recruitmentPipelineOwnership'
+import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
+import { isSelectedClientUser } from '../utils/clientAccess'
 
-type Props = { initialClientId?: number; onSaved?: (pipeline: RecruitmentPipelineDefinition) => void; dropdowns?: Drop[]; onDropdownsChange?: (rows: Drop[]) => void }
+type Props = { initialClientId?: number; initialPipelineDefinitionId?: number; initialPipelineVersionId?: number; onSaved?: (pipeline: RecruitmentPipelineDefinition) => void; dropdowns?: Drop[]; onDropdownsChange?: (rows: Drop[]) => void }
 const emptyLookups: RecruitmentOrchestrationLookups = { lookupSources: [], attachmentConfigurations: [], attachmentFieldConfigurations: [], workflows: [], forms: [], positions: [], atsProfiles: [] }
 const stageTypes = ['Screening', 'ATS', 'ExternalForm', 'Documents', 'Interview', 'HR', 'Approval', 'PreOnboarding', 'Offer', 'Joining', 'Rejected', 'Withdrawn', 'Completed']
-const stageColors: Record<string, string> = { Screening: '#6b4eff', ATS: '#2563eb', Interview: '#0e9f6e', HR: '#9333ea', Approval: '#d97706', ExternalForm: '#7c3aed', Documents: '#0891b2', Offer: '#db2777', PreOnboarding: '#4f46e5', Joining: '#16a34a', Rejected: '#b42318', Withdrawn: '#667085', Completed: '#15803d' }
 const localId = () => -Math.floor(Date.now() + Math.random() * 100000)
 const code = (value: string) => value.toUpperCase().trim().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+type SimilarPipelineDraft = { sourceClientId: number; source: RecruitmentPipelineDefinition | null; sourceVersionId: number; sourceScopeType?: RecruitmentPipelineVersion['scopeType']; targetClientId: number; pipelineName: string; pipelineCode: string }
 
-export default function RecruitmentPipelineDesigner({ initialClientId = 0, onSaved, dropdowns = [], onDropdownsChange = () => undefined }: Props) {
+export default function RecruitmentPipelineDesigner({ initialClientId = 0, initialPipelineDefinitionId = 0, initialPipelineVersionId = 0, onSaved, dropdowns = [], onDropdownsChange = () => undefined }: Props) {
   const session = useAuthSession()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
+  const scopeUser = session?.originalUser || session?.user
+  const boundClientId = isSelectedClientUser(scopeUser) ? 0 : Number(scopeUser?.clientId || 0)
   const [clients, setClients] = useState<Client[]>([])
-  const [clientId, setClientId] = useState(initialClientId)
-  const [loadedClientId, setLoadedClientId] = useState(0)
+  const [clientId, setClientId] = useState(boundClientId || initialClientId)
+  const [loadedClientId, setLoadedClientId] = useState(-1)
   const [pipelines, setPipelines] = useState<RecruitmentPipelineDefinition[]>([])
+  const [pipelineScopes, setPipelineScopes] = useState<Record<number, RecruitmentPipelineVersion['scopeType']>>({})
   const [lookups, setLookups] = useState(emptyLookups)
   const [users, setUsers] = useState<AuthUser[]>([])
   const [roles, setRoles] = useState<AuthRole[]>([])
   const [definition, setDefinition] = useState<RecruitmentPipelineDefinition | null>(null)
   const [version, setVersion] = useState<RecruitmentPipelineVersion | null>(null)
+  const [cloneReviewed, setCloneReviewed] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const savedRecord = useRef<{ definition: RecruitmentPipelineDefinition; version: RecruitmentPipelineVersion } | null>(null)
   const [selectingPipelineId, setSelectingPipelineId] = useState<number | null>(null)
   const [selectedStageId, setSelectedStageId] = useState<number | null>(null)
   const [stageDrawer, setStageDrawer] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveValidationError, setSaveValidationError] = useState('')
-  const [publishDialogOpen, setPublishDialogOpen] = useState(false)
-  const [publishing, setPublishing] = useState(false)
-  const [publishError, setPublishError] = useState('')
   const [competencyOpen, setCompetencyOpen] = useState(false)
   const [competencySaving, setCompetencySaving] = useState(false)
   const [competencyDraft, setCompetencyDraft] = useState({ competencyCode: '', competencyName: '', description: '' })
+  const [libraryOpen, setLibraryOpen] = useState(true)
+  const [libraryView, setLibraryView] = useSessionPreference<'Cards' | 'Table'>(`recruitment.pipeline-library:${session?.user.id ?? 0}:${clientId}:view`, 'Cards')
+  const [pipelineSearch, setPipelineSearch] = useSessionPreference(`recruitment.pipeline-library:${session?.user.id ?? 0}:${clientId}:search`, '')
+  const [similar, setSimilar] = useState<SimilarPipelineDraft | null>(null)
+  const [similarSources, setSimilarSources] = useState<RecruitmentPipelineDefinition[]>([])
+  const [copySourcesLoading, setCopySourcesLoading] = useState(false)
+  const [copyConfigurationLoading, setCopyConfigurationLoading] = useState(false)
+  const [copySourceError, setCopySourceError] = useState('')
+  const similarRequestRef = useRef(0)
+  const similarAbortRef = useRef<AbortController | null>(null)
+  const [copying, setCopying] = useState(false)
+  const [copyError, setCopyError] = useState('')
+  const openedInitialDefinition = useRef('')
+  const pendingDefinitionOpen = useRef<{ id: number; clientId: number; preferredVersionId?: number; edit: boolean } | null>(null)
   const stageFlowRef = useRef<HTMLDivElement | null>(null)
   const loadRequestRef = useRef(0)
   const selectionRequestRef = useRef(0)
 
   const load = async (scope: number) => {
-    if (!scope) return
     const requestId = ++loadRequestRef.current
-    const [rows, options] = await Promise.all([getRecruitmentPipelines(scope), getRecruitmentOrchestrationLookups(scope)])
+    // The pipeline library is useful immediately; the larger form/template lookup
+    // catalog must not hold it behind unrelated settings requests.
+    if (scope) void getRecruitmentOrchestrationLookups(scope).then(options => {
+      if (requestId === loadRequestRef.current) setLookups(options)
+    })
+    const rows = await getRecruitmentPipelines(scope)
     if (requestId !== loadRequestRef.current) return
-    setPipelines(rows); setLookups(options); setLoadedClientId(scope)
+    setPipelines(rows); setLoadedClientId(scope)
+    const kinds = await Promise.all(rows.map(async row => {
+      const versions = row.versions?.length ? row.versions : await getRecruitmentPipelineVersions(row.id)
+      const active = versions.find(item => item.id === row.currentPublishedVersionId) ?? versions.find(item => item.status === 'Draft') ?? versions[0]
+      return [row.id, active?.scopeType] as const
+    }))
+    if (requestId === loadRequestRef.current) setPipelineScopes(Object.fromEntries(kinds))
   }
   useEffect(() => {
-    void Promise.all([getClients(), loadSecurityData()]).then(([rows, security]) => {
+    void Promise.all([getClients(false, true), loadSecurityData()]).then(([rows, security]) => {
       setClients(rows); setUsers(security.users); setRoles(security.roles)
-      if (rows.length) setClientId(current => current || rows[0].id)
     })
   }, [])
   useEffect(() => {
-    setLoadedClientId(0)
+    setLoadedClientId(-1)
+    setPipelines([]); setLookups(emptyLookups)
     selectionRequestRef.current += 1
     setSelectingPipelineId(null)
-    if (clientId) void load(clientId)
-    else loadRequestRef.current += 1
+    void load(clientId)
     setDefinition(null); setVersion(null); setSelectedStageId(null); setStageDrawer(false)
+    setEditing(false); savedRecord.current = null; setCloneReviewed(false)
+    setPipelineScopes({})
   }, [clientId])
   useEffect(() => () => { selectionRequestRef.current += 1 }, [])
 
-  const readOnly = version?.status === 'Published' || version?.status === 'Retired'
+  const readOnly = !editing
+  const dirty = Boolean(definition && version && (!savedRecord.current || pipelineEditSnapshot(definition, version) !== pipelineEditSnapshot(savedRecord.current.definition, savedRecord.current.version)))
   const selectedStage = version?.stages.find(row => row.id === selectedStageId) ?? null
-  const selectPipeline = async (id: number) => {
+  const selectPipeline = async (id: number, preferredVersionId?: number, edit = false) => {
+    const known = pipelines.find(row => row.id === id)
+    if (known && known.clientId !== clientId) {
+      pendingDefinitionOpen.current = { id, clientId: known.clientId, preferredVersionId, edit }
+      setClientId(known.clientId)
+      return
+    }
     const requestId = ++selectionRequestRef.current
     setSelectingPipelineId(id)
     setDefinition(null); setVersion(null); setSelectedStageId(null); setStageDrawer(false)
@@ -89,37 +131,131 @@ export default function RecruitmentPipelineDesigner({ initialClientId = 0, onSav
         return
       }
       const row = detail.definition
+      if (row.clientId !== clientId) {
+        pendingDefinitionOpen.current = { id, clientId: row.clientId, preferredVersionId, edit }
+        setClientId(row.clientId)
+        return
+      }
       const ordered = [...(detail.versions.length ? detail.versions : versions)].sort((a, b) => b.versionNumber - a.versionNumber)
-      const selectedHeader = ordered.find(item => item.status === 'Draft')
-        ?? ordered.find(item => item.id === row.currentPublishedVersionId)
+      // CRUD always edits the current saved configuration. Internal version IDs
+      // remain only to preserve existing job/application mappings.
+      const selectedHeader = ordered.find(item => item.id === row.currentPublishedVersionId)
+        ?? ordered.find(item => item.status === 'Draft')
+        ?? ordered.find(item => item.id === preferredVersionId)
         ?? ordered[0]
         ?? blankVersion(row.id)
       const selected = selectedHeader.id ? await getRecruitmentPipelineVersion(selectedHeader.id) ?? selectedHeader : selectedHeader
       if (requestId !== selectionRequestRef.current) return
       const normalized = { ...selected, stages: normalizeLoadedStageScopes(selected) }
       setDefinition(row); setVersion(normalized); setSelectedStageId(normalized.stages[0]?.id ?? null)
+      savedRecord.current = structuredClone({ definition: row, version: normalized })
+      setEditing(edit); setSaveValidationError('')
+      setCloneReviewed(false)
+      setLibraryOpen(false)
     } catch {
       if (requestId === selectionRequestRef.current) message.error('Unable to load pipeline.')
     } finally {
       if (requestId === selectionRequestRef.current) setSelectingPipelineId(null)
     }
   }
+  useEffect(() => {
+    const key = `${clientId}:${initialPipelineDefinitionId}:${initialPipelineVersionId}`
+    const pending = pendingDefinitionOpen.current
+    if (loadedClientId === clientId && pending?.clientId === clientId && pipelines.some(row => row.id === pending.id)) {
+      pendingDefinitionOpen.current = null
+      openedInitialDefinition.current = key
+      void selectPipeline(pending.id, pending.preferredVersionId, pending.edit)
+      return
+    }
+    if (loadedClientId !== clientId || !initialPipelineDefinitionId || openedInitialDefinition.current === key || !pipelines.some(row => row.id === initialPipelineDefinitionId)) return
+    openedInitialDefinition.current = key
+    void selectPipeline(initialPipelineDefinitionId, initialPipelineVersionId)
+  }, [loadedClientId, pipelines, clientId, initialPipelineDefinitionId, initialPipelineVersionId]) // eslint-disable-line react-hooks/exhaustive-deps
+  const cancelSimilarReads = () => { ++similarRequestRef.current; similarAbortRef.current?.abort(); similarAbortRef.current = null }
+  useEffect(() => () => { ++similarRequestRef.current; similarAbortRef.current?.abort() }, [])
+  const selectSimilarSource = async (source: RecruitmentPipelineDefinition | undefined) => {
+    cancelSimilarReads()
+    setCopyError(''); setCopySourceError(''); setCopySourcesLoading(false)
+    setSimilar(current => current ? { ...current, source: source ?? null, sourceVersionId: 0, sourceScopeType: undefined, pipelineName: source ? `${source.pipelineName} copy` : '', pipelineCode: source ? `${source.pipelineCode}_COPY` : '' } : null)
+    if (!source) { setCopyConfigurationLoading(false); return }
+    const request = similarRequestRef.current
+    const controller = new AbortController(); similarAbortRef.current = controller
+    setCopyConfigurationLoading(true)
+    const result = await getJsonResult<RecruitmentPipelineVersion[]>(`/api/recruitment-orchestration/pipelines/${source.id}/versions`, [], { signal: controller.signal, toast: false, loader: false })
+    if (request !== similarRequestRef.current || controller.signal.aborted) return
+    setCopyConfigurationLoading(false)
+    if (!result.ok) { setCopySourceError(result.error || 'The source pipeline configuration could not be loaded.'); return }
+    const ordered = [...result.data].sort((left, right) => right.versionNumber - left.versionNumber)
+    const selected = ordered.find(row => row.id === source.currentPublishedVersionId) ?? ordered.find(row => row.status !== 'Retired') ?? ordered[0]
+    if (!selected?.id) { setCopySourceError('This pipeline has no saved configuration to copy. Choose another source pipeline.'); return }
+    setSimilar(current => current?.source?.id === source.id ? { ...current, sourceVersionId: selected.id, sourceScopeType: selected.scopeType } : current)
+  }
+  const loadSimilarSources = async (sourceClientId: number, preselected?: RecruitmentPipelineDefinition) => {
+    cancelSimilarReads()
+    const request = similarRequestRef.current
+    const controller = new AbortController(); similarAbortRef.current = controller
+    setCopyError(''); setCopySourceError(''); setSimilarSources([]); setCopySourcesLoading(true); setCopyConfigurationLoading(false)
+    setSimilar(current => current ? { ...current, sourceClientId, source: null, sourceVersionId: 0, sourceScopeType: undefined, pipelineName: '', pipelineCode: '' } : null)
+    const query = sourceClientId ? `?clientId=${sourceClientId}` : ''
+    const result = await getJsonResult<RecruitmentPipelineDefinition[]>(`/api/recruitment-orchestration/pipelines${query}`, [], { signal: controller.signal, toast: false, loader: false })
+    if (request !== similarRequestRef.current || controller.signal.aborted) return
+    setCopySourcesLoading(false)
+    if (!result.ok) { setCopySourceError(result.error || 'The source pipelines could not be loaded.'); return }
+    const rows = result.data.filter(row => !sourceClientId || row.clientId === sourceClientId)
+    setSimilarSources(rows)
+    if (preselected) {
+      const source = rows.find(row => row.id === preselected.id)
+      if (source) await selectSimilarSource(source)
+      else setCopySourceError('The selected source pipeline is no longer available in your permitted clients.')
+    }
+  }
+  const openSimilar = (source?: RecruitmentPipelineDefinition) => {
+    cancelSimilarReads()
+    const sourceClientId = source?.clientId || boundClientId || 0
+    setCopyError(''); setCopySourceError('')
+    setSimilar({ sourceClientId, source: null, sourceVersionId: 0, targetClientId: clientId || source?.clientId || boundClientId || 0, pipelineName: '', pipelineCode: '' })
+    void loadSimilarSources(sourceClientId, source)
+  }
+  const closeSimilar = () => {
+    if (copying) return
+    cancelSimilarReads(); setSimilar(null); setSimilarSources([]); setCopySourcesLoading(false); setCopyConfigurationLoading(false); setCopySourceError(''); setCopyError('')
+  }
+  const createSimilar = async () => {
+    if (!similar?.source || !similar.sourceVersionId || copySourcesLoading || copyConfigurationLoading || !similar.targetClientId || !similar.pipelineName.trim() || !code(similar.pipelineCode)) return
+    setCopying(true); setCopyError('')
+    const response = await createSimilarRecruitmentPipeline(similar.source.id, { sourceVersionId: similar.sourceVersionId, targetClientId: similar.targetClientId, pipelineName: similar.pipelineName.trim(), pipelineCode: code(similar.pipelineCode), description: similar.source.description })
+    setCopying(false)
+    if (!response.ok || !response.data) return setCopyError(response.error || 'The pipeline could not be copied.')
+    const copied = response.data
+    cancelSimilarReads()
+    pendingDefinitionOpen.current = null
+    setSimilar(null); setLibraryOpen(false)
+    if (copied.definition.clientId !== clientId) {
+      setClientId(copied.definition.clientId)
+      openedInitialDefinition.current = `${copied.definition.clientId}:${initialPipelineDefinitionId}:${initialPipelineVersionId}`
+    }
+    await load(copied.definition.clientId)
+    setDefinition(copied.definition); setVersion(copied.version); setCloneReviewed(false); setSelectedStageId(copied.version.stages[0]?.id ?? null)
+    savedRecord.current = structuredClone({ definition: copied.definition, version: copied.version }); setEditing(true)
+    if (copied.warnings.length) Modal.info({ title: 'Pipeline copied · review client references', content: <div>{copied.warnings.map((note, index) => <p key={index}>{note}</p>)}</div> })
+    else message.success('A separate pipeline is ready to edit. Save when ready to use it.')
+    onSaved?.(copied.definition)
+  }
   const startNew = () => {
     if (!clientId) return message.warning('Select a client first.')
     selectionRequestRef.current += 1
     setSelectingPipelineId(null)
     const row: RecruitmentPipelineDefinition = { id: 0, clientId, clientName: clients.find(item => item.id === clientId)?.name ?? '', pipelineCode: '', pipelineName: '', description: '', currentPublishedVersionId: null, isActive: true, versions: [] }
-    const draft = blankVersion(0); setDefinition(row); setVersion(draft); setSelectedStageId(draft.stages[0]?.id ?? null)
+    const draft = blankVersion(0); setDefinition(row); setVersion(draft); setCloneReviewed(false); setSelectedStageId(draft.stages[0]?.id ?? null)
+    savedRecord.current = null; setEditing(true)
+    setLibraryOpen(false)
   }
-  const beginRevision = () => {
-    if (!definition || !version) return
-    const draft = cloneVersion(version, definition.id)
-    setVersion(draft)
-    setSelectedStageId(draft.stages[0]?.id ?? null)
-    setStageDrawer(false)
-    setSaveValidationError('')
-    setPublishError('')
-    message.success(`Version ${draft.versionNumber} is ready to edit as a draft. Nothing changes for live hiring until you publish it.`)
+  const beginEdit = () => { setEditing(true); setSaveValidationError('') }
+  const cancelEdit = () => {
+    const saved = savedRecord.current
+    if (saved) { const restored = structuredClone(saved); setDefinition(restored.definition); setVersion(restored.version); setSelectedStageId(restored.version.stages[0]?.id ?? null) }
+    else { setDefinition(null); setVersion(null); setSelectedStageId(null); setLibraryOpen(true) }
+    setEditing(false); setStageDrawer(false); setCloneReviewed(false); setSaveValidationError('')
   }
   const patchDefinition = (patch: Partial<RecruitmentPipelineDefinition>) => setDefinition(current => current ? { ...current, ...patch } : current)
   const patchVersion = (patch: Partial<RecruitmentPipelineVersion>) => setVersion(current => current ? { ...current, ...patch } : current)
@@ -146,9 +282,9 @@ export default function RecruitmentPipelineDesigner({ initialClientId = 0, onSav
     patchVersion({ stages, transitions })
     setSelectedStageId(stage.id)
     setStageDrawer(true)
-    window.setTimeout(() => stageFlowRef.current?.scrollTo({ left: stageFlowRef.current.scrollWidth, behavior: 'smooth' }), 0)
+    window.setTimeout(() => stageFlowRef.current?.lastElementChild?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 0)
   }
-  const removeStage = (stageId: number) => Modal.confirm({ title: 'Delete pipeline stage?', content: 'Draft transitions connected to this stage will also be removed.', okText: 'Delete', okButtonProps: { danger: true }, onOk: () => { const stages = version!.stages.filter(row => row.id !== stageId).map((row, index) => ({ ...row, stageNumber: index + 1, displayOrder: index + 1 })); patchVersion({ stages, transitions: version!.transitions.filter(row => row.fromStageId !== stageId && row.toStageId !== stageId) }); setSelectedStageId(stages[0]?.id ?? null); setStageDrawer(false) } })
+  const removeStage = (stageId: number) => Modal.confirm({ title: 'Remove pipeline stage?', content: 'Connected transitions will also be removed when you save. Stages used by existing jobs or candidate history are protected.', okText: 'Remove', okButtonProps: { danger: true }, onOk: () => { const stages = version!.stages.filter(row => row.id !== stageId).map((row, index) => ({ ...row, stageNumber: index + 1, displayOrder: index + 1 })); patchVersion({ stages, transitions: version!.transitions.filter(row => row.fromStageId !== stageId && row.toStageId !== stageId) }); setSelectedStageId(stages[0]?.id ?? null); setStageDrawer(false) } })
   const moveStage = (stageId: number, delta: number) => { const rows = [...version!.stages]; const index = rows.findIndex(row => row.id === stageId); const target = index + delta; if (index < 0 || target < 0 || target >= rows.length) return; [rows[index], rows[target]] = [rows[target], rows[index]]; patchVersion({ stages: rows.map((row, rowIndex) => ({ ...row, stageNumber: rowIndex + 1, displayOrder: rowIndex + 1 })) }) }
   const setInitial = (stageId: number) => patchVersion({ stages: version!.stages.map(row => ({ ...row, isInitial: row.id === stageId })) })
   const addTransition = () => { if (!version || version.stages.length < 2 || readOnly) return; const from = selectedStage ?? version.stages[0]; const to = version.stages.find(row => row.id !== from.id)!; patchVersion({ transitions: [...version.transitions, newTransition(version.id, from, to, version.transitions.length + 1)] }) }
@@ -157,14 +293,15 @@ export default function RecruitmentPipelineDesigner({ initialClientId = 0, onSav
     const next = standardHiringFlow(version.id, version.scopeType ?? 'Application')
     patchVersion(next)
     setSelectedStageId(next.stages[0].id)
-    message.success('Standard hiring stages prepared. Review them and save the draft when ready.')
-    window.setTimeout(() => stageFlowRef.current?.scrollTo({ left: 0, behavior: 'smooth' }), 50)
+    message.success('Standard hiring stages prepared. Review them and save when ready.')
+    window.setTimeout(() => stageFlowRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 50)
   }
   const patchTransition = (id: number, patch: Partial<RecruitmentPipelineTransition>) => patchVersion({ transitions: version!.transitions.map(row => row.id === id ? { ...row, ...patch } : row) })
   const removeTransition = (id: number) => patchVersion({ transitions: version!.transitions.filter(row => row.id !== id).map((row, index) => ({ ...row, displayOrder: index + 1 })) })
 
   const save = async () => {
     if (!definition || !version || readOnly) return
+    if (version.cloneWarnings?.length && !cloneReviewed) return setSaveValidationError('Review the copied client mappings and access, then acknowledge the review before saving.')
     const error = validate(definition, version)
     if (error) {
       setSaveValidationError(error)
@@ -172,53 +309,21 @@ export default function RecruitmentPipelineDesigner({ initialClientId = 0, onSav
     }
     setSaveValidationError('')
     setSaving(true)
-    const definitionResponse = await saveRecruitmentPipelineDefinition({ id: definition.id, clientId: definition.clientId, pipelineCode: code(definition.pipelineCode || definition.pipelineName), pipelineName: definition.pipelineName.trim(), description: definition.description.trim(), isActive: definition.isActive })
-    if (!definitionResponse.ok || !definitionResponse.data) {
-      setSaving(false)
-      setSaveValidationError(definitionResponse.error || 'The pipeline definition could not be saved.')
-      return
-    }
-    const versionResponse = await saveRecruitmentPipelineVersion(definitionResponse.data.id, { ...version, pipelineDefinitionId: definitionResponse.data.id })
+    const response = await saveRecruitmentPipelineConfiguration({
+      definition: { id: definition.id, clientId: definition.clientId, pipelineCode: code(definition.pipelineCode || definition.pipelineName), pipelineName: definition.pipelineName.trim(), description: definition.description.trim(), isActive: definition.isActive },
+      configuration: { ...version, pipelineDefinitionId: definition.id, acknowledgeCloneWarnings: cloneReviewed },
+      expectedConfigurationHash: savedRecord.current?.version.configurationHash,
+    })
     setSaving(false)
-    if (!versionResponse.ok || !versionResponse.data) {
-      setSaveValidationError(versionResponse.error || 'The pipeline version could not be saved.')
+    if (!response.ok || !response.data) {
+      setSaveValidationError(response.error || 'The pipeline could not be saved. No partial changes were applied.')
       return
     }
-    setSaveValidationError('')
-    onSaved?.(definitionResponse.data); await load(definition.clientId); await selectPipeline(definitionResponse.data.id)
-  }
-  const publish = () => {
-    if (!definition || !version?.id || readOnly) {
-      const error = readOnly
-        ? 'This pipeline version is already published. Create the next version to make changes.'
-        : 'Save the pipeline draft successfully before publishing.'
-      setPublishError(error)
-      return message.error(error)
-    }
-    const error = validate(definition, version)
-    if (error) {
-      setPublishError(error)
-      return message.error(error)
-    }
-    setPublishError('')
-    setPublishDialogOpen(true)
-  }
-  const confirmPublish = async () => {
-    if (!definition || !version?.id) return
-    setPublishing(true)
-    const response = await publishRecruitmentPipelineVersion(version.id)
-    setPublishing(false)
-    if (!response.ok) {
-      setPublishError(response.error || 'Pipeline version could not be published.')
-      return
-    }
-    setPublishDialogOpen(false)
-    setPublishError('')
-    const update = response.data?.runtimeUpdate
-    if (update?.waiting.length) Modal.info({ title: 'Published — some active stages need attention', content: <div><p>Linked jobs now use the new version. Pending ATS checks will run automatically. Existing approvals and evidence are retained.</p>{update.waiting.map((note, index) => <p key={index}>{note}</p>)}</div> })
-    else message.success('Published. Linked jobs use this version; pending candidates will be checked automatically.')
-    await load(definition.clientId)
-    await selectPipeline(definition.id)
+    const saved = { definition: response.data.definition, version: response.data.version }
+    setDefinition(saved.definition); setVersion(saved.version); savedRecord.current = structuredClone(saved)
+    setEditing(false); setCloneReviewed(false); setSaveValidationError('')
+    setSelectedStageId(saved.version.stages[0]?.id ?? null)
+    onSaved?.(saved.definition); await load(saved.definition.clientId)
   }
 
   const removeDefinition = async (row: RecruitmentPipelineDefinition) => {
@@ -226,10 +331,10 @@ export default function RecruitmentPipelineDesigner({ initialClientId = 0, onSav
       selectionRequestRef.current += 1
       setSelectingPipelineId(null)
     }
-    const response = await deleteRecruitmentPipelineDefinition(row.id)
+    const response = await deleteRecruitmentPipelineDefinition(row.id, row.clientId)
     if (!response.ok) return
     if (definition?.id === row.id) {
-      setDefinition(null); setVersion(null); setSelectedStageId(null); setStageDrawer(false)
+      setDefinition(null); setVersion(null); setSelectedStageId(null); setStageDrawer(false); setEditing(false); savedRecord.current = null
     }
     await load(row.clientId)
   }
@@ -238,18 +343,39 @@ export default function RecruitmentPipelineDesigner({ initialClientId = 0, onSav
   const transitionWorkflowOptions = lookups.workflows
     .filter(row => row.isActive && row.resourceType === 'RecruitmentPipelineTransition' && (row.clientId == null || row.clientId === clientId))
     .map(row => ({ value: row.id, label: row.name }))
-  return <section className="orchestration-shell">
-    <div className="orchestration-toolbar recruitment-designer-command"><Space wrap className="recruitment-designer-actions"><span className="recruitment-command-label">Client</span><Select data-testid="pipeline-client" value={clientId || undefined} placeholder="Select client" options={clients.map(row => ({ value: row.id, label: row.name }))} onChange={value => { setLoadedClientId(0); setClientId(value) }} showSearch optionFilterProp="label" /><Button data-testid="pipeline-competencies" disabled={!clientId} onClick={() => setCompetencyOpen(true)}>Score components</Button><Button data-testid="pipeline-new" type="primary" icon={<PlusOutlined />} onClick={startNew}>New pipeline</Button></Space></div>
-    <div className="pipeline-designer-layout"><Card size="small" className="form-builder-library" data-testid="pipeline-library" data-loaded-client-id={loadedClientId} title={`Pipelines (${pipelines.length})`}><List dataSource={pipelines} locale={{ emptyText: 'No pipelines for this client.' }} renderItem={row => <List.Item className={selectingPipelineId === row.id || definition?.id === row.id ? 'active' : ''} aria-busy={selectingPipelineId === row.id} onClick={() => void selectPipeline(row.id)} actions={canDelete ? [<Popconfirm key="delete" title="Delete this hiring pipeline?" description="All versions are removed only when no position, application or cumulative hiring case uses them." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeDefinition(row)}><Button aria-label={`Delete ${row.pipelineName}`} size="small" danger type="text" icon={<DeleteOutlined />} onClick={event => event.stopPropagation()} /></Popconfirm>] : []}><List.Item.Meta title={row.pipelineName} description={<><span>{row.pipelineCode}</span><br /><Tag color={row.currentPublishedVersionId ? 'green' : 'orange'}>{row.currentPublishedVersionId ? 'Published' : 'Draft only'}</Tag></>} /></List.Item>} /></Card>
-      {selectingPipelineId !== null ? <Card data-testid="pipeline-selection-loading" loading aria-busy="true" aria-label="Loading selected pipeline" /> : !definition || !version ? <Card><Empty description="Select a pipeline or create a new one." /></Card> : <div className="form-builder-canvas">
-        <Card size="small"><div className="orchestration-toolbar"><Space wrap><Tag color={version.status === 'Published' ? 'green' : version.status === 'Retired' ? 'default' : 'gold'}>v{version.versionNumber} · {version.status}</Tag><Switch disabled={readOnly} checked={definition.isActive} onChange={isActive => patchDefinition({ isActive })} checkedChildren="Active" unCheckedChildren="Inactive" /></Space><Space>{readOnly && <Button data-testid="pipeline-edit" type="primary" ghost icon={<EditOutlined />} onClick={beginRevision}>Edit pipeline</Button>}<Button data-testid="pipeline-save" loading={saving} disabled={readOnly} onClick={() => void save()}>Save draft</Button><Button data-testid="pipeline-publish" type="primary" disabled={readOnly} onClick={publish}>Publish</Button></Space></div><div className="form-builder-meta"><Form.Item label="Pipeline name" required><Input data-testid="pipeline-name" disabled={readOnly} value={definition.pipelineName} onChange={event => patchDefinition({ pipelineName: event.target.value })} /></Form.Item><Form.Item label="Pipeline code" required><Input data-testid="pipeline-code" disabled={readOnly} value={definition.pipelineCode} onChange={event => patchDefinition({ pipelineCode: code(event.target.value) })} /></Form.Item><Form.Item label="Pipeline scope" required><Select data-testid="pipeline-scope" disabled={readOnly} value={version.scopeType ?? 'Application'} options={[{ value: 'Application', label: 'Candidate / application' }, { value: 'Position', label: 'Work-order position' }, { value: 'Hybrid', label: 'Position + candidate flow' }]} onChange={scopeType => patchVersion({ scopeType, stages: assignStageScopes(version.stages, scopeType) })} /></Form.Item><Form.Item label="SLA basis" required><Select data-testid="pipeline-sla-mode" disabled={readOnly} value={version.slaMode ?? 'StageEntry'} options={[{ value: 'StageEntry', label: 'From each stage entry' }, { value: 'CumulativeFromAnchor', label: 'Cumulative from work order' }]} onChange={slaMode => patchVersion({ slaMode })} /></Form.Item>{version.slaMode === 'CumulativeFromAnchor' && <Form.Item label="Overall SLA (days)" required><InputNumber data-testid="pipeline-overall-sla" disabled={readOnly} min={0.01} precision={2} value={(version.overallSlaMinutes ?? 0) / 1440 || undefined} onChange={value => patchVersion({ overallSlaMinutes: Math.round(Number(value || 0) * 1440) })} /></Form.Item>}<Form.Item className="wide" label="Description"><Input data-testid="pipeline-description" disabled={readOnly} value={definition.description} onChange={event => patchDefinition({ description: event.target.value })} /></Form.Item></div></Card>
+  const visiblePipelines = pipelines.filter(row => `${row.pipelineName} ${row.pipelineCode} ${row.clientName} ${row.description}`.toLowerCase().includes(pipelineSearch.trim().toLowerCase()))
+  const libraryLoading = loadedClientId !== clientId
+  const libraryActions = (row: RecruitmentPipelineDefinition) => <Space size={6} wrap>
+    <Button size="small" loading={selectingPipelineId === row.id} icon={<EditOutlined />} onClick={() => void selectPipeline(row.id, undefined, true)}>Edit</Button>
+    <Button size="small" icon={<CopyOutlined />} onClick={() => void openSimilar(row)}>Create similar</Button>
+    {canDelete && <Popconfirm title="Delete this pipeline?" description="Only unused definitions can be removed." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeDefinition(row)}><Button aria-label={`Delete ${row.pipelineName}`} size="small" danger type="text" icon={<DeleteOutlined />} /></Popconfirm>}
+  </Space>
+  const hiringStages = version?.stages.filter(stage => stage.cardScope === 'Position').length ?? 0
+  const candidateStages = version?.stages.filter(stage => stage.cardScope !== 'Position').length ?? 0
+  return <section className={`orchestration-shell pipeline-manager-v2 ${definition ? 'has-editor' : ''}`}>
+    <div className="pipeline-manager-command">
+      <div className="pipeline-manager-context"><label>Client<RecruitmentOfferClientSelect includeSetup aria-label="Pipeline configuration client" data-testid="pipeline-client" allowClear={!boundClientId} disabled={Boolean(boundClientId)} loading={!clients.length} value={clientId || undefined} placeholder="All accessible clients" options={clients.map(row => ({ value: row.id, label: row.name }))} onChange={value => { pendingDefinitionOpen.current = null; setLoadedClientId(-1); setClientId(Number(value || 0)); setLibraryOpen(true) }} /></label><label>Pipeline<Select aria-label="Selected pipeline definition" loading={libraryLoading} disabled={libraryLoading} value={definition?.id || undefined} placeholder="Choose a pipeline" options={pipelines.map(row => ({ value: row.id, label: `${row.pipelineName}${!clientId ? ` · ${row.clientName || clients.find(client => client.id === row.clientId)?.name || ''}` : ''}${pipelineScopes[row.id] ? ` · ${scopeLabel(pipelineScopes[row.id])}` : ''}` }))} onChange={id => void selectPipeline(id)} showSearch optionFilterProp="label" /></label></div>
+      <Space wrap><Button onClick={() => setLibraryOpen(value => !value)}>{libraryOpen ? 'Hide library' : 'Browse pipelines'}</Button><Button data-testid="pipeline-competencies" disabled={!clientId} onClick={() => setCompetencyOpen(true)}>Score components</Button><Button data-testid="pipeline-create-similar-top" icon={<CopyOutlined />} disabled={copying} onClick={() => openSimilar()}>Create similar</Button><Button data-testid="pipeline-new" type="primary" icon={<PlusOutlined />} onClick={startNew}>New pipeline</Button></Space>
+    </div>
+    {(libraryOpen || !definition) && <section className="pipeline-manager-library" data-testid="pipeline-library" data-loaded-client-id={loadedClientId}>
+      <div className="pipeline-library-heading"><div><strong>Pipelines <span>{libraryLoading ? "…" : pipelines.length}</span></strong><p>Hiring manages vacancies. Candidate pipelines manage individual applications. A combined pipeline contains both.</p></div><Segmented aria-label="Pipeline library display" value={libraryView} onChange={value => setLibraryView(value as 'Cards' | 'Table')} options={['Cards','Table']} /></div>
+      {libraryLoading ? <Card size="small" loading aria-busy="true" aria-label="Loading pipelines" /> : libraryView === 'Cards' ? <><Input aria-label="Find pipeline" prefix={<SearchOutlined />} placeholder="Find a pipeline by name or code" value={pipelineSearch} onChange={event => setPipelineSearch(event.target.value)} allowClear /><div className="pipeline-library-grid">{visiblePipelines.length ? visiblePipelines.map(row => <article className={`pipeline-library-card ${definition?.id === row.id ? 'is-selected' : ''}`} key={row.id}><div><strong>{row.pipelineName}</strong><span>{row.pipelineCode}</span><small>{row.clientName || clients.find(client => client.id === row.clientId)?.name}</small></div><Space wrap size={4}><Tag color={!row.isActive ? 'default' : row.currentPublishedVersionId ? 'green' : 'orange'}>{!row.isActive ? 'Inactive' : row.currentPublishedVersionId ? 'Active' : 'Needs setup'}</Tag>{pipelineScopes[row.id] && <Tag>{scopeLabel(pipelineScopes[row.id])}</Tag>}</Space>{row.description && <p>{row.description}</p>}{libraryActions(row)}</article>) : <Empty description={clientId ? 'No matching pipeline for this client.' : 'No pipelines are configured for your permitted clients.'} />}</div></> : <DataTable rows={pipelines} getRowId={row => row.id} columns={[{ key: 'pipelineName', label: 'Pipeline', wrap: true },{ key: 'pipelineCode', label: 'Code' },{ key: 'clientName', label: 'Client', value: row => row.clientName || clients.find(client => client.id === row.clientId)?.name || '' },{key:'scope',label:'Journey type',value:row=>pipelineScopes[row.id] ? scopeLabel(pipelineScopes[row.id]) : 'Not configured'},{ key: 'isActive', label: 'Status', value: row => !row.isActive ? 'Inactive' : row.currentPublishedVersionId ? 'Active' : 'Needs setup', render: row => <Tag color={!row.isActive ? 'default' : row.currentPublishedVersionId ? 'green' : 'orange'}>{!row.isActive ? 'Inactive' : row.currentPublishedVersionId ? 'Active' : 'Needs setup'}</Tag> },{ key: 'description', label: 'Description', wrap: true }]} actions={libraryActions} actionsWidth={270} emptyText={clientId ? 'No pipelines for this client.' : 'No pipelines are configured for your permitted clients.'} exportFileName="Recruitment pipelines" />}
+    </section>}
+    {selectingPipelineId !== null ? <Card data-testid="pipeline-selection-loading" loading aria-busy="true" aria-label="Loading selected pipeline" /> : !definition || !version ? null : <section className="pipeline-manager-editor">
+      <header className="pipeline-editor-toolbar"><div><strong>{definition.pipelineName || 'New pipeline'}</strong><Space size={4} wrap><Tag color={!definition.id || dirty ? 'gold' : !definition.currentPublishedVersionId ? 'orange' : definition.isActive ? 'green' : 'default'}>{!definition.id ? 'New pipeline' : dirty ? 'Unsaved changes' : !definition.currentPublishedVersionId ? 'Save to use this pipeline' : definition.isActive ? 'Saved · Active' : 'Saved · Inactive'}</Tag><span>{scopeLabel(version.scopeType)}</span></Space></div><Space wrap>{readOnly ? <Button data-testid="pipeline-edit" type="primary" ghost icon={<EditOutlined />} onClick={beginEdit}>Edit pipeline</Button> : <Button data-testid="pipeline-cancel" disabled={saving} onClick={cancelEdit}>Cancel</Button>}<Button data-testid="pipeline-create-similar" icon={<CopyOutlined />} disabled={!definition.id || !version.id || dirty} title={dirty ? 'Save changes before creating a similar pipeline' : undefined} onClick={() => void openSimilar(definition)}>Create similar</Button><Button data-testid="pipeline-save" type="primary" loading={saving} disabled={readOnly} onClick={() => void save()}>Save</Button></Space></header>
+      <div className="pipeline-editor-content">
+        {!!version.cloneWarnings?.length && <Alert type="warning" showIcon message="Copied pipeline · client mapping review required" description={<div><ul>{version.cloneWarnings.map((warning,index)=><li key={index}>{warning}</li>)}</ul><Checkbox data-testid="pipeline-clone-reviewed" checked={cloneReviewed} onChange={event=>setCloneReviewed(event.target.checked)} disabled={readOnly}>I reviewed the target-client mappings and stage access.</Checkbox><p>Correct missing references and save to use this pipeline.</p></div>}/>}
+        <div className="pipeline-manager-summary"><span><b>{version.stages.length}</b> total stages</span><span><b>{hiringStages}</b> hiring / vacancy</span><span><b>{candidateStages}</b> candidate</span><span><b>{version.transitions.length}</b> transitions</span></div>
+        <div className="pipeline-scope-explanation">{version.scopeType === 'Hybrid' ? 'This is one combined definition. Hiring-demand stages operate on vacancies; candidate stages operate on each application after the hand-off.' : version.scopeType === 'Position' ? 'This definition tracks a work-order vacancy through its hiring SLA. Individual applicant steps belong to the assigned candidate pipeline.' : 'This definition tracks each candidate. The separate hiring / vacancy definition tracks the overall work-order position.'}</div>
+        <Collapse className="pipeline-definition-details" defaultActiveKey={definition.id ? [] : ['details']} key={`details-${definition.id}`}><Collapse.Panel key="details" header="Pipeline details & SLA" extra={<Switch size="small" disabled={readOnly} checked={definition.isActive} onClick={(_,event) => event.stopPropagation()} onChange={isActive => patchDefinition({isActive})} checkedChildren="Active" unCheckedChildren="Inactive" />}><div className="form-builder-meta"><Form.Item label="Pipeline name" required><Input data-testid="pipeline-name" disabled={readOnly} value={definition.pipelineName} onChange={event => patchDefinition({ pipelineName: event.target.value })} /></Form.Item><Form.Item label="Pipeline code" required><Input data-testid="pipeline-code" disabled={readOnly} value={definition.pipelineCode} onChange={event => patchDefinition({ pipelineCode: code(event.target.value) })} /></Form.Item><Form.Item label="Pipeline scope" required><Select data-testid="pipeline-scope" disabled={readOnly} value={version.scopeType ?? 'Application'} options={[{ value: 'Application', label: 'Candidate / application' }, { value: 'Position', label: 'Work-order position' }, { value: 'Hybrid', label: 'Position + candidate flow' }]} onChange={scopeType => patchVersion({ scopeType, stages: assignStageScopes(version.stages, scopeType) })} /></Form.Item><Form.Item label="SLA basis" required><Select data-testid="pipeline-sla-mode" disabled={readOnly} value={version.slaMode ?? 'StageEntry'} options={[{ value: 'StageEntry', label: 'From each stage entry' }, { value: 'CumulativeFromAnchor', label: 'Cumulative from work order' }]} onChange={slaMode => patchVersion({ slaMode })} /></Form.Item>{version.slaMode === 'CumulativeFromAnchor' && <Form.Item label="Overall SLA (days)" required><InputNumber data-testid="pipeline-overall-sla" disabled={readOnly} min={0.01} precision={2} value={(version.overallSlaMinutes ?? 0) / 1440 || undefined} onChange={value => patchVersion({ overallSlaMinutes: Math.round(Number(value || 0) * 1440) })} /></Form.Item>}<Form.Item className="wide" label="Description"><Input data-testid="pipeline-description" disabled={readOnly} value={definition.description} onChange={event => patchDefinition({ description: event.target.value })} /></Form.Item></div></Collapse.Panel></Collapse>
         {version.stages.some(stage => stage.cardScope === 'Position') && <RecruitmentRollbackFields value={version.allRejectedRollback} stages={version.stages} disabled={readOnly} onChange={allRejectedRollback => patchVersion({ allRejectedRollback })} />}
-        {readOnly && <Alert data-testid="pipeline-version-readonly" type="info" showIcon message="Published version protected" description={`Version ${version.versionNumber} is retained as an immutable configuration snapshot. Publishing a revision updates linked jobs and safely rechecks pending journeys. Select Edit pipeline to prepare version ${version.versionNumber + 1} as an editable draft.`} />}
-        {!readOnly && version.id === 0 && definition.id > 0 && <Alert data-testid="pipeline-revision-draft" type="success" showIcon message={`Editing version ${version.versionNumber} draft`} description={`This draft is based on protected version ${Math.max(1, version.versionNumber - 1)}. Save it when ready; live hiring changes only after the new version is published and assigned.`} />}
-        {saveValidationError && <Alert data-testid="pipeline-validation-error" type="error" showIcon closable message="Pipeline draft needs attention" description={saveValidationError} onClose={() => setSaveValidationError('')} />}
-        {publishError && <Alert type="error" showIcon closable message="Pipeline version cannot be published" description={publishError} onClose={() => setPublishError('')} />}
-        <Card size="small" title="Ordered stages" extra={<Space><Button disabled={readOnly} onClick={useStandardFlow}>Use standard flow</Button><Button data-testid="pipeline-add-stage" icon={<PlusOutlined />} disabled={readOnly} onClick={addStage}>Add stage</Button></Space>}><div ref={stageFlowRef} className="pipeline-stage-flow" data-testid="pipeline-stage-flow">{version.stages.map((stage, index) => <Card key={stage.id} data-testid={`pipeline-stage-${stage.stageCode || index + 1}`} size="small" style={{ '--stage-color': stageColors[stage.stageType] || '#6b4eff' } as CSSProperties} className={`pipeline-stage-card ${selectedStageId === stage.id ? 'active' : ''}`} onClick={() => setSelectedStageId(stage.id)}><div><span className="stage-order">{index + 1}</span><strong>{stage.stageName}</strong></div><p>{stage.stageType}{stage.isInitial ? ' · Initial' : ''}{stage.isTerminal ? ' · Terminal' : ''}</p><Tag color={stage.cardScope === 'Position' ? 'purple' : 'blue'}>{stage.cardScope === 'Position' ? 'Hiring demand cards' : 'Candidate cards'}</Tag><div className="stage-facts"><span>SLA <b>{formatDuration(stage.slaDurationMinutes)}</b></span><span>{stage.requiresApproval ? 'Approval' : 'No approval'}</span></div><Space wrap onClick={event => event.stopPropagation()}><Button size="small" icon={<EditOutlined />} onClick={() => { setSelectedStageId(stage.id); setStageDrawer(true) }}>Configure</Button><Button size="small" aria-label={`Move ${stage.stageName} up`} icon={<ArrowUpOutlined />} disabled={readOnly || !index} onClick={() => moveStage(stage.id, -1)} /><Button size="small" aria-label={`Move ${stage.stageName} down`} icon={<ArrowDownOutlined />} disabled={readOnly || index === version.stages.length - 1} onClick={() => moveStage(stage.id, 1)} /><Button size="small" danger icon={<DeleteOutlined />} disabled={readOnly} onClick={() => removeStage(stage.id)}>Delete</Button></Space></Card>)}</div></Card>
-        <Card size="small" title="Allowed transitions" extra={<Button icon={<PlusOutlined />} disabled={readOnly || version.stages.length < 2} onClick={addTransition}>Add transition</Button>}>
+        {editing && <Alert data-testid="pipeline-editing-notice" type="info" showIcon message="Save changes to this pipeline" description="Existing jobs, applications and history keep their mappings. Removing a stage that is already in use is protected." />}
+        {saveValidationError && <Alert data-testid="pipeline-validation-error" type="error" showIcon closable message="Pipeline needs attention" description={saveValidationError} onClose={() => setSaveValidationError('')} />}
+
+        <section className="pipeline-stages-section"><div className="pipeline-section-heading"><div><h3>Stages & responsibility</h3><p>Configure who owns each step and who can see or work on its cards.</p></div><Space wrap><Button disabled={readOnly} onClick={useStandardFlow}>Use standard flow</Button><Button data-testid="pipeline-add-stage" icon={<PlusOutlined />} disabled={readOnly} onClick={addStage}>Add stage</Button></Space></div><div className="pipeline-owner-legend">{pipelineOwnershipLegend.map(owner => <span key={owner.ownerType}><i style={{background:owner.color}} />{owner.label}</span>)}</div><div ref={stageFlowRef} className="pipeline-stage-flow" data-testid="pipeline-stage-flow">{version.stages.map((stage,index) => { const owner=pipelineStageOwnership(stage); return <article key={stage.id} data-testid={`pipeline-stage-${stage.stageCode || index+1}`} style={{'--stage-color':owner.color} as CSSProperties} className={`pipeline-stage-card ${selectedStageId === stage.id ? 'active' : ''}`}>
+          <span className="stage-order">{index+1}</span><div className="pipeline-stage-identity"><strong>{stage.stageName}</strong><div><span>{stage.cardScope === 'Position' ? 'Hiring / vacancy' : 'Candidate'}</span><span>{stage.stageType}</span>{stage.isInitial && <Tag>Initial</Tag>}{stage.isTerminal && <Tag>Terminal</Tag>}</div></div><div className="pipeline-stage-owner"><i style={{background:owner.color}}/><span>{owner.label}<small>{stage.accessPolicy?.restricted ? 'Assigned roles / users only' : 'Existing module access'}</small></span></div><div className="pipeline-stage-sla"><small>SLA</small><b>{formatDuration(stage.slaDurationMinutes)}</b></div><Space className="pipeline-stage-actions" size={4} wrap><Button size="small" icon={<EditOutlined />} onClick={() => {setSelectedStageId(stage.id);setStageDrawer(true)}}>{readOnly ? 'View stage' : 'Configure'}</Button><Button size="small" aria-label={`Move ${stage.stageName} up`} icon={<ArrowUpOutlined />} disabled={readOnly || !index} onClick={() => moveStage(stage.id,-1)}/><Button size="small" aria-label={`Move ${stage.stageName} down`} icon={<ArrowDownOutlined />} disabled={readOnly || index === version.stages.length-1} onClick={() => moveStage(stage.id,1)}/><Button size="small" aria-label={`Delete ${stage.stageName}`} danger icon={<DeleteOutlined />} disabled={readOnly} onClick={() => removeStage(stage.id)}/></Space>
+        </article>})}</div></section>
+        <Collapse className="pipeline-transitions-collapse"><Collapse.Panel key="transitions" header={`Transitions & decision rules (${version.transitions.length})`}><div className="pipeline-section-heading"><p>Only configured transitions can advance a card.</p><Button icon={<PlusOutlined/>} disabled={readOnly || version.stages.length<2} onClick={addTransition}>Add transition</Button></div>
           {!version.transitions.length && <Alert type="info" showIcon message="Add controlled transitions. Candidates cannot skip an unconfigured stage." />}
           {version.transitions.map(transition => <div className="pipeline-transition-card" key={transition.id}>
             <div className="pipeline-transition-row">
@@ -265,14 +391,28 @@ export default function RecruitmentPipelineDesigner({ initialClientId = 0, onSav
             </div>
             <TransitionRuleEditor readOnly={readOnly} rules={transition.rules} onChange={rules => patchTransition(transition.id, { rules })} />
           </div>)}
-        </Card>
-      </div>}
-    </div>
-    <Modal open={publishDialogOpen} title="Publish pipeline version?" okText="Publish version" confirmLoading={publishing} onOk={() => void confirmPublish()} onCancel={() => setPublishDialogOpen(false)}>
-      <p>Linked jobs and pending journeys will adopt this version automatically. Public links stay the same. ATS eligibility will be checked again using saved scores, with a new score queued only if needed.</p>
-      <p>Completed history stays unchanged. An interview, approval or document already in progress finishes under its original rules before the remaining journey adopts the update. Removed or incompatible active stages require an explicit mapping.</p>
+
+        </Collapse.Panel></Collapse>
+      </div>
+    </section>}
+    <Modal open={!!similar} title="Create a similar pipeline" okText="Create copy" confirmLoading={copying} onOk={() => void createSimilar()} onCancel={closeSimilar} okButtonProps={{ disabled: !similar?.source || !similar.sourceVersionId || copySourcesLoading || copyConfigurationLoading || !similar.targetClientId || !similar.pipelineName.trim() || !code(similar.pipelineCode) }}>
+      {similar && <Form layout="vertical" className="pipeline-similar-form">
+        <Alert type="info" showIcon message={similar.source ? `Copy ${similar.source.pipelineName}` : 'Choose an existing pipeline to copy'} description="Copies stages, transitions, SLA and configuration into a separate pipeline. Review the copy and save to use it. Existing jobs and history stay attached to the original pipeline." />
+        <div className="pipeline-copy-source-fields">
+          <Form.Item label="Source client"><RecruitmentOfferClientSelect includeSetup data-testid="pipeline-copy-source-client" aria-label="Copy source client" disabled={copying || Boolean(boundClientId)} allowClear={!boundClientId} loading={!clients.length} value={similar.sourceClientId || undefined} placeholder="All permitted source clients" options={clients.map(row => ({ value: row.id, label: row.name }))} onChange={sourceClientId => void loadSimilarSources(Number(sourceClientId || 0))} /></Form.Item>
+          <Form.Item label="Source pipeline" required><Select data-testid="pipeline-copy-source-pipeline" aria-label="Copy source pipeline" showSearch allowClear optionFilterProp="label" disabled={copying || copySourcesLoading} loading={copySourcesLoading || copyConfigurationLoading} value={similar.source?.id} placeholder={copySourcesLoading ? 'Loading source pipelines...' : 'Choose a saved hiring or candidate pipeline'} notFoundContent={copySourcesLoading ? 'Loading source pipelines...' : 'No saved pipelines in this client scope.'} options={similarSources.map(row => ({ value: row.id, label: `${row.pipelineName}${pipelineScopes[row.id] || similar.source?.id === row.id && similar.sourceScopeType ? ` · ${scopeLabel(pipelineScopes[row.id] || similar.sourceScopeType)}` : ''}${!similar.sourceClientId ? ` · ${row.clientName || clients.find(client => client.id === row.clientId)?.name || ''}` : ''}` }))} onChange={sourceId => void selectSimilarSource(similarSources.find(row => row.id === sourceId))} /></Form.Item>
+          {copyConfigurationLoading && <span className="pipeline-copy-source-status" role="status">Loading the saved source configuration...</span>}
+          {similar.source && !copyConfigurationLoading && similar.sourceVersionId > 0 && <div className="pipeline-copy-source-status"><Tag color="purple">{scopeLabel(similar.sourceScopeType)}</Tag><span>{similar.source.clientName || clients.find(row => row.id === similar.source?.clientId)?.name}</span></div>}
+          {copySourceError && <Alert type="error" showIcon message="Source pipeline unavailable" description={copySourceError} action={<Button size="small" disabled={copying} onClick={() => void loadSimilarSources(similar.sourceClientId)}>Retry</Button>} />}
+        </div>
+        <Form.Item label="Target client" required><RecruitmentOfferClientSelect includeSetup data-testid="pipeline-copy-target-client" aria-label="Copy target client" disabled={copying || Boolean(boundClientId)} allowClear={!boundClientId} value={similar.targetClientId || undefined} placeholder="Choose the client receiving the copy" options={clients.map(row => ({ value: row.id, label: row.name }))} onChange={targetClientId => { setCopyError(''); setSimilar({ ...similar, targetClientId: Number(targetClientId || 0) }) }} /></Form.Item>
+        <Form.Item label="New pipeline name" required><Input aria-label="Similar pipeline name" disabled={copying} maxLength={200} value={similar.pipelineName} onChange={event => { setCopyError(''); setSimilar({ ...similar, pipelineName: event.target.value }) }} /></Form.Item>
+        <Form.Item label="New pipeline code" required><Input aria-label="Similar pipeline code" disabled={copying} maxLength={80} value={similar.pipelineCode} onChange={event => { setCopyError(''); setSimilar({ ...similar, pipelineCode: code(event.target.value) }) }} /></Form.Item>
+        {similar.source && similar.targetClientId > 0 && similar.targetClientId !== similar.source.clientId && <Alert type="warning" showIcon message="Review references for the new client" description="Client-specific users, workflows and templates may need to be selected again. The copy will list anything requiring review." />}
+        {copyError && <Alert type="error" showIcon message={copyError} />}
+      </Form>}
     </Modal>
-    <Drawer rootClassName="recruitment-pipeline-stage-drawer" width={760} title="Pipeline stage" open={stageDrawer && !!selectedStage} onClose={() => setStageDrawer(false)}>{selectedStage && <StageProperties stage={selectedStage} pipelineStages={version?.stages ?? []} lookups={lookups} users={users} roles={roles} clientId={definition?.clientId ?? 0} clientName={clients.find(row => row.id === definition?.clientId)?.name || ''} cumulativeSla={version?.slaMode === 'CumulativeFromAnchor'} dropdowns={dropdowns} onDropdownsChange={onDropdownsChange} readOnly={readOnly} patch={value => patchStage(selectedStage.id, value)} makeInitial={() => setInitial(selectedStage.id)} />}</Drawer>
+    <Drawer rootClassName="recruitment-pipeline-stage-drawer pipeline-stage-editor-v2" width="min(860px, 96vw)" title={selectedStage ? `${selectedStage.displayOrder}. ${selectedStage.stageName}` : 'Pipeline stage'} open={stageDrawer && !!selectedStage} onClose={() => setStageDrawer(false)} footer={<div className="pipeline-stage-footer"><span>{readOnly ? 'Select Edit pipeline to make changes.' : 'Changes apply when you save the pipeline.'}</span><Button type="primary" onClick={()=>setStageDrawer(false)}>Done</Button></div>}>{selectedStage && <StageProperties stage={selectedStage} pipelineStages={version?.stages ?? []} lookups={lookups} users={users} roles={roles} clientId={definition?.clientId ?? 0} clientName={clients.find(row => row.id === definition?.clientId)?.name || ''} cumulativeSla={version?.slaMode === 'CumulativeFromAnchor'} dropdowns={dropdowns} onDropdownsChange={onDropdownsChange} readOnly={readOnly} canConfigureAccess={canDelete} patch={value => patchStage(selectedStage.id, value)} makeInitial={() => setInitial(selectedStage.id)} />}</Drawer>
     <Modal title="Interview score components" open={competencyOpen} onCancel={() => setCompetencyOpen(false)} onOk={() => void saveCompetency()} okText="Save component" confirmLoading={competencySaving}>
       <Alert showIcon type="info" message="Client-scoped scoring library" description="Create normalized components once, then reuse them in any interview stage with stage-specific maximum and minimum scores." />
       <div style={{ margin: '16px 0' }} data-testid="pipeline-competency-library"><Space wrap>{(lookups.interviewCompetencies ?? []).filter(row => row.isActive).map(row => <Tag key={row.id}>{row.competencyName} ({row.competencyCode})</Tag>)}</Space></div>
@@ -281,7 +421,7 @@ export default function RecruitmentPipelineDesigner({ initialClientId = 0, onSav
   </section>
 }
 
-function StageProperties({ stage, pipelineStages, lookups, users, roles, clientId, clientName, cumulativeSla, dropdowns, onDropdownsChange, readOnly, patch, makeInitial }: { stage: RecruitmentPipelineStage; pipelineStages: RecruitmentPipelineStage[]; lookups: RecruitmentOrchestrationLookups; users: AuthUser[]; roles: AuthRole[]; clientId: number; clientName: string; cumulativeSla: boolean; dropdowns: Drop[]; onDropdownsChange: (rows: Drop[]) => void; readOnly: boolean; patch: (value: Partial<RecruitmentPipelineStage>) => void; makeInitial: () => void }) {
+function StageProperties({ stage, pipelineStages, lookups, users, roles, clientId, clientName, cumulativeSla, dropdowns, onDropdownsChange, readOnly, canConfigureAccess, patch, makeInitial }: { stage: RecruitmentPipelineStage; pipelineStages: RecruitmentPipelineStage[]; lookups: RecruitmentOrchestrationLookups; users: AuthUser[]; roles: AuthRole[]; clientId: number; clientName: string; cumulativeSla: boolean; dropdowns: Drop[]; onDropdownsChange: (rows: Drop[]) => void; readOnly: boolean; canConfigureAccess: boolean; patch: (value: Partial<RecruitmentPipelineStage>) => void; makeInitial: () => void }) {
   const addDocument = () => patch({ attachmentRequirements: [...stage.attachmentRequirements, { id: localId(), pipelineStageId: stage.id, attachmentFieldConfigurationId: 0, isRequired: true, minimumFileCount: 1, maximumFileCount: 1, requiresVerification: false, displayOrder: stage.attachmentRequirements.length + 1 }] })
   const patchDocument = (id: number, value: Partial<RecruitmentStageAttachmentRequirement>) => patch({ attachmentRequirements: stage.attachmentRequirements.map(row => row.id === id ? { ...row, ...value } : row) })
   const removeDocument = (id: number) => patch({ attachmentRequirements: stage.attachmentRequirements.filter(row => row.id !== id).map((row, index) => ({ ...row, displayOrder: index + 1 })) })
@@ -312,10 +452,13 @@ function StageProperties({ stage, pipelineStages, lookups, users, roles, clientI
     .filter(row => row.isActive && row.resourceType === 'RecruitmentOffer' && (row.clientId == null || row.clientId === clientId))
     .map(row => ({ value: row.id, label: `${row.name} (${row.code})` }))
   const availableUsers = users.filter(row => row.isActive && (!row.clientId || Number(row.clientId) === clientId))
+  const access = { ownerType: 'Unassigned' as const, departmentLabel: '', restricted: false, allowedRoleCodes: [] as string[], allowedUserIds: [] as number[], ...stage.accessPolicy }
+  const patchAccess = (value: Partial<NonNullable<RecruitmentPipelineStage['accessPolicy']>>) => patch({accessPolicy:{...access,...value}})
   return <Form layout="vertical">
+    <Card size="small" className="pipeline-stage-access-card" title="Responsibility & access"><div className="field-property-grid"><Form.Item label="Responsible team"><Select data-testid="pipeline-stage-owner-type" disabled={readOnly || !canConfigureAccess} value={access.ownerType} options={pipelineOwnershipLegend.map(owner=>({value:owner.ownerType,label:owner.label}))} onChange={ownerType=>patchAccess({ownerType})}/></Form.Item><Form.Item label="Department / team name"><Input data-testid="pipeline-stage-owner-label" disabled={readOnly || !canConfigureAccess} value={access.departmentLabel} maxLength={100} placeholder="For example: Project Cell, GAD Recruitment" onChange={event=>patchAccess({departmentLabel:event.target.value})}/></Form.Item><Form.Item className="wide"><Checkbox data-testid="pipeline-stage-restricted" disabled={readOnly || !canConfigureAccess} checked={access.restricted} onChange={event=>patchAccess({restricted:event.target.checked})}>Only assigned roles or users can view and operate this stage</Checkbox></Form.Item>{access.restricted && <><Form.Item className="wide" label="Allowed roles"><Select data-testid="pipeline-stage-access-roles" disabled={readOnly || !canConfigureAccess} mode="multiple" showSearch optionFilterProp="label" value={access.allowedRoleCodes} options={roles.map(role=>({value:role.code,label:`${role.name} (${role.code})`}))} onChange={allowedRoleCodes=>patchAccess({allowedRoleCodes})} placeholder="Select permitted roles"/></Form.Item><Form.Item className="wide" label="Allowed users"><Select data-testid="pipeline-stage-access-users" disabled={readOnly || !canConfigureAccess} mode="multiple" showSearch optionFilterProp="label" value={access.allowedUserIds} options={availableUsers.map(user=>({value:user.id,label:`${user.displayName || user.email} (${user.email})`}))} onChange={allowedUserIds=>patchAccess({allowedUserIds})} placeholder="Select permitted users"/></Form.Item></>}</div><Alert showIcon type={access.restricted && !access.allowedRoleCodes.length && !access.allowedUserIds.length ? 'warning' : 'info'} message={access.restricted ? !access.allowedRoleCodes.length && !access.allowedUserIds.length ? 'No grants selected · platform administrators only' : 'Assigned roles / users still need module and client access' : 'Existing module and client permissions apply'} description={canConfigureAccess ? 'Color identifies the responsible team. Access is enforced separately by the API; platform administrators retain visibility within their permitted clients.' : 'A platform administrator manages stage ownership and grants. Color alone does not grant permission.'}/></Card>
     <div className="recruitment-config-heading"><b>Stage essentials</b><span>Name the step, choose its purpose and set the expected completion time.</span></div>
     <div className="field-property-grid"><Form.Item label="Stage name" required><Input data-testid="pipeline-stage-name" disabled={readOnly} value={stage.stageName} onChange={event => patch({ stageName: event.target.value, stageCode: stage.id < 0 ? code(event.target.value) : stage.stageCode })} /></Form.Item><Form.Item label="Stage type"><Select data-testid="pipeline-stage-type" disabled={readOnly} showSearch optionFilterProp="label" value={stage.stageType} options={stageTypes.map(value => ({ value, label: value.replace(/([A-Z])/g, ' $1').trim() }))} onChange={stageType => patch(stageTypePatch(stage, stageType))} /></Form.Item><Form.Item label="Cards shown in this stage" required><Select data-testid="pipeline-stage-card-scope" disabled={readOnly} value={stage.cardScope ?? 'Application'} options={[{ value: 'Position', label: 'Hiring demand / work-order role' }, { value: 'Application', label: 'Candidate / application' }]} onChange={cardScope => patch({ cardScope })} /></Form.Item>{cumulativeSla ? <Form.Item label="Cumulative target (days)" required><InputNumber data-testid="pipeline-stage-target-days" disabled={readOnly} min={0} precision={2} value={stage.targetOffsetMinutes == null ? undefined : stage.targetOffsetMinutes / 1440} onChange={value => patch({ targetOffsetMinutes: value == null ? null : Math.round(Number(value) * 1440) })} /></Form.Item> : <Form.Item label="Complete within (hours)"><InputNumber disabled={readOnly} min={0} value={stage.slaDurationMinutes / 60} onChange={value => patch({ slaDurationMinutes: Math.round(Number(value || 0) * 60) })} /></Form.Item>}</div>
-    <Collapse className="recruitment-advanced-collapse"><Collapse.Panel key="stage-controls" header="Advanced stage controls"><div className="field-property-grid"><Form.Item label="Stage code" required><Input data-testid="pipeline-stage-code" disabled={readOnly} value={stage.stageCode} onChange={event => patch({ stageCode: code(event.target.value) })} /></Form.Item><Form.Item label="Stakeholder / owner"><Input data-testid="pipeline-stage-stakeholder" disabled={readOnly} value={stage.stakeholderCode ?? ''} placeholder="GAD, UIDAI, CLIENT_HR" onChange={event => patch({ stakeholderCode: code(event.target.value) })} /></Form.Item><Form.Item label="Warning before due (hours)"><InputNumber disabled={readOnly} min={0} value={stage.slaWarningMinutes / 60} onChange={value => patch({ slaWarningMinutes: Math.round(Number(value || 0) * 60) })} /></Form.Item><Form.Item label="Pause effect"><Select data-testid="pipeline-stage-pause-behavior" disabled={readOnly || stage.allowPause === false} value={stage.pauseBehavior ?? 'ShiftStageAndOverall'} options={[{ value: 'ShiftStageAndOverall', label: 'Shift stage + overall due' }, { value: 'ShiftStageOnly', label: 'Shift this stage only' }, { value: 'NoShift', label: 'Audit pause; do not shift due' }]} onChange={pauseBehavior => patch({ pauseBehavior })} /></Form.Item><Form.Item className="wide" label="Approval workflow"><Select data-testid="pipeline-stage-approval-workflow" disabled={readOnly} allowClear showSearch optionFilterProp="label" value={stage.approvalWorkflowId || undefined} onChange={approvalWorkflowId => patch({ approvalWorkflowId: approvalWorkflowId || null, requiresApproval: Boolean(approvalWorkflowId) })} options={workflowOptions} placeholder="No approval required" /></Form.Item><Form.Item className="wide"><Space direction="vertical"><Checkbox disabled={readOnly || stage.isInitial} checked={stage.isInitial} onChange={event => event.target.checked && makeInitial()}>Initial stage</Checkbox><Checkbox data-testid="pipeline-stage-terminal" disabled={readOnly} checked={stage.isTerminal} onChange={event => patch({ isTerminal: event.target.checked })}>Terminal stage</Checkbox><Checkbox disabled={readOnly} checked={stage.calendarEnabled} onChange={event => patch({ calendarEnabled: event.target.checked })}>Calendar enabled</Checkbox><Checkbox disabled={readOnly} checked={stage.allowSkip} onChange={event => patch({ allowSkip: event.target.checked })}>Allow controlled skip</Checkbox><Checkbox data-testid="pipeline-stage-allow-pause" disabled={readOnly} checked={stage.allowPause ?? true} onChange={event => patch({ allowPause: event.target.checked })}>Allow SLA pause with reason</Checkbox><Checkbox disabled={readOnly} checked={stage.isActive} onChange={event => patch({ isActive: event.target.checked })}>Active</Checkbox></Space></Form.Item></div></Collapse.Panel></Collapse>
+    <Collapse className="recruitment-advanced-collapse"><Collapse.Panel key="stage-controls" header="Advanced stage controls"><div className="field-property-grid"><Form.Item label="Stage code" required><Input data-testid="pipeline-stage-code" disabled={readOnly} value={stage.stageCode} onChange={event => patch({ stageCode: code(event.target.value) })} /></Form.Item><Form.Item label="SLA stakeholder code"><Input data-testid="pipeline-stage-stakeholder" disabled={readOnly} value={stage.stakeholderCode ?? ''} placeholder="GAD, UIDAI, CLIENT_HR" onChange={event => patch({ stakeholderCode: code(event.target.value) })} /></Form.Item><Form.Item label="Warning before due (hours)"><InputNumber disabled={readOnly} min={0} value={stage.slaWarningMinutes / 60} onChange={value => patch({ slaWarningMinutes: Math.round(Number(value || 0) * 60) })} /></Form.Item><Form.Item label="Pause effect"><Select data-testid="pipeline-stage-pause-behavior" disabled={readOnly || stage.allowPause === false} value={stage.pauseBehavior ?? 'ShiftStageAndOverall'} options={[{ value: 'ShiftStageAndOverall', label: 'Shift stage + overall due' }, { value: 'ShiftStageOnly', label: 'Shift this stage only' }, { value: 'NoShift', label: 'Audit pause; do not shift due' }]} onChange={pauseBehavior => patch({ pauseBehavior })} /></Form.Item><Form.Item className="wide" label="Approval workflow"><Select data-testid="pipeline-stage-approval-workflow" disabled={readOnly} allowClear showSearch optionFilterProp="label" value={stage.approvalWorkflowId || undefined} onChange={approvalWorkflowId => patch({ approvalWorkflowId: approvalWorkflowId || null, requiresApproval: Boolean(approvalWorkflowId) })} options={workflowOptions} placeholder="No approval required" /></Form.Item><Form.Item className="wide"><Space direction="vertical"><Checkbox disabled={readOnly || stage.isInitial} checked={stage.isInitial} onChange={event => event.target.checked && makeInitial()}>Initial stage</Checkbox><Checkbox data-testid="pipeline-stage-terminal" disabled={readOnly} checked={stage.isTerminal} onChange={event => patch({ isTerminal: event.target.checked })}>Terminal stage</Checkbox><Checkbox disabled={readOnly} checked={stage.calendarEnabled} onChange={event => patch({ calendarEnabled: event.target.checked })}>Calendar enabled</Checkbox><Checkbox disabled={readOnly} checked={stage.allowSkip} onChange={event => patch({ allowSkip: event.target.checked })}>Allow controlled skip</Checkbox><Checkbox data-testid="pipeline-stage-allow-pause" disabled={readOnly} checked={stage.allowPause ?? true} onChange={event => patch({ allowPause: event.target.checked })}>Allow SLA pause with reason</Checkbox><Checkbox disabled={readOnly} checked={stage.isActive} onChange={event => patch({ isActive: event.target.checked })}>Active</Checkbox></Space></Form.Item></div></Collapse.Panel></Collapse>
     {stage.stageType === 'ATS' && ats && <Card size="small" title="ATS stage"><div className="field-property-grid"><Form.Item className="wide" label="Scoring profile"><Select data-testid="pipeline-ats-profile" disabled={readOnly} allowClear value={ats.scoringProfileId || undefined} onChange={scoringProfileId => patch({ atsConfiguration: { ...ats, scoringProfileId: scoringProfileId || null } })} options={(lookups.atsProfiles ?? []).filter(row => row.isActive).map(row => ({ value: row.id, label: `${row.profileName} (${row.profileCode})` }))} /></Form.Item><Form.Item label="Advance score"><InputNumber data-testid="pipeline-ats-advance-score" disabled={readOnly} min={0} max={100} value={ats.minimumAdvanceScore} onChange={value => patch({ atsConfiguration: { ...ats, minimumAdvanceScore: Number(value || 0) } })} /></Form.Item><Form.Item label="Reject up to"><InputNumber data-testid="pipeline-ats-reject-score" disabled={readOnly} min={0} max={100} value={ats.maximumRejectScore} onChange={value => patch({ atsConfiguration: { ...ats, maximumRejectScore: Number(value || 0) } })} /></Form.Item><Form.Item className="wide"><Space wrap><Checkbox data-testid="pipeline-ats-auto-score" disabled={readOnly} checked={ats.autoScoreOnEntry} onChange={event => patch({ atsConfiguration: { ...ats, autoScoreOnEntry: event.target.checked } })}>Auto-score</Checkbox><Checkbox data-testid="pipeline-ats-auto-advance" disabled={readOnly} checked={ats.autoAdvance} onChange={event => patch({ atsConfiguration: { ...ats, autoAdvance: event.target.checked } })}>Auto-advance</Checkbox><Checkbox data-testid="pipeline-ats-auto-reject" disabled={readOnly} checked={ats.autoReject} onChange={event => patch({ atsConfiguration: { ...ats, autoReject: event.target.checked } })}>Auto-reject</Checkbox><Checkbox data-testid="pipeline-ats-human-confirmation" disabled={readOnly} checked={ats.requireHumanConfirmation} onChange={event => patch({ atsConfiguration: { ...ats, requireHumanConfirmation: event.target.checked } })}>Human confirmation</Checkbox></Space></Form.Item></div></Card>}
     {external && <Card size="small" title={needsDocuments ? 'Secure document collection form' : 'Secure external form'}><div className="field-property-grid"><Form.Item className="wide" label="Published form version" required><Select disabled={readOnly} showSearch optionFilterProp="label" value={external.formVersionId || undefined} onChange={formVersionId => patch({ externalFormConfiguration: { ...external, formVersionId } })} options={formVersions} /></Form.Item><Form.Item label="Token validity (hours)"><InputNumber disabled={readOnly} min={1} value={external.actionTokenValidityMinutes / 60} onChange={value => patch({ externalFormConfiguration: { ...external, actionTokenValidityMinutes: Math.round(Number(value || 1) * 60) } })} /></Form.Item><Form.Item label="Maximum completed submissions"><InputNumber disabled={readOnly} min={1} value={external.actionTokenMaximumUses} onChange={value => patch({ externalFormConfiguration: { ...external, actionTokenMaximumUses: Number(value || 1) } })} /></Form.Item><Form.Item className="wide"><Space wrap><Checkbox disabled={readOnly} checked={external.submissionRequired} onChange={event => patch({ externalFormConfiguration: { ...external, submissionRequired: event.target.checked } })}>Submission required before stage exit</Checkbox><Checkbox disabled={readOnly} checked={external.allowSaveDraft} onChange={event => patch({ externalFormConfiguration: { ...external, allowSaveDraft: event.target.checked } })}>Allow candidate to save draft</Checkbox></Space></Form.Item></div>{needsDocuments && <Alert showIcon type="info" message="The selected form must contain upload fields bound to every requested global document below." />}</Card>}
     {stage.stageType === 'Interview' && interview && <Card size="small" title="Interview round">
@@ -508,12 +651,6 @@ function stageTypePatch(stage: RecruitmentPipelineStage, stageType: string): Par
     attachmentRequirements: ['Documents', 'PreOnboarding'].includes(stageType) ? stage.attachmentRequirements : [],
   }
 }
-function cloneVersion(source: RecruitmentPipelineVersion, pipelineDefinitionId: number): RecruitmentPipelineVersion {
-  const idMap = new Map<number, number>(); source.stages.forEach(stage => idMap.set(stage.id, localId()))
-  const stages = source.stages.map((stage, index) => { const id = idMap.get(stage.id)!; return { ...stage, id, pipelineVersionId: 0, stageNumber: index + 1, displayOrder: index + 1, actions: stage.actions.map((action, actionIndex) => { const actionId = localId(); return { ...action, id: actionId, pipelineStageId: id, executionOrder: actionIndex + 1, recipients: (action.recipients ?? []).map((recipient, recipientIndex) => ({ ...recipient, id: localId(), stageActionId: actionId, displayOrder: recipientIndex + 1 })) } }), atsConfiguration: stage.atsConfiguration ? { ...stage.atsConfiguration, id: 0, pipelineStageId: id } : null, externalFormConfiguration: stage.externalFormConfiguration ? { ...stage.externalFormConfiguration, id: 0, pipelineStageId: id } : null, attachmentRequirements: stage.attachmentRequirements.map((item, itemIndex) => ({ ...item, id: localId(), pipelineStageId: id, displayOrder: itemIndex + 1 })), processDocumentRequirements: (stage.processDocumentRequirements ?? []).map((item, itemIndex) => ({ ...item, id: localId(), pipelineStageId: id, displayOrder: itemIndex + 1 })), offerConfiguration: stage.offerConfiguration ? { ...stage.offerConfiguration, id: 0, pipelineStageId: id } : null, interviewConfiguration: stage.interviewConfiguration ? { ...stage.interviewConfiguration, id: 0, pipelineStageId: id, competencies: stage.interviewConfiguration.competencies.map((item, itemIndex) => ({ ...item, id: localId(), interviewStageConfigurationId: 0, displayOrder: itemIndex + 1 })) } : null, defaultPanelMembers: (stage.defaultPanelMembers ?? []).map((panel, panelIndex) => ({ ...panel, id: localId(), pipelineStageId: id, displayOrder: panelIndex + 1 })) } })
-  const transitions = source.transitions.map((transition, index) => ({ ...transition, id: localId(), pipelineVersionId: 0, fromStageId: idMap.get(transition.fromStageId)!, toStageId: idMap.get(transition.toStageId)!, displayOrder: index + 1, rules: transition.rules.map((rule, ruleIndex) => ({ ...rule, id: localId(), transitionId: 0, displayOrder: ruleIndex + 1 })) }))
-  return { id: 0, pipelineDefinitionId, versionNumber: source.versionNumber + 1, status: 'Draft', scopeType: source.scopeType, slaMode: source.slaMode, overallSlaMinutes: source.overallSlaMinutes, allRejectedRollback: source.allRejectedRollback ? { ...source.allRejectedRollback } : undefined, stages, transitions }
-}
 function defaultNewStageScope(version: RecruitmentPipelineVersion): 'Position' | 'Application' {
   if (version.scopeType === 'Position') return 'Position'
   if (version.scopeType === 'Application') return 'Application'
@@ -586,7 +723,15 @@ function validate(definition: RecruitmentPipelineDefinition, version: Recruitmen
   if (nonTerminal.some(stage => !version.transitions.some(row => row.fromStageId === stage.id && row.isActive))) return 'Every active non-terminal stage needs at least one outgoing transition.'
   return ''
 }
+function pipelineEditSnapshot(definition: RecruitmentPipelineDefinition, configuration: RecruitmentPipelineVersion) {
+  return JSON.stringify({
+    definition: { clientId: definition.clientId, pipelineCode: definition.pipelineCode, pipelineName: definition.pipelineName, description: definition.description, isActive: definition.isActive },
+    configuration: { id: configuration.id, scopeType: configuration.scopeType, slaMode: configuration.slaMode, overallSlaMinutes: configuration.overallSlaMinutes, allRejectedRollback: configuration.allRejectedRollback, stages: configuration.stages, transitions: configuration.transitions },
+  })
+}
+
 function formatDuration(minutes: number) { if (!minutes) return 'None'; if (minutes % 1440 === 0) return `${minutes / 1440}d`; if (minutes % 60 === 0) return `${minutes / 60}h`; return `${minutes}m` }
+function scopeLabel(scope: RecruitmentPipelineVersion['scopeType']) { return scope === 'Position' ? 'Hiring / vacancy' : scope === 'Hybrid' ? 'Combined hiring + candidates' : 'Candidate journey' }
 function equalCompetencies(ids: number[], configurationId: number, lookups: RecruitmentOrchestrationLookups) {
   if (!ids.length) return []
   const base = Math.floor(10000 / ids.length) / 100

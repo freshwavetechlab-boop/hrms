@@ -150,6 +150,32 @@
   margin: 0;
 }
 
+.recruitment-form-copy-modal .form-copy-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-top: 8px;
+}
+
+.recruitment-form-copy-modal .form-copy-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+  min-width: 0;
+}
+
+.recruitment-form-copy-modal .form-copy-grid .ant-form-item,
+.recruitment-form-copy-modal .form-copy-grid .ant-select {
+  min-width: 0;
+  width: 100%;
+}
+
+.recruitment-form-copy-modal .form-copy-grid .ant-form-item:last-child { grid-column: 1 / -1; }
+
+@media (max-width: 540px) {
+  .recruitment-form-copy-modal .form-copy-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
 .recruitment-form-builder .form-builder-palette-card {
   display: flex;
   height: auto;

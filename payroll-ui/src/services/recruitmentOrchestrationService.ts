@@ -57,26 +57,33 @@ export const getRecruitmentOrchestrationLookups = async (clientId = 0, base = in
 }
 
 export const getRecruitmentForms = (clientId = 0, base = internalBase) =>
-  getJson<DynamicFormDefinition[]>(`${base}/forms?clientId=${clientId}`, [])
+  getJson<DynamicFormDefinition[]>(`${base}/forms${clientId || base !== internalBase ? `?clientId=${clientId}` : ''}`, [])
 
 export const getRecruitmentForm = (id: number, base = internalBase) =>
   getJson<DynamicFormDefinition | null>(`${base}/forms/${id}`, null)
 
+export const createSimilarRecruitmentForm = (definitionId: number, request: { sourceVersionId?: number; targetClientId: number; formName: string; formCode: string }) =>
+  postJson(`${internalBase}/forms/${definitionId}/create-similar`, request, null as { definition: DynamicFormDefinition; version: DynamicFormVersion; warnings: string[] } | null, { successMessage: 'Form copied. Review the draft before publishing.' })
+
 export const saveRecruitmentFormDefinition = (definition: SaveDynamicFormDefinition, base = internalBase) =>
   postJson(`${base}/forms`, definition, null as DynamicFormDefinition | null, { successMessage: base === internalBase ? 'Form definition saved.' : undefined })
 
-export const deleteRecruitmentFormDefinition = (id: number) =>
-  deleteJson(`${internalBase}/forms/${id}`, null, { successMessage: 'Form definition deleted.' })
+export const deleteRecruitmentFormDefinition = (id: number, clientId?: number) =>
+  deleteJson(`${internalBase}/forms/${id}${clientId ? `?clientId=${clientId}` : ''}`, null, { successMessage: 'Form definition deleted.' })
 
-export const saveRecruitmentFormVersion = (definitionId: number, version: DynamicFormVersion, base = internalBase) =>
-  postJson(`${base}/forms/${definitionId}/versions`, {
+export const saveRecruitmentFormVersion = (definitionId: number, version: DynamicFormVersion, base = internalBase, clientId?: number) =>
+  postJson(`${base}/forms/${definitionId}/versions${base === internalBase && clientId ? `?clientId=${clientId}` : ''}`, {
     id: version.id,
     formDefinitionId: definitionId,
     sections: version.sections,
   }, null as DynamicFormVersion | null, { successMessage: base === internalBase ? 'Form draft saved.' : undefined })
 
-export const publishRecruitmentFormVersion = (versionId: number, base = internalBase, definitionId?: number) =>
-  postJson(`${base}/form-versions/${versionId}/publish${definitionId ? `?definitionId=${definitionId}` : ""}`, {}, null as DynamicFormVersion | null, { successMessage: base === internalBase ? 'Form version published.' : undefined })
+export const publishRecruitmentFormVersion = (versionId: number, base = internalBase, definitionId?: number, clientId?: number) => {
+  const query = new URLSearchParams()
+  if (definitionId) query.set('definitionId', String(definitionId))
+  if (base === internalBase && clientId) query.set('clientId', String(clientId))
+  return postJson(`${base}/form-versions/${versionId}/publish${query.size ? `?${query}` : ''}`, {}, null as DynamicFormVersion | null, { successMessage: base === internalBase ? 'Form version published.' : undefined })
+}
 
 export const loadInternalSelectOptions = (sourceCode: string, search: string, clientId: number) => {
   const query = new URLSearchParams({ clientId: String(clientId), search })
@@ -84,7 +91,7 @@ export const loadInternalSelectOptions = (sourceCode: string, search: string, cl
 }
 
 export const getRecruitmentPipelines = (clientId = 0) =>
-  getJson<RecruitmentPipelineDefinition[]>(`${internalBase}/pipelines?clientId=${clientId}`, [])
+  getJson<RecruitmentPipelineDefinition[]>(`${internalBase}/pipelines${clientId > 0 ? `?clientId=${clientId}` : ''}`, [])
 
 export const saveRecruitmentInterviewCompetency = (request: { id: number; clientId: number; competencyCode: string; competencyName: string; description: string; isActive: boolean }) =>
   postJson(`${internalBase}/interview-competencies`, request, null as { id: number; clientId: number; competencyCode: string; competencyName: string; description: string; isActive: boolean } | null, { successMessage: 'Interview score component saved.' })
@@ -101,8 +108,8 @@ export const getRecruitmentPipelineVersion = (versionId: number) =>
 export const saveRecruitmentPipelineDefinition = (definition: SaveRecruitmentPipelineDefinition) =>
   postJson(`${internalBase}/pipelines`, definition, null as RecruitmentPipelineDefinition | null, { successMessage: 'Pipeline definition saved.' })
 
-export const deleteRecruitmentPipelineDefinition = (id: number) =>
-  deleteJson(`${internalBase}/pipelines/${id}`, null, { successMessage: 'Pipeline definition deleted.' })
+export const deleteRecruitmentPipelineDefinition = (id: number, clientId?: number | null) =>
+  deleteJson(`${internalBase}/pipelines/${id}${Number.isInteger(clientId) && Number(clientId) > 0 ? `?clientId=${clientId}` : ''}`, null, { successMessage: 'Pipeline definition deleted.' })
 
 export const saveRecruitmentPipelineVersion = (definitionId: number, version: RecruitmentPipelineVersion) =>
   postJson(`${internalBase}/pipelines/${definitionId}/versions`, {
@@ -112,12 +119,19 @@ export const saveRecruitmentPipelineVersion = (definitionId: number, version: Re
     slaMode: version.slaMode ?? 'StageEntry',
     overallSlaMinutes: version.overallSlaMinutes ?? 0,
       allRejectedRollback: version.allRejectedRollback ?? { enabled: false, targetStageCode: '' },
+    acknowledgeCloneWarnings: version.acknowledgeCloneWarnings === true,
     stages: version.stages,
     transitions: version.transitions,
   }, null as RecruitmentPipelineVersion | null, { successMessage: 'Pipeline draft saved.' })
 
 export const publishRecruitmentPipelineVersion = (versionId: number) =>
   postJson(`${internalBase}/pipeline-versions/${versionId}/publish`, {}, null as RecruitmentPipelineVersion | null, { successMessage: 'Pipeline version published.' })
+
+export const createSimilarRecruitmentPipeline = (definitionId: number, request: { sourceVersionId: number; targetClientId: number; pipelineCode: string; pipelineName: string; description?: string }) =>
+  postJson(`${internalBase}/pipelines/${definitionId}/create-similar`, request, null as { definition: RecruitmentPipelineDefinition; version: RecruitmentPipelineVersion; warnings: string[] } | null, { successMessage: 'Pipeline copied. Review and save to use it.' })
+
+export const saveRecruitmentPipelineConfiguration = (request: { definition: SaveRecruitmentPipelineDefinition; configuration: RecruitmentPipelineVersion; expectedConfigurationHash?: string }) =>
+  postJson(`${internalBase}/pipeline-configurations`, request, null as { definition: RecruitmentPipelineDefinition; version: RecruitmentPipelineVersion } | null, { successMessage: 'Pipeline saved.' })
 
 export const getRecruitmentWorkLocations = (clientId: number) => getJson<WorkLocation[]>(`/api/recruitment/work-locations?clientId=${clientId}`, [])
 export const getRecruitmentPipelineTargets = (clientId = 0, workLocationId = 0) => {

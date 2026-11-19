@@ -507,7 +507,7 @@ PositionName=@PositionName,NumberOfPositions=@NumberOfPositions,Location=@Locati
         await using var db = Db();
         await db.OpenAsync();
         var scopedClientId = user.ClientId ?? (requestedClientId is > 0 ? requestedClientId : null);
-        if (RecruitmentAccessScope.IsRestricted(user))
+        if (RecruitmentAccessScope.IsRestricted(user) || SelectedClientAccess.IsSelected(user))
         {
             var scopedRequests = await db.QueryAsync<RecruitmentRequisition>(ListSql("WHERE (@ClientId IS NULL OR r.ClientId=@ClientId) ORDER BY r.UpdatedAt DESC"), new { ClientId = scopedClientId });
             var visibleRequests = await RecruitmentAccessScope.FilterAsync(db, user, scopedRequests, row => row.ClientId, row => row.JobLocation);

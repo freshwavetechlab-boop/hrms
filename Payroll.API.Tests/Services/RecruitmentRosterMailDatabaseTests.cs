@@ -21,7 +21,7 @@ public sealed class RecruitmentRosterMailDatabaseTests
     }
 
     [IsolatedFact]
-    public async Task Release_onboards_once_and_mail_is_durable_deduplicated_scoped_and_attaches_the_released_pdf()
+    public async Task Release_waits_for_explicit_import_and_mail_is_durable_deduplicated_scoped_and_attaches_the_released_pdf()
     {
         var connection=Environment.GetEnvironmentVariable("FREVO_ROSTER_TEST_DB")!;
         var parsed=new MySqlConnectionStringBuilder(connection);
@@ -31,7 +31,7 @@ public sealed class RecruitmentRosterMailDatabaseTests
         var token=Guid.NewGuid().ToString("N")[..10];
         var client=await db.ExecuteScalarAsync<int>("INSERT INTO clients(Name,Code,IsActive) VALUES(@Name,@Code,TRUE);SELECT LAST_INSERT_ID();",new{Name="Offer test "+token,Code="TEST"+token});
         var location=await db.ExecuteScalarAsync<int>("INSERT INTO worklocations(Name,ClientId,City,State,IsActive) VALUES('Synthetic institute',@Client,'Test city','Test state',TRUE);SELECT LAST_INSERT_ID();",new{Client=client});
-        var user=new AuthUser{Id=1,IsActive=true,DisplayName="Synthetic sender",ClientAccessMode="Selected",AssignedClientIds=[client],RecruitmentScopeMode="Client",Permissions=["recruitment.offer.issue","recruitment.offer.manage"]};
+        var user=new AuthUser{Id=1,IsActive=true,DisplayName="Synthetic sender",ClientAccessMode="Selected",AssignedClientIds=[client],RecruitmentScopeMode="Client",Permissions=["recruitment.offer.issue","recruitment.offer.manage","employees.manage"]};
         var repository=new RecruitmentDocumentRepository(config,null!,new());await repository.RowsAsync(client,user);
         var layout=new RecruitmentDocumentLayout { Inputs=[new(){Key="joiningDate",Label="Date of joining",Type="date",Required=true}],Sections=Enumerable.Range(0,8).Select(_=>new DocumentSection{Elements=[new(){X=65,Y=150,Width=460,Height=30,Text="{{candidateName}} {{joiningDate.date}} {{offerNumber}}"}]}).ToList() };
         layout.Sections[4].Elements.Add(new(){Kind="signature",X=65,Y=230,Width=220,Height=40,Text="[Signature & Stamp of Signatory]"});
@@ -47,13 +47,18 @@ public sealed class RecruitmentRosterMailDatabaseTests
         var rowId=await AddRow("Synthetic Person","one@example.invalid",1);
         await repository.SaveSigningAssetAsync(client,RecruitmentDocumentSigningTests.SyntheticPng(),"synthetic.png",user);
         var release=await repository.ReleaseAsync(client,rowId,true,user);
+        Assert.Null(Assert.Single(await repository.RowsAsync(client,user)).EmployeeId);
+        Assert.Equal(1,(await repository.AcceptSelectedRosterOffersAsync(client,[rowId],user)).Accepted);
+        Assert.Equal(1,(await repository.ImportSelectedRosterJoiningCandidatesAsync(client,[rowId],user)).Imported);
         var releasedRows=await repository.RowsAsync(client,user);var row=Assert.Single(releasedRows);Assert.True(row.EmployeeId>0);Assert.Equal(row.CandidateCode,row.EmployeeCode);
         Assert.Equal(0,await db.ExecuteScalarAsync<decimal>("SELECT AnnualCtc FROM employees WHERE Id=@Id",new{Id=row.EmployeeId}));
         Assert.Equal("2026-11-02",await db.ExecuteScalarAsync<string>("SELECT DateOfJoining FROM employees WHERE Id=@Id",new{Id=row.EmployeeId}));
         Assert.Equal(release.Bytes,(await repository.ReleaseAsync(client,rowId,true,user)).Bytes);
         Assert.Equal(1,await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employees WHERE ClientId=@Client",new{Client=client}));
-        // Same person on a second source row links the existing master.
+        // A second release does not hire; explicit accepted import reuses the same master.
         var duplicate=await AddRow("Synthetic Person","one@example.invalid",2);await repository.ReleaseAsync(client,duplicate,true,user);
+        Assert.Equal(1,(await repository.AcceptSelectedRosterOffersAsync(client,[duplicate],user)).Accepted);
+        Assert.Equal(1,(await repository.ImportSelectedRosterJoiningCandidatesAsync(client,[duplicate],user)).Imported);
         Assert.Equal(1,await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employees WHERE ClientId=@Client",new{Client=client}));
         var missing=await AddRow("Missing Email","",3);await repository.ReleaseAsync(client,missing,true,user);
         var unreleased=await AddRow("Unreleased Person","unreleased@example.invalid",4);

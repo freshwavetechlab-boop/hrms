@@ -1,7 +1,7 @@
 import { RecruitmentViewContext, useSessionPreference, type RecruitmentView } from '../hooks/useRecruitmentPreferences'
 import { PageHeaderPortal } from '../components/layout/AppPageHeader'
 import '../RecruitmentViewport.css'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BranchesOutlined, DeleteOutlined, FormOutlined, PlusOutlined, RocketOutlined } from '@ant-design/icons'
 import { Button, Card, Drawer, Input, InputNumber, Modal, Popconfirm, Segmented, Select, Space, Tabs, Tag, message } from 'antd'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -20,6 +20,8 @@ import { assignRecruiter, createReferralCampaign, deleteRecruitmentOpenPosition,
 import type { Client, RecruitmentDashboard, RecruitmentOpenPosition, RecruitmentOperationsOptions, RecruitmentPositionDetail } from '../types/payroll'
 import { recruitmentStageColor } from '../utils/recruitmentStage'
 import RecruitmentOfferClientSelect from '../components/RecruitmentOfferClientSelect'
+import { assignedClients, isSelectedClientUser } from '../utils/clientAccess'
+import { recruitmentClientSelection } from '../utils/recruitmentClientScope'
 
 const fallbackPositionStatuses = ['Open', 'Recruiter Assigned', 'Published', 'Candidate Screening', 'Interview In Progress', 'Offer Released', 'Offer Accepted', 'Joining Pending', 'Filled', 'Partially Filled', 'Cancelled', 'Closed', 'On Hold']
 const money = (value: number, currency = 'INR') => `${currency} ${Number(value || 0).toLocaleString('en-IN')}`
@@ -63,13 +65,15 @@ export default function RecruitmentPage({ view = 'Dashboard', onRequestNavigatio
   const routeQuery = useMemo(() => new URLSearchParams(location.search), [location.search])
   const workspace = recruitmentWorkspace(view)
   const isRequestWorkspace = workspace === 'requests'
-  const boundClientId = Number(session?.user.clientId || 0)
-  const canChooseClient = !boundClientId && Boolean(session?.user.permissions.includes('settings.manage'))
+  const scopeUser = session?.originalUser || session?.user
+  const boundClientId = isSelectedClientUser(scopeUser) ? 0 : Number(scopeUser?.clientId || 0)
+  const canChooseClient = !boundClientId && Boolean(scopeUser?.isActive)
+  const defaultAllClients = view === 'Dashboard' || view === 'Hiring Pipeline'
   const [clients, setClients] = useState<Client[]>([])
   const [workspacePending, setWorkspacePending] = useState({ dirty: false, busy: false })
   const preferenceScope = 'recruitment.ui:' + session?.user.id + ':' + boundClientId
   const [savedClientId, setSavedClientId] = useSessionPreference(preferenceScope + ':client', 0)
-  const [selectedClientId, setSelectedClientId] = useState(() => boundClientId || Number(routeQuery.get('clientId') ?? savedClientId))
+  const [selectedClientId, setSelectedClientId] = useState(() => recruitmentClientSelection(scopeUser, routeQuery.get('clientId'), savedClientId, defaultAllClients))
   const [recordView, setRecordView] = useSessionPreference<RecruitmentView>(preferenceScope + ':view', 'Cards')
   const [pipelineDisplay, setPipelineDisplay] = useSessionPreference<RecruitmentPipelineDisplayMode>(preferenceScope + ':' + selectedClientId + ':pipeline-view', 'pipeline')
   const [dashboard, setDashboard] = useState<RecruitmentDashboard>(dashboard0)
@@ -85,16 +89,21 @@ export default function RecruitmentPage({ view = 'Dashboard', onRequestNavigatio
   const [recruiter, setRecruiter] = useState({ primaryRecruiterUserId: 0, secondaryRecruiterUserId: 0, assignmentReason: '' })
   const [publication, setPublication] = useState({ channel: '', publishingDate: new Date().toISOString().slice(0, 10), expiryDate: '', status: 'Published', remarks: '' })
   const [campaign, setCampaign] = useState({ campaignName: '', startDate: new Date().toISOString().slice(0, 10), endDate: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10), referralReward: 0, visibilityDepartment: '', visibilityBusinessUnit: '', visibilityLocation: '', visibilityEmploymentType: '', status: 'Open' })
-  const clientOptions = useMemo(() => clients.map(row => ({ value: Number(row.id), label: `${row.code} · ${row.name}` })), [clients])
+  const permittedClients = useMemo(() => isSelectedClientUser(scopeUser) ? clients.filter(row => assignedClients(scopeUser).includes(Number(row.id))) : clients, [clients, scopeUser])
+  const clientOptions = useMemo(() => permittedClients.map(row => ({ value: Number(row.id), label: `${row.code} · ${row.name}` })), [permittedClients])
+  const clientScopeKey = JSON.stringify([scopeUser?.id, boundClientId, scopeUser?.clientAccessMode, scopeUser?.assignedClientIds])
+  const requestSequence = useRef(0)
 
   const load = useCallback(async () => {
     // JD and ATS own their scoped queries; request-table data is not needed there.
     if (!isRequestWorkspace) return
+    const request = ++requestSequence.current
     const [metrics, positionRows, approvalMode] = await Promise.all([
       getRecruitmentDashboard(selectedClientId),
       getRecruitmentOpenPositions(selectedClientId),
       getRecruitmentRequisitionApprovalMode(selectedClientId),
     ])
+    if (request !== requestSequence.current) return
     setDashboard(metrics)
     setPositions(positionRows)
     setRequisitionWorkflowEnabled(approvalMode.workflowEnabled)
@@ -102,7 +111,7 @@ export default function RecruitmentPage({ view = 'Dashboard', onRequestNavigatio
   }, [selectedClientId, isRequestWorkspace, onRequestNavigationChange])
 
   useEffect(() => {
-    void getClients().then(setClients)
+    void getClients(false, true).then(setClients)
   }, [])
   useEffect(() => {
     if (!isRequestWorkspace) return
@@ -112,16 +121,10 @@ export default function RecruitmentPage({ view = 'Dashboard', onRequestNavigatio
     void getRecruitmentOperationsOptions().then(setOps)
   }, [isRequestWorkspace])
   useEffect(() => {
-    if (!boundClientId || selectedClientId === boundClientId) return
-    setSelectedClientId(boundClientId)
-  }, [boundClientId, selectedClientId])
-  useEffect(() => {
-    if (boundClientId || !routeQuery.has('clientId')) return
-    const routeClientId = Number(routeQuery.get('clientId'))
-    if (Number.isSafeInteger(routeClientId) && routeClientId >= 0) setSelectedClientId(routeClientId)
-  }, [boundClientId, routeQuery])
-  useEffect(() => { setSavedClientId(selectedClientId) }, [selectedClientId])
-  useEffect(() => { void load() }, [load])
+    setSelectedClientId(recruitmentClientSelection(scopeUser, routeQuery.get('clientId'), savedClientId, defaultAllClients))
+  }, [clientScopeKey, routeQuery, defaultAllClients]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!defaultAllClients || routeQuery.has('clientId') || selectedClientId) setSavedClientId(selectedClientId) }, [selectedClientId, defaultAllClients, routeQuery, setSavedClientId])
+  useEffect(() => { void load(); return () => { ++requestSequence.current } }, [load])
   useEffect(() => { if (detail?.position.status) setPositionStatus(detail.position.status) }, [detail?.position.status])
 
   const confirmWorkspaceNavigation = (action: () => void) => {
@@ -143,10 +146,11 @@ export default function RecruitmentPage({ view = 'Dashboard', onRequestNavigatio
 
   const changeClientScope = (value?: number) => {
     if (!canChooseClient) return
-    const next = Number(value || 0)
+    const next = recruitmentClientSelection(scopeUser, String(Number(value || 0)))
     if (next === selectedClientId) return
     confirmWorkspaceNavigation(() => {
       setSelectedClientId(next)
+      setSavedClientId(next)
       setDetail(null)
       const params = new URLSearchParams(location.search)
       for (const key of ['positionId', 'requisitionId', 'jobDescriptionVersionId', 'jobPostingId', 'workOrderId', 'workOrderLineId', 'upload']) params.delete(key)
@@ -284,9 +288,7 @@ export default function RecruitmentPage({ view = 'Dashboard', onRequestNavigatio
                   : <RecruitmentTalentWorkspace key={`interviews-${selectedClientId}`} mode="interviews" initialClientId={selectedClientId} />
 
   return <RecruitmentViewContext.Provider value={{ view: workspace === 'pipeline' ? pipelineDisplay === 'table' ? 'Table' : 'Cards' : recordView, pipelineDisplay: workspace === 'pipeline' ? pipelineDisplay : undefined, scope: String(session?.user.id) + ':' + selectedClientId }}><section className={`recruitment-monitor-page recruitment-experience${workspace !== 'overview' ? ' recruitment-viewport' : ''}${workspace === 'pipeline' && pipelineDisplay === 'both' ? ' recruitment-pipeline-both' : ''}`} aria-label={copy.title}>
-    <PageHeaderPortal slot="recruitment-client-controls">{canChooseClient && (view === 'Offers & Pre-Onboarding'
-      ? <RecruitmentOfferClientSelect data-testid="recruitment-client-scope" aria-label="Recruitment client scope" value={selectedClientId || undefined} placeholder={clients.length ? 'All accessible clients' : 'Loading client...'} loading={!clients.length} options={clientOptions} onChange={changeClientScope} />
-      : <Select data-testid="recruitment-client-scope" aria-label="Recruitment client scope" allowClear showSearch optionFilterProp="label" optionLabelProp="label" value={selectedClientId || undefined} placeholder={clients.length ? 'All accessible clients' : 'Loading client...'} loading={!clients.length} options={clientOptions} onChange={changeClientScope} />)}</PageHeaderPortal>
+    <PageHeaderPortal slot="recruitment-client-controls">{canChooseClient && <RecruitmentOfferClientSelect includeSetup data-testid="recruitment-client-scope" aria-label="Recruitment client scope" value={selectedClientId || undefined} placeholder={clients.length ? 'All accessible clients' : 'Loading client...'} loading={!clients.length} options={clientOptions} onChange={changeClientScope} />}</PageHeaderPortal>
     <PageHeaderPortal slot="recruitment-view-controls">{workspace === 'pipeline' ? <Segmented aria-label="Pipeline display view" options={recruitmentPipelineDisplayOptions.map(option => option.value === 'pipeline' ? { ...option, label: 'Card view' } : option)} value={pipelineDisplay} onChange={value => setPipelineDisplay(value as RecruitmentPipelineDisplayMode)} /> : <Segmented aria-label="Recruitment display view" options={[{ label: 'Card view', value: 'Cards' }, { label: 'Table view', value: 'Table' }]} value={recordView} onChange={value => setRecordView(value as RecruitmentView)} />}</PageHeaderPortal>
     <PageHeaderPortal slot="recruitment-page-controls"><Space wrap>
         {workspace === 'requests' && canDelete && !requisitionWorkflowEnabled && <Button onClick={() => setManageVacanciesOpen(true)}>Manage vacancies</Button>}

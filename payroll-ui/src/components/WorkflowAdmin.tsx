@@ -21,7 +21,7 @@ const sourceLocations = [{ value: 'route', label: 'URL value' }, { value: 'body'
 const coreModules = ['Payroll', 'Leave & Attendance', 'Travel & Expense', 'Employees', 'Recruitment', 'Tax', 'Security', 'Settings', 'Client Billing', 'Workflow']
 const resourcePresets: Record<string, Array<{ value: string; label: string }>> = {
   Payroll: [{ value: 'PayRun', label: 'Payroll run' }, { value: 'PayrollAdjustment', label: 'Payroll adjustment' }],
-  'Leave & Attendance': [{ value: 'LeaveRequest', label: 'Leave request' }, { value: 'AttendanceRegularization', label: 'Attendance regularization' }],
+  'Leave & Attendance': [{ value: 'LeaveRequest', label: 'Leave request' }, { value: 'AttendanceRegularization', label: 'Attendance regularization' }, { value: 'AttendancePeriod', label: 'PI and Project Cell attendance approval' }],
   'Travel & Expense': [{ value: 'TravelRequest', label: 'Travel request' }, { value: 'ExpenseClaim', label: 'Expense claim' }],
   Employees: [{ value: 'EmployeeProfileEdit', label: 'Employee profile edit access' }, { value: 'EmployeeAction', label: 'Employee action' }, { value: 'SalaryRevision', label: 'Salary revision' }],
   Recruitment: [{ value: 'RecruitmentPipelineTransition', label: 'Pipeline stage movement' }, { value: 'RecruitmentPipelineStageAction', label: 'Pipeline stage action' }, { value: 'RecruitmentRequisition', label: 'Hiring requisition (RFR)' }, { value: 'RecruitmentJobDescription', label: 'Job description approval' }, { value: 'RecruitmentOffer', label: 'Candidate offer approval' }],

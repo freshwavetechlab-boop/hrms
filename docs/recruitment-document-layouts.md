@@ -37,9 +37,10 @@ and the existing UIDAI branded offer path retain their existing behavior.
 Release is an explicit action protected by `recruitment.offer.issue`. It records
 an issued document and downloads its PDF (or a ZIP for several people). It does
 not automatically run an approval workflow, email the document, change a hiring
-stage, select/hire a candidate or create payroll. Release creates or links Employee
-Master through the shared identity rules; this master link is separate from actual
-joining confirmation in the candidate pipeline.
+stage, select/hire a candidate or create payroll. After HR records acceptance of
+the released letter, **Employees > Import selected from Talent Acquisition**
+creates or links Employee Master through the shared identity rules. Existing
+employee links remain intact and repeated import does not create another employee.
 It does not bypass or replace the existing native offer approval workflow.
 
 An unsigned draft and a plain released letter are different: a draft is for

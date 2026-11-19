@@ -87,11 +87,13 @@ public sealed partial class RecruitmentTalentRepository(
         await using var db = Db();
         await db.OpenAsync();
         var scopeClientId = user.ClientId ?? clientId;
-        return await db.QueryAsync<RecruitmentCandidate>($@"{CandidateSelect}
+        var rows = await db.QueryAsync<RecruitmentCandidate>($@"{CandidateSelect}
 WHERE (@ClientId IS NULL OR c.ClientId=@ClientId OR EXISTS (SELECT 1 FROM recruitment_candidate_applications ca WHERE ca.CandidateId=c.Id AND ca.ClientId=@ClientId AND ca.ApplicationType='Application'))
   AND (@Status='' OR c.ProfileStatus=@Status)
   AND (@Query='' OR CONCAT(c.CandidateCode,' ',c.FirstName,' ',c.LastName,' ',c.Email,' ',c.Phone,' ',c.CurrentCompany,' ',c.CurrentTitle) LIKE CONCAT('%',@Query,'%') OR EXISTS (SELECT 1 FROM recruitment_candidate_skills cs WHERE cs.CandidateId=c.Id AND cs.SkillName LIKE CONCAT('%',@Query,'%')))
 ORDER BY c.UpdatedAt DESC LIMIT 500", new { ClientId = scopeClientId, ScopeClientId = scopeClientId, Query = query?.Trim() ?? "", Status = status?.Trim() ?? "" });
+        var allowed = await RecruitmentPipelineStageAccess.AllowedCandidateIdsAsync(db, rows.Select(r => r.Id), user);
+        return rows.Where(r => allowed.Contains(r.Id)).ToList();
     }
 
     public async Task<IEnumerable<RecruitmentCandidate>> SearchGlobalTalentPoolAsync(AuthUser user, string query, string status)
@@ -139,6 +141,7 @@ WHERE applicationRow.CandidateId=@CandidateId AND (panel.PanelUserId=@UserId OR 
         var candidate = await db.QueryFirstOrDefaultAsync<RecruitmentCandidate>($@"{CandidateSelect}
 WHERE c.Id=@Id AND (@ClientId IS NULL OR c.ClientId=@ClientId OR EXISTS (SELECT 1 FROM recruitment_candidate_applications ca WHERE ca.CandidateId=c.Id AND ca.ClientId=@ClientId AND ca.ApplicationType='Application'))", new { Id = id, ClientId = user.ClientId, ScopeClientId = user.ClientId });
         if (candidate is null) return null;
+        if (!await RecruitmentPipelineStageAccess.AllowsCandidateAsync(db, id, user)) return null;
         var applications = (await ApplicationsAsync(db, user, candidateId: id)).ToList();
         if (IsPanelScoped(user))
             applications = (await db.QueryAsync<long>(@"SELECT DISTINCT interviewRow.ApplicationId FROM recruitment_interviews interviewRow
@@ -185,6 +188,7 @@ WHERE (panel.PanelUserId=@UserId OR interviewRow.DecisionApproverUserId=@UserId)
         var normalizedPhone = NormalizePhone(request.Phone);
         await using var db = Db();
         await db.OpenAsync();
+        if (request.Id > 0 && !await RecruitmentPipelineStageAccess.AllowsCandidateAsync(db, request.Id, user)) return (null, "Candidate was not found in your assigned pipeline stages.");
         var globalLockAcquired = false;
         if (globalTalentProfile)
         {
@@ -2061,6 +2065,7 @@ LEFT JOIN clients client ON client.Id=o.ClientId
 LEFT JOIN recruitment_templates t ON t.Id=o.OfferTemplateId
 WHERE o.Id=@OfferId AND (@ClientId IS NULL OR o.ClientId=@ClientId)", new { OfferId = offerId, user.ClientId });
         if (context is null) return (null, "Offer was not found.");
+        if (!await RecruitmentPipelineStageAccess.AllowsApplicationAsync(db, context.ApplicationId, user)) return (null, "Offer was not found in your assigned pipeline stages.");
         FinalOfferApproval? finalApproval = null;
         if (finalApprovalInstanceId.HasValue)
         {
@@ -3749,7 +3754,8 @@ WHERE a.ApplicationType='Application' AND (@ApplicationId IS NULL OR a.Id=@Appli
         foreach (var row in rows)
             row.ScoreStatus = RecruitmentAtsDomainRules.EffectiveScoreStatus(row.AtsScore, row.AtsShortlistThreshold, row.ScoreStatus);
         await ApplyApplicationEligibilityAsync(db, rows.ToList());
-        return await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
+        var stageVisible = await RecruitmentPipelineStageAccess.AllowedApplicationIdsAsync(db, rows.Select(r => r.Id), user);
+        return await RecruitmentAccessScope.FilterAsync(db, user, rows.Where(r => stageVisible.Contains(r.Id)), row => row.ClientId, row => row.JobLocation);
     }
 
     private static async Task<RecruitmentCandidateApplication?> ApplicationByIdAsync(MySqlConnection db, long id, AuthUser user) =>
@@ -3777,6 +3783,8 @@ ORDER BY i.ScheduledStart DESC", new { ClientId = user.ClientId, ApplicationId =
         if (rows.Count == 0) return rows;
         var directRows = rows.Where(row => row.ApplicationId == 0 && (row.CreatedByUserId == user.Id || RecruitmentPermissions.IsAdmin(user) || row.DecisionApproverUserId == user.Id || JsonSerializer.Deserialize<int[]>(row.PanelUserIdsJson)!.Contains(user.Id))).ToList();
         rows = (await RecruitmentAccessScope.FilterAsync(db, user, rows.Where(row => row.ApplicationId > 0), row => row.ClientId, row => row.JobLocation)).Concat(directRows).ToList();
+        var permittedApps = await RecruitmentPipelineStageAccess.AllowedApplicationIdsAsync(db, rows.Select(r => r.ApplicationId), user);
+        rows = rows.Where(r => r.ApplicationId == 0 || permittedApps.Contains(r.ApplicationId)).ToList();
         if (rows.Count == 0) return rows;
         var ids = rows.Select(row => row.Id).ToArray();
         var panelStatus = (await db.QueryAsync<RecruitmentInterviewPanelStatus>(@"SELECT pm.InterviewId,pm.PanelUserId UserId,COALESCE(NULLIF(u.DisplayName,''),u.Email,'Panel member') DisplayName,
@@ -4030,8 +4038,9 @@ WHERE applicationRow.Id=@ApplicationId LIMIT 1", new { ApplicationId = applicati
         _ => "ApprovedMaximum"
     };
 
-    private async Task<IEnumerable<RecruitmentOffer>> OfferRowsAsync(MySqlConnection db, AuthUser user, long? applicationId, long[]? applicationIds) =>
-        await db.QueryAsync<RecruitmentOffer>(@"SELECT o.*,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,p.PositionTitle,
+    private async Task<IEnumerable<RecruitmentOffer>> OfferRowsAsync(MySqlConnection db, AuthUser user, long? applicationId, long[]? applicationIds)
+    {
+        var rows = await db.QueryAsync<RecruitmentOffer>(@"SELECT o.*,TRIM(CONCAT(COALESCE(c.FirstName,''),' ',COALESCE(c.LastName,''))) CandidateName,p.PositionTitle,
 COALESCE(t.TemplateName,'') OfferTemplateName,
 final.Id FinalApprovalWorkflowInstanceId,COALESCE(final.Status,'Not requested') FinalApprovalStatus,
 ((CASE WHEN signing.Id IS NULL THEN (@FinalEnabled=TRUE AND o.ClientId=@FinalClientId)
@@ -4049,6 +4058,9 @@ LEFT JOIN modulesettings signing ON signing.client_id=o.ClientId AND signing.Mod
 WHERE (@ClientId IS NULL OR o.ClientId=@ClientId) AND (@ApplicationId IS NULL OR o.ApplicationId=@ApplicationId)
 AND (@UseIds=FALSE OR o.ApplicationId IN @Ids) ORDER BY o.UpdatedAt DESC", new { ClientId = user.ClientId, ApplicationId = applicationId, UseIds = applicationIds is { Length: > 0 }, Ids = applicationIds ?? [0L],
     FinalEnabled = configuration.GetValue<bool>("OfferSigning:Uidai:PostAcceptanceEnabled"), FinalClientId = configuration.GetValue<int>("OfferSigning:Uidai:ClientId") });
+        var permitted = await RecruitmentPipelineStageAccess.AllowedApplicationIdsAsync(db, rows.Select(r => r.ApplicationId), user);
+        return rows.Where(r => permitted.Contains(r.ApplicationId)).ToList();
+    }
 
     private static Task<ResumeJobContextRow?> ResumeJobContextAsync(MySqlConnection db, long positionId, int clientId) =>
         db.QueryFirstOrDefaultAsync<ResumeJobContextRow>(@"SELECT p.Id PositionId,p.Status,p.PositionTitle,p.PositionCategory,p.Department,
@@ -4698,6 +4710,7 @@ WHERE instance.ApplicationId=@ApplicationId AND instance.Status IN ('Active','Pa
             : $"A talent profile already exists: {duplicate.CandidateCode} - {duplicate.FirstName} {duplicate.LastName}. Open the existing profile instead of creating a duplicate.";
     private static async Task<bool> CanAccessCandidateAsync(MySqlConnection db, AuthUser user, RecruitmentCandidate candidate)
     {
+        if (!await RecruitmentPipelineStageAccess.AllowsCandidateAsync(db, candidate.Id, user)) return false;
         if (user.ClientId is null || user.ClientId == candidate.ClientId) return true;
         return await db.ExecuteScalarAsync<int>(@"SELECT CASE WHEN EXISTS (
     SELECT 1 FROM recruitment_candidate_applications a WHERE a.CandidateId=@CandidateId AND a.ClientId=@ClientId AND a.ApplicationType='Application'

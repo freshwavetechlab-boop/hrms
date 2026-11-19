@@ -246,7 +246,7 @@ public partial class PayRunRepository
         result.TemplateId = allocationTemplateIds is null ? structure!.Id : string.Join(";",allocationTemplateIds);
         if (!string.IsNullOrWhiteSpace(request.TemplateId) && (allocationTemplateIds is null ? request.TemplateId!=structure!.Id : !allocationTemplateIds.Contains(request.TemplateId))) { result.Issues.Add(new("Error", "Salary assignment", "This employee is assigned to a different salary template for this period.", "Select an employee assigned to this template, or simulate their assigned template.")); return result; }
         if(employee.LocationParts is null)ValidateOverrides(structure!, request.AmountOverrides);
-        var attendance = shared is not null ? shared.Attendance.GetValueOrDefault(employee.Id) : (await GetPayRunAttendanceAsync(db, tx, request.ClientId, request.PayPeriod, employee.Id)).FirstOrDefault(a => a.EmployeeId == employee.Id);
+        var attendance = shared is not null ? shared.Attendance.GetValueOrDefault(employee.Id) : (await GetPayRunAttendanceAsync(db, tx, request.ClientId, request.PayPeriod, employee.Id, includeApprovalState: false)).FirstOrDefault(a => a.EmployeeId == employee.Id);
         if(historicalAssignment?.ReportedAttendanceSeed is { } reportedSeed)
         {
             if(shared is not null&&(historicalData is null||historicalContext!.Mode!="Proposed"||attendance is not null)

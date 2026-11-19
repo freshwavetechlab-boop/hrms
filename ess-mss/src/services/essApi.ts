@@ -104,10 +104,10 @@ export const essApi = {
   leaveRequests: () => essFetch('/api/ess/leave/requests').then(r => r.ok ? r.json() as Promise<LeaveRequest[]> : []),
   leaveTrail: (id: number) => essFetch(`/api/ess/leave/requests/${id}/trail`).then(r => r.ok ? r.json() as Promise<WorkflowTrail> : Promise.reject()),
   tasks: (view: 'pending' | 'actioned' = 'pending') => essFetch(`/api/workflows/tasks/${view}`).then(r => r.ok ? r.json() as Promise<Task[]> : []),
-  taskAction: (taskId: number, action: 'Approved' | 'Rejected' | 'Sent Back', comment: string) => essFetch(`/api/workflows/tasks/${taskId}/${encodeURIComponent(action)}`, {
+  taskAction: (taskId: number, action: 'Approved' | 'Rejected' | 'Sent Back', comment: string, projectRollVerified = false) => essFetch(`/api/workflows/tasks/${taskId}/${encodeURIComponent(action)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ comment }),
+    body: JSON.stringify({ comment, projectRollVerified }),
   }).then(async response => {
     if (response.ok) return
     const data = await response.json().catch(() => ({}))

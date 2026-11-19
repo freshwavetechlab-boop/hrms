@@ -266,6 +266,7 @@ SELECT * FROM payrunemployees WHERE PayRunId = @Id ORDER BY EmployeeName;", new 
             }
             var employees = (await connection.QueryAsync<PayRunSourceEmployee>("SELECT e.Id FROM employees e WHERE " + EmployeeEmploymentRules.EligibleInMonth("e", "@PayPeriod") + " AND e.ClientId=@ClientId ORDER BY e.FirstName,e.LastName FOR UPDATE", new { request.ClientId, request.PayPeriod }, transaction)).ToList();
             var scopedEmployeeIds = await NormalizeRegularEmployeeScopeAsync(connection, transaction, request, employees);
+            await AttendanceApprovalStore.RequireApprovedAsync(connection, transaction, request.ClientId, request.PayPeriod, scopedEmployeeIds);
             if (scopedEmployeeIds.Count == 0)
             {
                 await transaction.RollbackAsync();
@@ -384,6 +385,7 @@ AND IS_FREE_LOCK(CONCAT('payroll:',MD5(DATABASE()),':',Id))=1", new { Minutes = 
         if (runType == "Regular")
         {
             includedEmployeeIds = await NormalizeRegularEmployeeScopeAsync(connection, transaction, request, employees);
+            await AttendanceApprovalStore.RequireApprovedAsync(connection, transaction, request.ClientId, request.PayPeriod, includedEmployeeIds);
             requestedIncludedIds = request.IncludedEmployeeIds.Distinct().ToHashSet();
         }
         if (runType == "Regular" && requestedIncludedIds.Count > 0)
@@ -559,6 +561,7 @@ SELECT LAST_INSERT_ID();", new { request.ClientId, ClientName = client.Name, req
         if (runType == "Regular")
         {
             includedEmployeeIds = await NormalizeRegularEmployeeScopeAsync(connection, transaction, request, employees, payRunId);
+            await AttendanceApprovalStore.RequireApprovedAsync(connection, transaction, request.ClientId, request.PayPeriod, includedEmployeeIds);
             requestedIncludedIds = request.IncludedEmployeeIds.Distinct().ToHashSet();
             if (preserveQueuedEvidence) RequireUnchangedSelectedScope(request, includedEmployeeIds, reviewedEmployeeIds);
         }
@@ -756,6 +759,7 @@ WHERE Id=@Id AND Status != 'Applied';", adjustment);
         await using var transaction = await connection.BeginTransactionAsync();
         var status = await connection.ExecuteScalarAsync<string?>("SELECT Status FROM payruns WHERE Id=@Id FOR UPDATE", new { Id = id }, transaction);
         if (status != "Draft") return null;
+        await RequireAttendanceApprovalForRunAsync(connection, transaction, id);
         await EnsureReconciledAsync(connection, transaction, id);
         var rows = await connection.ExecuteAsync("UPDATE payruns SET Status = 'Pending Approval' WHERE Id = @Id AND Status = 'Draft'", new { Id = id }, transaction);
         await transaction.CommitAsync();
@@ -769,6 +773,7 @@ WHERE Id=@Id AND Status != 'Applied';", adjustment);
         await using var transaction = await connection.BeginTransactionAsync();
         var status = await connection.ExecuteScalarAsync<string?>("SELECT Status FROM payruns WHERE Id=@Id FOR UPDATE", new { Id = id }, transaction);
         if (status != "Pending Approval") return null;
+        await RequireAttendanceApprovalForRunAsync(connection, transaction, id);
         await EnsureReconciledAsync(connection, transaction, id);
         var rows = await connection.ExecuteAsync("UPDATE payruns SET Status = 'Approved' WHERE Id = @Id AND Status='Pending Approval'", new { Id = id }, transaction);
         await transaction.CommitAsync();
@@ -2040,18 +2045,46 @@ WHERE a.client_id = @ClientId
     private static int ClampDay(DateTime month, int day) =>
         Math.Min(Math.Max(1, day), DateTime.DaysInMonth(month.Year, month.Month));
 
-    private static async Task<List<PayRunAttendance>> GetPayRunAttendanceAsync(MySqlConnection connection, MySqlTransaction transaction, int clientId, string payPeriod, int? employeeId = null)
-        => await GetPayRunAttendanceCoreAsync(connection,transaction,clientId,payPeriod,employeeId,null);
+    private static async Task<List<PayRunAttendance>> GetPayRunAttendanceAsync(MySqlConnection connection, MySqlTransaction transaction, int clientId, string payPeriod, int? employeeId = null, bool includeApprovalState = true)
+        => await GetPayRunAttendanceCoreAsync(connection,transaction,clientId,payPeriod,employeeId,null,includeApprovalState);
 
     private static Task<List<PayRunAttendance>> GetSelectedPayRunAttendanceAsync(MySqlConnection connection,MySqlTransaction transaction,
-        int clientId,string payPeriod,IReadOnlyList<int> employeeIds)
+        int clientId,string payPeriod,IReadOnlyList<int> employeeIds,bool includeApprovalState = true)
     {
         if(employeeIds.Count is <1 or >100 || employeeIds.Any(id=>id<=0) || employeeIds.Distinct().Count()!=employeeIds.Count)
             throw new InvalidOperationException("Select 1–100 distinct employee attendance inputs.");
-        return GetPayRunAttendanceCoreAsync(connection,transaction,clientId,payPeriod,null,employeeIds);
+        return GetPayRunAttendanceCoreAsync(connection,transaction,clientId,payPeriod,null,employeeIds,includeApprovalState);
     }
 
     private static async Task<List<PayRunAttendance>> GetPayRunAttendanceCoreAsync(MySqlConnection connection,MySqlTransaction transaction,
+        int clientId,string payPeriod,int? employeeId,IReadOnlyList<int>? selectedEmployeeIds,bool includeApprovalState = true)
+    {
+        var rows = await GetRawPayRunAttendanceCoreAsync(connection, transaction, clientId, payPeriod, employeeId, selectedEmployeeIds);
+        // What-if calculations keep native attendance validation without requiring
+        // a final approval. Actual run creation, processing and approval stay gated.
+        if (!includeApprovalState) return rows;
+        // Keep unconfigured clients' existing attendance and payroll path unchanged.
+        var approvalStates = await AttendanceApprovalStore.StatesAsync(connection, transaction, clientId, payPeriod, rows.Select(r => r.EmployeeId));
+        if (approvalStates.Count > 0)
+        {
+            foreach (var row in rows)
+            {
+                if (approvalStates.TryGetValue(row.EmployeeId, out var state) && state != "Approved")
+                    row.PolicyError = $"Attendance approval: {state}. PI and Project Cell approval are required before payroll. " + row.PolicyError;
+            }
+        }
+        return rows;
+    }
+
+    private static async Task RequireAttendanceApprovalForRunAsync(MySqlConnection connection, MySqlTransaction transaction, int runId)
+    {
+        var run = await connection.QuerySingleAsync<PayRun>("SELECT * FROM payruns WHERE Id=@Id", new { Id = runId }, transaction);
+        if (run.RunType == "Off Cycle") return;
+        var ids = await connection.QueryAsync<int>("SELECT EmployeeId FROM payrunemployees WHERE PayRunId=@Id AND IsSkipped=FALSE", new { Id = runId }, transaction);
+        await AttendanceApprovalStore.RequireApprovedAsync(connection, transaction, run.ClientId, run.PayPeriod, ids);
+    }
+
+    private static async Task<List<PayRunAttendance>> GetRawPayRunAttendanceCoreAsync(MySqlConnection connection,MySqlTransaction transaction,
         int clientId,string payPeriod,int? employeeId,IReadOnlyList<int>? selectedEmployeeIds)
     {
         // Only the explicit batch-proof path filters a selected roster. Null

@@ -54,7 +54,7 @@ export async function apiRequest(path: string, options: ApiOptions = {}) {
 
   if (options.body && !isFormData && !headers.has('Content-Type')) headers.set('Content-Type', jsonContent)
   if (legacyToken && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${legacyToken}`)
-  const activeClient = activeClientHeader(path)
+  const activeClient = activeClientHeader(path, options.method)
   if (activeClient) headers.set('X-Client-Id', activeClient)
 
   try {
@@ -125,7 +125,7 @@ export function postFormWithProgress<TResult>(path: string, body: FormData, fall
     request.open('POST', apiUrl(path))
     request.withCredentials = true
     if (legacyToken) request.setRequestHeader('Authorization', `Bearer ${legacyToken}`)
-    const activeClient = activeClientHeader(path)
+    const activeClient = activeClientHeader(path, 'POST')
     if (activeClient) request.setRequestHeader('X-Client-Id', activeClient)
     request.onloadend = stopScopedWrite
     request.upload.onprogress = event => {

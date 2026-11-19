@@ -27,7 +27,7 @@ const baseName = (value: string) => {
   // Percent annotations name a familiar earning basis, but pairing still needs
   // the actual dependency below. Do not strip statutory employee/employer labels.
   const label = value.normalize('NFKC').trim().replace(/^(B(?:A|E)SIC(?:\s*(?:PAY|SALARY|WAGES))?|HRA|HOUSE\s*RENT\s*ALLOWANCE|DA|DEARNESS\s*ALLOWANCE|STAT(?:UTORY)?\s*BONUS|BONUS)\s*@?\s*\d+(?:\.\d+)?\s*%\s*(?:(?:ON|OF)\s*)?(?:(?:THE\s*)?(?:BASIC(?:\s*PAY)?|GROSS(?:\s*SALARY)?|WAGES?))?\s*$/i, '$1')
-  const key = normal(label).replace(/^(?:ER|EARNED|MONTHLY|FULLMONTH)(?=BASIC|DA|HRA|SPECIAL|EXP|OTHER|MEDICAL|BONUS|WAGES)/, '').replace(/(?:MONTHLY|FULLMONTH|EARNED)$/, '')
+  const key = normal(label).replace(/^(?:MONTHLY|FULLMONTH)/, '').replace(/^(?:ER|EARNED)(?=BASIC|DA|HRA|SPECIAL|EXP|OTHER|MEDICAL|BONUS|WAGES)/, '').replace(/(?:MONTHLY|FULLMONTH|EARNED)$/, '')
   // A source relationship is still required below. Canonicalize only established
   // earning aliases, never similarly named employee/employer statutory columns.
   return /^B(?:A|E)SIC(?:PAY|SALARY|WAGES)?$/.test(key) ? 'BASIC' : key === 'HOUSERENTALLOWANCE' ? 'HRA' : key === 'DEARNESSALLOWANCE' ? 'DA' : /^(?:STAT(?:UTORY)?BONUS|BONUS)$/.test(key) ? 'STATBONUS' : key

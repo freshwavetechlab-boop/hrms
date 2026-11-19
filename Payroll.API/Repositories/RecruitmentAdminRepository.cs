@@ -5,7 +5,7 @@ using System.Text.Json;
 
 namespace Payroll.API.Repositories;
 
-public class RecruitmentAdminRepository(IConfiguration configuration)
+public partial class RecruitmentAdminRepository(IConfiguration configuration)
 {
     private MySqlConnection Connection() => new(configuration.GetConnectionString("Default"));
     private static readonly Dictionary<string, (string Table, string AuditEntity)> ConfigurationTables = new(StringComparer.OrdinalIgnoreCase)

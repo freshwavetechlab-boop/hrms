@@ -11,8 +11,8 @@ using Payroll.API.Services;
 namespace Payroll.API.Repositories;
 
 // Existing-manpower profiles, document inputs and explicitly authorized roster
-// releases. Release links Employee Master using the existing identity/infotype
-// services; native application approvals/acceptance and payroll are separate.
+// releases. Explicit accepted-candidate import links Employee Master using the
+// existing identity/infotype services; letter release itself does not hire.
 public sealed partial class RecruitmentDocumentRepository(IConfiguration configuration, RecruitmentTalentRepository talent, LayoutDocumentPdfService pdf)
 {
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));

@@ -766,6 +766,10 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     const templateName = structure.name.trim()
     const selectedClientIds = refIds(structure.clientId)
     const targetClientIds = selectedClientIds.length ? selectedClientIds : ['']
+    if (!structure.id && structure.excelSource && setup.salaryStructures.some(item => targetClientIds.includes(refId(item.clientId)) && item.name.trim().toLowerCase() === templateName.toLowerCase())) {
+      notify('A saved template already uses this name for the client. Give the extracted draft a different name; the saved template has not been replaced.', 'error')
+      return false
+    }
     const templateKey = (row: Structure) => `${refId(row.clientId)}:${row.name.trim().toLowerCase()}`
     const rows = targetClientIds.map((clientId, index) => {
       const existing = setup.salaryStructures.find(item => item.id !== structure.id && refId(item.clientId) === clientId && item.name.trim().toLowerCase() === templateName.toLowerCase())

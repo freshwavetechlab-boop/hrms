@@ -153,3 +153,14 @@
 .candidate-pipeline-empty .ant-empty-description p { max-width:600px; margin:8px auto 0; color:#667085; }
 @media(max-width:1000px) { .candidate-pipeline-filter-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media(max-width:640px) { .candidate-pipeline-filter-grid { grid-template-columns:minmax(0,1fr); } }
+
+.pipeline-complete-journey{display:grid;gap:8px;min-width:0;flex-shrink:0;padding:10px 12px;background:#fff;border:1px solid #e5dff5;border-radius:12px}.pipeline-complete-journey>div:first-child{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.pipeline-complete-journey strong{color:#4937a8;font-size:12px}.pipeline-complete-journey>div>span{color:#667085;font-size:11px}.pipeline-complete-journey-stages{display:flex;gap:7px;overflow-x:auto;padding-bottom:3px;overscroll-behavior:contain}.pipeline-complete-journey-stages>button{display:flex;align-items:center;gap:7px;flex-shrink:0;text-align:left;white-space:normal;padding:7px 9px;background:#f6f2ff;border:1px solid #e5dbff;color:#4937a8;box-shadow:none}.pipeline-complete-journey-stages>button.is-candidate{background:#f0f6ff;border-color:#dbe8fc;color:#28598f}.pipeline-complete-journey-stages>button>b{display:grid;place-items:center;background:#fff;border-radius:50%;width:22px;height:22px;font-size:11px}.pipeline-complete-journey-stages>button>span{display:grid;gap:2px;font-size:11px}.pipeline-complete-journey-stages small{color:#667085;font-size:10px}.pipeline-complete-journey-stages>button:focus-visible{outline:2px solid #7756f5;outline-offset:-2px}
+.pipeline-owner-legend { display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;flex-shrink:0;padding:5px 2px;color:#475467;font-size:11px; }
+.pipeline-owner-legend > span { display:inline-flex;align-items:center;gap:6px; }
+.pipeline-owner-legend i { width:9px;height:9px;border-radius:50%; }
+.pipeline-owner-legend small { color:#667085; }
+.pipeline-journey-select { min-width:230px;max-width:min(100%,440px);flex:1; }
+.pipeline-complete-journey-stages > button { background:#fff; }
+.recruitment-pipeline-manager-drawer .ant-drawer-body { padding:14px 22px;min-height:0; }
+.recruitment-pipeline-manager-drawer .ant-tabs-content-holder { min-width:0; }
+@media(max-width:640px) { .pipeline-journey-select { width:100%;min-width:0;max-width:100%; } .recruitment-pipeline-manager-drawer .ant-drawer-body { padding:10px; } }

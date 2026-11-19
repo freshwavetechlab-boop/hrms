@@ -55,7 +55,7 @@ export function translatePayrollExcelFormula(source: string, values: Record<stri
   })
 }
 
-function slabFormula(source: string, base: string) {
+export function slabFormula(source: string, base: string) {
   let result = '0'
   for (const slab of source.split(';').filter(Boolean).reverse()) {
     const parts = slab.trim().split(':')

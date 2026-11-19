@@ -1,0 +1,12 @@
+.talent-employee-import-modal.ant-modal { top: 24px; padding-bottom: 24px; }
+.talent-employee-import-modal .ant-modal-content { display: flex; flex-direction: column; max-height: calc(100dvh - 48px); }
+.talent-employee-import-modal .ant-modal-header, .talent-employee-import-modal .ant-modal-footer { flex-shrink: 0; }
+.talent-employee-import-modal .ant-modal-body { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.talent-employee-import-modal .ant-alert { flex-shrink: 0; margin-bottom: 12px; }
+.talent-employee-import-context, .talent-employee-import-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-shrink: 0; flex-wrap: wrap; }
+.talent-employee-import-context > span, .talent-employee-import-controls span, .talent-employee-import-note { color: #667085; font-size: 12px; }
+.talent-employee-import-note { flex-shrink: 0; margin: 8px 0 12px; }
+.talent-employee-import-controls { margin-bottom: 12px; }
+.talent-employee-import-table { display: flex; flex-direction: column; min-width: 0; min-height: 160px; height: min(52dvh, 460px); }
+.talent-employee-import-table td small { display: block; color: #667085; }
+@media(max-width: 600px) { .talent-employee-import-modal .ant-modal-content { padding: 16px 12px; }.talent-employee-import-table { height: 45dvh; }.talent-employee-import-modal .ant-modal-footer .ant-space { justify-content: flex-end; } }

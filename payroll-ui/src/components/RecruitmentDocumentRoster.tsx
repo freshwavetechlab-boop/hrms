@@ -150,7 +150,7 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
     { key: 'joiningDate', label: 'Date of joining', value: row => row.values.joiningDate || 'Not supplied' }, { key: 'tenure', label: 'Contract end', value: row => row.values.contractEndDate || 'Not supplied' },
     { key: 'basic', label: 'Monthly basic', value: row => row.values.monthlyBasic || '' }, { key: 'gross', label: 'Monthly gross', value: row => row.values.monthlyGross || '' }, { key: 'readiness', label: 'Draft readiness', value: row => row.documentIssues.length ? row.documentIssues.join('; ') : 'Ready for draft', width: 250 },
     { key: 'released', label: 'Released offer', width: 180, value: row => row.releasedAt ? row.offerNumber || 'Released' : 'Not released' },
-    { key: 'employeeMaster', label: 'Employee Master', width: 180, value: row => row.employeeId ? row.employeeCode || `Employee ${row.employeeId}` : row.releasedAt ? 'Release again to link Master' : 'Added on release' },
+    { key: 'employeeMaster', label: 'Employee Master', width: 180, value: row => row.employeeId ? row.employeeCode || `Employee ${row.employeeId}` : row.releasedAt ? 'Pending acceptance / import' : 'Awaiting release' },
   ], [locations, jdLinks, canCreateJd, positionNames, busy, jdLoadingId])
   const linkLocation = async () => {
     if (!canManageOffers || !linkLocationId || busy || !selectedRows.length) return
@@ -273,7 +273,7 @@ function RosterReleaseDrawer({ clientId, ids, canManageAsset, canRelease, onClos
     finally { if (alive.current) setBusy(false) }
   }
   return <Drawer open title={ids.length ? `Release ${ids.length} offer letter${ids.length > 1 ? 's' : ''}` : 'Signature and stamp'} className="document-roster-release" width="min(640px, 96vw)" onClose={() => { if (!busy) onClose() }} closable={!busy} maskClosable={!busy} footer={<Space><Button disabled={busy} onClick={onClose}>{ids.length ? 'Cancel' : 'Close'}</Button>{canRelease && !!ids.length && <Button type="primary" icon={<DownloadOutlined />} loading={busy} disabled={loading || !asset || (applySignature && !asset.available)} onClick={() => void release()}>Release &amp; download ({ids.length})</Button>}</Space>}>
-    <Alert type="info" showIcon message={ids.length ? 'Release all selected letters together' : 'Save a signature and stamp for this client'} description={ids.length ? 'Release adds or links Employee Master using the existing identity checks. Use the saved signature and stamp, or switch it off for plain letters. Email selected letters separately after release.' : 'Upload one combined image to use when releasing offer letters.'} />
+    <Alert type="info" showIcon message={ids.length ? 'Release all selected letters together' : 'Save a signature and stamp for this client'} description={ids.length ? 'Release and download the selected letters. After acceptance, use Employees → Import selected from Talent Acquisition to create or link Employee Master. Use the saved signature and stamp, or switch it off for plain letters. Email selected letters separately after release.' : 'Upload one combined image to use when releasing offer letters.'} />
     {error && <Alert type="error" showIcon message={error} />}
     <section className="document-roster-signature-section" aria-busy={loading || busy}>
       <h3>Signature and stamp</h3>

@@ -35,6 +35,15 @@ public sealed class SelectedClientScopeMiddleware(RequestDelegate next)
         if (path.Equals("/api/recruitment/document-roster/client-summary", StringComparison.OrdinalIgnoreCase)
             && HttpMethods.IsGet(context.Request.Method))
         { await next(context); return; }
+        if (IsRecruitmentConfigurationCommand(context.Request.Method, path))
+        { await InvokeRecruitmentConfigurationCommand(context, identity, ownership, path); return; }
+        if (HttpMethods.IsGet(context.Request.Method) && !context.Request.Headers.ContainsKey(Header)
+            && !context.Request.Query.Keys.Any(IsClientKey) && IsRecruitmentAggregateRead(path))
+        {
+            if (!await ValidateAssignedReadReferences(context, identity, ownership, path)) return;
+            context.Items[IdentityKey] = identity;
+            await next(context); return;
+        }
         if (!SelectedClientOwnershipCatalog.IsAllowedScopedRequest(context.Request.Method, path))
         { await Deny(context, "This operation requires unrestricted administration or a supported client-scoped route."); return; }
 
@@ -156,6 +165,102 @@ public sealed class SelectedClientScopeMiddleware(RequestDelegate next)
         }
         catch(Exception e) when(e is JsonException or InvalidOperationException or FormatException)
         { await Deny(context,"The request could not be validated for the selected client."); }
+    }
+
+    // These repositories apply assigned-client, work-location and stage filters
+    // themselves. This is deliberately not a prefix-wide All-clients bypass.
+    internal static bool IsRecruitmentAggregateRead(string path)
+    {
+        path = path.Split('?', 2)[0].TrimEnd('/').ToLowerInvariant();
+        return path is "/api/recruitment/dashboard" or "/api/recruitment/requisitions" or "/api/recruitment/open-positions"
+            or "/api/recruitment/applications" or "/api/recruitment/interviews" or "/api/recruitment/offers"
+            or "/api/recruitment/hiring-cases" or "/api/recruitment/pipeline-workspace" or "/api/recruitment/pipeline-targets"
+            or "/api/recruitment/client-configuration-summary" or "/api/recruitment-orchestration/job-postings"
+            or "/api/recruitment-orchestration/pipelines" or "/api/recruitment-admin/templates" or "/api/recruitment-orchestration/forms"
+            || System.Text.RegularExpressions.Regex.IsMatch(path, @"^/api/recruitment-orchestration/(?:pipelines/[1-9]\d*(?:/versions)?|pipeline-versions/[1-9]\d*|forms/[1-9]\d*)$");
+    }
+
+    private static bool IsRecruitmentConfigurationCommand(string method, string path) => HttpMethods.IsPost(method)
+        && (path.Equals("/api/recruitment-orchestration/pipeline-configurations", StringComparison.OrdinalIgnoreCase)
+            || System.Text.RegularExpressions.Regex.IsMatch(path, @"^/api/recruitment-orchestration/(?:pipelines|forms)/[1-9]\d*/create-similar/?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+            || System.Text.RegularExpressions.Regex.IsMatch(path, @"^/api/recruitment-admin/templates/[1-9]\d*/create-similar/?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase));
+
+    private static async Task<bool> ValidateAssignedReadReferences(HttpContext context, AuthUser identity, ISelectedClientOwnershipLookup ownership, string path)
+    {
+        if (identity.Id <= 0 || !identity.IsActive || identity.MustChangePassword) { await Deny(context, "Active client access is required."); return false; }
+        var references = new HashSet<ScopeOwnershipReference>(SelectedClientOwnershipCatalog.RouteReferences(path));
+        foreach (var pair in context.Request.Query) AddReferences(path, pair.Key, pair.Value.ToString(), references);
+        if (ownership is SelectedClientOwnershipStore store) await store.PrimeAsync(references, context.RequestAborted);
+        foreach (var reference in references)
+        {
+            var owner = await ownership.ClientIdAsync(reference, context.RequestAborted);
+            if (owner is > 0 && SelectedClientAccess.Allows(identity, owner.Value) || owner == 0 && (reference.AllowGlobal || IsSharedDefinition(reference.Resource))) continue;
+            await Deny(context, "A requested recruitment record is outside your assigned clients."); return false;
+        }
+        return true;
+    }
+
+    private async Task InvokeRecruitmentConfigurationCommand(HttpContext context, AuthUser identity, ISelectedClientOwnershipLookup ownership, string path)
+    {
+        // An explicit definition/client in these configuration commands is authoritative;
+        // the shell's remembered active-client header may refer to another allowed
+        // client while an administrator edits a record from the All-clients list.
+        if (identity.Id <= 0 || !identity.IsActive || identity.MustChangePassword || !context.Request.HasJsonContentType())
+        { await Deny(context, "Select an assigned client for this configuration."); return; }
+        try
+        {
+            context.Request.EnableBuffering();
+            using var reader = new StreamReader(context.Request.Body, Encoding.UTF8, false, 4096, true);
+            var raw = await reader.ReadToEndAsync(context.RequestAborted); context.Request.Body.Position = 0;
+            if (Encoding.UTF8.GetByteCount(raw) > BodyLimit || JsonNode.Parse(raw) is not JsonObject body) throw new InvalidOperationException();
+            JsonNode? Get(JsonObject value, string name) => value.FirstOrDefault(p => p.Key.Equals(name, StringComparison.OrdinalIgnoreCase)).Value;
+            int Client(JsonNode? value) => int.TryParse(value?.ToString(), out var id) && SelectedClientAccess.Allows(identity, id) ? id : throw new InvalidOperationException();
+            var references = new HashSet<ScopeOwnershipReference>();
+            if (path.TrimEnd('/').Equals("/api/recruitment-orchestration/pipeline-configurations", StringComparison.OrdinalIgnoreCase))
+            {
+                if (Get(body, "definition") is not JsonObject definition || Get(body, "configuration") is not JsonObject configuration) throw new InvalidOperationException();
+                var clientId = Client(Get(definition, "clientId"));
+                var requested = new HashSet<int>(); Walk(body, requested, references, path, true);
+                foreach (var pair in context.Request.Query.Where(p => IsClientKey(p.Key))) ReadClients(pair.Value.ToString(), requested);
+                if (requested.Count != 1 || !requested.Contains(clientId)) throw new InvalidOperationException();
+                AddIdentity(Get(definition, "id"), "pipeline"); AddIdentity(Get(configuration, "id"), "pipeline-version");
+                if (Get(configuration, "stages") is JsonArray stages) foreach (var stage in stages.OfType<JsonObject>()) AddIdentity(Get(stage, "id"), "pipeline-stage");
+                if (Get(configuration, "transitions") is JsonArray transitions) foreach (var transition in transitions.OfType<JsonObject>()) AddIdentity(Get(transition, "id"), "pipeline-transition");
+                if (ownership is SelectedClientOwnershipStore store) { store.ScopeClientId = clientId; await store.PrimeAsync(references, context.RequestAborted); }
+                foreach (var reference in references)
+                {
+                    var owner = await ownership.ClientIdAsync(reference, context.RequestAborted);
+                    if (owner != clientId && !(owner == 0 && reference.AllowGlobal)) throw new InvalidOperationException();
+                }
+            }
+            else
+            {
+                _ = Client(Get(body, "targetClientId"));
+                var isForm = path.StartsWith("/api/recruitment-orchestration/forms/", StringComparison.OrdinalIgnoreCase);
+                var isTemplate = path.StartsWith("/api/recruitment-admin/templates/", StringComparison.OrdinalIgnoreCase);
+                var sourceResource = isTemplate ? "recruitment-template" : isForm ? "form" : "pipeline";
+                var source = SelectedClientOwnershipCatalog.RouteReferences(path).Single(r => r.Resource == sourceResource);
+                ScopeOwnershipReference? version = null;
+                if (!isTemplate && Get(body, "sourceVersionId") is { } requestedVersion)
+                {
+                    if (!long.TryParse(requestedVersion.ToString(), out var versionId) || versionId <= 0) throw new InvalidOperationException();
+                    version = new ScopeOwnershipReference(isForm ? "form-version" : "pipeline-version", versionId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                }
+                else if (!isTemplate && !isForm) throw new InvalidOperationException();
+                if (ownership is SelectedClientOwnershipStore store) await store.PrimeAsync(version is not null ? [source, version] : [source], context.RequestAborted);
+                var sourceClient = await ownership.ClientIdAsync(source, context.RequestAborted);
+                if (!(sourceClient is > 0 && SelectedClientAccess.Allows(identity, sourceClient.Value) || sourceClient == 0 && (isForm || isTemplate))
+                    || version is not null && await ownership.ClientIdAsync(version, context.RequestAborted) != sourceClient) throw new InvalidOperationException();
+            }
+            context.Items[IdentityKey] = identity;
+            await next(context);
+            void AddIdentity(JsonNode? value, string resource)
+            {
+                if (long.TryParse(value?.ToString(), out var id) && id > 0) references.Add(new(resource, id.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            }
+        }
+        catch (Exception error) when (error is JsonException or InvalidOperationException or FormatException)
+        { await Deny(context, "The configuration or copied source is outside the assigned client scope."); }
     }
 
     private static bool IsClientKey(string key) => key.Replace("_","").Equals("clientId",StringComparison.OrdinalIgnoreCase)

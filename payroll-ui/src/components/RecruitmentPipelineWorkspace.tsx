@@ -1,3 +1,4 @@
+import RecruitmentOfferClientSelect from './RecruitmentOfferClientSelect'
 import RecruitmentEligibilityBadge from './RecruitmentEligibilityBadge'
 import { recruitmentDuration, recruitmentJobSla } from '../utils/recruitmentSla'
 import { PageHeaderPortal } from './layout/AppPageHeader'
@@ -21,6 +22,8 @@ import type { RecruitmentPipelineDisplayMode } from '../types/recruitmentPipelin
 import { recruitmentPipelineDisplayOptions, recruitmentPipelineDisplayStorageKey } from '../types/recruitmentPipelineView'
 import { hiringTransitionLabel, isDivisionRejectionOutcome } from '../utils/recruitmentTransitions'
 import { usePipelineScroller } from '../utils/usePipelineScroller'
+import { recruitmentJourneyLanes } from '../utils/recruitmentPipelineJourney'
+import { pipelineStageOwnership, pipelineOwnershipLegend } from '../utils/recruitmentPipelineOwnership'
 import DataTable from './DataTable'
 import { useAuthSession } from './AuthGate'
 import RecruitmentHiringTemplateManager from './RecruitmentAdminSettings'
@@ -46,6 +49,7 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
   const session = useAuthSession()
   const navigate = useNavigate()
   const hasClientScope = initialClientId > 0
+  const canBrowse = hasClientScope || Boolean(session && !(session.originalUser || session.user).clientId)
   const canManagePipeline = Boolean(session?.user.permissions.some(permission =>
     permission === 'settings.manage' || permission === 'recruitment.manage' || permission === 'recruitment.configuration.manage'))
   const canOperateHiringJourney = Boolean(session?.user.permissions.some(permission =>
@@ -53,12 +57,15 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
   const [view, setView] = useState<PipelineView>(initialView)
   const [selectedCandidateCount, setSelectedCandidateCount] = useState<number | null>(null)
   const [workspace, setWorkspace] = useState<PipelineWorkspaceResponse>(emptyWorkspace)
+  const workspaceMatchesClient = (workspace.clientId || 0) === initialClientId
+  const currentWorkspace = workspaceMatchesClient ? workspace : emptyWorkspace
+  const [pipelineVersionId, setPipelineVersionId] = useSessionPreference(`recruitment.pipeline.journey:${session?.user.id ?? 'guest'}:${initialClientId}`, 0)
   const [workLocations, setWorkLocations] = useState<WorkLocation[]>([])
   const [workLocationId, setWorkLocationId] = useSessionPreference(`recruitment.pipeline.location:${session?.user.id ?? 'guest'}:${initialClientId}`, 0)
   const workspaceRequest = useRef(0)
   const [workspaceSyncedAt, setWorkspaceSyncedAt] = useState(Date.now())
   const [clockNow, setClockNow] = useState(Date.now())
-  const [loading, setLoading] = useState(hasClientScope)
+  const [loading, setLoading] = useState(canBrowse)
   const [designerOpen, setDesignerOpen] = useState(() => typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('manage') === '1')
   const [managerTool, setManagerTool] = useState<PipelineManagerTool>(() => {
     const requested = typeof window === 'undefined' ? '' : new URLSearchParams(window.location.search).get('tool')
@@ -79,7 +86,7 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
   useEffect(() => {
     let active = true
     setWorkLocations([])
-    if (!initialClientId) return
+    if (!initialClientId) { if (workLocationId) setWorkLocationId(0); return }
     void getRecruitmentWorkLocations(initialClientId).then(rows => {
       if (!active) return
       setWorkLocations(rows)
@@ -89,16 +96,16 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
   }, [initialClientId, workLocationId])
   const load = useCallback(async (silent = false) => {
     const request = ++workspaceRequest.current
-    if (!initialClientId) {
+    if (!canBrowse) {
       setWorkspace(emptyWorkspace)
       setLoading(false)
       return
     }
     if (!silent) setLoading(true)
     try {
-      let nextWorkspace = await getRecruitmentPipelineWorkspace(initialClientId, positionId, 0, workLocationId)
+      let nextWorkspace = await getRecruitmentPipelineWorkspace(initialClientId, positionId, 0, hasClientScope ? workLocationId : 0)
       if (request !== workspaceRequest.current) return
-      const automaticStarts = canOperateHiringJourney
+      const automaticStarts = hasClientScope && canOperateHiringJourney
         ? [...nextWorkspace.unassignedDemandCards, ...nextWorkspace.lanes.flatMap(lane => lane.demandCards)]
           .filter(card => card.hasWorkOrder && !card.hiringCaseId && card.requisitionId && card.pipelineVersionId && !card.needsPipelineSelection && !['Completed', 'Cancelled'].includes(card.status))
         : []
@@ -111,7 +118,7 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
       setWorkspaceSyncedAt(Date.now())
     }
     finally { if (!silent && request === workspaceRequest.current) setLoading(false) }
-  }, [canOperateHiringJourney, initialClientId, positionId, workLocationId])
+  }, [canBrowse, hasClientScope, canOperateHiringJourney, initialClientId, positionId, workLocationId])
   useEffect(() => { void load(); return () => { ++workspaceRequest.current } }, [load])
   useEffect(() => {
     const timer = window.setInterval(() => setClockNow(Date.now()), 1_000)
@@ -126,11 +133,18 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
   useEffect(() => { window.localStorage.setItem(recruitmentPipelineDisplayStorageKey, displayMode) }, [displayMode])
   useEffect(() => { if (designerOpen && !designerDropdowns.length) void getDropdowns().then(setDesignerDropdowns) }, [designerOpen, designerDropdowns.length])
 
-  const journeyLanes = useMemo(() => [...workspace.lanes]
-    .sort((left, right) => left.pipelineVersionId - right.pipelineVersionId || left.displayOrder - right.displayOrder), [workspace.lanes])
-  const hiringLanes = useMemo(() => journeyLanes.filter(lane => lane.cardScope === 'Position'), [journeyLanes])
-  const demandCount = workspace.unassignedDemandCards.length + hiringLanes.reduce((total, lane) => total + lane.demandCards.length, 0)
-  const candidateCount = workspace.lanes.reduce((total, lane) => total + lane.applications.length, 0)
+  const pipelineChoices = useMemo(() => Array.from(new Set(currentWorkspace.lanes.map(lane => lane.pipelineVersionId))).map(id => {
+    const lanes = currentWorkspace.lanes.filter(lane => lane.pipelineVersionId === id)
+    return { value: id, label: `${hasClientScope ? '' : lanes[0].clientName + ' · '}${lanes[0].pipelineName} · ${lanes.filter(lane => lane.cardScope === 'Position').length} hiring / ${lanes.filter(lane => lane.cardScope === 'Application').length} candidate` }
+  }), [currentWorkspace.lanes, hasClientScope])
+  useEffect(() => { if (workspaceMatchesClient && !loading && pipelineVersionId && !pipelineChoices.some(row => row.value === pipelineVersionId)) setPipelineVersionId(0) }, [loading, workspaceMatchesClient, pipelineChoices, pipelineVersionId, setPipelineVersionId])
+  const journeyLanes = useMemo(() => recruitmentJourneyLanes(currentWorkspace.lanes.filter(lane => view !== 'hiring' || !pipelineVersionId || lane.pipelineVersionId === pipelineVersionId), 'hiring'), [currentWorkspace.lanes, pipelineVersionId, view])
+  const unassigned = view === 'hiring' && pipelineVersionId ? [] : currentWorkspace.unassignedDemandCards
+  const managerLanes = view === 'candidates' ? journeyLanes.filter(lane => lane.cardScope === 'Application') : journeyLanes
+  const selectedDefinitionId = managerLanes.length && new Set(managerLanes.map(lane => lane.pipelineDefinitionId)).size === 1 ? managerLanes[0].pipelineDefinitionId : undefined
+  const selectedVersionId = managerLanes.length && new Set(managerLanes.map(lane => lane.pipelineVersionId)).size === 1 ? managerLanes[0].pipelineVersionId : undefined
+  const demandCount = unassigned.length + journeyLanes.reduce((total, lane) => total + lane.demandCards.length, 0)
+  const candidateCount = currentWorkspace.lanes.reduce((total, lane) => total + lane.applications.length, 0)
 
   const setWorkspaceView = (next: PipelineView) => {
     setView(next)
@@ -158,31 +172,37 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
   }
 
   return <section className="unified-pipeline-workspace" data-testid="recruitment-unified-pipeline">
-    {sharedView && <PageHeaderPortal slot="recruitment-page-controls">{canManagePipeline && <Button data-testid="manage-hiring-pipeline" icon={<SettingOutlined />} disabled={!hasClientScope} onClick={() => setPipelineManagerOpen(true)}>Manage pipeline</Button>}</PageHeaderPortal>}
+    {sharedView && <PageHeaderPortal slot="recruitment-page-controls">{canManagePipeline && <Button data-testid="manage-hiring-pipeline" icon={<SettingOutlined />} disabled={!canBrowse} onClick={() => setPipelineManagerOpen(true)}>Manage pipeline</Button>}</PageHeaderPortal>}
     <div className="pipeline-workspace-toolbar">
       <Segmented
         aria-label="Pipeline workspace view"
         value={view}
         onChange={value => setWorkspaceView(value as PipelineView)}
         options={[
-          { value: 'hiring', disabled: !hasClientScope, label: <span><BranchesOutlined /> Hiring flow <Badge count={demandCount} showZero /></span> },
-          { value: 'candidates', disabled: !hasClientScope, label: <span title={view === 'candidates' && displayMode !== 'flow' ? 'Candidates in the selected position / posting pipeline' : 'Candidates across this client pipeline'}><TeamOutlined /> Candidates <Badge data-testid="pipeline-candidate-count" count={view === 'candidates' && displayMode !== 'flow' ? selectedCandidateCount ?? '…' : candidateCount} showZero color="#2563eb" /></span> },
+          { value: 'hiring', disabled: !canBrowse, label: <span><BranchesOutlined /> Full hiring journey <Badge count={demandCount} showZero /></span> },
+          { value: 'candidates', disabled: !canBrowse, label: <span title={view === 'candidates' && displayMode !== 'flow' ? 'Candidates in the selected position / posting pipeline' : 'Candidates across permitted pipelines'}><TeamOutlined /> Candidates <Badge data-testid="pipeline-candidate-count" count={view === 'candidates' && displayMode !== 'flow' ? selectedCandidateCount ?? '…' : candidateCount} showZero color="#2563eb" /></span> },
         ]}
       />
+      {view === 'hiring' && <Select aria-label="Configured hiring journey" className="pipeline-journey-select" disabled={!canBrowse || loading || !workspaceMatchesClient} showSearch optionFilterProp="label" value={pipelineVersionId} options={[{ value: 0, label: 'All configured journeys' }, ...pipelineChoices]} onChange={setPipelineVersionId} />}
       <Select aria-label="Hiring pipeline work location" style={{ minWidth: 220, maxWidth: 340 }} disabled={!hasClientScope} showSearch optionFilterProp="label" value={workLocationId} options={[{ value: 0, label: 'All permitted work locations' }, ...workLocations.map(row => ({ value: row.id, label: recruitmentWorkLocationLabel(row) }))]} onChange={setWorkLocationId} />
-      {!sharedView && <div className="pipeline-command-controls">{canManagePipeline && <Button data-testid="manage-hiring-pipeline" icon={<SettingOutlined />} disabled={!hasClientScope} onClick={() => setPipelineManagerOpen(true)}>Manage pipeline</Button>}{canChooseClient && <Select aria-label="Pipeline client scope" allowClear showSearch optionFilterProp="label" value={initialClientId || undefined} options={clientOptions} placeholder="Select client" onChange={onClientChange} />}<Select aria-label="Pipeline display view" value={displayMode} onChange={setDisplayMode} options={recruitmentPipelineDisplayOptions} /></div>}
+      {!sharedView && <div className="pipeline-command-controls">{canManagePipeline && <Button data-testid="manage-hiring-pipeline" icon={<SettingOutlined />} disabled={!canBrowse} onClick={() => setPipelineManagerOpen(true)}>Manage pipeline</Button>}{canChooseClient && <RecruitmentOfferClientSelect includeSetup aria-label="Pipeline client scope" allowClear value={initialClientId || undefined} options={clientOptions} placeholder="All accessible clients" onChange={value => onClientChange?.(value)} />}<Select aria-label="Pipeline display view" value={displayMode} onChange={setDisplayMode} options={recruitmentPipelineDisplayOptions} /></div>}
     </div>
 
-    {!hasClientScope && <Card className="pipeline-empty-card" data-testid="pipeline-client-required"><Empty description={canChooseClient ? 'Select a client to load its configured hiring pipeline and candidates.' : 'A client scope is required to load the hiring pipeline.'} /></Card>}
-    {hasClientScope && displayMode === 'flow' && (loading
+    {canBrowse && !loading && journeyLanes.length > 0 && <div className="pipeline-owner-legend" aria-label="Stage responsibility colors">{pipelineOwnershipLegend.map(owner => <span key={owner.ownerType} title={owner.description}><i style={{ background: owner.color }} />{owner.label}</span>)}<small>Responsibility colors · access follows assigned roles and users</small></div>}
+    {canBrowse && !loading && displayMode !== 'flow' && journeyLanes.length > 0 && <section className="pipeline-complete-journey" aria-label="Complete configured hiring journey">
+      <div><strong>{journeyLanes.length} visible stages</strong><span>{journeyLanes.filter(lane => lane.cardScope === 'Position').length} hiring demand + {journeyLanes.filter(lane => lane.cardScope === 'Application').length} candidate processing. Each stage belongs to its named pipeline.</span></div>
+      <div className="pipeline-complete-journey-stages">{journeyLanes.map(lane => { const owner = pipelineStageOwnership(lane); return <button type="button" key={`${lane.pipelineVersionId}:${lane.stageId}`} title={`${lane.clientName} · ${lane.pipelineName} · ${owner.label}`} onClick={() => setWorkspaceView(lane.cardScope === 'Application' ? 'candidates' : 'hiring')} style={{ borderColor: owner.color }}><b>{lane.displayOrder}</b><span>{lane.stageName}<small style={{ color: owner.color }}>{owner.label} · {lane.cardScope === 'Application' ? 'Candidate' : 'Hiring demand'}</small></span></button> })}</div>
+    </section>}
+    {!canBrowse && <Card className="pipeline-empty-card" data-testid="pipeline-client-required"><Empty description="No permitted hiring workspace is available." /></Card>}
+    {canBrowse && displayMode === 'flow' && (loading
       ? <Card><Skeleton active paragraph={{ rows: 5 }} /></Card>
-      : <PipelineFlowDiagram view={view} lanes={workspace.lanes} unassigned={workspace.unassignedDemandCards} />)}
-    {hasClientScope && displayMode !== 'flow' && view === 'hiring' && (loading
+      : <PipelineFlowDiagram view={view} lanes={journeyLanes} unassigned={unassigned} />)}
+    {canBrowse && displayMode !== 'flow' && view === 'hiring' && (loading
       ? <Card><Skeleton active paragraph={{ rows: 6 }} /></Card>
       : <DemandBoard
           clientId={initialClientId}
-          lanes={hiringLanes}
-          unassigned={workspace.unassignedDemandCards}
+          lanes={journeyLanes}
+          unassigned={unassigned}
           displayMode={displayMode}
           clockNow={clockNow}
           workspaceSyncedAt={workspaceSyncedAt}
@@ -190,10 +210,10 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
           onOpenCandidates={() => setWorkspaceView('candidates')}
           onChanged={() => void load(true)}
         />)}
-    {hasClientScope && displayMode !== 'flow' && view === 'candidates' && <RecruitmentPipelineBoard embedded key={`candidate-pipeline-${initialClientId}-${positionId}-${workLocationId}`} initialClientId={initialClientId} clientScopeManaged={clientScopeManaged} positionId={positionId} workLocationId={workLocationId} displayMode={displayMode} onDisplayModeChange={setDisplayMode} clientPipelineCandidateCount={candidateCount} onCandidateCountChange={setSelectedCandidateCount} clientPipelineLanes={journeyLanes.filter(lane => lane.cardScope === 'Application')} />}
-    <Drawer className="recruitment-pipeline-manager-drawer" title="Manage hiring automation" open={designerOpen && canManagePipeline && hasClientScope} width="min(1480px, 98vw)" onClose={() => setPipelineManagerOpen(false)} destroyOnClose>
+    {canBrowse && displayMode !== 'flow' && view === 'candidates' && <RecruitmentPipelineBoard embedded key={`candidate-pipeline-${initialClientId}-${positionId}-${workLocationId}`} initialClientId={initialClientId} clientScopeManaged={clientScopeManaged} positionId={positionId} workLocationId={hasClientScope ? workLocationId : 0} displayMode={displayMode} onDisplayModeChange={setDisplayMode} clientPipelineCandidateCount={candidateCount} onCandidateCountChange={setSelectedCandidateCount} clientPipelineLanes={journeyLanes.filter(lane => lane.cardScope === 'Application')} />}
+    <Drawer className="recruitment-pipeline-manager-drawer" title="Manage pipeline" open={designerOpen && canManagePipeline && canBrowse} width="100%" onClose={() => setPipelineManagerOpen(false)} destroyOnClose>
       <Tabs className="recruitment-automation-tabs" activeKey={managerTool} onChange={key => setPipelineManagerTool(key as PipelineManagerTool)} items={[
-        { key: 'pipeline', label: <span><BranchesOutlined aria-hidden /> Pipeline design</span>, children: <RecruitmentPipelineDesigner key={`pipeline-manager-${initialClientId}-${managerRevision}`} initialClientId={initialClientId} dropdowns={designerDropdowns} onDropdownsChange={setDesignerDropdowns} onSaved={() => void load(true)} /> },
+        { key: 'pipeline', label: <span><BranchesOutlined aria-hidden /> Pipeline design</span>, children: <RecruitmentPipelineDesigner key={`pipeline-manager-${initialClientId}-${managerRevision}`} initialClientId={initialClientId} initialPipelineDefinitionId={selectedDefinitionId} initialPipelineVersionId={selectedVersionId} dropdowns={designerDropdowns} onDropdownsChange={setDesignerDropdowns} onSaved={() => void load(true)} /> },
         { key: 'templates', label: <span><FileTextOutlined aria-hidden /> Hiring templates</span>, children: <RecruitmentHiringTemplateManager initialClientId={initialClientId} onSaved={() => setManagerRevision(value => value + 1)} /> },
       ]} />
     </Drawer>
@@ -202,9 +222,7 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
 
 function PipelineFlowDiagram({ view, lanes, unassigned }: { view: PipelineView; lanes: RecruitmentUnifiedPipelineLane[]; unassigned: RecruitmentPipelineDemandCard[] }) {
   const scroller = usePipelineScroller<HTMLDivElement>({ rootScrollsVertically: true })
-  const scopedLanes = lanes
-    .filter(lane => lane.cardScope === (view === 'candidates' ? 'Application' : 'Position'))
-    .sort((left, right) => left.pipelineVersionId - right.pipelineVersionId || left.displayOrder - right.displayOrder)
+  const scopedLanes = recruitmentJourneyLanes(lanes, view)
   const groups = Array.from(scopedLanes.reduce((map, lane) => {
     const group = map.get(lane.pipelineVersionId) ?? []
     group.push(lane)
@@ -225,7 +243,7 @@ function PipelineFlowDiagram({ view, lanes, unassigned }: { view: PipelineView; 
         <FlowNode title="Unassigned intake" type="Position" scope="Position" count={unassigned.length} demandCount={unassigned.length} candidateCount={0} targetLabel="SLA not started" order={0} />
       </div>}
       {groups.map(([versionId, versionLanes]) => <div className="pipeline-flow-group" key={versionId} data-testid={`pipeline-flow-version-${versionId}`}>
-        <div className="pipeline-flow-group-label"><span>{versionLanes[0]?.pipelineName || 'Hiring pipeline'}</span><small>{versionLanes[0]?.clientName ? `${versionLanes[0].clientName} · ` : ''}v{versionLanes[0]?.pipelineVersionNumber || versionId} · {versionLanes.length} stage{versionLanes.length === 1 ? '' : 's'}</small></div>
+        <div className="pipeline-flow-group-label"><span>{versionLanes[0]?.pipelineName || 'Hiring pipeline'}</span><small>{versionLanes[0]?.clientName ? `${versionLanes[0].clientName} · ` : ''}{versionLanes.length} stage{versionLanes.length === 1 ? '' : 's'}</small></div>
         <div className="pipeline-flow-track">
           {versionLanes.map((lane, index) => {
             const previous = versionLanes[index - 1]
@@ -242,6 +260,7 @@ function PipelineFlowDiagram({ view, lanes, unassigned }: { view: PipelineView; 
                 targetLabel={laneTargetLabel(lane)}
                 order={lane.displayOrder}
                 stageId={lane.stageId}
+                owner={pipelineStageOwnership(lane)}
               />
             </div>
           })}
@@ -258,11 +277,12 @@ function FlowConnector({ handoff }: { handoff: boolean }) {
   </div>
 }
 
-function FlowNode({ title, type, scope, count, demandCount, candidateCount, targetLabel, order, stageId }: { title: string; type: string; scope: 'Position' | 'Application'; count: number; demandCount: number; candidateCount: number; targetLabel: string; order: number; stageId?: number }) {
-  const color = stageColor(type)
+function FlowNode({ title, type, scope, count, demandCount, candidateCount, targetLabel, order, stageId, owner = pipelineStageOwnership() }: { title: string; type: string; scope: 'Position' | 'Application'; count: number; demandCount: number; candidateCount: number; targetLabel: string; order: number; stageId?: number; owner?: ReturnType<typeof pipelineStageOwnership> }) {
+  const color = owner.color
   return <article className={`pipeline-flow-node ${type === 'Approval' ? 'is-decision' : ''}`} data-testid={stageId ? `pipeline-flow-stage-${stageId}` : 'pipeline-flow-unassigned'} style={{ '--flow-color': color } as CSSProperties}>
     <header><span>{order ? String(order).padStart(2, '0') : 'IN'}</span><Badge count={count} showZero color={color} /></header>
     <h4 title={title}>{title}</h4>
+    <Tag color={color}>{owner.label}</Tag>
     <div className="pipeline-flow-node-meta"><Tag>{scope === 'Position' ? 'Hiring demand' : 'Candidate'}</Tag><span><ClockCircleOutlined /> {targetLabel}</span></div>
     <footer><span>{demandCount} demand</span><span>{candidateCount} candidate{candidateCount === 1 ? '' : 's'}</span></footer>
   </article>
@@ -272,15 +292,13 @@ function DemandBoard({ clientId, lanes, unassigned, displayMode, clockNow, works
   const scroller = usePipelineScroller<HTMLDivElement>()
   if (!lanes.length && !unassigned.length) return <Card className="pipeline-empty-card"><Empty description="No hiring pipeline activity in this client scope."><Space wrap><Button type="primary" onClick={onOpenOrders}>Open work orders</Button><Button href={`/recruitment/requisitions?new=1&clientId=${clientId}`}>New hiring request</Button></Space></Empty></Card>
 
-  const stageNameCounts = lanes.reduce((counts, lane) => {
-    const key = lane.stageName.trim().toLowerCase()
-    counts.set(key, (counts.get(key) ?? 0) + 1)
-    return counts
-  }, new Map<string, number>())
 
   const tableRows = [
-    ...unassigned.map(card => ({ id: `unassigned-${card.workOrderLineId}`, card, stageName: 'Work-order intake', stageType: 'Position' })),
-    ...lanes.flatMap(lane => lane.demandCards.map(card => ({ id: `${lane.stageId}-${card.workOrderLineId}`, card, stageName: lane.stageName, stageType: lane.stageType }))),
+    ...unassigned.map(card => ({ id: `unassigned-${card.workOrderLineId}`, card, candidate: null as RecruitmentPipelineBoardCard | null, stageName: 'Work-order intake', stageType: 'Position', owner: pipelineStageOwnership() })),
+    ...lanes.flatMap(lane => [
+      ...lane.demandCards.map(card => ({ id: `${lane.stageId}-demand-${card.workOrderLineId}`, card, candidate: null as RecruitmentPipelineBoardCard | null, stageName: lane.stageName, stageType: lane.stageType, owner: pipelineStageOwnership(lane) })),
+      ...lane.applications.map(candidate => ({ id: `${lane.stageId}-candidate-${candidate.applicationId}`, card: null as RecruitmentPipelineDemandCard | null, candidate, stageName: lane.stageName, stageType: lane.stageType, owner: pipelineStageOwnership(lane) })),
+    ]),
   ]
   return <div className={`pipeline-results${displayMode === 'both' ? ' is-both' : ''}`}>
     {displayMode !== 'table' && <div ref={scroller.ref} className="demand-pipeline-board" data-testid="pipeline-hiring-flow" tabIndex={0} onKeyDown={scroller.onKeyDown} aria-label="Scrollable hiring pipeline">
@@ -289,7 +307,7 @@ function DemandBoard({ clientId, lanes, unassigned, displayMode, clockNow, works
           key="unassigned"
           clientId={clientId}
           title="Work-order intake"
-          color="#6b4eff"
+          color="#667085"
           cards={unassigned}
           applications={[]}
           helper="Select the approved pipeline so its SLA and next actions can start."
@@ -298,7 +316,7 @@ function DemandBoard({ clientId, lanes, unassigned, displayMode, clockNow, works
           onOpenCandidates={onOpenCandidates}
           onChanged={onChanged}
         />}
-        {lanes.map(lane => <DemandLane key={lane.stageId} clientId={clientId} title={lane.stageName} color={stageColor(lane.stageType)} cards={lane.demandCards} applications={lane.applications} helper={laneTargetLabel(lane)} context={(stageNameCounts.get(lane.stageName.trim().toLowerCase()) ?? 0) > 1 || lanes.length > 1 ? `${lane.pipelineName || 'Hiring pipeline'} · v${lane.pipelineVersionNumber || lane.pipelineVersionId}` : lane.pipelineName} clockNow={clockNow} workspaceSyncedAt={workspaceSyncedAt} onOpenCandidates={onOpenCandidates} onChanged={onChanged} />)}
+        {lanes.map(lane => <DemandLane key={lane.stageId} clientId={clientId} title={lane.stageName} color={pipelineStageOwnership(lane).color} ownerLabel={pipelineStageOwnership(lane).label} cards={lane.demandCards} applications={lane.applications} helper={laneTargetLabel(lane)} context={[lane.clientName,lane.pipelineName].filter(Boolean).join(' · ')} clockNow={clockNow} workspaceSyncedAt={workspaceSyncedAt} onOpenCandidates={onOpenCandidates} onChanged={onChanged} />)}
       </div>
     </div>}
     {displayMode !== 'pipeline' && <Card size="small" className="pipeline-demand-table" data-testid="pipeline-demand-table"><DataTable fillHeight
@@ -307,28 +325,30 @@ function DemandBoard({ clientId, lanes, unassigned, displayMode, clockNow, works
       exportFileName="hiring-demand-pipeline"
       emptyText="No hiring demand matches this client scope."
       columns={[
-        { key: 'position', label: 'Hiring demand', width: '220px', value: row => row.card.positionName, render: row => <div className="pipeline-table-candidate"><strong>{row.card.positionName}</strong><small>{row.card.division || row.card.payBandLevelCode || 'Role details pending'}</small></div> },
-        { key: 'workLocation', label: 'Work location', width: '200px', value: row => row.card.workLocationName || 'Not linked' },
-        { key: 'workOrder', label: 'Work order', width: '190px', value: row => row.card.workOrderNumber },
-        { key: 'stage', label: 'Current stage', width: '190px', value: row => row.stageName, render: row => <Tag color={stageColor(row.stageType)}>{row.stageName}</Tag> },
-        { key: 'request', label: 'Request', width: '130px', value: row => row.card.requisitionStatus || 'Not started', render: row => <Tag color={statusColor(row.card.requisitionStatus || '')}>{row.card.requisitionStatus || 'Not started'}</Tag> },
-        { key: 'jd', label: 'JD', width: '130px', value: row => row.card.jobDescriptionStatus || 'Not started', render: row => <Tag color={statusColor(row.card.jobDescriptionStatus || '')}>{row.card.jobDescriptionStatus || 'Not started'}</Tag> },
-        { key: 'posting', label: 'Posting', width: '130px', value: row => row.card.jobPostingStatus || 'Not started', render: row => <Tag color={statusColor(row.card.jobPostingStatus || '')}>{row.card.jobPostingStatus || 'Not started'}</Tag> },
-        { key: 'candidates', label: 'Candidates', width: '110px', value: row => row.card.candidateCount || 0, render: row => <Tag color="cyan"><TeamOutlined /> {row.card.candidateCount || 0}</Tag> },
-        { key: 'sla', label: 'Live SLA', width: '260px', value: row => demandSla(row.card, clockNow, workspaceSyncedAt) },
-        { key: 'actions', label: 'Actions', width: '420px', sortable: false, filterable: false, render: row => <DemandActions card={row.card} clientId={clientId} compact onChanged={onChanged} /> },
+        { key: 'position', label: 'Hiring demand / Candidate', width: '220px', value: row => row.card?.positionName || row.candidate?.candidateName || '', render: row => <div className="pipeline-table-candidate"><strong>{row.card?.positionName || row.candidate?.candidateName}</strong><small>{row.card ? row.card.division || row.card.payBandLevelCode || 'Role details pending' : row.candidate?.applicationCode}</small></div> },
+        { key: 'recordType', label: 'Record type', width: '120px', value: row => row.card ? 'Hiring demand' : 'Candidate' },
+        { key: 'workLocation', label: 'Work location', width: '200px', value: row => row.card?.workLocationName || row.candidate?.workLocationName || 'Not linked' },
+        { key: 'workOrder', label: 'Work order / Position', width: '190px', value: row => row.card?.workOrderNumber || row.candidate?.positionTitle || '' },
+        { key: 'stage', label: 'Current stage', width: '190px', value: row => row.stageName, render: row => <Tag color={row.owner.color}>{row.stageName}</Tag> },
+        { key: 'owner', label: 'Responsible team', width: '160px', value: row => row.owner.label },
+        { key: 'request', label: 'Request', width: '130px', value: row => row.card ? row.card.requisitionStatus || 'Not started' : '', render: row => row.card ? <Tag color={statusColor(row.card.requisitionStatus || '')}>{row.card.requisitionStatus || 'Not started'}</Tag> : '—' },
+        { key: 'jd', label: 'JD', width: '130px', value: row => row.card ? row.card.jobDescriptionStatus || 'Not started' : '', render: row => row.card ? <Tag color={statusColor(row.card.jobDescriptionStatus || '')}>{row.card.jobDescriptionStatus || 'Not started'}</Tag> : '—' },
+        { key: 'posting', label: 'Posting', width: '130px', value: row => row.card ? row.card.jobPostingStatus || 'Not started' : '', render: row => row.card ? <Tag color={statusColor(row.card.jobPostingStatus || '')}>{row.card.jobPostingStatus || 'Not started'}</Tag> : '—' },
+        { key: 'candidates', label: 'Candidates', width: '110px', value: row => row.card ? row.card.candidateCount || 0 : 1 },
+        { key: 'sla', label: 'Live SLA', width: '260px', value: row => row.card ? demandSla(row.card, clockNow, workspaceSyncedAt) : row.candidate ? candidateSla(row.candidate, clockNow, workspaceSyncedAt) : '' },
+        { key: 'actions', label: 'Actions', width: '420px', sortable: false, filterable: false, render: row => row.card ? <DemandActions card={row.card} clientId={row.card.clientId || clientId} compact onChanged={onChanged} /> : <Button onClick={onOpenCandidates}>Manage candidate</Button> },
       ]}
     /></Card>}
   </div>
 }
 
-function DemandLane({ clientId, title, color, cards, applications, helper, context, clockNow, workspaceSyncedAt, onOpenCandidates, onChanged }: { clientId: number; title: string; color: string; cards: RecruitmentPipelineDemandCard[]; applications: RecruitmentPipelineBoardCard[]; helper: string; context?: string; clockNow: number; workspaceSyncedAt: number; onOpenCandidates: () => void; onChanged: () => void }) {
+function DemandLane({ clientId, title, color, cards, applications, helper, context, ownerLabel = 'Owner not set', clockNow, workspaceSyncedAt, onOpenCandidates, onChanged }: { clientId: number; title: string; color: string; cards: RecruitmentPipelineDemandCard[]; applications: RecruitmentPipelineBoardCard[]; helper: string; context?: string; ownerLabel?: string; clockNow: number; workspaceSyncedAt: number; onOpenCandidates: () => void; onChanged: () => void }) {
   const totalCards = cards.length + applications.length
   return <section className="demand-pipeline-lane" style={{ '--lane-color': color } as CSSProperties}>
-    <header><div>{context && <span className="demand-lane-context" title={context}>{context}</span>}<h3>{title}</h3><small>{helper}</small></div><Badge count={totalCards} showZero color={color} /></header>
+    <header><div>{context && <span className="demand-lane-context" title={context}>{context}</span>}<h3>{title}</h3><Tag color={color}>{ownerLabel}</Tag><small>{helper}</small></div><Badge count={totalCards} showZero color={color} /></header>
     <div className="demand-pipeline-lane-body">
       {!totalCards && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No records in this stage" />}
-      {cards.map(card => <DemandCard key={`${card.workOrderLineId}-${card.hiringCaseId ?? 0}`} card={card} clientId={clientId} clockNow={clockNow} workspaceSyncedAt={workspaceSyncedAt} onChanged={onChanged} />)}
+      {cards.map(card => <DemandCard key={`${card.workOrderLineId}-${card.hiringCaseId ?? 0}`} card={card} clientId={card.clientId || clientId} clockNow={clockNow} workspaceSyncedAt={workspaceSyncedAt} onChanged={onChanged} />)}
       {applications.map(card => <JourneyCandidateCard key={card.applicationId} card={card} clockNow={clockNow} workspaceSyncedAt={workspaceSyncedAt} onOpen={onOpenCandidates} />)}
     </div>
   </section>
@@ -370,7 +390,7 @@ function DemandCard({ card, clientId, clockNow, workspaceSyncedAt, onChanged }: 
       <Milestone label="Posting" status={card.jobPostingStatus} />
     </div></details>
     <div className="demand-card-actions"><DemandActions card={card} clientId={clientId} onChanged={onChanged} /></div>
-    {card.needsPipelineSelection && <div className="demand-card-callout">Choose a published Position or Hybrid pipeline in the work order to start governed stage tracking.</div>}
+    {card.needsPipelineSelection && <div className="demand-card-callout">Choose a saved hiring or combined pipeline in the work order to start stage tracking.</div>}
   </Card>
 }
 
@@ -527,7 +547,4 @@ function laneTargetLabel(lane: RecruitmentUnifiedPipelineLane) {
     return `${durationText(lane.targetOffsetMinutes)} cumulative target`
   }
   return `${durationText(lane.slaDurationMinutes)} ${lane.cardScope === 'Application' ? 'candidate' : 'hiring'} stage target`
-}
-function stageColor(type: string) {
-  return ({ Screening: '#6b4eff', ATS: '#2563eb', Interview: '#0e9f6e', Approval: '#d97706', Offer: '#db2777', Position: '#6b4eff' } as Record<string, string>)[type] || '#667085'
 }

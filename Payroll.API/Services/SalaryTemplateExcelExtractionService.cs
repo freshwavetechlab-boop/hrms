@@ -46,6 +46,17 @@ public static class SalaryTemplateExcelExtractionService
                 && (allowFormula || string.IsNullOrWhiteSpace(cell.FormulaText)) && decimal.TryParse(cell.Value, NumberStyles.Number | NumberStyles.AllowExponent, CultureInfo.InvariantCulture, out var value) && value is >= 0 and <= 1_000_000_000m ? value : null;
         }
         var payrollDays = request.FixedPayrollDays ?? (Role("payrollDays") is { } days && Literal(days.ColumnIndex) is decimal divisor && divisor == decimal.Truncate(divisor) ? (int?)divisor : null);
+        if (!string.IsNullOrWhiteSpace(request.PayrollDaysCell))
+        {
+            try
+            {
+                var sharedDays = ReadSharedPayrollDays(request, source);
+                if (payrollDays.HasValue && payrollDays != sharedDays) throw new InvalidOperationException("The selected fixed/column divisor disagrees with the shared source cell.");
+                payrollDays = sharedDays;
+                setup.FixedPayrollDays = sharedDays;
+            }
+            catch (InvalidOperationException error) { Error("PAYROLL_DAYS", null, error.Message); }
+        }
         var payableDays = Role("payableDays") is { } payable ? Literal(payable.ColumnIndex) : null;
         var actualPresent = Role("presentDays") is { } present ? Literal(present.ColumnIndex) : null;
         if (payrollDays is null) Error("PAYROLL_DAYS", null, "Select a numeric payroll-days column or explicitly enter the contract/calendar divisor.");
@@ -145,6 +156,11 @@ public static class SalaryTemplateExcelExtractionService
                 ProRata = candidate.ProRata, Priority = candidate.Priority });
         }
         var row = new ExcelPayslipRow { Id = "extract-sample", SourceRow = request.SampleRow };
+        if (!string.IsNullOrWhiteSpace(request.PayrollDaysCell) && payrollDays.HasValue)
+        {
+            try { ExcelPayrollSetupRepository.ValidateSharedPayrollDaysBinding(setup, source, [row]); }
+            catch (InvalidOperationException error) { Error("PAYROLL_DAYS", null, error.Message); }
+        }
         if (computedMonthlyCtc is int ctcColumn)
         {
             try
@@ -180,6 +196,11 @@ public static class SalaryTemplateExcelExtractionService
                     PayrollFormulaEvaluator.Validate(translated);
                     if (candidate.CalculationType == "Fixed Amount")
                     {
+                        // A paired full-period input may also be paid unchanged (for
+                        // example a fixed deduction). Prove the direct source binding
+                        // before deciding that monthly/earned headings imply proration.
+                        if (candidate.InputColumnIndex.HasValue && PayrollFormulaEvaluator.Canonicalize(translated) == PayrollFormulaEvaluator.Canonicalize(candidate.Code + "_MONTHLY"))
+                            candidate.ProRata = definition.ProRata = false;
                         var expected = candidate.ProRata ? candidate.Code + "_MONTHLY/PAYROLL_DAYS*PAYABLE_DAYS" : candidate.Code + "_MONTHLY";
                         if (PayrollFormulaEvaluator.Canonicalize(translated) != PayrollFormulaEvaluator.Canonicalize(expected))
                             throw new InvalidOperationException("This rule is more than ordinary monthly-input proration. Keep it as an explicit reviewed source formula; its cached output will not be frozen as a salary amount.");
@@ -222,6 +243,19 @@ public static class SalaryTemplateExcelExtractionService
     }
 
     private static bool ProtectedHeader(string header) => Regex.IsMatch(header, @"\b(?:uan|pan|aadh?aar|ifsc|dob|employee\s*(?:code|id)|account|e-?mail|date)\b", RegexOptions.IgnoreCase) || RecurringInputHeaderGuards.HasContactIdentifier(header);
+    private static int ReadSharedPayrollDays(SalaryTemplateExcelExtractionRequest request, ExcelPayslipCalculationSource source)
+    {
+        var address = request.PayrollDaysCell.Replace("$", "").Trim().ToUpperInvariant();
+        var match = Regex.Match(address, @"^([A-Z]{1,3})([1-9]\d{0,5})$");
+        if (!match.Success || !int.TryParse(match.Groups[2].Value, out var row) || row > source.HeaderRow)
+            throw new InvalidOperationException("Choose a captured shared divisor cell at or above the salary header row.");
+        var column = match.Groups[1].Value.Aggregate(0, (value, character) => value * 26 + character - 'A' + 1) - 1;
+        var cell = source.Rows.SingleOrDefault(item => item.SourceRow == row)?.Cells.ElementAtOrDefault(column);
+        if (cell is null || !string.IsNullOrWhiteSpace(cell.FormulaText) || cell.Error is not null || cell.CalculationError is not null || cell.MissingCachedValue
+            || !decimal.TryParse(cell.Value, NumberStyles.Number, CultureInfo.InvariantCulture, out var days) || days < 1 || days > 31 || days != decimal.Truncate(days))
+            throw new InvalidOperationException("The shared divisor must contain an explicit whole number from 1 to 31; a blank or formula cache is not a payroll divisor.");
+        return (int)days;
+    }
     public static IReadOnlyList<PayrollReviewComponent> ReadMasterCatalogue(string setupJson)
     {
         using var document = JsonDocument.Parse(setupJson);
@@ -236,8 +270,11 @@ public static class SalaryTemplateExcelExtractionService
     private static void ValidateOriginalFormula(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw) || raw.Length > 2000 || raw.Contains('!') || raw.Contains('[') || raw.Contains(']')) throw new InvalidOperationException("External or cross-sheet dependencies must be supplied and reviewed separately; their caches are not salary rules.");
-        foreach (Match token in Regex.Matches(raw.ToUpperInvariant(), @"\b[A-Z_][A-Z0-9_]*\b"))
-            if (!Regex.IsMatch(token.Value, @"^[A-Z]{1,3}[1-9][0-9]*$") && token.Value is not ("TRUE" or "FALSE") && !(Functions.Contains(token.Value) && Regex.IsMatch(raw[(token.Index + token.Length)..], @"^\s*\(")))
+        // Anchored A1 references are still captured cells, not workbook-defined names.
+        // Normalize only complete cell tokens so unresolved names retain their guard.
+        var normalized = Regex.Replace(raw.ToUpperInvariant(), @"(?<![A-Z0-9_])\$?([A-Z]{1,3})\$?([1-9][0-9]*)(?![A-Z0-9_])", "$1$2");
+        foreach (Match token in Regex.Matches(normalized, @"\b[A-Z_][A-Z0-9_]*\b"))
+            if (!Regex.IsMatch(token.Value, @"^[A-Z]{1,3}[1-9][0-9]*$") && token.Value is not ("TRUE" or "FALSE") && !(Functions.Contains(token.Value) && Regex.IsMatch(normalized[(token.Index + token.Length)..], @"^\s*\(")))
                 throw new InvalidOperationException("Workbook-defined names and unresolved symbols need an explicit captured binding; a formula cache is not a replacement.");
     }
     private static string ExcelLetter(int index) { var value = ""; for (var n = index + 1; n > 0; n = (n - 1) / 26) value = (char)('A' + (n - 1) % 26) + value; return value; }

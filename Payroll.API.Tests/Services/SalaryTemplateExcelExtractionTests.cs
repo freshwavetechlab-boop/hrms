@@ -40,6 +40,52 @@ public sealed class SalaryTemplateExcelExtractionTests
     }
 
     [Fact]
+    public void AnchoredSampleReferencesRemainCellBindingsRatherThanUnresolvedNames()
+    {
+        var request = Fixture();
+        request.Source.Rows[1].Cells[3]!.FormulaText = "$A2/B$2*$C$2";
+        request.Source.Rows[1].Cells[4]!.FormulaText = "MIN($D$2,15000)*12%";
+        var result = SalaryTemplateExcelExtractionService.Extract(request);
+        Assert.True(result.CanCreateDraft, string.Join(" | ", result.Issues.Select(issue => issue.Message)));
+        Assert.Equal(4400m, result.Simulation!.Net);
+        Assert.Equal("", result.Components.Single(component => component.Code == "BASIC").Value);
+    }
+
+    [Fact]
+    public void SharedHeaderDivisorReusesTheExistingSourceBindingWithoutRequiringTheValueTwice()
+    {
+        var request = Fixture();
+        request.SelectedColumns.RemoveAll(column => column.Kind == "payrollDays");
+        request.PayrollDaysCell = "$H$1";
+        request.Source.Rows[0].Cells[7] = new() { Value = "30", DataType = "Number" };
+        request.Source.Columns[7].SourceHeader = "Shared payroll divisor";
+        request.Source.Rows[1].Cells[3]!.FormulaText = "A2/$H$1*C2";
+        var before = JsonSerializer.Serialize(request);
+        var result = SalaryTemplateExcelExtractionService.Extract(request);
+        Assert.True(result.CanCreateDraft, string.Join(" | ", result.Issues.Select(issue => issue.Message)));
+        Assert.Equal(30, result.Scenario!.PayrollDays);
+        Assert.Equal(4400m, result.Simulation!.Net);
+        Assert.Equal(before, JsonSerializer.Serialize(request));
+    }
+
+    [Theory]
+    [InlineData("H2", "30", null)]
+    [InlineData("H1", "", null)]
+    [InlineData("H1", "30", "15+15")]
+    [InlineData("H1", "32", null)]
+    [InlineData("H1", "26.5", null)]
+    public void SharedDivisorRejectsEmployeeRowsBlanksCalculatedCachesAndInvalidDays(string address, string value, string? formula)
+    {
+        var request = Fixture();
+        request.SelectedColumns.RemoveAll(column => column.Kind == "payrollDays");
+        request.PayrollDaysCell = address;
+        request.Source.Rows[0].Cells[7] = new() { Value = value, FormulaText = formula, DataType = "Number" };
+        var result = SalaryTemplateExcelExtractionService.Extract(request);
+        Assert.False(result.CanCreateDraft);
+        Assert.Contains(result.Issues, issue => issue.Code == "PAYROLL_DAYS" && issue.Severity == "Error");
+    }
+
+    [Fact]
     public void TheSavedBlankBaseFailsClosedWithoutTheEmployeeOverride()
     {
         var result = SalaryTemplateExcelExtractionService.Extract(Fixture());
@@ -52,6 +98,25 @@ public sealed class SalaryTemplateExcelExtractionTests
         // used by regular payroll, without the simulation-only InspectTemplate check.
         var error = Assert.Throws<InvalidOperationException>(() => PayRunRepository.PreviewAdvisorTemplate(result.Scenario.Snapshot!, 30, 15));
         Assert.Contains("amount is missing", error.Message);
+    }
+
+    [Theory]
+    [InlineData("0", "4400")]
+    [InlineData("250", "4150")]
+    public void PairedDirectFixedDeductionDoesNotReceiveASecondAttendanceProration(string value, string net)
+    {
+        var request = Fixture();
+        request.Source.ColumnCount = 10;
+        request.Source.Columns.AddRange([new() { ColumnIndex = 8, SourceHeader = "Monthly PT", Kind = "info" }, new() { ColumnIndex = 9, SourceHeader = "PT", Kind = "deduction" }]);
+        request.Source.Rows[0].Cells.AddRange([new() { Value = "Monthly PT", DataType = "Text" }, new() { Value = "PT", DataType = "Text" }]);
+        request.Source.Rows[1].Cells.AddRange([new() { Value = value, DataType = "Number" }, new() { Value = value, FormulaText = "I2", DataType = "Number" }]);
+        request.Source.Rows[1].Cells[6] = new() { Value = net, FormulaText = "D2-E2-J2", DataType = "Number" };
+        request.SelectedColumns.AddRange([new() { ColumnIndex = 8, Code = "PT", Name = "Monthly PT", Kind = "input", ReviewedFixedValue = true }, new() { ColumnIndex = 9, Code = "PT", Name = "PT", Kind = "deduction" }]);
+        var result = SalaryTemplateExcelExtractionService.Extract(request);
+        Assert.True(result.CanCreateDraft, string.Join(" | ", result.Issues.Select(issue => issue.Message)));
+        var pt = result.Components.Single(component => component.Code == "PT");
+        Assert.False(pt.ProRata); Assert.False(pt.RequiresEmployeeInput); Assert.Equal(value, pt.Value);
+        Assert.Equal(decimal.Parse(net, System.Globalization.CultureInfo.InvariantCulture), result.Simulation!.Net);
     }
 
     [Fact]

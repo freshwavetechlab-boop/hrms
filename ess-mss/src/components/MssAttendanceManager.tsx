@@ -1,4 +1,5 @@
 import { calculateReviewShift, resolveAttendanceShift, hasExplicitAttendancePolicy } from '../shared/attendanceShift'
+import AttendanceApprovalPanel from './AttendanceApprovalPanel'
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import { DownloadOutlined, UploadOutlined } from '@ant-design/icons'
 import { Button, Card, Input, Space, Typography } from 'antd'
@@ -635,6 +636,7 @@ export default function ManualAttendanceManager({ clientId, reviewMonth = '', on
   }
 
   return <div className="manual-attendance">
+    <AttendanceApprovalPanel clientId={clientId} month={month} dirty={dirtyCellKeys.size > 0} />
     <Card className="attendance-panel" title={<div><Typography.Title level={4}>Attendance Summary</Typography.Title><Typography.Text type="secondary">{reviewPatternText} / {cleanTime(settings.checkInTime)}-{cleanTime(settings.checkOutTime)}</Typography.Text></div>} extra={
         <div className="attendance-summary-controls">
           <label className="attendance-cycle-field attendance-cycle-field-compact">

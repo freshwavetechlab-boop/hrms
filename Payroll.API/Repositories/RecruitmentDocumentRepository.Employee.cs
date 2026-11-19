@@ -10,30 +10,30 @@ namespace Payroll.API.Repositories;
 public sealed partial class RecruitmentDocumentRepository
 {
     // The existing employee identity/import rules and infotype save run in the
-    // release transaction. Repeated releases link the same employee, never rehire
+    // explicit joining-import transaction. Repeated imports never rehire
     // an inactive employee or overwrite an existing master's salary/bank values.
     private static async Task LinkReleasedEmployeeAsync(MySqlConnection db, MySqlTransaction tx,
         RecruitmentDocumentRosterRow row, Dictionary<string,string> values, WorkLocation location,
         List<Employee> current, AuthUser user, string reference, IReadOnlySet<int> permittedLocations)
     {
         var candidateEmployeeId = await db.ExecuteScalarAsync<int?>("SELECT EmployeeId FROM recruitment_candidates WHERE Id=@CandidateId AND ClientId=@ClientId FOR UPDATE", row, tx);
-        if(row.EmployeeId.HasValue && candidateEmployeeId.HasValue && row.EmployeeId!=candidateEmployeeId)throw new InvalidOperationException("The source profile and roster have conflicting employee links. Review Employee Master before release.");
+        if(row.EmployeeId.HasValue && candidateEmployeeId.HasValue && row.EmployeeId!=candidateEmployeeId)throw new InvalidOperationException("The source profile and roster have conflicting employee links. Review Employee Master before import.");
         var linkedId=row.EmployeeId??candidateEmployeeId;
         if (linkedId.HasValue)
         {
             var linked = current.SingleOrDefault(employee => employee.Id == linkedId);
             if (linked is null) throw new InvalidOperationException($"{row.CandidateCode}: the employee link is outside this client or no longer exists.");
-            if (!linked.IsActive) throw new InvalidOperationException($"{row.CandidateCode}: rehire the inactive employee from Employee Master before releasing another offer.");
+            if (!linked.IsActive) throw new InvalidOperationException($"{row.CandidateCode}: rehire the inactive employee from Employee Master before importing the candidate.");
             RequireEmployeePosting(linked,row,user,permittedLocations);
             if(await db.ExecuteScalarAsync<bool>("SELECT COALESCE("+EmployeeEmploymentRules.LatestAction("e","@Today")+",'Rehire') IN ('Resign','Retire','Terminate') FROM employees e WHERE e.Id=@Id AND e.ClientId=@ClientId",new{Id=linked.Id,row.ClientId,Today=EmployeeEmploymentRules.Today},tx))
-                throw new InvalidOperationException("Rehire the exited employee in Employee Master before releasing another offer.");
+                throw new InvalidOperationException("Rehire the exited employee in Employee Master before importing the candidate.");
             await RecordRosterEmployeeLinkAsync(db,tx,row,linked,user,reference);
             return;
         }
         var incoming = BuildRosterEmployee(row, values, location);
         var identity = EmployeeRepository.ExcelPayrollIdentityRows([incoming], current).Single();
         if (identity.BlockingReasons.Count > 0 || identity.MatchStatus == "ProbableDuplicate")
-            throw new InvalidOperationException($"{row.CandidateCode}: review the Employee Master identity match before release. " + string.Join(" ", identity.BlockingReasons));
+            throw new InvalidOperationException($"{row.CandidateCode}: review the Employee Master identity match before import. " + string.Join(" ", identity.BlockingReasons));
         if (identity.MatchedEmployeeId.HasValue)
         {
             var existing = await EmployeeRepository.LoadRecruitmentEmployeeAsync(db, identity.MatchedEmployeeId.Value, tx)
@@ -42,7 +42,7 @@ public sealed partial class RecruitmentDocumentRepository
                 throw new InvalidOperationException($"{row.CandidateCode}: the matched employee is inactive or belongs to another client.");
             RequireEmployeePosting(existing,row,user,permittedLocations);
             if(NormalizedRosterName(existing.FirstName+existing.LastName)!=NormalizedRosterName(incoming.FirstName+incoming.LastName))
-                throw new InvalidOperationException($"{row.CandidateCode}: contact/bank identifiers match an employee with a different name. Review the identity in Employee Master before release.");
+                throw new InvalidOperationException($"{row.CandidateCode}: contact/bank identifiers match an employee with a different name. Review the identity in Employee Master before import.");
             incoming = FillRosterEmployeeBlanks(existing, incoming);
         }
         incoming.Id = await EmployeeRepository.SaveRecruitmentEmployeeAsync(db, tx, incoming, user, reference);
@@ -65,7 +65,7 @@ public sealed partial class RecruitmentDocumentRepository
     private static void RequireEmployeePosting(Employee employee,RecruitmentDocumentRosterRow row,AuthUser user,IReadOnlySet<int> permittedLocations)
     {
         if(RecruitmentAccessScope.IsRestricted(user) && !permittedLocations.Contains(employee.WorkLocationId))throw new UnauthorizedAccessException("The matched employee is outside your permitted work locations.");
-        if(employee.WorkLocationId>0 && employee.WorkLocationId!=row.WorkLocationId)throw new InvalidOperationException($"{row.CandidateCode}: update the existing employee's work location in Employee Master before releasing an offer for a different posting.");
+        if(employee.WorkLocationId>0 && employee.WorkLocationId!=row.WorkLocationId)throw new InvalidOperationException($"{row.CandidateCode}: update the existing employee's work location in Employee Master before importing a different posting.");
     }
 
     internal static Employee BuildRosterEmployee(RecruitmentDocumentRosterRow row, IReadOnlyDictionary<string,string> values, WorkLocation location)
@@ -73,10 +73,10 @@ public sealed partial class RecruitmentDocumentRepository
         string Value(params string[] keys) => keys.Select(key=>values.GetValueOrDefault(key, "").Trim()).FirstOrDefault(value=>value.Length>0) ?? "";
         var date = Value("joiningDate");
         if (!DateOnly.TryParseExact(date,"yyyy-MM-dd",CultureInfo.InvariantCulture,DateTimeStyles.None,out var joining))
-            throw new InvalidOperationException($"{row.CandidateCode}: enter a valid joining date before release and automatic onboarding.");
+            throw new InvalidOperationException($"{row.CandidateCode}: enter a valid joining date before Employee Master import.");
         var name = row.CandidateName.Trim().Split(' ',2,StringSplitOptions.RemoveEmptyEntries);
         if (name.Length == 0 || row.ClientId<=0 || row.WorkLocationId!=location.Id || location.ClientId!=row.ClientId)
-            throw new InvalidOperationException("Employee name, client and linked work location must be available before release.");
+            throw new InvalidOperationException("Employee name, client and linked work location must be available before import.");
         // Monthly emoluments are not an annual CTC. Copy CTC only when the
         // template explicitly supplies it; payroll configuration remains intact.
         var annual = Value("annualCtc"); decimal ctc=0;

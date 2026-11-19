@@ -1,0 +1,7 @@
+.recruitment-offer-joining-workspace { display: flex; flex: 1; flex-direction: column; gap: 10px; min-height: 0; min-width: 0; overflow: hidden; }
+.recruitment-offer-joining-tabs { align-self: flex-start; flex-shrink: 0; max-width: 100%; overflow-x: auto; }
+.recruitment-offer-joining-workspace > .ant-alert { flex-shrink: 0; }
+.recruitment-offer-joining-toolbar { display: flex; flex-shrink: 0; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; color: #667085; }
+.recruitment-offer-joining-toolbar > span { flex: 1; min-width: 180px; }
+.recruitment-offer-joining-workspace > .ant-smart-table { flex: 1; min-height: 0; min-width: 0; }
+@media (max-width: 550px) { .recruitment-offer-joining-tabs { font-size: 11px; } }

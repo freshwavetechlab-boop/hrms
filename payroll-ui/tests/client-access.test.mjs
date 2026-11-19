@@ -56,3 +56,64 @@ test('request context follows active assigned client, remains absent for legacy 
   configureClientRequestScope(null)
   assert.equal(activeClientHeader('/api/employees'), undefined)
 })
+
+test('recruitment All reads and authoritative configuration commands avoid stale headers without widening other writes', () => {
+  const memory = new Map()
+  const sessionStorage = { getItem: key => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value) }
+  const requests = {}
+  new Function('exports', 'require', 'sessionStorage', compile('../src/services/clientRequestScope.ts'))(requests, () => access, sessionStorage)
+  requests.configureClientRequestScope(selected, 20)
+  for (const path of ['/api/recruitment/dashboard', '/api/recruitment/applications', '/api/recruitment/pipeline-workspace', '/api/recruitment/client-configuration-summary', '/api/recruitment-orchestration/pipelines', '/api/recruitment-orchestration/pipeline-versions/13']) assert.equal(requests.activeClientHeader(path, 'GET'), undefined)
+  assert.equal(requests.activeClientHeader('/api/recruitment-orchestration/lookups?clientId=55', 'GET'), undefined)
+  assert.equal(requests.activeClientHeader('/api/recruitment/requisitions', 'POST'), '20')
+  assert.equal(requests.activeClientHeader('/api/recruitment-orchestration/pipeline-configurations', 'POST'), undefined)
+  assert.equal(requests.activeClientHeader('/api/recruitment-orchestration/pipelines/8/create-similar', 'POST'), undefined)
+  assert.equal(requests.activeClientHeader('/api/recruitment-orchestration/interview-competencies', 'POST'), undefined)
+  assert.equal(requests.activeClientHeader('/api/recruitment-orchestration/interview-competencies', 'DELETE'), '20')
+  assert.equal(requests.activeClientHeader('/api/employees?clientId=55', 'GET'), '20')
+  assert.equal(requests.activeClientHeader('/api/excel-payslips/batches', 'GET'), '20')
+  const finish = requests.beginClientScopedWrite('/api/recruitment-orchestration/pipeline-configurations', 'POST')
+  assert.equal(requests.setActiveClientRequestScope(55), false)
+  finish()
+  assert.equal(requests.setActiveClientRequestScope(55), true)
+})
+
+test('deleting a pipeline from All uses its explicit owning client and retains ordinary write scoping', () => {
+  const requests = {}
+  const sessionStorage = { getItem: () => null, setItem: () => {} }
+  new Function('exports', 'require', 'sessionStorage', compile('../src/services/clientRequestScope.ts'))(requests, () => access, sessionStorage)
+  requests.configureClientRequestScope(selected, 20)
+  assert.equal(requests.activeClientHeader('/api/recruitment-orchestration/pipelines/8?clientId=55', 'DELETE'), undefined)
+  for (const path of ['/api/recruitment-orchestration/pipelines/8', '/api/recruitment-orchestration/pipelines/8?clientId=0', '/api/recruitment-orchestration/pipelines/8?clientId=invalid', '/api/recruitment-orchestration/pipelines/8/versions?clientId=55', '/api/employees/8?clientId=55']) {
+    assert.equal(requests.activeClientHeader(path, 'DELETE'), '20')
+  }
+  assert.equal(requests.activeClientHeader('/api/recruitment-orchestration/pipelines/8?clientId=55', 'POST'), '20')
+  const finish = requests.beginClientScopedWrite('/api/recruitment-orchestration/pipelines/8?clientId=55', 'DELETE')
+  assert.equal(requests.setActiveClientRequestScope(55), false)
+  finish()
+  assert.equal(requests.setActiveClientRequestScope(55), true)
+})
+
+test('template and candidate-form copies use explicit source and target without widening ordinary routes', () => {
+  const requests = {}
+  new Function('exports', 'require', 'sessionStorage', compile('../src/services/clientRequestScope.ts'))(requests, () => access, { getItem: () => null, setItem: () => {} })
+  requests.configureClientRequestScope(selected, 20)
+  for (const path of ['/api/recruitment-admin/templates', '/api/recruitment-orchestration/forms', '/api/recruitment-orchestration/forms/17']) {
+    assert.equal(requests.activeClientHeader(path, 'GET'), undefined)
+  }
+  for (const path of ['/api/recruitment-admin/templates/8/create-similar', '/api/recruitment-orchestration/forms/17/create-similar', '/api/recruitment-admin/templates', '/api/recruitment-orchestration/forms']) {
+    assert.equal(requests.activeClientHeader(path, 'POST'), undefined)
+  }
+  for (const path of ['/api/recruitment-orchestration/forms/17/versions?clientId=55', '/api/recruitment-orchestration/form-versions/27/publish?definitionId=17&clientId=55']) {
+    assert.equal(requests.activeClientHeader(path, 'POST'), undefined)
+    assert.equal(requests.activeClientHeader(path.replace('clientId=55', 'clientId=0'), 'POST'), '20')
+    assert.equal(requests.activeClientHeader(path.replace('clientId=55', 'clientId=invalid'), 'POST'), '20')
+  }
+  assert.equal(requests.activeClientHeader('/api/recruitment-orchestration/forms/17?clientId=55', 'DELETE'), undefined)
+  for (const path of ['/api/recruitment-admin', '/api/employees/field-configuration/forms/17']) assert.equal(requests.activeClientHeader(path, 'GET'), '20')
+  for (const path of ['/api/recruitment-admin/settings', '/api/recruitment-admin/templates/8', '/api/recruitment-orchestration/forms/17/versions', '/api/recruitment-orchestration/form-versions/27/publish', '/api/employees/field-configuration/forms', '/api/excel-payslips/batches']) assert.equal(requests.activeClientHeader(path, 'POST'), '20')
+  const finish = requests.beginClientScopedWrite('/api/recruitment-orchestration/forms/17/create-similar', 'POST')
+  assert.equal(requests.setActiveClientRequestScope(55), false)
+  finish()
+  assert.equal(requests.setActiveClientRequestScope(55), true)
+})

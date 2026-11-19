@@ -10,6 +10,7 @@ export function TasksPage({ user }: { user: User }) {
   const [view, setView] = useState<TaskView>('pending')
   const [selected, setSelected] = useState<Task | null>(null)
   const [remark, setRemark] = useState('')
+  const [projectRollVerified, setProjectRollVerified] = useState(false)
   const [busy, setBusy] = useState('')
   const [message, setMessage] = useState('')
 
@@ -30,7 +31,7 @@ export function TasksPage({ user }: { user: User }) {
     setBusy(action)
     setMessage('')
     try {
-      await essApi.taskAction(selected.id, action, remark.trim())
+      await essApi.taskAction(selected.id, action, remark.trim(), projectRollVerified)
       setMessage(`Task ${action.toLowerCase()}.`)
       setRemark('')
       setSelected(null)
@@ -60,7 +61,7 @@ export function TasksPage({ user }: { user: User }) {
               <td data-label="Received">{formatDate(task.createdAt)}</td>
               {view === 'actioned' && <td data-label="Actioned on">{formatDate(task.actionedAt || '')}</td>}
               <td data-label="Status"><span className={`task-status ${statusTone(task.status || (view === 'pending' ? 'Pending' : ''))}`}>{task.status || (view === 'pending' ? 'Pending' : '-')}</span></td>
-              <td data-label="Action"><button type="button" onClick={() => { setSelected(task); setRemark(''); setMessage('') }}>{view === 'pending' ? 'Process' : 'View'}</button></td>
+              <td data-label="Action"><button type="button" onClick={() => { setSelected(task); setRemark(''); setProjectRollVerified(false); setMessage('') }}>{view === 'pending' ? 'Process' : 'View'}</button></td>
             </tr>)}
           </tbody>
         </table>
@@ -72,6 +73,7 @@ export function TasksPage({ user }: { user: User }) {
         <TaskModalHeader task={selected} rows={detailRows} onClose={() => setSelected(null)} />
         <TaskDetailView task={selected} rows={detailRows} />
         {view === 'pending' ? <>
+          {selected.resourceType === 'AttendancePeriod' && <label className="task-remarks"><span><input type="checkbox" checked={projectRollVerified} onChange={event => setProjectRollVerified(event.target.checked)} /> I verified the employee's project/role and valid employment/contract period. Required for Project Cell final approval.</span></label>}
           <label className="task-remarks"><span>Remarks</span><textarea value={remark} onChange={event => setRemark(event.target.value)} placeholder="Add approval, rejection, or send-back remarks..." /></label>
           <div className="task-actions">
             <button type="button" disabled={!!busy} onClick={() => void takeAction('Approved')}>{busy === 'Approved' ? 'Approving...' : 'Approve'}</button>
@@ -455,6 +457,7 @@ function taskDetails(task: Task) {
   try {
     const data = JSON.parse(task.payloadJson || '{}') as Record<string, unknown>
     Object.entries(data).forEach(([key, value]) => {
+      if (task.resourceType === 'AttendancePeriod' && !['employeeCode', 'employeeName', 'month', 'workLocation', 'designation', 'department', 'piName', 'dateOfJoining', 'isActive', 'presentDays', 'payableDays', 'projectReference', 'projectRollVerified'].includes(key)) return
       if (value === null || value === undefined || value === '') return
       rows.push([label(key), formatValue(value)])
     })

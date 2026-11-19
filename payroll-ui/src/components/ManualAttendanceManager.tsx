@@ -9,6 +9,7 @@ import { getDropdownsResult } from '../services/settingsService'
 import BulkUploadProgressModal, { type BulkUploadState } from './BulkUploadProgressModal'
 import SearchSelect from './SearchSelect'
 import type { ToastType } from './ToastProvider'
+import AttendanceApprovalNotice from './AttendanceApprovalNotice'
 
 type Props = { clientId: number; group?: AttendanceGroup | null; reviewMonth?: string; onReviewMonthChange?: (month: string) => void; onMessage: (message: string, type?: ToastType) => void; clientControl?: ReactNode }
 type DailyStatus = string
@@ -656,6 +657,7 @@ export default function ManualAttendanceManager({ clientId, group = null, review
   }
 
   return <div className="manual-attendance">
+    <AttendanceApprovalNotice clientId={clientId} month={month} />
     <div className="attendance-toolbar attendance-simple-toolbar">
       <div
         aria-disabled={saving}

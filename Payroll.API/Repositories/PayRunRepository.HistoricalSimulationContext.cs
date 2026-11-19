@@ -61,7 +61,7 @@ WHERE e.ClientId=@ClientId AND e.Id IN @Ids AND "+EmployeeEmploymentRules.Eligib
         if(controlBasisOnly)return result;
         try
         {
-            foreach(var row in await GetSelectedPayRunAttendanceAsync(db,tx,clientId,period,ids))data.Attendance.Add(row.EmployeeId,row);
+            foreach(var row in await GetSelectedPayRunAttendanceAsync(db,tx,clientId,period,ids,includeApprovalState:false))data.Attendance.Add(row.EmployeeId,row);
         }
         catch(InvalidOperationException){result.Fallback=true;return result;}
         var adjustmentRows=await GetApplicableAdjustmentsAsync(db,tx,clientId,period,"Regular",[]);

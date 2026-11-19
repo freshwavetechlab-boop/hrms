@@ -302,10 +302,12 @@ CREATE TABLE IF NOT EXISTS form_submission_events (
     {
         await using var db = Db();
         await db.OpenAsync();
-        var scope = EffectiveScope(user, clientId);
-        return await db.QueryAsync<DynamicFormDefinition>(@"SELECT d.Id,d.ClientId,COALESCE(c.Name,'') ClientName,d.ModuleCode,d.FormCode,d.FormName,d.PurposeCode,d.EntityType,d.Status,d.RequiresEmailVerification,d.CurrentPublishedVersionId,d.CreatedByUserId,d.CreatedAtUtc,d.UpdatedAtUtc
+        if (clientId.HasValue && !SelectedClientAccess.Allows(user, clientId.Value)) return [];
+        var scope = clientId ?? (SelectedClientAccess.IsSelected(user) ? null : user.ClientId);
+        var rows = await db.QueryAsync<DynamicFormDefinition>(@"SELECT d.Id,d.ClientId,COALESCE(c.Name,'') ClientName,d.ModuleCode,d.FormCode,d.FormName,d.PurposeCode,d.EntityType,d.Status,d.RequiresEmailVerification,d.CurrentPublishedVersionId,d.CreatedByUserId,d.CreatedAtUtc,d.UpdatedAtUtc
 FROM form_definitions d LEFT JOIN clients c ON c.Id=d.ClientId
 WHERE (@ClientId IS NULL OR d.ClientId IN (0,@ClientId)) ORDER BY d.ModuleCode,d.FormName", new { ClientId = scope });
+        return rows.Where(row => row.ClientId == 0 || SelectedClientAccess.Allows(user, row.ClientId)).ToList();
     }
 
     public async Task<DynamicFormDefinition?> GetAsync(long id, AuthUser user)
@@ -313,8 +315,8 @@ WHERE (@ClientId IS NULL OR d.ClientId IN (0,@ClientId)) ORDER BY d.ModuleCode,d
         await using var db = Db();
         await db.OpenAsync();
         var definition = await db.QueryFirstOrDefaultAsync<DynamicFormDefinition>(@"SELECT d.Id,d.ClientId,COALESCE(c.Name,'') ClientName,d.ModuleCode,d.FormCode,d.FormName,d.PurposeCode,d.EntityType,d.Status,d.RequiresEmailVerification,d.CurrentPublishedVersionId,d.CreatedByUserId,d.CreatedAtUtc,d.UpdatedAtUtc
-FROM form_definitions d LEFT JOIN clients c ON c.Id=d.ClientId WHERE d.Id=@Id AND (@ClientId IS NULL OR d.ClientId=@ClientId)", new { Id = id, user.ClientId });
-        if (definition is null) return null;
+FROM form_definitions d LEFT JOIN clients c ON c.Id=d.ClientId WHERE d.Id=@Id", new { Id = id });
+        if (definition is null || definition.ClientId != 0 && !SelectedClientAccess.Allows(user, definition.ClientId)) return null;
         definition.Versions = (await db.QueryAsync<DynamicFormVersion>("SELECT * FROM form_versions WHERE FormDefinitionId=@Id ORDER BY VersionNumber DESC", new { Id = id })).ToList();
         foreach (var version in definition.Versions)
             await PopulateVersionAsync(db, version);
@@ -452,7 +454,7 @@ WHERE Id=@Id AND ClientId=@ClientId", new { request.Id, request.ClientId, reques
             long versionId = request.Id;
             if (versionId > 0)
             {
-                var status = await db.ExecuteScalarAsync<string>("SELECT Status FROM form_versions WHERE Id=@Id AND FormDefinitionId=@FormDefinitionId", new { Id = versionId, request.FormDefinitionId }, transaction);
+                var status = await db.ExecuteScalarAsync<string>("SELECT Status FROM form_versions WHERE Id=@Id AND FormDefinitionId=@FormDefinitionId FOR UPDATE", new { Id = versionId, request.FormDefinitionId }, transaction);
                 if (status is null) return (null, "Form version was not found.");
                 if (!status.Equals("Draft", StringComparison.OrdinalIgnoreCase)) versionId = 0;
             }
