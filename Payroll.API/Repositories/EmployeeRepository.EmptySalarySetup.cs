@@ -60,7 +60,8 @@ public partial class EmployeeRepository
         SalaryStructureId = row.SalaryStructureId, AnnualCtc = row.AnnualCtc, SalaryJson = row.SalaryJson
     };
     private static string SalaryInputHash(string value)
-        => ClosedSalaryHash(ReadSalaryInputs(value).OrderBy(pair => pair.Key, StringComparer.Ordinal));
+        => ClosedSalaryHash(ReadSalaryInputs(value).OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair => new { pair.Key, Value = pair.Value.ToString("G29", CultureInfo.InvariantCulture) }));
     private static Dictionary<string, decimal> ReadSalaryInputs(string value)
     {
         Dictionary<string, decimal>? inputs;

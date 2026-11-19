@@ -16,6 +16,21 @@ public sealed class EmptySalarySetupCleanupTests
         new() { Id=3, EmployeeId=71, ClientId=9, EffectiveFrom=new(2026,9,1), EffectiveTo=new(2026,9,30),
             Status="Historical", SalaryStructureId="490", AnnualCtc=0, SalaryJson="{\"101\":12000}" }
     ];
+    [Theory]
+    [InlineData("12636",true)]
+    [InlineData("12636.0",true)]
+    [InlineData("12636.0000",true)]
+    [InlineData("12636.0001",false)]
+    public void Database_decimal_scale_is_not_a_salary_change_but_real_precision_still_blocks(string amount,bool canApply)
+    {
+        var employee=Employee();var history=History();
+        employee.SalaryJson="{\"101\":"+amount+"}";
+        history[0].SalaryJson="{\"101\":12636}";
+        var before=JsonSerializer.Serialize(new{employee,history});
+        var plan=EmployeeRepository.PlanEmptySalaryCleanup(employee,history,"2026-10",new(2026,11,20),false);
+        Assert.Equal(canApply,plan.Preview.CanApply);
+        Assert.Equal(before,JsonSerializer.Serialize(new{employee,history}));
+    }
     [Fact]
     public void Only_later_empty_active_markers_in_the_reviewed_month_are_selected_without_mutation()
     {
