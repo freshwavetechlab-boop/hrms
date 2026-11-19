@@ -21,6 +21,8 @@ internal static class ReviewedPeriodProfessionalTax
         || statutoryType.Equals("Professional Tax", StringComparison.OrdinalIgnoreCase);
     internal static void Validate(ReviewedProfessionalTaxRequest request, bool saving = false)
     {
+        if (request.SourcePeriodReviewVersion is not (0 or 2))
+            throw new InvalidOperationException("This source-period statutory review version is not supported.");
         if (request.ClientId <= 0 || !ValidMonth(request.PayPeriod) || !Guid.TryParseExact(request.SourceBatchId, "N", out _)
             || request.SourceHash is null || request.SourceHash.Length > 64 || request.SourceHash.Length > 0 && !ValidHash(request.SourceHash)
             || saving && !ValidHash(request.SourceHash) || string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Trim().Length > 500
@@ -33,10 +35,19 @@ internal static class ReviewedPeriodProfessionalTax
             || request.Rows.Select(row => row.EmployeeId).Distinct().Count() != request.Rows.Count
             || request.Rows.Select(row => row.SourceRowId).Distinct(StringComparer.Ordinal).Count() != request.Rows.Count)
             throw new InvalidOperationException("Each unique source row must match one existing employee. Choose Automatic with no amount, or an explicit reviewed amount including zero, to paise.");
+        foreach (var row in request.Rows)
+        {
+            ValidateSourceZeros(row.SourceZeroStatutoryColumns);
+            if (request.SourcePeriodReviewVersion == 0 && row.SourceZeroStatutoryColumns is not null
+                || request.SourcePeriodReviewVersion == 2 && (row.Mode == Reviewed && row.Amount != 0
+                    || row.Mode == Automatic && row.SourceZeroStatutoryColumns is not null))
+                throw new InvalidOperationException("Source-period version two reviews only explicit zero statutory amounts, or a deliberate return to Automatic.");
+        }
     }
     internal static void RequireControl(ReviewedProfessionalTaxControl control, int clientId, int employeeId, string month)
     {
-        if (control.Version != 1 || control.Kind != "ReviewedPeriodProfessionalTax" || control.ClientId != clientId
+        ValidateSourceZeros(control.SourceZeroStatutoryColumns);
+        if (control.Version is not (1 or 2) || control.Kind != "ReviewedPeriodProfessionalTax" || control.ClientId != clientId
             || control.EmployeeId != employeeId || control.PayPeriod != month || !ValidMonth(month)
             || control.Mode is not (Reviewed or Automatic) || control.Mode == Reviewed && control.Amount is null
             || control.Mode == Automatic && control.Amount is not null || control.Amount is < 0 or > 10000000m
@@ -45,8 +56,24 @@ internal static class ReviewedPeriodProfessionalTax
             || !ValidHash(control.NativeBasisHash) || string.IsNullOrWhiteSpace(control.SourceRowId)
             || string.IsNullOrWhiteSpace(control.Reason) || control.ReviewedById <= 0 || string.IsNullOrWhiteSpace(control.ReviewedBy)
             || control.ReviewedAtUtc == default || !Guid.TryParse(control.RequestId, out _)
+            || control.Version == 1 && control.SourceZeroStatutoryColumns is not null
+            || control.Version == 2 && (control.HistoricalReceiptId is not null || control.Mode == Reviewed && control.Amount != 0
+                || control.Mode == Automatic && control.SourceZeroStatutoryColumns is not null)
             || control.HistoricalReceiptId is not null && (!Guid.TryParseExact(control.HistoricalReceiptId,"N",out _) || control.Mode!=Reviewed || control.Amount!=0))
             throw new InvalidOperationException("Reviewed period Professional Tax evidence is invalid or belongs to another scope. No automatic fallback is substituted.");
+    }
+    internal static void ValidateSourceZeros(IReadOnlyDictionary<string, int>? columns)
+    {
+        if (columns is null) return;
+        if (columns.Count is < 1 or > 4 || columns.Keys.Any(code => !Regex.IsMatch(code, "^[A-Z][A-Z0-9_]{0,39}$"))
+            || columns.Values.Any(column => column is < 0 or > 1499) || columns.Values.Distinct().Count() != columns.Count)
+            throw new InvalidOperationException("Review up to four distinct PF/ESIC source-zero component/column bindings.");
+    }
+    internal static bool CanReviewSourceZero(string category, string statutoryType)
+    {
+        var type = Regex.Replace(statutoryType.ToUpperInvariant(), "[^A-Z]", "");
+        return category == "Deduction" && (type is "PFEMPLOYEE" or "ESIEMPLOYEE" or "ESICEMPLOYEE")
+            || category == "Benefit" && (type is "PFEMPLOYER" or "ESIEMPLOYER" or "ESICEMPLOYER");
     }
     internal static decimal? Resolve(ReviewedProfessionalTaxControl? control, int clientId, int employeeId, string month,
         string sourceHash, string nativeBasisHash, bool locationParts, decimal seededPt, bool positiveConfiguredPt, bool mixedPt, int configuredPtLines)

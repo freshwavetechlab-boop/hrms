@@ -45,7 +45,7 @@ public sealed class ExcelPayrollSumMappingTests
         Assert.Contains("does not certify source-cache arithmetic", lesson.Content);
         var before = JsonSerializer.Serialize(request);
         using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, references));
-        Assert.Equal("excel-payroll-mapping-v46", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v74", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(lesson.Content, prompt.RootElement.GetProperty("references").EnumerateArray()
             .Single(reference => reference.GetProperty("title").GetString() == lesson.Title).GetProperty("content").GetString());
         Assert.Equal(before, JsonSerializer.Serialize(request));

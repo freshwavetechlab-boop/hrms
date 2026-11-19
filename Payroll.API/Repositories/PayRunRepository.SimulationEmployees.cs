@@ -55,6 +55,8 @@ ORDER BY e.EmployeeCode,e.Id LIMIT @PageSize OFFSET @Offset", new { ClientId = c
             }
             if (employees.Count < pageSize) break;
         }
+        if (output.Count == 0 && await BeforeJoiningTemplateErrorAsync(db, tx, clientId, templateId!, payPeriod!, searchText) is { } joiningError)
+            throw new InvalidOperationException(joiningError);
         await tx.RollbackAsync(token);
         return output;
     }

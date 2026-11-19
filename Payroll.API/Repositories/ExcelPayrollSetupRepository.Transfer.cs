@@ -131,7 +131,11 @@ public sealed partial class ExcelPayrollSetupRepository
     {
         var value = Regex.Replace(formula.TrimStart('=').ToUpperInvariant(), @"\s+", "");
         value = Regex.Replace(value, @"ROUND\(([^()]*(?:\([^()]*\)[^()]*)*),0\)", "ROUND($1)");
-        return request.FixedPayrollDays.HasValue ? value.Replace("PAYROLL_DAYS", request.FixedPayrollDays.Value.ToString(CultureInfo.InvariantCulture)) : value;
+        if (request.FixedPayrollDays.HasValue) value = value.Replace("PAYROLL_DAYS", request.FixedPayrollDays.Value.ToString(CultureInfo.InvariantCulture));
+        // A captured helper such as Rate = Monthly / Divisor introduces grouping,
+        // not another operation. Compare the engine's parsed tree, retaining
+        // operator order, variable identity, rounding and function arguments.
+        return PayrollFormulaEvaluator.CanonicalStructure(value);
     }
 
     // Deliberately bounded proof. Lookups/external inputs and arbitrary shared cells still require explicit native input mapping. Numeric conditionals use the main payroll AST.

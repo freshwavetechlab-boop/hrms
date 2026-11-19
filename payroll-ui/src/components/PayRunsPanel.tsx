@@ -11,6 +11,7 @@ import { canCreateSelectedPayRunDraft, matchesSelectedPayRunDraftResponse, selec
 import { presentDayText, presentDayTotal } from '../utils/payrollAttendanceDisplay'
 import { matchesPayRunReviewScope } from '../utils/payRunReviewScope'
 import { money } from '../utils/salary'
+import { monthlyAttendanceHasIssue } from '../utils/reviewedExtraPaidUnits'
 import PageTabs from './PageTabs'
 import DataTable, { type Column } from './DataTable'
 import FileDropZone from './FileDropZone'
@@ -188,7 +189,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   const locationAttendanceIssues = new Set(locationContext?.rows.filter(row => row.nativePart && includedIds.includes(row.employeeId)
     && (!row.recorded || !!row.issue)).map(row => row.employeeId)).size
   const rosterMismatch = includedIds.some(id => !regularEmployees.some(employee => employee.id === id))
-  const attendanceIssues = missingAttendance + attendanceRows.filter(row => includedIds.includes(row.employeeId) && attendanceIssue(row)).length + locationAttendanceIssues
+  const attendanceIssues = missingAttendance + attendanceRows.filter(row => includedIds.includes(row.employeeId) && monthlyAttendanceHasIssue(row, clientId)).length + locationAttendanceIssues
   const attendanceReady = !locationLoading && !rosterMismatch && includedCount > 0 && attendanceRows.length > 0 && attendanceIssues === 0
   const reviewRuns = useMemo(() => runs.filter(run => matchesPayRunReviewScope(run, {
     clientId,
@@ -683,11 +684,6 @@ function DiagnosticsPanel({ diagnostics, payPeriod }: { diagnostics: PayRunDiagn
     { key: 'factor', label: 'Factor' },
     { key: 'calculatedAmount', label: 'Amount', value: row => row.calculatedAmount, render: row => money(row.calculatedAmount) }
   ]} /></section>
-}
-
-function attendanceIssue(row: EmployeeMonthlyAttendance) {
-  const working = Number(row.workingDays || 0), present = row.presentDays, payable = Number(row.payableDays || 0), lop = Number(row.lopDays || 0)
-  return working <= 0 || working > 31 || (present != null && (!Number.isFinite(present) || present < 0 || present > working)) || payable > working || Math.abs((payable + lop) - working) > 0.01
 }
 
 function isAdjustmentComponent(component: Component) {

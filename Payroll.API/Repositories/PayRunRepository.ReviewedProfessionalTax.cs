@@ -17,7 +17,7 @@ public partial class PayRunRepository
     private sealed record PtEnvelope(int Version, string Kind, string Payload);
     private sealed class PtSetting { public string Code { get; set; } = ""; public string Json { get; set; } = ""; public bool Enabled { get; set; } }
     private sealed class PtSourceJson { public string Batch { get; set; } = ""; public string Source { get; set; } = ""; }
-    private sealed record PtSource(ExcelPayslipBatch Batch, string Hash);
+    private sealed record PtSource(ExcelPayslipBatch Batch, string Hash, ExcelPayslipCalculationSource Source);
     private sealed record PtReceipt(int ActorId, string Fingerprint, ReviewedProfessionalTaxSaveResult Result,
         IReadOnlyList<ReviewedProfessionalTaxControl?> Previous);
     private sealed record PtPlan(ReviewedProfessionalTaxPreview Preview, List<PayRunSourceEmployee> Employees,
@@ -111,16 +111,32 @@ WHERE b.client_id=@ClientId AND b.id=@Id" + (locked ? " FOR UPDATE" : ""), new {
         // Hash exact raw source text before any response-only employment annotation.
         var hash = ExcelPayslipLegacyReview.SnapshotHash(raw.Batch, raw.Source);
         await ExcelPayslipRepository.AnnotateEmploymentAsync(db, batch, tx, annotateMasterDetails: false);
-        return new(batch, hash);
+        var source = JsonSerializer.Deserialize<ExcelPayslipCalculationSource>(raw.Source, ExcelPayslipRepository.JsonOptions)
+            ?? throw new InvalidOperationException("The captured statutory calculation source is invalid.");
+        return new(batch, hash, source);
     }
-    private static void RequirePtIdentity(PtSource source, PayRunSourceEmployee employee, string rowId, string month)
+    private static void RequirePtIdentity(PtSource source, PayRunSourceEmployee employee, string rowId, string month, bool verifiedSourceCode = false)
     {
         var rows = source.Batch.Rows.Where(row => row.Id == rowId).ToArray();
         if (source.Batch.Month != month || rows.Length != 1 || rows[0].Employment is not { IdentityReviewRequired: false, BlockedForMonth: false } employment
             || employment.EmployeeId != employee.Id || source.Batch.ClientId != employee.ClientId
-            || !rows[0].EmployeeCode.Trim().Equals(employee.EmployeeCode.Trim(), StringComparison.OrdinalIgnoreCase)
-            || source.Batch.Rows.Count(row => row.EmployeeCode.Trim().Equals(employee.EmployeeCode.Trim(), StringComparison.OrdinalIgnoreCase)) != 1)
+            || !(verifiedSourceCode ? employment.EmployeeCode : rows[0].EmployeeCode).Trim().Equals(employee.EmployeeCode.Trim(), StringComparison.OrdinalIgnoreCase)
+            || (verifiedSourceCode ? source.Batch.Rows.Count(row => row.Employment?.EmployeeId == employee.Id)
+                : source.Batch.Rows.Count(row => row.EmployeeCode.Trim().Equals(employee.EmployeeCode.Trim(), StringComparison.OrdinalIgnoreCase))) != 1)
             throw new InvalidOperationException("The source row is not one uniquely verified existing employee in this exact client and payroll month.");
+    }
+    private static void RequirePeriodSourceZeros(PtSource source, PayRunSourceEmployee employee, string rowId,
+        IReadOnlyDictionary<string, int>? columns, string setupJson, bool requirePtZero)
+    {
+        var setup = ReadPayrollSetup(setupJson);
+        var structure = setup.Structures.SingleOrDefault(value => value.Id == employee.SalaryStructureId && value.Active)
+            ?? throw new InvalidOperationException("The source-period review requires an active saved salary template.");
+        var ids = structure.Lines.Select(line => line.ComponentId).ToHashSet(StringComparer.Ordinal);
+        var components = setup.Components.Where(component => component.Active && ids.Contains(component.Id))
+            .Select(component => new SourcePeriodStatutoryComponent(component.Code, component.Category, component.StatutoryType)).ToArray();
+        var sourceRow=source.Batch.Rows.Single(row=>row.Id==rowId);
+        if(requirePtZero)ReviewedSourcePeriodStatutory.RequireNoPositiveSourcePt(source.Source,sourceRow);
+        ReviewedSourcePeriodStatutory.RequireCapturedZeros(source.Source, sourceRow, columns, components);
     }
     private async Task LoadReviewedProfessionalTaxAsync(MySqlConnection db, MySqlTransaction tx, List<PayRunSourceEmployee> employees, string payPeriod)
     {
@@ -142,10 +158,11 @@ WHERE client_id=@ClientId AND ModuleCode IN @Codes", new { ClientId = client.Key
                 var key = (employee.ClientId, control.SourceBatchId);
                 if (!sources.TryGetValue(key, out var source)) sources[key] = source = await ReadPtSourceAsync(db, tx, key.ClientId, key.SourceBatchId, false);
                 setupJson ??= await PayrollDataTableStore.GetSetupJsonAsync(db, tx);
-                if(control.HistoricalReceiptId is null)RequirePtIdentity(source, employee, control.SourceRowId, payPeriod);
+                if(control.HistoricalReceiptId is null)RequirePtIdentity(source, employee, control.SourceRowId, payPeriod, control.Version == 2);
                 else await RequireHistoricalPtReceiptAsync(db,tx,control,employee,setupJson,payPeriod);
                 var seeded = ReadSeededPayrollDeductions(employee).Where(row => row.Code is "PT" or "PT_LWF_WC").Sum(row => row.Amount);
                 setupJson ??= await PayrollDataTableStore.GetSetupJsonAsync(db, tx);
+                if (control.Version == 2) RequirePeriodSourceZeros(source, employee, control.SourceRowId, control.SourceZeroStatutoryColumns, setupJson,control.Mode==ReviewedPeriodProfessionalTax.Reviewed);
                 ReviewedPeriodProfessionalTax.Resolve(control, employee.ClientId, employee.Id, payPeriod, source.Hash,
                     PtBasis(employee, setupJson, payPeriod), employee.LocationParts is not null, seeded, false, false, 0);
                 employee.ReviewedProfessionalTax = control;
@@ -155,6 +172,7 @@ WHERE client_id=@ClientId AND ModuleCode IN @Codes", new { ClientId = client.Key
     private async Task<PtPlan> BuildPtPlanAsync(MySqlConnection db, MySqlTransaction tx, ReviewedProfessionalTaxRequest request, AuthUser actor, bool locked)
     {
         ReviewedPeriodProfessionalTax.Validate(request, saving: locked);
+        if (request.SourcePeriodReviewVersion == 2) ReviewedSourcePeriodStatutory.RequireClosedZeroReview(request, EmployeeEmploymentRules.Today);
         var preview = new ReviewedProfessionalTaxPreview { Request = request };
         if (!await PtTableAsync(db, tx, "modulesettings")) throw new InvalidOperationException("Existing module-settings storage is unavailable. No schema is created by this workflow.");
         var source = await ReadPtSourceAsync(db, tx, request.ClientId, request.SourceBatchId, locked);
@@ -191,7 +209,10 @@ AND p.IsSkipped=FALSE AND p.EmployeeId IN @Ids)", new { request.ClientId, reques
         {
             var employee = employees.SingleOrDefault(employee => employee.Id == row.EmployeeId); if (employee is null) continue;
             var blockers = new List<string>();
-            try { RequirePtIdentity(source, employee, row.SourceRowId, request.PayPeriod); }
+            try {
+                RequirePtIdentity(source, employee, row.SourceRowId, request.PayPeriod, request.SourcePeriodReviewVersion == 2);
+                if (request.SourcePeriodReviewVersion == 2) RequirePeriodSourceZeros(source, employee, row.SourceRowId, row.SourceZeroStatutoryColumns, setupJson,row.Mode==ReviewedPeriodProfessionalTax.Reviewed);
+            }
             catch (InvalidOperationException error) { blockers.Add(error.Message); }
             var key = ReviewedPeriodProfessionalTax.Key(employee.Id, request.PayPeriod);
             var old = records.TryGetValue(key, out var existing) ? ReadPt<ReviewedProfessionalTaxControl>(existing.Json, "PeriodControl") : null;
@@ -213,6 +234,8 @@ AND p.IsSkipped=FALSE AND p.EmployeeId IN @Ids)", new { request.ClientId, reques
                     // A stored/inferred zero must not mask a positive template rule.
                     employee.ReviewedProfessionalTax = new()
                     {
+                        Version = request.SourcePeriodReviewVersion == 2 ? 2 : 1,
+                        SourceZeroStatutoryColumns = row.SourceZeroStatutoryColumns,
                         ClientId = request.ClientId, EmployeeId = employee.Id, PayPeriod = request.PayPeriod,
                         Mode = row.Mode, Amount = row.Amount, SourceBatchId = request.SourceBatchId,
                         SourceRowId = row.SourceRowId, SourceHash = source.Hash, NativeBasisHash = PtBasis(employee, setupJson, request.PayPeriod),
@@ -242,9 +265,10 @@ AND p.IsSkipped=FALSE AND p.EmployeeId IN @Ids)", new { request.ClientId, reques
         await using var tx = await db.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, isReadOnly: true);
         var plan = await BuildPtPlanAsync(db, tx, request, actor, false); await tx.RollbackAsync(); return plan.Preview;
     }
-    public async Task<ReviewedProfessionalTaxSaveResult> SaveReviewedProfessionalTaxAsync(SaveReviewedProfessionalTaxRequest command, AuthUser actor)
+    public async Task<ReviewedProfessionalTaxSaveResult> SaveReviewedProfessionalTaxAsync(SaveReviewedProfessionalTaxRequest command, AuthUser actor, bool sourcePeriod = false)
     {
-        if (!SelectedRunRuntime.Read(configuration).Safe) throw new InvalidOperationException("Reviewed period PT saving requires migrations and workers disabled and outbound delivery suppressed. No control was saved.");
+        if (sourcePeriod) ReviewedSourcePeriodStatutory.RequireClosedZeroReview(command.Request, EmployeeEmploymentRules.Today);
+        else if (!SelectedRunRuntime.Read(configuration).Safe) throw new InvalidOperationException("Reviewed period PT saving requires migrations and workers disabled and outbound delivery suppressed. No control was saved.");
         RequirePtActor(actor, command.Request.ClientId); ReviewedPeriodProfessionalTax.Validate(command.Request, saving: true);
         if (!command.Acknowledged || !ReviewedPeriodProfessionalTax.ValidHash(command.ExpectedPlanHash) || !Guid.TryParse(command.RequestId, out var parsed))
             throw new InvalidOperationException("Preview and explicitly acknowledge the exact source-bound period PT changes before saving.");
@@ -266,6 +290,9 @@ AND p.IsSkipped=FALSE AND p.EmployeeId IN @Ids)", new { request.ClientId, reques
             throw new InvalidOperationException("Source, employee, attendance, existing PT input or payroll state changed. Refresh the preview; no period controls were saved.");
         var controls = plan.Preview.Rows.Select(row => new ReviewedProfessionalTaxControl
         {
+            Version = command.Request.SourcePeriodReviewVersion == 2 ? 2 : 1,
+            SourceZeroStatutoryColumns = command.Request.Rows.Single(input => input.EmployeeId == row.EmployeeId).SourceZeroStatutoryColumns is { } zeros
+                ? new Dictionary<string, int>(zeros, StringComparer.Ordinal) : null,
             ClientId = command.Request.ClientId, EmployeeId = row.EmployeeId, PayPeriod = command.Request.PayPeriod, Mode = row.Mode, Amount = row.Amount,
             SourceBatchId = command.Request.SourceBatchId, SourceRowId = row.SourceRowId, SourceHash = plan.Preview.SourceHash, NativeBasisHash = row.NativeBasisHash,
             Reason = command.Request.Reason.Trim(), ReviewedById = actor.Id, ReviewedBy = actor.Email, ReviewedAtUtc = DateTime.UtcNow, RequestId = requestId

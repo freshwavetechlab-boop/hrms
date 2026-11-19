@@ -1,4 +1,5 @@
 import EmployeeResignationAction from '../components/EmployeeResignationAction'
+import EmptySalarySetupCleanup from '../components/EmptySalarySetupCleanup'
 import TalentAcquisitionEmployeeImport from '../components/TalentAcquisitionEmployeeImport'
 import '../components/EmployeeResignation.css'
 import { useEffect, useMemo, useState } from 'react'
@@ -774,6 +775,7 @@ function EmployeePanel(p: { clientScoped: boolean; employee: Employee; setEmploy
     {p.employeeInfotype !== '0000' && p.employeeInfotype !== 'DOCS' && p.employeeInfotype !== '360' && <div className="grid"><F l="Change reason" w><input value={p.changeReason} onChange={event => p.setChangeReason(event.target.value)} placeholder="Reason for this infotype change" /></F></div>}
     </section>
     {p.employee.id > 0 && p.employee.clientId > 0 && !['0000', 'DOCS', '360'].includes(p.employeeInfotype) && <EmployeeDynamicFields employeeId={p.employee.id} clientId={p.employee.clientId} infotypeCode={p.employeeInfotype} changeReason={p.changeReason} />}
+    {p.employeeInfotype === '0008' && p.employee.id > 0 && <EmptySalarySetupCleanup employeeId={p.employee.id} clientId={p.employee.clientId} employeeCode={p.employee.employeeCode} onApplied={p.closeModal} />}
     <InfotypeHistory employee={p.employee} infotypeCode={p.employeeInfotype} infotypes={p.infotypes} clients={p.clients} locations={p.locations} managerUsers={p.managerUsers} templates={p.templates} />
     <div className="actions">
       <button type="button" className="secondary" onClick={p.closeModal}>{p.employeeInfotype === 'DOCS' || p.employeeInfotype === '360' ? 'Close' : 'Cancel'}</button>

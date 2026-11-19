@@ -8,7 +8,7 @@ using Payroll.API.Repositories;
 
 namespace Payroll.API.Tests.Repositories;
 
-public sealed class ExcelPayrollSalaryOnlySaveTests
+public sealed partial class ExcelPayrollSalaryOnlySaveTests
 {
     private static Employee Candidate() => new()
     {
@@ -104,6 +104,7 @@ public sealed class ExcelPayrollSalaryOnlySaveTests
         public decimal AnnualCtc {get;private set;}
         public string SalaryJson {get;private set;}="{}";
         public bool FailUpdate {get;set;}
+        public Func<string,DbParameterCollection,bool,object?>? CustomExecutor {get;set;}
         public int CommitCalls {get;set;}
         public int RollbackCalls {get;set;}
         [AllowNull] public override string ConnectionString {get;set;}="";
@@ -117,6 +118,7 @@ public sealed class ExcelPayrollSalaryOnlySaveTests
         internal object? Execute(RecordingCommand command,bool scalar)
         {
             var sql=command.CommandText;Commands.Add(new(sql,!scalar,command.ActiveTransaction));
+            if(CustomExecutor is not null)return CustomExecutor(sql,command.Parameters,scalar);
             object? Value(string name)=>command.Parameters.Cast<DbParameter>().Single(p=>p.ParameterName.TrimStart('@')==name).Value;
             if(scalar && sql.StartsWith("SELECT ClientId FROM employees ",StringComparison.Ordinal))return Convert.ToInt32(Value("Id"))==10?11:null;
             if(scalar && sql.StartsWith("SELECT Code FROM salarycomponents ",StringComparison.Ordinal))return Value("Id");

@@ -48,7 +48,7 @@ public sealed class RecurringControlMappingLessonsTests
     {
         var before = JsonSerializer.Serialize(request);
         using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, [lesson]));
-        Assert.Equal("excel-payroll-mapping-v46", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v74", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(lesson.Content, prompt.RootElement.GetProperty("references")[0].GetProperty("content").GetString());
         Assert.Equal(before, JsonSerializer.Serialize(request));
     }

@@ -4573,6 +4573,22 @@ app.MapGet("/api/employees/{id:int}/infotypes", async (EmployeeRepository reposi
 .WithName("GetEmployeeInfotypes")
 .WithOpenApi();
 
+app.MapGet("/api/employees/{id:int}/salary-setup-cleanup", async (EmployeeRepository repository, int id, int clientId, string payPeriod, HttpContext context) =>
+{
+    if (!HasPermission(context, "employees.manage") || !CanAccessClient(context, clientId)
+        || await repository.GetClientIdAsync(id) != clientId) return Results.StatusCode(403);
+    try { return Results.Ok(await repository.PreviewEmptySalaryCleanupAsync(id, clientId, payPeriod)); }
+    catch (InvalidOperationException error) { return Results.BadRequest(new { error = error.Message }); }
+}).WithName("PreviewEmptySalarySetupCleanup");
+
+app.MapPost("/api/employees/{id:int}/salary-setup-cleanup", async (EmployeeRepository repository, int id, EmptySalarySetupCleanupRequest request, HttpContext context) =>
+{
+    if (!HasPermission(context, "employees.manage") || !CanAccessClient(context, request.ClientId)
+        || await repository.GetClientIdAsync(id) != request.ClientId) return Results.StatusCode(403);
+    try { return Results.Ok(await repository.ApplyEmptySalaryCleanupAsync(id, request, CurrentUser(context).Email)); }
+    catch (InvalidOperationException error) { return Results.BadRequest(new { error = error.Message }); }
+}).WithName("ApplyEmptySalarySetupCleanup");
+
 app.MapGet("/api/employees/{id:int}/audit", async (EmployeeRepository repository, int id, HttpContext context) =>
 {
     var clientId = await repository.GetClientIdAsync(id);

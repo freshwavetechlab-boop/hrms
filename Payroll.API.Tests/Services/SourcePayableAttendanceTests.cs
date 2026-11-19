@@ -10,31 +10,37 @@ public sealed class SourcePayableAttendanceTests
 {
     private static SourcePayableAttendanceEvidence Evidence()=>new(1,11,7,"2026-09",new string('a',32),"synthetic-row",new string('b',32),new string('c',64),31,19);
 
-    [Fact]
-    public void ExtraDutyUnitsNeedVersionedReviewAndAreNeverClampedToTheSalaryDivisor()
+    [Theory]
+    [InlineData(26, 29)]
+    [InlineData(26, 40)]
+    [InlineData(31, 40)]
+    public void ExtraDutyUnitsNeedVersionedReviewAndAreNeverClampedToTheSalaryDivisor(int divisor, int units)
     {
-        var e=Evidence() with {Version=2,PayrollDays=26,PayableDays=29,ReviewedExtraDutyUnits=true};
+        var e=Evidence() with {Version=2,PayrollDays=divisor,PayableDays=units,ReviewedExtraDutyUnits=true};
         var encoded=SourcePayableAttendance.Encode(e);
-        var row=new PayRunRepository.PayRunAttendance {EmployeeId=7,WorkingDays=26,PresentDays=null,PayableDays=29,SourceType=SourcePayableAttendance.SourceType,Remarks=encoded};
+        var row=new PayRunRepository.PayRunAttendance {EmployeeId=7,WorkingDays=divisor,PresentDays=null,PayableDays=units,SourceType=SourcePayableAttendance.SourceType,Remarks=encoded};
         PayRunRepository.ReadPayableOnlyAttendance(row,11,"2026-09");
-        Assert.Equal(29,PayRunRepository.NativePayableUnits(row,26));Assert.Null(row.PresentDays);
+        Assert.Equal(units,PayRunRepository.NativePayableUnits(row,divisor));Assert.Null(row.PresentDays);
         Assert.Throws<InvalidOperationException>(()=>SourcePayableAttendance.Encode(e with {Version=1}));
         Assert.Throws<InvalidOperationException>(()=>SourcePayableAttendance.Encode(e with {ReviewedExtraDutyUnits=false}));
         Assert.Throws<InvalidOperationException>(()=>SourcePayableAttendance.Encode(e with {PayableDays=1000}));
-        Assert.Equal(44,SourcePayableAttendance.Read(SourcePayableAttendance.Encode(e with {PayableDays=44}),11,7,"2026-09",26,44).PayableDays);
-        var known=new PayRunRepository.PayRunAttendance {EmployeeId=7,WorkingDays=26,PresentDays=26,PayableDays=29,SourceType="Monthly"};
-        Assert.Equal(26,PayRunRepository.NativePayableUnits(known,26));
+        Assert.Equal(44,SourcePayableAttendance.Read(SourcePayableAttendance.Encode(e with {PayableDays=44}),11,7,"2026-09",divisor,44).PayableDays);
+        var known=new PayRunRepository.PayRunAttendance {EmployeeId=7,WorkingDays=divisor,PresentDays=divisor,PayableDays=units,SourceType="Monthly"};
+        Assert.Equal(divisor,PayRunRepository.NativePayableUnits(known,divisor));
     }
 
-    [Fact]
-    public void NativeSalaryKeepsReviewedSalaryUnitsAboveCalendarDaysAndReconciliationBindsTheirEvidence()
+    [Theory]
+    [InlineData(26, 44, "50769.23")]
+    [InlineData(26, 40, "46153.85")]
+    [InlineData(31, 40, "38709.68")]
+    public void NativeSalaryKeepsReviewedSalaryUnitsAboveCalendarDaysAndReconciliationBindsTheirEvidence(int divisor, int units, string gross)
     {
-        var result=Calculate(null,payrollDays:26,payable:44,extraDuty:true);
-        Assert.Null(result.PresentDays);Assert.Equal(44,result.PayableDays);Assert.Equal(50769.23m,result.GrossPay);
-        Assert.True(PayRunRepository.HasReviewedExtraDutySnapshot(result.DetailsJson,11,7,"2026-09",26,44));
-        Assert.False(PayRunRepository.HasReviewedExtraDutySnapshot(result.DetailsJson,11,7,"2026-10",26,44));
-        Assert.False(PayRunRepository.HasReviewedExtraDutySnapshot(result.DetailsJson,11,7,"2026-09",26,43));
-        Assert.Throws<InvalidOperationException>(()=>Calculate(null,payrollDays:26,payable:44));
+        var result=Calculate(null,payrollDays:divisor,payable:units,extraDuty:true);
+        Assert.Null(result.PresentDays);Assert.Equal(units,result.PayableDays);Assert.Equal(decimal.Parse(gross,System.Globalization.CultureInfo.InvariantCulture),result.GrossPay);
+        Assert.True(PayRunRepository.HasReviewedExtraDutySnapshot(result.DetailsJson,11,7,"2026-09",divisor,units));
+        Assert.False(PayRunRepository.HasReviewedExtraDutySnapshot(result.DetailsJson,11,7,"2026-10",divisor,units));
+        Assert.False(PayRunRepository.HasReviewedExtraDutySnapshot(result.DetailsJson,11,7,"2026-09",divisor,units-1));
+        Assert.Throws<InvalidOperationException>(()=>Calculate(null,payrollDays:divisor,payable:units));
     }
 
     [Fact]

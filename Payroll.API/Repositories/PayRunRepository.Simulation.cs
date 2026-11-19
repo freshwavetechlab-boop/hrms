@@ -188,7 +188,9 @@ public partial class PayRunRepository
         var result = new PayrollSimulationResult { Mode = "Employee", ClientId=request.ClientId,EmployeeId=request.EmployeeId,PayPeriod=request.PayPeriod,
             Coverage = "Saved salary assignment, attendance, eligible approved regular-period adjustments, dated PF, professional tax and projected TDS. What-if inputs are temporary; no payrun or tax snapshot is saved. Already-applied adjustments are excluded." };
         var employee = shared is not null ? shared.Employees.GetValueOrDefault(request.EmployeeId!.Value) : await db.QuerySingleOrDefaultAsync<PayRunSourceEmployee>(new CommandDefinition("SELECT e.*, c.Name ClientName,COALESCE(w.State,'') WorkState FROM employees e JOIN clients c ON c.Id=e.ClientId LEFT JOIN worklocations w ON w.Id=e.WorkLocationId WHERE e.Id=@EmployeeId AND e.ClientId=@ClientId AND " + EmployeeEmploymentRules.EligibleInMonth("e", "@PayPeriod"), new { request.EmployeeId, request.ClientId, request.PayPeriod }, tx, cancellationToken: token));
-        if (employee is null) throw new InvalidOperationException("No active employee belongs to this client with the selected ID.");
+        if (employee is null)
+            throw new InvalidOperationException(await BeforeJoiningEmployeeErrorAsync(db, tx, request.ClientId, request.EmployeeId!.Value, request.PayPeriod)
+                ?? "No active employee belongs to this client with the selected ID.");
         result.Employee = $"{employee.EmployeeCode} - {employee.FirstName} {employee.LastName}".Trim();
         if(shared is null) await LoadEmployeeTablesAsync(db, tx, [employee], request.PayPeriod, loadReviewedProfessionalTax: historicalAssignment is null);
         if(historicalData is not null&&historicalContext!.PreparationErrors.TryGetValue(employee.Id,out var preparationError))preparationError.Throw();

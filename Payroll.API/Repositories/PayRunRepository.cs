@@ -854,6 +854,8 @@ AND NOT EXISTS (
     {
         if (employee.LocationParts is { } locationPeriod && locationPeriod.PayPeriod != payPeriod)
             throw new InvalidOperationException("Location attendance allocations belong to another payroll period.");
+        if (employee.ReviewedProfessionalTax is { Version: 2 } reviewedPeriod)
+            ReviewedPeriodProfessionalTax.RequireControl(reviewedPeriod, employee.ClientId, employee.Id, payPeriod);
         if(!presentDays.HasValue&&employee.PayableOnlyAttendance?.PayPeriod!=payPeriod&&employee.ReportedPendingSeed?.PayPeriod!=payPeriod)
             throw new InvalidOperationException("Unknown actual presence requires reviewed payable-only attendance for this exact payroll period.");
         var setup = ReadPayrollSetup(setupJson);
@@ -1046,6 +1048,12 @@ AND NOT EXISTS (
 
         if (structure is not null && structure.Lines.Count > 0 && (monthlyTarget > 0 || hasDailyRates || employee.SimulationAnnualCtc.HasValue))
         {
+            if (employee.ReviewedProfessionalTax is { Version: 2, SourceZeroStatutoryColumns: { } zeroColumns })
+                foreach (var code in zeroColumns.Keys)
+                    if (structure.Lines.Count(line => componentById.TryGetValue(line.ComponentId, out var component)
+                            && component.Active && component.Code == code
+                            && ReviewedPeriodProfessionalTax.CanReviewSourceZero(component.Category, component.StatutoryType)) != 1)
+                        throw new InvalidOperationException("A reviewed source-zero PF/ESIC component is missing, duplicated or changed in the effective template.");
             ValidateRuntimePfMappings(setup.Components, structure, employee.PfPolicyPeriod);
             var overrides = new Dictionary<string, decimal>();
             // Legacy employee salary maps contain calculated values as well as overrides. Compare sequential full-month values, not earned-period values.
@@ -1059,7 +1067,8 @@ AND NOT EXISTS (
             // effective expression above. This unused arithmetic operand is not
             // stored, exposed, or permitted to resolve a PRESENT_DAYS formula.
             return CalculateStructureLines(setup.Components, structure, monthlyTarget, payrollDays, presentDays.GetValueOrDefault(), payableDays, employee.PfPolicyPeriod, overrides, trace: trace,
-                reviewedExtraDutyUnits: employee.PayableOnlyAttendance?.ReviewedExtraDutyUnits == true, reviewedProfessionalTax: employee.ReviewedProfessionalTax?.Amount, namedInputs: employee.NamedInputs);
+                reviewedExtraDutyUnits: employee.PayableOnlyAttendance?.ReviewedExtraDutyUnits == true, reviewedProfessionalTax: employee.ReviewedProfessionalTax?.Amount, namedInputs: employee.NamedInputs,
+                reviewedSourceZeroCodes: employee.ReviewedProfessionalTax is { Version: 2, SourceZeroStatutoryColumns: { } zeros } ? zeros.Keys.ToHashSet(StringComparer.Ordinal) : null);
         }
         if (employee.PfPolicyPeriod is not null)
             throw new InvalidOperationException("The published PF policy requires its salary template and a positive monthly salary base.");
@@ -1142,7 +1151,7 @@ AND NOT EXISTS (
                 r.DailyRate is decimal rate ? decimal.Round(rate * payableDays, 2) : r.Component.ProRata ? decimal.Round(r.Monthly * payableDays / payrollDays, 2) : r.Monthly)).ToList();
     }
 
-    private static List<CalculatedPayrollComponent> CalculateStructureLines(List<PayrollComponent> components, SalaryStructureSetup structure, decimal monthlyTarget, int payrollDays, decimal presentDays, decimal payableDays, PfPolicyPeriod? pfPeriod = null, Dictionary<string, decimal>? overrides = null, Dictionary<string, decimal>? storedAmounts = null, Dictionary<string, decimal>? inferredOverrides = null, List<PayrollSimulationLine>? trace = null, bool reviewedExtraDutyUnits = false, decimal? reviewedProfessionalTax = null, NamedFormulaInputContext? namedInputs = null)
+    private static List<CalculatedPayrollComponent> CalculateStructureLines(List<PayrollComponent> components, SalaryStructureSetup structure, decimal monthlyTarget, int payrollDays, decimal presentDays, decimal payableDays, PfPolicyPeriod? pfPeriod = null, Dictionary<string, decimal>? overrides = null, Dictionary<string, decimal>? storedAmounts = null, Dictionary<string, decimal>? inferredOverrides = null, List<PayrollSimulationLine>? trace = null, bool reviewedExtraDutyUnits = false, decimal? reviewedProfessionalTax = null, NamedFormulaInputContext? namedInputs = null, IReadOnlySet<string>? reviewedSourceZeroCodes = null)
     {
         var componentById = components.ToDictionary(component => component.Id);
         var values = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
@@ -1280,6 +1289,15 @@ AND NOT EXISTS (
                 effectiveComponent = effectiveComponent with { ProRata = false, CalculationType = "Fixed Amount", Formula = monthly.ToString(CultureInfo.InvariantCulture), Value = monthly.ToString(CultureInfo.InvariantCulture) };
                 dailyRate = null;
             }
+            var reviewedSourceZero = reviewedSourceZeroCodes?.Contains(component.Code) == true;
+            if (reviewedSourceZero)
+            {
+                if (!ReviewedPeriodProfessionalTax.CanReviewSourceZero(component.Category, component.StatutoryType)
+                    || pfSnapshot is not null)
+                    throw new InvalidOperationException("Source-zero review cannot replace an earning, unsupported component or a published PF policy. Review that policy separately.");
+                monthly = 0; dailyRate = null;
+                effectiveComponent = effectiveComponent with { ProRata = false, CalculationType = "Fixed Amount", Formula = "0", Value = "0" };
+            }
             var raw = monthly;
             monthly = Math.Max(0, decimal.Round(monthly, 2));
             values[component.Id] = monthly;
@@ -1290,9 +1308,9 @@ AND NOT EXISTS (
             values[$"{component.Id}_EARNED"] = earned;
             values[$"{component.Code}_EARNED"] = earned;
             rows.Add(new CalculatedPayrollComponent(effectiveComponent, monthly, pfSnapshot, dailyRate));
-            if (trace is not null) trace.Add(CreateSimulationTrace(effectiveComponent, reviewedPtLine ? effectiveComponent.Formula : formula, raw, monthly, earned, dailyRate, payableDays, pfSnapshot is not null, overrides?.ContainsKey(component.Id) == true, traceInputs!) with
+            if (trace is not null) trace.Add(CreateSimulationTrace(effectiveComponent, reviewedPtLine || reviewedSourceZero ? effectiveComponent.Formula : formula, raw, monthly, earned, dailyRate, payableDays, pfSnapshot is not null, overrides?.ContainsKey(component.Id) == true, traceInputs!) with
             {
-                Source = reviewedPtLine ? "Reviewed source-bound period Professional Tax amount" : pfSnapshot is not null ? "Effective-dated PF policy (overrides formula)" : overrides?.ContainsKey(component.Id) == true ? "Employee / what-if amount override" : "Component / template default",
+                Source = reviewedSourceZero ? "Reviewed source-bound PF/ESIC zero for this payroll month" : reviewedPtLine ? "Reviewed source-bound period Professional Tax amount" : pfSnapshot is not null ? "Effective-dated PF policy (overrides formula)" : overrides?.ContainsKey(component.Id) == true ? "Employee / what-if amount override" : "Component / template default",
                 // Observational trace only: retain the actual input to the earned currency-rounding stage.
                 NamedOperands = namedInputs,
                 UnroundedEarned = dailyRate is decimal tracedRate ? tracedRate * payableDays
@@ -2267,12 +2285,17 @@ LIMIT 1;", new { request.PayPeriod, request.ClientId }, transaction);
     {
         var requestedIncludedIds = request.IncludedEmployeeIds.Distinct().ToHashSet();
         var activeEmployeeIds = employees.Select(employee => employee.Id).ToHashSet();
+        foreach (var id in requestedIncludedIds.Except(activeEmployeeIds))
+            if (await BeforeJoiningEmployeeErrorAsync(connection, transaction, request.ClientId, id, request.PayPeriod) is { } joiningError)
+                throw new InvalidOperationException(joiningError);
         var includedEmployeeIds = requestedIncludedIds.Count > 0
             ? activeEmployeeIds.Where(requestedIncludedIds.Contains).ToHashSet()
             : activeEmployeeIds.Except(request.ExcludedEmployeeIds).ToHashSet();
 
         if (includedEmployeeIds.Count == 0)
         {
+            if (await BeforeJoiningTemplateErrorAsync(connection, transaction, request.ClientId, null, request.PayPeriod, "") is { } joiningError)
+                throw new InvalidOperationException(joiningError);
             request.IncludedEmployeeIds = [];
             request.ExcludedEmployeeIds = [];
             return [];

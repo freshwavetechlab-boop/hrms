@@ -6,6 +6,14 @@ namespace Payroll.API.Services;
 // are never removed when an employee leaves.
 internal static class EmployeeEmploymentRules
 {
+    internal static string? BeforeJoiningPayrollError(string? joiningDate, string month, string? employeeCode = null)
+    {
+        if (!DateTime.TryParseExact(joiningDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var joined)
+            || !DateTime.TryParseExact(month + "-01", "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var start)
+            || joined.Date <= start.AddMonths(1).AddDays(-1)) return null;
+        var subject = string.IsNullOrWhiteSpace(employeeCode) ? "The selected employees join on or after" : $"Employee {employeeCode} joined on";
+        return $"Payroll cannot be generated for {start.ToString("MMMM yyyy", CultureInfo.InvariantCulture)}. {subject} {joined.ToString("d MMMM yyyy", CultureInfo.InvariantCulture)}.";
+    }
     internal static DateTime Today => TimeZoneInfo.ConvertTimeBySystemTimeZoneId(DateTime.UtcNow, "Asia/Kolkata").Date;
     internal static readonly string[] ExitActions = ["Resign", "Retire", "Terminate"];
     internal static string LatestAction(string employeeAlias, string dateExpression) => $@"(SELECT lifecycle.ActionType

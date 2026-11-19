@@ -9,7 +9,7 @@ namespace Payroll.API.Services;
 public sealed class ExcelPayslipMappingService(RecruitmentAiScoringService ai,
     IWebHostEnvironment environment, ILogger<ExcelPayslipMappingService> logger)
 {
-    internal const string KnowledgeVersion = "excel-payroll-mapping-v73";
+    internal const string KnowledgeVersion = "excel-payroll-mapping-v74";
     internal static readonly HashSet<string> Kinds = ["employeeName", "employeeCode", "email", "info", "earning", "deduction", "employer", "netPay", "grossTotal", "deductionTotal", "ignore"];
     private static readonly HashSet<string> Functions = ["SUM", "ROUND", "ROUNDUP", "ROUNDDOWN", "IF", "IFERROR", "MIN", "MAX", "SUMIF", "SUMIFS", "COUNT", "COUNTA", "COUNTIF", "COUNTIFS", "AND", "OR", "ABS", "CEILING", "FLOOR", "VLOOKUP", "HLOOKUP", "XLOOKUP", "INDEX", "MATCH"];
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -111,9 +111,25 @@ public sealed class ExcelPayslipMappingService(RecruitmentAiScoringService ai,
             && columns.Any(contribution => contribution.Kind is "deduction" or "employer" && contribution.HasFormula
                 && !contribution.DependencyEvidenceIncomplete && contribution.FormulaFunctions.Contains("IF")
                 && Regex.IsMatch(HeaderKey(contribution.SourceHeader), "PF|PROVIDENTFUND|ESIC?") && contribution.FormulaDependencies.Contains(revised.ColumnIndex)));
+        // Keep this helper-chain lesson out of unrelated allowance/day layouts;
+        // adding a generic reference must not displace their existing lessons.
+        var helperProrationChain = columns.Any(helper => helper.HasFormula
+            && !helper.DependencyEvidenceIncomplete && helper.CrossSheetDependencies.Count == 0
+            && Regex.IsMatch(HeaderKey(helper.SourceHeader), "^(?:PERDAYSRATE|PERDAYRATE|DAILYRATE)$")
+            && columns.Any(monthly => monthly.Kind is "info" or "ignore" && monthly.HasNumbers && !monthly.HasFormula
+                && HeaderKey(monthly.SourceHeader) == "MONTHLYRATE" && helper.FormulaDependencies.Contains(monthly.ColumnIndex))
+            && columns.Any(divisor => divisor.Kind is "info" or "ignore" && divisor.HasNumbers
+                && HeaderKey(divisor.SourceHeader) == "TOTALWORKINGDAYS" && helper.FormulaDependencies.Contains(divisor.ColumnIndex))
+            && columns.Any(earned => earned.Kind == "earning" && earned.HasFormula && BasicHeading(earned.SourceHeader)
+                && !earned.DependencyEvidenceIncomplete && earned.CrossSheetDependencies.Count == 0
+                && earned.FormulaDependencies.Contains(helper.ColumnIndex)
+                && columns.Any(units => units.Kind is "info" or "ignore" && units.HasNumbers
+                    && Regex.IsMatch(HeaderKey(units.SourceHeader), "^(?:ACTUALWORKING|PAYABLE|PAID)DAYS$")
+                    && earned.FormulaDependencies.Contains(units.ColumnIndex))));
         var query = Tokens(string.Join(" ", columns.Select(c => SafeText(c.SourceHeader))));
         var chunks = Regex.Split(knowledge, @"\r?\n(?=## )").Where(c => c.StartsWith("## ")
                 && (monthlyInputAliases || !c.StartsWith("## Monthly Basic Basic Pay: dependency-bound blank template inputs"))
+                && (helperProrationChain || !c.StartsWith("## Monthly Rate Total Working Days Actual Working Days Per Days Rate Basic Salary: helper proration"))
                 && (revisedBasicChain || !c.StartsWith("## Original Basic Increment Revised Basic Earned Basic PF ESIC: dependency-preserved source setup")))
             .Select((c, i) => new Reference("excel-payroll-mapping.md#" + (i + 1), c.Split('\n')[0].TrimStart('#', ' ', '\r'), c.Trim()))
             .Select(r => (Item: r, Score: Tokens(r.Content).Count(query.Contains)))

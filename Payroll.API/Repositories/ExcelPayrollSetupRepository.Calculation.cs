@@ -299,9 +299,9 @@ public sealed partial class ExcelPayrollSetupRepository
         ExcelPayrollSetupEmployeeDecision? decision, List<ExcelPayrollSetupIssue> issues)
     {
         void Error(string message) => issues.Add(new("Error", message, row.Id));
-        var pan = Info(information,"PAN","PAN Number","PAN No"); var aadhaar = Info(information,"Aadhaar","Aadhar","Aadhaar Number"); var uan = Info(information,"UAN","UAN Number","UAN No");
+        var pan = PayrollIdentityValue(Info(information,"PAN","PAN Number","PAN No")); var aadhaar = PayrollIdentityValue(Info(information,"Aadhaar","Aadhar","Aadhaar Number")); var uan = PayrollIdentityValue(Info(information,"UAN","UAN Number","UAN No"));
         var code = existing.Where(e => e.EmployeeCode.Equals(row.EmployeeCode, StringComparison.OrdinalIgnoreCase)).ToList();
-        var strong = existing.Where(e => pan.Length > 0 && Normalize(e.Pan) == Normalize(pan) || aadhaar.Length > 0 && Normalize(e.Aadhaar) == Normalize(aadhaar) || uan.Length > 0 && Normalize(e.Uan) == Normalize(uan)).ToList();
+        var strong = existing.Where(e => pan.Length > 0 && PayrollIdentityValue(e.Pan) == pan || aadhaar.Length > 0 && PayrollIdentityValue(e.Aadhaar) == aadhaar || uan.Length > 0 && PayrollIdentityValue(e.Uan) == uan).ToList();
         if (code.Count > 1 || strong.Count > 1 || code.Count == 1 && strong.Count == 1 && code[0].Id != strong[0].Id) { Error("Employee code or identity fields match conflicting master records."); return null; }
         Identity? selected = null;
         if (decision?.MatchedEmployeeId is int explicitId)
@@ -324,11 +324,17 @@ public sealed partial class ExcelPayrollSetupRepository
             var anchoredName = code.Count == 1 && code[0].Id == selected.Id || strong.Count == 1 && strong[0].Id == selected.Id;
             var sourceName = anchoredName ? Regex.Replace(row.EmployeeName.Trim(), @"^(?:Mr|Ms)\.?\s+", "", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) : row.EmployeeName;
             if (Normalize(selected.Name) != Normalize(sourceName)) Error("The source name differs from the matched employee. Resolve identity before importing salary.");
-            if (pan.Length > 0 && selected.Pan.Length > 0 && Normalize(pan) != Normalize(selected.Pan)
-                || aadhaar.Length > 0 && selected.Aadhaar.Length > 0 && Normalize(aadhaar) != Normalize(selected.Aadhaar)
-                || uan.Length > 0 && selected.Uan.Length > 0 && Normalize(uan) != Normalize(selected.Uan)) Error("A source identity field conflicts with the matched employee.");
+            if (pan.Length > 0 && PayrollIdentityValue(selected.Pan).Length > 0 && pan != PayrollIdentityValue(selected.Pan)
+                || aadhaar.Length > 0 && PayrollIdentityValue(selected.Aadhaar).Length > 0 && aadhaar != PayrollIdentityValue(selected.Aadhaar)
+                || uan.Length > 0 && PayrollIdentityValue(selected.Uan).Length > 0 && uan != PayrollIdentityValue(selected.Uan)) Error("A source identity field conflicts with the matched employee.");
         }
         return selected;
+    }
+    internal static string PayrollIdentityValue(string? value)
+    {
+        var normalized = Normalize(value ?? "");
+        return normalized is "NA" or "NIL" or "NONE" or "NULL" or "NOTAVAILABLE" or "NOTAPPLICABLE"
+            || normalized.All(character => character == '0') ? "" : normalized;
     }
 
     internal static Employee NewEmployee(int clientId, ExcelPayslipRow row, ExcelPayrollSetupRequest request, Dictionary<string,string> information) => new()

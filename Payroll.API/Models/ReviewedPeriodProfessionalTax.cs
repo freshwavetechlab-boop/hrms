@@ -6,9 +6,13 @@ public sealed class ReviewedProfessionalTaxRow
     public string SourceRowId { get; set; } = "";
     public string Mode { get; set; } = "";
     public decimal? Amount { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string, int>? SourceZeroStatutoryColumns { get; set; }
 }
 public sealed class ReviewedProfessionalTaxRequest
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public int SourcePeriodReviewVersion { get; set; }
     public int ClientId { get; set; }
     public string PayPeriod { get; set; } = "";
     public string SourceBatchId { get; set; } = "";
@@ -36,6 +40,8 @@ public sealed class ReviewedProfessionalTaxControl
     public string RequestId { get; set; } = "";
     [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? HistoricalReceiptId { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string, int>? SourceZeroStatutoryColumns { get; set; }
 }
 public sealed record ReviewedProfessionalTaxPreviewRow(int EmployeeId, string EmployeeCode, string EmployeeName,
     string SourceRowId, string CurrentMode, decimal? CurrentAmount, string Mode, decimal? Amount,

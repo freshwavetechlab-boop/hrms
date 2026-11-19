@@ -1,4 +1,5 @@
 import { calculateReviewShift, resolveAttendanceShift, manualHalfDayAttendance, manualHalfDayStatus, hasExplicitAttendancePolicy } from '../shared/attendanceShift'
+import { hasReviewedExtraPaidUnits, monthlyAttendanceHasIssue } from '../utils/reviewedExtraPaidUnits'
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { DownloadOutlined, UploadOutlined } from '@ant-design/icons'
 import { Button, Card, Input, Space, Typography } from 'antd'
@@ -167,6 +168,7 @@ const isDateInCycle = (date: string, preferences: LeaveAttendancePreferences) =>
 }
 
 const reviewStatus = (row: EmployeeMonthlyAttendance): ReviewStatus => {
+  if (hasReviewedExtraPaidUnits(row)) return monthlyAttendanceHasIssue(row) ? 'Check values' : 'Ready'
   const workingDays = toNumber(row.workingDays), presentDays = toNumber(row.presentDays), payableDays = toNumber(row.payableDays), lopDays = toNumber(row.lopDays)
   if (workingDays <= 0 && presentDays <= 0 && payableDays <= 0) return 'Missing attendance'
   if (payableDays < 0 || presentDays < 0 || lopDays < 0 || payableDays > workingDays || presentDays > workingDays) return 'Check values'

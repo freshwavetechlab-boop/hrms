@@ -25,7 +25,7 @@ public sealed class DailyRateMappingLessonTests
         Assert.Contains("cached result is never a rule", lesson.Content);
         Assert.Contains("Unknown actual presence stays unknown", lesson.Content);
         using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, references));
-        Assert.Equal("excel-payroll-mapping-v46", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v74", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(lesson.Content, prompt.RootElement.GetProperty("references").EnumerateArray()
             .Single(x => x.GetProperty("title").GetString() == lesson.Title).GetProperty("content").GetString());
         Assert.Equal(before, JsonSerializer.Serialize(request));
