@@ -12,10 +12,13 @@ await fs.mkdir(path.join(out, 'inputs'), { recursive: true })
 const components = [
   { id: 11, code: 'BASIC', name: 'Basic', category: 'Earning', calculationType: 'Fixed Amount', value: '', formula: '', proRata: true, componentRole: 'Regular Earning', priority: '1' },
   { id: 12, code: 'PF', name: 'PF', category: 'Deduction', calculationType: 'Formula', value: '', formula: 'MIN(BASIC_EARNED,15000)*12%', proRata: false, componentRole: 'Other Deduction', priority: '90' },
+  { id: 13, code: 'OTHER_SITE_WAGES', name: 'Other site wages', category: 'Earning', calculationType: 'Fixed Amount', value: '12000', formula: '', proRata: true, componentRole: 'Regular Earning', priority: '1' },
+  { id: 14, code: 'OTHER_SITE_PF', name: 'Other site PF', category: 'Deduction', calculationType: 'Formula', value: '', formula: 'MIN(OTHER_SITE_WAGES_EARNED,15000)*12%', proRata: false, componentRole: 'Other Deduction', priority: '90' },
 ].map(c => ({ componentType: 'Salary', statutoryType: 'None', baseComponent: '', payType: 'Fixed Pay', taxable: true, ctc: c.category === 'Earning', fbp: false, restrictFbp: false, epf: '', esi: false, recurring: true, scheduled: false, investmentType: '', correctionOf: '', active: true, ...c }))
 const clients = [{ id: 901, name: 'Example multi-location client' }, { id: 902, name: 'Example other client' }]
 const locations = [{ id: 71, clientId: 901, name: 'Site A', isActive: true }, { id: 72, clientId: 901, name: 'Site B', isActive: true }, { id: 73, clientId: 902, name: 'Other site', isActive: true }]
 const templates = Array.from({ length: 18 }, (_, i) => ({ id: i + 1, clientId: i === 17 ? '902' : '901', name: `Saved ${i === 17 ? 'other client' : 'site'} template ${String(i + 1).padStart(2, '0')}`, annualCtc: '', active: true, lines: [{ componentId: '11', value: '', proRataOverride: 'true' }], excelSource: { version: 1, fileName: 'Synthetic original.xlsx', sheetName: 'Salary', headerRow: 4, sampleRow: 5, payPeriod: '2026-10', payrollDays: i % 2 ? 30 : 26, workLocationLabel: i % 2 ? 'Site B' : 'Site A', columns: [] } }))
+templates.push({ id: 19, clientId: '902', name: 'Other-site payroll', annualCtc: '', active: true, lines: [{ componentId: '13', value: '12000', proRataOverride: 'true' }, { componentId: '14', value: 'MIN(OTHER_SITE_WAGES_EARNED,15000)*12%', proRataOverride: 'false' }] })
 const exported = {}
 new Function('exports', ts.transpileModule(await fs.readFile(path.join(root, 'src/utils/xlsx.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText)(exported)
 const input = value => ({ value, type: typeof value === 'number' ? 'number' : 'text' })
@@ -25,7 +28,7 @@ const data = n => [input(`Synthetic employee ${n - 4}`), input(10000), input(26)
 const sheets = [{ name: 'Cover', rows: [['Synthetic workbook'], ['Open the Salary worksheet']] }, { name: 'Salary', rows: [['Example salary statement'], ['October 2026'], ['Site A'], headers.map(input), data(5), data(6)] }]
 await fs.writeFile(path.join(out, 'inputs/salary-site-a.xlsx'), Buffer.from(await exported.buildXlsxBlob(sheets).arrayBuffer()))
 const native = path.join(toolsRoot, 'fixtures/SalaryTemplateTools.Native/bin/Debug/net8.0/Native.dll')
-const state = { nativeRequests: [], blockedWrites: 0, saves: [], databaseWrites: 0, emailsSent: 0 }
+const state = { nativeRequests: [], catalogueRequests: [], blockedWrites: 0, saves: [], databaseWrites: 0, emailsSent: 0 }
 const calculate = payload => new Promise((resolve, reject) => {
   const child = spawn('dotnet', [native], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
   let stdout = '', stderr = ''; const timeout = setTimeout(() => child.kill(), 60000)
@@ -49,6 +52,12 @@ const plugin = {
       if (!route.startsWith('/api/')) return next()
       if (req.method === 'GET' && route === '/api/auth/me') return reply({ id: 996, email: 'reviewer@example.test', displayName: 'Local reviewer', isActive: true, mustChangePassword: false, clientId: null, roles: ['Admin'], permissions: ['settings.manage', 'security.manage', 'employees.manage'], clientAccessMode: 'All', assignedClientIds: [] })
       if (req.method === 'GET' && route.startsWith('/api/excel-payslips/profiles')) return reply({ error: 'No saved mapping in synthetic fixture.' }, 404)
+      if (req.method === 'POST' && route === '/api/payroll-calculation/catalogue') {
+        const request = await body()
+        const result = await calculate({ operation: 'catalogue', request })
+        state.catalogueRequests.push({ includedComponentIds: request.includedComponentIds, excludeComponentId: request.excludeComponentId, tokens: result.map(row => row.token) })
+        return reply(result)
+      }
       if (req.method === 'POST' && ['/api/payroll-calculation/extract-template', '/api/payroll-calculation/simulate'].includes(route)) {
         const request = await body(), operation = route.endsWith('simulate') ? 'simulate' : 'extract'
         if (request.clientId !== 901 && request.clientId !== 902) return reply({ error: 'Client not permitted.' }, 403)

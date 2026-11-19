@@ -288,7 +288,7 @@ test('five actual financial cases propose monthly bases, earned tokens, per-row 
   const ordinaryComponents = request.components.map(component => ({ ...component, id: component.key, active: true }))
   for (const code of ['EPF_ADMIN', 'EPF_EDLI', 'EPF_ER', 'ESIC_ER'])
     assert.deepEqual(validateSalaryComponent(ordinaryComponents.find(component => component.code === code), ordinaryComponents), [], `${code} must remain valid in the existing salary component editor`)
-  assert.equal(byCode.get('ESIC').rowFormulas['row-86'], 'BASIC_MONTHLY*0.75%')
+  assert.equal(byCode.get('ESIC').rowFormulas['row-86'], 'IF(BASIC_MONTHLY<=21000,BASIC_MONTHLY*0.75%,0)')
   assert.equal(byCode.get('STAT_BONUS').rowFormulas['row-86'], 'BASIC_EARNED*8.33%')
   assert.equal(byCode.get('TA_DA').category, 'Reimbursement'); assert.equal(byCode.get('TA_DA').isPeriodAdjustment, true)
   assert.equal(byCode.get('RECOVERY').isPeriodAdjustment, true)
@@ -332,8 +332,116 @@ test('a calculated condition is never frozen from its cached result', () => {
   const { batch, context, rowIds } = fixture()
   context.source.rows.find(row => row.sourceRow === 3).cells[22].formulaText = 'IF(O3>20000,O3*12%,0)'
   const proposal = proposeExcelPayrollSetup(batch, context, rowIds)
-  assert.equal(proposal.request.components.find(item => item.code === 'PF').rowFormulas['row-3'], 'REVIEW_REQUIRED')
-  assert.ok(proposal.notes.some(note => /calculated condition/.test(note)))
+  assert.equal(proposal.request.components.find(item => item.code === 'PF').rowFormulas['row-3'], 'IF(BASIC_EARNED>20000,BASIC_EARNED*12%,0)')
+  assert.ok(!proposal.notes.some(note => /calculated condition/.test(note)))
+})
+
+function revisedBasicFixture() {
+ const headers=['Employee name','Basic','','Basic','Total Days','Working Days','Earned Basic','PF employer','ESI employer','PF','ESI']
+ const source={headerRow:1,columnCount:headers.length,columns:headers.map((sourceHeader,columnIndex)=>({columnIndex,sourceHeader,label:sourceHeader||'Increment',kind:['employeeName','info','ignore','info','info','info','earning','employer','employer','deduction','deduction'][columnIndex]})),rows:[]}
+ const batch={id:'revised-monthly-base',clientId:9,clientName:'Synthetic',month:'2026-10',rows:[]}
+ for(const [index,base] of [12000,24000,15000,14000].entries()){
+  const row=index+2,id='revised-'+row,increment=index<2?base*.05:index===2?'':0,current=index===3?20000:base+Number(increment),earned=current/30*20,pf=Math.min(earned,25000)*.12,esi=current>21000?0:earned*.0075
+  const values=['Synthetic '+index,String(base),String(increment),String(current),'30','20',String(earned),String(Math.min(current,25000)*.13),String(current>21000?0:earned*.0325),String(pf),String(esi)]
+  const formulas={...(index<2?{2:`B${row}*5%`}:{}),...(index!==3?{3:`B${row}+C${row}`}:{}) ,6:`D${row}/E${row}*F${row}`,7:`IF(D${row}>25000,25000*13%,D${row}*13%)`,8:`IF(D${row}>21000,0,G${row}*3.25%)`,9:`IF(G${row}>25000,25000*12%,G${row}*12%)`,10:`IF(D${row}>21000,0,G${row}*0.75%)`}
+  source.rows.push({sourceRow:row,cells:values.map((value,column)=>({value,dataType:column===0?'Text':value===''?'Blank':'Number',...(formulas[column]?{formulaText:formulas[column]}:{})}))})
+  batch.rows.push({id,sourceRow:row,employeeName:values[0],employeeCode:'SYN-'+index,earnings:[{label:'Basic',amount:earned}],deductions:[{label:'PF',amount:pf},{label:'ESI',amount:esi}],netPay:earned-pf-esi})
+ }
+ const context={source,components:[],employees:[],workWeeks:[],workLocations:[],rowScopedRecurringBlankInputReviewSupported:true}
+ return {batch,source,context}
+}
+
+test('revised Basic arithmetic and ESI conditions preserve dependency rules, including separately scoped blank increments',()=>{
+ const {batch,source,context}=revisedBasicFixture(),before=JSON.stringify({batch,source,context}),{request}=proposeExcelPayrollSetup(batch,context,batch.rows.map(row=>row.id)),evaluate=load('payrollFormula').evaluatePayrollFormula
+ assert.equal(request.components.length,5)
+ assert.equal(request.components.find(c=>c.code==='BASIC').sourceColumnIndex,undefined,'derived monthly caches cannot become a recurring literal')
+ assert.ok(request.components.every(c=>!Object.values(c.rowFormulas||{}).includes('REVIEW_REQUIRED')))
+ assert.deepEqual(request.recurringBlankInputReview.rowIds,['revised-4']);assert.deepEqual(request.recurringBlankInputReview.columnIndices,[2])
+ assert.equal(request.recurringBlankInputReview.version,2);assert.equal(request.recurringBlankInputReview.reviewed,false);assert.equal(request.recurringBlankInputReview.sourceHash,'')
+ assert.equal(request.sourceColumnRoles[2],'info')
+ for(const row of batch.rows){
+  const values={PAYROLL_DAYS:30,PAYABLE_DAYS:20}
+  for(const c of request.components)values[c.code+'_EARNED']=evaluate(c.rowFormulas[row.id],values)
+  assert.equal(values.BASIC_EARNED,source.rows.find(r=>r.sourceRow===row.sourceRow).cells[6].value*1)
+  assert.ok(Math.abs(values.BASIC_EARNED-values.PF_EARNED-values.ESIC_EARNED-row.netPay)<1e-8)
+ }
+ const changed=structuredClone(context);changed.source.rows[0].cells[3].value='999999'
+ assert.equal(proposeExcelPayrollSetup(batch,changed,batch.rows.map(row=>row.id)).request.components.find(c=>c.code==='ESIC').rowFormulas['revised-2'],request.components.find(c=>c.code==='ESIC').rowFormulas['revised-2'],'calculated condition must ignore its cache when proposing the dependency expression')
+ assert.equal(JSON.stringify({batch,source,context}),before)
+})
+
+test('scoped blank proposals regenerate for each selected subset and never infer missing/error/text operands as zero',()=>{
+ const {batch,context}=revisedBasicFixture()
+ const onlyLiteral=proposeExcelPayrollSetup(batch,context,['revised-2']).request
+ assert.equal(onlyLiteral.recurringBlankInputReview,undefined)
+ const onlyBlank=proposeExcelPayrollSetup(batch,context,['revised-4']).request
+ assert.deepEqual(onlyBlank.recurringBlankInputReview.rowIds,['revised-4']);assert.equal(onlyBlank.recurringBlankInputReview.reviewed,false)
+ for(const problem of ['text','missing','error','formula','unsupported-api']){
+  const changed=structuredClone(context),cell=changed.source.rows[2].cells[2]
+  if(problem==='text')cell.dataType='Text'
+  if(problem==='missing')changed.source.rows[2].cells[2]=undefined
+  if(problem==='error')cell.error='#VALUE!'
+  if(problem==='formula')cell.formulaText='0'
+  if(problem==='unsupported-api')changed.rowScopedRecurringBlankInputReviewSupported=false
+  assert.equal(proposeExcelPayrollSetup(batch,changed,batch.rows.map(row=>row.id)).request.recurringBlankInputReview,undefined,problem)
+ }
+})
+
+for(const monthly of [20000,24000]) test(`literal revised monthly bases retain the complete ESI IF proof (${monthly<=21000?'eligible':'above threshold'})`,()=>{
+ const {batch,context}=revisedBasicFixture(),literal=context.source.rows[3]
+ literal.cells[3].value=String(monthly)
+ const before=JSON.stringify({batch,context}),{request}=proposeExcelPayrollSetup(batch,context,['revised-5'])
+ assert.equal(request.components.find(component=>component.code==='ESIC').rowFormulas['revised-5'],`IF(${monthly}>21000,0,BASIC_EARNED*0.75%)`)
+ assert.equal(request.components.find(component=>component.code==='ESIC_ER').rowFormulas['revised-5'],`IF(${monthly}>21000,0,BASIC_EARNED*3.25%)`)
+ assert.equal(JSON.stringify({batch,context}),before)
+})
+
+function auxiliaryEsicFixture(allZero=false){
+ const headers=['Employee name','ESIC','Basic','Total Days','Working Days','Earned Basic','PF 12%','ESIC @ .75%','Total deduction','Net paid']
+ const source={headerRow:1,columnCount:10,columns:headers.map((sourceHeader,columnIndex)=>({columnIndex,sourceHeader,label:sourceHeader,kind:['employeeName','deduction','info','info','info','earning','deduction','deduction','deductionTotal','netPay'][columnIndex]})),rows:[]}
+ const batch={id:'auxiliary-esic-proof',clientId:9,clientName:'Synthetic',month:'2026-10',rows:[]}
+ for(const [index,base] of [allZero?24000:12000,24000].entries()){
+  const row=index+2,earned=base/30*20,pf=earned*.12,esi=base>21000?0:earned*.0075
+  const values=['Synthetic '+index,'',String(base),'30','20',String(earned),String(pf),String(esi),String(pf+esi),String(earned-pf-esi)]
+  const formulas={5:`C${row}/D${row}*E${row}`,6:`MIN(F${row},25000)*12%`,7:`IF(C${row}>21000,0,F${row}*.75%)`,8:`G${row}+H${row}`,9:`F${row}-I${row}`}
+  source.rows.push({sourceRow:row,cells:values.map((value,column)=>({value,dataType:column===0?'Text':column===1?'Blank':'Number',...(formulas[column]?{formulaText:formulas[column]}:{})}))})
+  batch.rows.push({id:'esic-'+row,sourceRow:row,employeeName:values[0],employeeCode:'SYN-'+index,earnings:[{label:'Earned Basic',amount:earned}],deductions:[{label:'ESIC',amount:0},{label:'PF 12%',amount:pf},{label:'ESIC @ .75%',amount:esi}],netPay:earned-pf-esi})
+ }
+ const context={source,workWeeks:[],workLocations:[],employees:[],components:[{id:'canonical-esi',code:'ESIC',name:'Employee ESI',category:'Deduction',componentRole:'Regular Deduction',statutoryType:'ESI Employee',taxable:false,priority:100,payType:'Fixed Pay'}]}
+ return {source,batch,context}
+}
+
+for(const allZero of [false,true]) test(`blank auxiliary ESIC is Information only when both monetary controls prove the other output (${allZero?'zero ESI month':'mixed eligibility'})`,()=>{
+ const {source,batch,context}=auxiliaryEsicFixture(allZero),before=JSON.stringify({source,batch,context}),{request}=proposeExcelPayrollSetup(batch,context,batch.rows.map(row=>row.id))
+ assert.equal(request.sourceColumnRoles[1],'info')
+ assert.equal(request.components.length,3)
+ const esi=request.components.find(component=>component.expectedColumnIndex===7)
+ assert.equal(esi.code,'ESIC');assert.equal(esi.existingComponentId,'canonical-esi');assert.equal(esi.statutoryType,'ESI Employee')
+ assert.ok(!request.components.some(component=>component.expectedColumnIndex===1),'blank auxiliary must not take the canonical deduction master')
+ assert.equal(JSON.stringify({source,batch,context}),before)
+})
+
+for(const problem of ['used-in-total','used-in-net','net-does-not-reach-esi','missing-total','missing-net','literal-esi','external-esi','cross-row-esi','error-esi','numeric-aux','nonzero-saved-aux','missing-row','ambiguous-esi','explicit-role','explicit-component']) test(`auxiliary ESIC inference fails closed for ${problem}`,()=>{
+ const {source,batch,context}=auxiliaryEsicFixture(),roles={}
+ if(problem==='used-in-total')source.rows[0].cells[8].formulaText='G2+H2+B2'
+ if(problem==='used-in-net')source.rows[0].cells[9].formulaText='F2-I2-B2'
+ if(problem==='net-does-not-reach-esi')source.rows[0].cells[9].formulaText='F2-G2'
+ if(problem==='missing-total')source.columns[8].kind='info'
+ if(problem==='missing-net')source.columns[9].kind='info'
+ if(problem==='literal-esi')source.rows[0].cells[7].formulaText=undefined
+ if(problem==='external-esi')source.rows[0].cells[7].formulaText="'[other.xlsx]Sheet1'!A2"
+ if(problem==='cross-row-esi')source.rows[0].cells[7].formulaText='F3*.75%'
+ if(problem==='error-esi')source.rows[0].cells[7].error='#VALUE!'
+ if(problem==='numeric-aux')source.rows[0].cells[1]={dataType:'Number',value:'0'}
+ if(problem==='nonzero-saved-aux')batch.rows[0].deductions[0].amount=1
+ if(problem==='missing-row')source.rows.pop()
+ if(problem==='ambiguous-esi'){source.columns.push({columnIndex:10,sourceHeader:'ESIC alternate',label:'ESIC alternate',kind:'deduction'});source.columnCount=11;source.rows.forEach(row=>row.cells.push({dataType:'Number',value:'0',formulaText:`F${row.sourceRow}*.01%`}))}
+ if(problem==='explicit-role')roles[1]='deduction'
+ if(problem==='explicit-component')source.columns[1].componentId='explicit-master'
+ const before=JSON.stringify({source,batch,context}),{request}=proposeExcelPayrollSetup(batch,context,batch.rows.map(row=>row.id),roles)
+ assert.equal(request.sourceColumnRoles[1],'deduction')
+ assert.ok(request.components.some(component=>component.expectedColumnIndex===1))
+ assert.equal(JSON.stringify({source,batch,context}),before)
 })
 
 test('employee matching requires a unique normalized name and source work location', () => {

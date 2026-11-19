@@ -77,7 +77,8 @@ public sealed class ExcelPayrollSetupRequest
 public sealed record ExcelPayrollQuickPreparation(int Version, string SourceHash, string AttendanceSnapshotHash);
 
 public sealed record ExcelPayrollRecurringBlankInputReview(int Version, bool Reviewed, string SourceHash,
-    IReadOnlyList<int> ColumnIndices, string Reason);
+    IReadOnlyList<int> ColumnIndices, string Reason,
+    [property:System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? RowIds=null);
 
 public sealed class ExcelPayrollIdentityColumnReview
 {

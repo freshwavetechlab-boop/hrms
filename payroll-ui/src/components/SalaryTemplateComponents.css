@@ -83,6 +83,8 @@
 .salary-component-library-item strong { font-size: 12px; line-height: 1.4; font-weight: 600; overflow-wrap: anywhere; }
 .salary-component-library-item > div > span { font-size: 10px; line-height: 1.5; color: #7d8799; overflow-wrap: anywhere; }
 .salary-component-library-item small { font-size: 10px; color: #7d8799; line-height: 1.5; }
+.salary-component-library-item .salary-component-usage { color: #7756b8; }
+.salary-component-library > .ant-checkbox-wrapper { flex-shrink: 0; margin: 0; color: #475467; font-size: 11px; }
 .salary-component-library-item > .ant-btn { padding-inline: 8px; font-size: 11px; }
 .salary-component-library-item.is-added > .ant-btn:disabled { color: #458368; }
 @container (max-width: 900px) {

@@ -66,4 +66,51 @@ public sealed class RecurringBlankInputReviewTests
         var error=Assert.Throws<InvalidOperationException>(()=>{if(reported)ExcelPayrollSetupRepository.ValidateReportedHistoricalSalaryRequest(request);else ExcelPayrollSetupRepository.ValidateHistoricalSalaryRequest(request);});
         Assert.Contains("Recurring blank operand review cannot authorize",error.Message);
     }
+
+    [Fact] public void RowScopedVersionTwoLeavesOtherRowsLiteralAndRetainsVersionOneAllRowGuard()
+    {
+        var f=Fixture();var second=new ExcelPayslipRow{Id="literal-operand-row",SourceRow=9,NetPay=300};f.B.Rows.Add(second);f.Q.RowIds.Add(second.Id);
+        var cells=JsonSerializer.Deserialize<ExcelPayslipCalculationSourceRow>(JsonSerializer.Serialize(f.S.Rows[0],Wire),Wire)!;cells.SourceRow=9;
+        foreach(var cell in cells.Cells.Where(c=>c?.FormulaText is not null))cell!.FormulaText=cell.FormulaText!.Replace("8","9");
+        cells.Cells[0]=new(){DataType="Number",Value="5"};f.S.Rows.Add(cells);
+        f.Q.RecurringBlankInputReview=f.Q.RecurringBlankInputReview! with{SourceHash=Hash(f.B,f.S)};
+        Assert.Throws<InvalidOperationException>(()=>ExcelPayrollSetupRepository.BindRecurringBlankInputReview(f.Q,f.B,f.S));
+        Assert.DoesNotContain("rowIds",JsonSerializer.Serialize(f.Q.RecurringBlankInputReview,Wire));
+        f.Q.RecurringBlankInputReview=f.Q.RecurringBlankInputReview with{Version=2,RowIds=[f.R.Id]};
+        var before=JsonSerializer.Serialize(new{f.B,f.S,f.Q});ExcelPayrollSetupRepository.BindRecurringBlankInputReview(f.Q,f.B,f.S);
+        var blank=ExcelPayrollSetupRepository.TranslateTransferFormulaWithEvidence("IF(E8>400,200,0)",f.Q,f.S,f.R);
+        var literal=ExcelPayrollSetupRepository.TranslateTransferFormulaWithEvidence("IF(E9>400,200,0)",f.Q,f.S,second);
+        Assert.Contains(blank.Dependencies,d=>d.ColumnIndex==0&&d.Kind=="reviewed-blank-zero"&&d.Literal=="0");
+        Assert.Contains(literal.Dependencies,d=>d.ColumnIndex==0&&d.Kind=="info"&&d.Literal=="5");
+        Assert.DoesNotContain(literal.Dependencies,d=>d.Kind=="reviewed-blank-zero");Assert.Equal(before,JsonSerializer.Serialize(new{f.B,f.S,f.Q}));
+    }
+
+    [Fact] public void UnreviewedVersionTwoProposalNeverGrantsZeroAndStillNeedsExplicitSourceBoundReview()
+    {
+        var f=Fixture();f.Q.ReviewedFixedInputs=false;f.Q.ReviewedPolicyScope=false;
+        f.Q.RecurringBlankInputReview=f.Q.RecurringBlankInputReview! with{Version=2,RowIds=[f.R.Id],Reviewed=false,SourceHash=""};
+        ExcelPayrollSetupRepository.ValidateRecurringBlankInputReview(f.Q);ExcelPayrollSetupRepository.BindRecurringBlankInputReview(f.Q,f.B,f.S);
+        Assert.False(ExcelPayrollSetupRepository.IsReviewedRecurringBlankOperand(f.Q,f.R.Id,0));
+        Assert.Throws<InvalidOperationException>(()=>ExcelPayrollSetupRepository.TranslateTransferFormula("IF(E8>400,200,0)",f.Q,f.S,f.R));
+        f.Q.ReviewedFixedInputs=true;f.Q.ReviewedPolicyScope=true;
+        Assert.Throws<InvalidOperationException>(()=>ExcelPayrollSetupRepository.TranslateTransferFormula("IF(E8>400,200,0)",f.Q,f.S,f.R));
+    }
+
+    [Theory][InlineData("empty")][InlineData("duplicate")][InlineData("foreign")][InlineData("oversized")][InlineData("source-changed")][InlineData("subset-changed")][InlineData("typed-zero")][InlineData("formula")][InlineData("version-one-scope")]
+    public void RowScopedReviewCannotEscapeTheDeclaredSelectionOrTypedBlankSource(string mutation)
+    {
+        var f=Fixture();f.Q.RecurringBlankInputReview=f.Q.RecurringBlankInputReview! with{Version=2,RowIds=[f.R.Id]};
+        switch(mutation){
+            case"empty":f.Q.RecurringBlankInputReview=f.Q.RecurringBlankInputReview with{RowIds=[]};break;
+            case"duplicate":f.Q.RecurringBlankInputReview=f.Q.RecurringBlankInputReview with{RowIds=[f.R.Id,f.R.Id]};break;
+            case"foreign":f.Q.RecurringBlankInputReview=f.Q.RecurringBlankInputReview with{RowIds=["foreign"]};break;
+            case"oversized":f.Q.RecurringBlankInputReview=f.Q.RecurringBlankInputReview with{RowIds=Enumerable.Range(0,101).Select(i=>"row-"+i).ToArray()};break;
+            case"source-changed":f.S.Rows[0].Cells[1]!.Value="2000";break;
+            case"subset-changed":f.Q.RowIds=["new-selection"];break;
+            case"typed-zero":f.S.Rows[0].Cells[0]=new(){DataType="Number",Value="0"};f.Q.RecurringBlankInputReview=f.Q.RecurringBlankInputReview with{SourceHash=Hash(f.B,f.S)};break;
+            case"formula":f.S.Rows[0].Cells[0]!.FormulaText="0";f.Q.RecurringBlankInputReview=f.Q.RecurringBlankInputReview with{SourceHash=Hash(f.B,f.S)};break;
+            case"version-one-scope":f.Q.RecurringBlankInputReview=f.Q.RecurringBlankInputReview with{Version=1};break;
+        }
+        Assert.Throws<InvalidOperationException>(()=>ExcelPayrollSetupRepository.BindRecurringBlankInputReview(f.Q,f.B,f.S));
+    }
 }

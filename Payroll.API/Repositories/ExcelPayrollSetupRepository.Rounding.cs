@@ -104,9 +104,10 @@ public sealed partial class ExcelPayrollSetupRepository
         decimal Core(params string[] categories) => result.Lines.Where(l => categories.Contains(l.Category)).Sum(l => l.Calculated);
         bool Same(decimal left, decimal right) => SourceDisplayPrecision(left) == SourceDisplayPrecision(right);
         var rawGross = Raw("Earning", "Reimbursement"); var rawDeductions = Raw("Deduction"); var rawBenefits = Raw("Benefit");
+        var provenBlankAuxiliaries=ProvenBlankAuxiliaryDeductionCount(plan,request);
         var aggregateChecks = new (bool Matches, string Stage)[] {
             (source.Earnings.Count == result.Lines.Count(l => l.Category is "Earning" or "Reimbursement"), "earning coverage"),
-            (source.Deductions.Count == result.Lines.Count(l => l.Category == "Deduction"), "deduction coverage"),
+            (source.Deductions.Count-provenBlankAuxiliaries == result.Lines.Count(l => l.Category == "Deduction"), "deduction coverage"),
             (source.EmployerContributions.Count == result.Lines.Count(l => l.Category == "Benefit"), "employer coverage"),
             (Same(source.Earnings.Sum(a => a.Amount), rawGross), "earning aggregate"),
             (Same(source.Deductions.Sum(a => a.Amount), rawDeductions), "deduction aggregate"),
@@ -131,6 +132,7 @@ public sealed partial class ExcelPayrollSetupRepository
             result.Version="source-core-arithmetic-v2";
             result.Reason="Captured component formulas translate exactly. Bounded same-row arithmetic checks source caches against outward-rounded IEEE-754 operation intervals and proves the net identity by exact rational algebra with distinct literal-cell symbols, including distribution and offset cancellation. A fresh core calculation verifies every native pre-rounding/currency stage. Source binary arithmetic and native decimal/component currency stages differ; all raw/display amounts remain unchanged and visible. No currency epsilon or cached-output override is used. This prepares configuration, not statutory or saved Employee parity certification.";
         }
+        if(provenBlankAuxiliaries>0)result.Reason+=" Source coverage retains the original zero amounts while excluding only typed-blank auxiliary ESIC fields explicitly mapped as Information and proven unused by both captured deduction-total and net dependency graphs.";
         var reviewedRequest = JsonSerializer.SerializeToNode(request, Json)!.AsObject(); reviewedRequest.Remove("roundingReviews");
         result.ProofHash = Hash(JsonSerializer.Serialize(new { result.Version, sourceHash, reviewedRequest, source,
             preview.PayrollDays, preview.PresentDays, preview.PayableDays, preview.Gross, preview.Deductions, preview.Benefits,

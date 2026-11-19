@@ -49,6 +49,57 @@ public sealed class ExcelPayrollTransferRoundingTests
         var proofs=p.Rows[0].Components.Select(c=>ExcelPayrollSetupRepository.InspectTransferFormula(q,p.Source,p.Batch.Rows[0],c.Definition)).ToList();
         return ExcelPayrollSetupRepository.ClassifyTransferAmounts(p,p.Rows[0],q,new string('b',64),proofs);
     }
+    private static (ExcelPayrollSetupRepository.Plan Plan,ExcelPayrollSetupRequest Request) AuxiliaryCoverageFixture()
+    {
+        var(p,q)=Fixture();var source=p.Source;var cells=source.Rows[0].Cells;var saved=p.Batch.Rows[0];
+        foreach(var cell in cells)cell!.DataType="Number";
+        source.Columns[5].SourceHeader=source.Columns[5].Label="ESIC @ .75%";
+        source.ColumnCount=11;
+        source.Columns.AddRange([new(){ColumnIndex=8,Kind="deduction",SourceHeader="ESIC",Label="ESIC Auxiliary",BlankAsZero=true},new(){ColumnIndex=9,Kind="deductionTotal",SourceHeader="Total deduction",Label="Total deduction"},new(){ColumnIndex=10,Kind="netPay",SourceHeader="Net paid",Label="Net paid"}]);
+        cells.AddRange([new(){DataType="Blank",Value=""},new(){DataType="Number",Value=saved.Deductions.Sum(a=>a.Amount).ToString(CultureInfo.InvariantCulture),FormulaText="E6+F6"},new(){DataType="Number",Value=saved.NetPay.ToString(CultureInfo.InvariantCulture),FormulaText="D6-J6"}]);
+        saved.Deductions.Insert(0,new(){Label="ESIC Auxiliary",Amount=0});q.SourceColumnRoles[8]="info";
+        return(p,q);
+    }
+    [Fact] public void ExplicitInfoAuxiliaryCoverageNeedsSourceBoundBlankAndBothControlsWithoutChangingSourceAmounts()
+    {
+        var(p,q)=AuxiliaryCoverageFixture();var before=JsonSerializer.Serialize(new{p.Batch,p.Source,p.Rows[0].Preview,q});
+        Assert.Equal(1,ExcelPayrollSetupRepository.ProvenBlankAuxiliaryDeductionCount(p,q));
+        var proof=Classify(p,q);Assert.Equal("Explained rounding",proof.Status);Assert.Equal(64,proof.ProofHash.Length);
+        Assert.Contains("typed-blank auxiliary ESIC",proof.Reason);Assert.Equal(5,proof.Lines.Count);
+        Assert.Equal(before,JsonSerializer.Serialize(new{p.Batch,p.Source,p.Rows[0].Preview,q}));
+        var fingerprint=proof.ProofHash;q.SourceColumnRoles.Remove(8);
+        Assert.Equal(0,ExcelPayrollSetupRepository.ProvenBlankAuxiliaryDeductionCount(p,q));Assert.Equal("Mismatch",Classify(p,q).Status);
+        Assert.NotEqual(fingerprint,Classify(p,q).ProofHash);
+    }
+    [Theory][InlineData("nonzero")][InlineData("numeric-zero")][InlineData("missing-cell")][InlineData("error")][InlineData("used-total")][InlineData("used-net")][InlineData("no-total")][InlineData("no-net")][InlineData("literal-actual")][InlineData("actual-not-reached")][InlineData("external")][InlineData("cross-row")][InlineData("partial-selection")][InlineData("input-alias")][InlineData("duplicate-column")]
+    public void AuxiliaryCoverageCannotDropMonetaryMissingUsedOrUnreviewedSourceFields(string mutation)
+    {
+        var(p,q)=AuxiliaryCoverageFixture();var cells=p.Source.Rows[0].Cells;
+        switch(mutation){
+            case"nonzero":p.Batch.Rows[0].Deductions[0].Amount=1;break;
+            case"numeric-zero":cells[8]=new(){DataType="Number",Value="0"};break;
+            case"missing-cell":cells[8]=null;break;
+            case"error":cells[8]!.Error="#VALUE!";break;
+            case"used-total":cells[9]!.FormulaText="E6+F6+I6";break;
+            case"used-net":cells[10]!.FormulaText="D6-J6-I6";break;
+            case"no-total":p.Source.Columns[9].Kind="info";break;
+            case"no-net":p.Source.Columns[10].Kind="info";break;
+            case"literal-actual":cells[5]!.FormulaText=null;break;
+            case"actual-not-reached":cells[10]!.FormulaText="D6-E6";break;
+            case"external":cells[9]!.FormulaText="'[other.xlsx]Sheet1'!A6";break;
+            case"cross-row":cells[9]!.FormulaText="E6+F7";break;
+            case"partial-selection":q.RowIds.Add("missing-selected-row");break;
+            case"input-alias":q.Components[0].SourceColumnIndex=8;break;
+            case"duplicate-column":p.Source.Columns.Add(p.Source.Columns[8]);break;
+        }
+        Assert.Equal(0,ExcelPayrollSetupRepository.ProvenBlankAuxiliaryDeductionCount(p,q));
+        Assert.NotEqual("Explained rounding",Classify(p,q).Status);
+    }
+    [Fact] public void OneProvenBlankAuxiliaryDoesNotExcludeAnAdditionalUnmappedZeroDeduction()
+    {
+        var(p,q)=AuxiliaryCoverageFixture();p.Batch.Rows[0].Deductions.Add(new(){Label="Unmapped charge",Amount=0});
+        Assert.Equal(1,ExcelPayrollSetupRepository.ProvenBlankAuxiliaryDeductionCount(p,q));Assert.Equal("Mismatch",Classify(p,q).Status);
+    }
     [Fact] public void ActualCoreTraceExplainsComponentVersusAggregateOnePaisaWithoutChangingOutputs()
     {
         var(p,q)=Fixture(); var before=JsonSerializer.Serialize(new {p.Source,p.Batch,p.Rows[0].Preview});

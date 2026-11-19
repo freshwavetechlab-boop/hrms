@@ -16,6 +16,13 @@ export function masterWorkspaceDefaults(batch: ExcelPayslipBatch, context: Payro
     if (row?.employeeId && ['Existing', 'Applied'].includes(row.status)) return { ...decision, matchedEmployeeId: row.employeeId, allowCreate: false }
     return row?.status === 'New' ? { ...decision, allowCreate: true } : decision
   })
+  const singleLocation = context.workLocations.length === 1 ? context.workLocations[0] : undefined
+  const listedScope = request.templateScope?.locationMode === 'Listed' ? request.templateScope : undefined
+  const singleLocationInScope = !listedScope || !listedScope.workLocationIds.length && !listedScope.newLocationNames.length
+    || !!singleLocation && listedScope.workLocationIds.includes(singleLocation.id)
+  const proposedLocation = request.sourceWorkLocationColumnIndex == null && !request.defaultWorkLocationId && singleLocation && singleLocationInScope
+    && employeeDecisions.some(decision => !decision.matchedEmployeeId && decision.allowCreate) ? singleLocation : undefined
+  const defaultWorkLocationId = request.defaultWorkLocationId || proposedLocation?.id
   const locationNames = [...new Set(batch.rows.filter(row => request.rowIds.includes(row.id)).map(row => {
     if (request.sourceWorkLocationColumnIndex != null) {
       const cells = context.source.rows.filter(source => source.sourceRow === row.sourceRow)
@@ -25,7 +32,10 @@ export function masterWorkspaceDefaults(batch: ExcelPayslipBatch, context: Payro
     }
     const match = employeeDecisions.find(decision => decision.rowId === row.id)?.matchedEmployeeId
     const employee = context.employees.find(employee => employee.id === match)
-    return context.workLocations.find(location => location.id === (request.defaultWorkLocationId || employee?.workLocationId))?.name || employee?.workLocation || ''
+    // A default is for unmatched new employees; it must not relocate an
+    // existing employee or overwrite the actual locations in template scope.
+    if (employee) return context.workLocations.find(location => location.id === employee.workLocationId)?.name || employee.workLocation || ''
+    return context.workLocations.find(location => location.id === defaultWorkLocationId)?.name || ''
   }).filter(name => !!name && !/^(?:n\/?a|nil|none|0|-+)$/i.test(name)))]
   const ids: number[] = [], names: string[] = []
   for (const name of locationNames) {
@@ -57,7 +67,7 @@ export function masterWorkspaceDefaults(batch: ExcelPayslipBatch, context: Payro
   // A salary worksheet's payable units are never fabricated as daily presence.
   const knownWorkWeek = context.workWeeks.find(week => normalized(week.value) === normalized(request.workWeek))?.value
     || (continuingSavedSelection ? request.workWeek : '') || context.defaults?.workWeek
-  return { ...request, employeeDecisions, templateScopeReviewVersion: 1, templateScope: scope, workWeek: knownWorkWeek || '', importAttendance: request.importAttendance ?? false }
+  return { ...request, ...(proposedLocation ? { defaultWorkLocationId: proposedLocation.id, defaultWorkLocationName: proposedLocation.name } : {}), employeeDecisions, templateScopeReviewVersion: 1, templateScope: scope, workWeek: knownWorkWeek || '', importAttendance: request.importAttendance ?? false }
 }
 
 export function masterWorkspaceTemplateDecisions(request: PayrollSetupRequest, preview: PayrollSetupPreview): TransferTemplateDecision[] {
@@ -80,6 +90,7 @@ export function masterWorkspaceTemplateDecisions(request: PayrollSetupRequest, p
 export function reviewedMasterWorkspace(request: PayrollSetupRequest, context: PayrollSetupContext, batch: ExcelPayslipBatch, preview: PayrollSetupPreview): PayrollSetupRequest {
   if (request.batchId !== batch.id || !preview.transfer || preview.transfer.sourceBatchId !== request.batchId || preview.transfer.sourceMonth !== batch.month || !/^[a-f0-9]{64}$/i.test(preview.transfer.sourceHash)
     || context.quickPreparation && (context.quickPreparation.month !== batch.month || context.quickPreparation.sourceHash !== preview.transfer.sourceHash)) throw Error('The saved Excel changed or its source is unavailable. Refresh the setup before checking it.')
+  if (request.recurringBlankInputReview?.version === 2 && context.rowScopedRecurringBlankInputReviewSupported !== true) throw Error('This Excel needs the updated API to review its blank increment inputs. No Master changes have been saved.')
   const calendarCycle = request.attendanceCycleStartDay === 1 && request.attendanceCycleEndDay === Number(sourceMonthEnd(batch.month).slice(-2))
   const cycleStart = context.quickPreparation?.cycleStart || (calendarCycle ? `${batch.month}-01` : '')
   const cycleEnd = context.quickPreparation?.cycleEnd || (calendarCycle ? sourceMonthEnd(batch.month) : '')
@@ -94,6 +105,7 @@ export function reviewedMasterWorkspace(request: PayrollSetupRequest, context: P
     templateScope: request.templateScope ? { ...request.templateScope, reviewed: true } : undefined,
     attendanceReview: { ...review, sourceHash: preview.transfer.sourceHash, sourceMonth: batch.month, reviewed: true },
     templateDecisions: masterWorkspaceTemplateDecisions(request, preview) }
+  if (request.recurringBlankInputReview) next.recurringBlankInputReview = { ...request.recurringBlankInputReview, reviewed: true, sourceHash: preview.transfer.sourceHash }
   next.attendanceReview!.boundSourceInputs = attendanceProofBinding(next)
   return next
 }

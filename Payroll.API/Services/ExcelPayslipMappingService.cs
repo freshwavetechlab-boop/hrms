@@ -9,7 +9,7 @@ namespace Payroll.API.Services;
 public sealed class ExcelPayslipMappingService(RecruitmentAiScoringService ai,
     IWebHostEnvironment environment, ILogger<ExcelPayslipMappingService> logger)
 {
-    internal const string KnowledgeVersion = "excel-payroll-mapping-v72";
+    internal const string KnowledgeVersion = "excel-payroll-mapping-v73";
     internal static readonly HashSet<string> Kinds = ["employeeName", "employeeCode", "email", "info", "earning", "deduction", "employer", "netPay", "grossTotal", "deductionTotal", "ignore"];
     private static readonly HashSet<string> Functions = ["SUM", "ROUND", "ROUNDUP", "ROUNDDOWN", "IF", "IFERROR", "MIN", "MAX", "SUMIF", "SUMIFS", "COUNT", "COUNTA", "COUNTIF", "COUNTIFS", "AND", "OR", "ABS", "CEILING", "FLOOR", "VLOOKUP", "HLOOKUP", "XLOOKUP", "INDEX", "MATCH"];
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -96,9 +96,25 @@ public sealed class ExcelPayslipMappingService(RecruitmentAiScoringService ai,
                 && columns.Any(input => input.Kind is "info" or "ignore" && input.HasNumbers && !input.HasFormula
                     && Regex.IsMatch(HeaderKey(input.SourceHeader), "^MONTHLYBASIC(?:PAY|SALARY|WAGES)?$")
                     && output.FormulaDependencies.Contains(input.ColumnIndex)));
+        static bool BasicHeading(string value) => Regex.IsMatch(HeaderKey(value), "^(?:(?:OLD|ORIGINAL|PREVIOUS|NEW|REVISED|MONTHLY|EARNED))?BASIC(?:PAY|SALARY|WAGES)?$");
+        var revisedBasicChain = columns.Any(revised => revised.Kind is "info" or "ignore" && revised.HasNumbers && revised.HasFormula
+            && BasicHeading(revised.SourceHeader) && !revised.DependencyEvidenceIncomplete && revised.CrossSheetDependencies.Count == 0
+            && columns.Any(original => original.ColumnIndex != revised.ColumnIndex && original.Kind is "info" or "ignore"
+                && original.HasNumbers && !original.DependencyEvidenceIncomplete && original.CrossSheetDependencies.Count == 0
+                && BasicHeading(original.SourceHeader) && revised.FormulaDependencies.Contains(original.ColumnIndex))
+            && revised.FormulaDependencies.All(index => columns.Any(operand => operand.ColumnIndex == index && operand.Kind is "info" or "ignore"
+                && !operand.DependencyEvidenceIncomplete && operand.CrossSheetDependencies.Count == 0))
+            && columns.Any(earned => earned.Kind == "earning" && earned.HasFormula && BasicHeading(earned.SourceHeader)
+                && !earned.DependencyEvidenceIncomplete && earned.CrossSheetDependencies.Count == 0 && earned.FormulaDependencies.Contains(revised.ColumnIndex)
+                && columns.Any(day => day.Kind is "info" or "ignore" && day.HasNumbers && day.ColumnIndex != revised.ColumnIndex
+                    && Regex.IsMatch(HeaderKey(day.SourceHeader), "DAYS?|MONTH|ATTENDANCE|ATTEDANCE") && earned.FormulaDependencies.Contains(day.ColumnIndex)))
+            && columns.Any(contribution => contribution.Kind is "deduction" or "employer" && contribution.HasFormula
+                && !contribution.DependencyEvidenceIncomplete && contribution.FormulaFunctions.Contains("IF")
+                && Regex.IsMatch(HeaderKey(contribution.SourceHeader), "PF|PROVIDENTFUND|ESIC?") && contribution.FormulaDependencies.Contains(revised.ColumnIndex)));
         var query = Tokens(string.Join(" ", columns.Select(c => SafeText(c.SourceHeader))));
         var chunks = Regex.Split(knowledge, @"\r?\n(?=## )").Where(c => c.StartsWith("## ")
-                && (monthlyInputAliases || !c.StartsWith("## Monthly Basic Basic Pay: dependency-bound blank template inputs")))
+                && (monthlyInputAliases || !c.StartsWith("## Monthly Basic Basic Pay: dependency-bound blank template inputs"))
+                && (revisedBasicChain || !c.StartsWith("## Original Basic Increment Revised Basic Earned Basic PF ESIC: dependency-preserved source setup")))
             .Select((c, i) => new Reference("excel-payroll-mapping.md#" + (i + 1), c.Split('\n')[0].TrimStart('#', ' ', '\r'), c.Trim()))
             .Select(r => (Item: r, Score: Tokens(r.Content).Count(query.Contains)))
             .OrderByDescending(r => r.Score).ThenBy(r => r.Item.Source).Take(5).Select(r => r.Item).ToList();
@@ -121,6 +137,16 @@ public sealed class ExcelPayslipMappingService(RecruitmentAiScoringService ai,
                 .FirstOrDefault(c => c.StartsWith("## Monthly Basic Basic Pay: dependency-bound blank template inputs"));
             if (inputRule is not null && !chunks.Any(c => c.Content == inputRule.Trim()))
                 chunks.Add(new("excel-payroll-mapping.md#monthly-input-aliases", inputRule.Split('\n')[0].TrimStart('#', ' ', '\r'), inputRule.Trim()));
+        }
+        // Duplicate headings are not enough: retrieve the derived-basis lesson
+        // only for a complete monthly -> earned -> conditional-contribution graph.
+        // This is classification guidance, never approval of a source operand.
+        if (revisedBasicChain)
+        {
+            var revisedRule = Regex.Split(knowledge, @"\r?\n(?=## )")
+                .FirstOrDefault(c => c.StartsWith("## Original Basic Increment Revised Basic Earned Basic PF ESIC: dependency-preserved source setup"));
+            if (revisedRule is not null && !chunks.Any(c => c.Content == revisedRule.Trim()))
+                chunks.Add(new("excel-payroll-mapping.md#revised-basic-dependencies", revisedRule.Split('\n')[0].TrimStart('#', ' ', '\r'), revisedRule.Trim()));
         }
         // Header scoring cannot recognize an unlabelled auxiliary dependency.
         // Supply its review boundary from structural metadata only; this does

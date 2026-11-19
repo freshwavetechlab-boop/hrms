@@ -1,7 +1,9 @@
 import { useMemo, useState, type DragEvent, type KeyboardEvent } from 'react'
 import { ArrowDownOutlined, ArrowUpOutlined, CheckOutlined, DeleteOutlined, HolderOutlined, PlusOutlined, SearchOutlined, SettingOutlined } from '@ant-design/icons'
-import { Button, Drawer, Input } from 'antd'
+import { Button, Checkbox, Drawer, Input } from 'antd'
 import type { Component, StructureLine } from '../types/payroll'
+import type { PayrollValue } from '../services/payrollCalculationService'
+import SalaryFormulaInput from './SalaryFormulaInput'
 import { SALARY_COMPONENT_DRAG_TYPE, salaryComponentDragPayload, salaryComponentDropAction } from '../utils/salaryTemplateComponentOrder'
 import './SalaryTemplateComponents.css'
 
@@ -15,20 +17,26 @@ type Props = {
   onMove: (sourceId: string, targetId: string) => void
   onUpdate: (id: string, patch: Partial<StructureLine>) => void
   onConfigure: (id: string) => void
+  formulaValues?: PayrollValue[]
+  libraryPrimaryIds?: Set<string>
+  componentUsageLabels?: Map<string, string>
   disabled?: boolean
 }
 
 const categories = [{ key: 'All', label: 'All' }, { key: 'Earning', label: 'Earnings' }, { key: 'Deduction', label: 'Deductions' }, { key: 'Reimbursement', label: 'Reimbursements' }, { key: 'Benefit', label: 'Benefits' }] as const
 
-export default function SalaryTemplateComponents({ components, lines, selectedLineId, onSelect, onAdd, onRemove, onMove, onUpdate, onConfigure, disabled = false }: Props) {
+export default function SalaryTemplateComponents({ components, lines, selectedLineId, onSelect, onAdd, onRemove, onMove, onUpdate, onConfigure, formulaValues = [], libraryPrimaryIds, componentUsageLabels, disabled = false }: Props) {
   const [category, setCategory] = useState<string>('All'), [search, setSearch] = useState('')
   const [lineSearch, setLineSearch] = useState(''), [libraryOpen, setLibraryOpen] = useState(false)
   const [drag, setDrag] = useState<{ kind: 'library' | 'line'; id: string } | null>(null), [dropTarget, setDropTarget] = useState('')
   const [announcement, setAnnouncement] = useState('')
+  const [showOtherClients, setShowOtherClients] = useState(false)
   const componentMap = useMemo(() => new Map(components.map(component => [String(component.id), component])), [components])
   const activeComponents = components.filter(component => component.active)
   const ids = lines.map(line => String(line.componentId)), included = new Set(ids)
-  const library = activeComponents.filter(component => (category === 'All' || component.category === category) && (!search.trim() || `${component.code} ${component.name}`.toLowerCase().includes(search.trim().toLowerCase())))
+  const otherClientCount = activeComponents.filter(component => libraryPrimaryIds && !libraryPrimaryIds.has(String(component.id))).length
+  const libraryComponents = activeComponents.filter(component => !libraryPrimaryIds || showOtherClients || libraryPrimaryIds.has(String(component.id)))
+  const library = libraryComponents.filter(component => (category === 'All' || component.category === category) && (!search.trim() || `${component.code} ${component.name}`.toLowerCase().includes(search.trim().toLowerCase())))
   const visibleLines = lines.map((line, index) => ({ line, index })).filter(({ line }) => {
     const component = componentMap.get(String(line.componentId))
     return !lineSearch.trim() || `${component?.code || line.componentId} ${component?.name || 'Missing component'} ${line.formula || line.value || component?.formula || component?.value || ''}`.toLowerCase().includes(lineSearch.trim().toLowerCase())
@@ -69,7 +77,7 @@ export default function SalaryTemplateComponents({ components, lines, selectedLi
   return <div className="salary-template-components">
     <section className={`salary-component-workspace${drag ? ' is-dragging' : ''}${dropTarget === 'canvas' ? ' is-drop-target' : ''}`} aria-label="Template components" onDragOver={event => over(event)} onDrop={event => drop(event)} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTarget('') }}>
       <header>
-        <div className="salary-component-heading"><h3>Components <span>{lines.length}</span></h3><p>Calculated in the order shown.</p></div>
+        <div className="salary-component-heading"><h3>Components <span>{lines.length}</span></h3><p>Calculated in the order shown. Type a code or part of a component name for formula suggestions.</p></div>
         <div className="salary-component-toolbar"><Input aria-label="Find template component" placeholder="Find a component or formula" prefix={<SearchOutlined />} allowClear value={lineSearch} onChange={event => setLineSearch(event.target.value)} /><Button icon={<PlusOutlined />} onClick={() => setLibraryOpen(true)} disabled={disabled}>Add components</Button></div>
       </header>
       {!!lines.length && <div className="salary-component-summary">{categories.filter(item => item.key !== 'All').map(item => { const count = lines.filter(line => componentMap.get(String(line.componentId))?.category === item.key).length; return count ? <span key={item.key} className={`salary-component-summary-item is-${item.key.toLowerCase()}`}><b>{count}</b> {item.label}</span> : null })}<span className="salary-component-order-label">Drag a handle or use the arrows to reorder</span></div>}
@@ -88,7 +96,10 @@ export default function SalaryTemplateComponents({ components, lines, selectedLi
             <div className="salary-component-order-cell"><button type="button" className="salary-component-drag-handle" draggable={!disabled} disabled={disabled} onDragStart={event => start(event, 'line', id)} onDragEnd={clearDrag} onKeyDown={event => keyboardMove(event, id, index)} aria-label={`Move ${name}; use up or down arrow keys`} title="Drag to reorder, or use ↑ and ↓"><HolderOutlined /></button><span>{index + 1}</span></div>
             <div className="salary-component-line-name"><strong>{name}</strong><span>{component?.code || id}</span>{unavailable && <small role="status">{component ? 'Inactive component — review before saving' : 'Component not found — review before saving'}</small>}</div>
             <span className={`salary-component-category is-${(component?.category || 'missing').toLowerCase()}`}>{component?.componentRole === 'Information' ? 'Information' : component?.category || 'Missing'}</span>
-            <label className="salary-component-formula"><span className="salary-component-mobile-label">{daily ? 'Daily rate' : 'Formula / value'}</span><input aria-label={`${name} ${daily ? 'daily rate' : 'formula or value'}`} disabled={disabled || unavailable} value={formula} placeholder={requiresEmployeeAmount ? 'Employee salary input required' : component?.formula || component?.value || 'Configure a value'} title={daily ? 'Daily rate × attendance payable days' : requiresEmployeeAmount ? 'Each employee supplies their own salary amount in Employee Master; the imported sample is not a shared default.' : formula || component?.formula || component?.value} onFocus={() => onSelect(id)} onChange={event => onUpdate(id, daily ? { calculationType: 'Daily Rate', value: event.target.value, formula: '', proRataOverride: 'false' } : { calculationType: 'Formula', formula: event.target.value, value: '' })} /><span>{daily ? 'Per payable day' : requiresEmployeeAmount ? 'Employee Master input · sample used only in simulation' : line.formula || line.value ? 'Template setting' : 'Component default'}</span></label>
+            <label className="salary-component-formula"><span className="salary-component-mobile-label">{daily ? 'Daily rate' : 'Formula / value'}</span>
+              {daily ? <input aria-label={`${name} daily rate`} disabled={disabled || unavailable} value={formula} placeholder={component?.value || 'Configure a value'} title="Daily rate × attendance payable days" onFocus={() => onSelect(id)} onChange={event => onUpdate(id, { calculationType: 'Daily Rate', value: event.target.value, formula: '', proRataOverride: 'false' })} />
+                : <SalaryFormulaInput label={`${name} formula or value`} disabled={disabled || unavailable} value={formula} values={formulaValues} includedComponentIds={ids} excludeComponentId={id} placeholder={requiresEmployeeAmount ? 'Employee salary input required' : component?.formula || component?.value || 'Configure a value'} title={requiresEmployeeAmount ? 'Each employee supplies their own salary amount in Employee Master; the imported sample is not a shared default.' : formula || component?.formula || component?.value} onFocus={() => onSelect(id)} onChange={value => onUpdate(id, { calculationType: 'Formula', formula: value, value: '' })} />}
+              <span>{daily ? 'Per payable day' : requiresEmployeeAmount ? 'Employee Master input · sample used only in simulation' : line.formula || line.value ? 'Template setting' : 'Component default'}</span></label>
             <div className="salary-component-line-actions"><Button size="small" type="text" icon={<SettingOutlined />} title={`Configure ${name}`} aria-label={`Configure ${name}`} disabled={disabled || unavailable} onClick={() => { onSelect(id); onConfigure(id) }} /><span className="salary-component-order-actions"><Button size="small" type="text" icon={<ArrowUpOutlined />} disabled={disabled || index === 0} aria-label={`Move ${name} up`} title="Move up" onClick={() => move(id, ids[index - 1])} /><Button size="small" type="text" icon={<ArrowDownOutlined />} disabled={disabled || index === lines.length - 1} aria-label={`Move ${name} down`} title="Move down" onClick={() => move(id, ids[index + 1])} /><Button size="small" type="text" danger icon={<DeleteOutlined />} disabled={disabled} aria-label={`Remove ${name}`} title={`Remove ${name}`} onClick={() => { onRemove(id); setAnnouncement(`${name} removed from the template.`) }} /></span></div>
           </article>
         })}
@@ -100,7 +111,8 @@ export default function SalaryTemplateComponents({ components, lines, selectedLi
     </section>
     <Drawer title="Add components" open={libraryOpen} onClose={closeLibrary} width={460} rootClassName="salary-component-library-drawer" mask={false} extra={<Button onClick={closeLibrary}>Done</Button>}>
       <aside className="salary-component-library" aria-label="Salary component library">
-        <header><div><h3>Component library <span className="salary-component-count">{activeComponents.length}</span></h3><p>Add once, then configure in your template.</p></div></header>
+        <header><div><h3>Component library <span className="salary-component-count">{libraryComponents.length}</span></h3><p>Shared component masters. Choose the rules for this template.</p></div></header>
+        {otherClientCount > 0 && <Checkbox checked={showOtherClients} disabled={disabled} onChange={event => setShowOtherClients(event.target.checked)}>Show masters used by other clients ({otherClientCount})</Checkbox>}
         <Input aria-label="Search salary components" placeholder="Search name or code" prefix={<SearchOutlined />} allowClear value={search} onChange={event => setSearch(event.target.value)} />
         <nav className="salary-component-categories" aria-label="Component category">{categories.map(item => <button type="button" key={item.key} aria-pressed={category === item.key} onClick={() => setCategory(item.key)}>{item.label}</button>)}</nav>
         <div className="salary-component-library-list">
@@ -108,7 +120,7 @@ export default function SalaryTemplateComponents({ components, lines, selectedLi
             const id = String(component.id), added = included.has(id)
             return <article key={id} className={`salary-component-library-item${added ? ' is-added' : ''}`}>
               <button type="button" className="salary-component-drag-handle" draggable={!disabled && !added} disabled={disabled || added} onDragStart={event => start(event, 'library', id)} onDragEnd={clearDrag} aria-label={`Drag ${component.name} to template`} title="Drag to add"><HolderOutlined /></button>
-              <div><strong>{component.name}</strong><span>{component.code}</span><small>{component.componentRole === 'Information' ? 'Information' : component.category} · {component.calculationType}</small></div>
+              <div><strong>{component.name}</strong><span>{component.code}</span><small>{component.componentRole === 'Information' ? 'Information' : component.category} · {component.calculationType}</small>{componentUsageLabels?.get(id) && <small className="salary-component-usage">{componentUsageLabels.get(id)}</small>}</div>
               <Button size="small" type={added ? 'text' : 'default'} icon={added ? <CheckOutlined /> : <PlusOutlined />} disabled={disabled || added} onClick={() => add(id)} aria-label={added ? `${component.name} already added` : `Add ${component.name}`}>{added ? 'Added' : 'Add'}</Button>
             </article>
           })}

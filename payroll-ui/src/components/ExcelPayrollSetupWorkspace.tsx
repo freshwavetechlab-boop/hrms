@@ -14,6 +14,15 @@ export default function ExcelPayrollSetupWorkspace({ clientId, batch, rowIds, on
   const [group, setGroup] = useState('Existing'), [selected, setSelected] = useState<string[]>([]), [cohort, setCohort] = useState<string[] | null>(null)
   const [missingSelection, setMissingSelection] = useState<string[]>([])
   const [advanced, setAdvanced] = useState(false)
+  const sourceSelectionKey = `${clientId}:${batch.id}:${rowIds.join('|')}`
+  const [focusedSelection, setFocusedSelection] = useState<{ sourceKey: string; rowIds: string[] } | null>(null)
+  const activeRows = focusedSelection?.sourceKey === sourceSelectionKey ? focusedSelection.rowIds : rowIds
+  const changeRows = (ids: string[]) => {
+    const next = rowIds.filter(id => ids.includes(id))
+    if (!next.length || next.length !== ids.length || new Set(ids).size !== ids.length) return
+    setFocusedSelection({ sourceKey: sourceSelectionKey, rowIds: next })
+    setSelected([]); setCohort(null); setAdvanced(false)
+  }
   const load = useCallback(async () => {
     setLoading(true); setError('')
     try {
@@ -24,7 +33,7 @@ export default function ExcelPayrollSetupWorkspace({ clientId, batch, rowIds, on
     finally { setLoading(false) }
   }, [clientId, batch.id])
   useEffect(() => { if (rowIds.length > 100) void load() }, [load, rowIds.length])
-  const rows = context?.roster?.rows.filter(row => rowIds.includes(row.rowId)) || []
+  const rows = context?.roster?.rows.filter(row => activeRows.includes(row.rowId)) || []
   const visible = rows.filter(row => group === 'All' || row.status === group)
   const pending = visible.filter(row => row.status !== 'Applied')
   const selection = selected.filter(id => pending.some(row => row.rowId === id))
@@ -33,9 +42,9 @@ export default function ExcelPayrollSetupWorkspace({ clientId, batch, rowIds, on
   const configure = (ids: string[]) => { setSelected([]); setCohort(ids.slice(0, 100)) }
   // Open the actual proposed configuration, including first-time clients,
   // directly. The queue is only needed to preserve larger cohort boundaries.
-  if (rowIds.length <= 100) return <ExcelPayrollSetup key={`${clientId}:${batch.id}:${rowIds.join('|')}`} clientId={clientId} batch={batch} rowIds={rowIds} onClose={onClose} onApplied={onApplied} />
-  if (context && !advanced && !context.clientConfiguration) return <ExcelPayrollSetup key={`${clientId}:${batch.id}:first-group`} clientId={clientId} batch={batch} rowIds={rowIds.slice(0,100)} onClose={onClose} onApplied={result=>{onApplied(result);void load()}} />
-  if (context && !advanced) return <ExcelPayrollQuickPrepare key={`${clientId}:${batch.id}:${rowIds.join('|')}`} clientId={clientId} batch={batch} rowIds={rowIds} context={context} onClose={onClose} onApplied={result=>{onApplied(result);void load()}} onAdvanced={ids=>{setAdvanced(true);setGroup('All');setSelected(ids);if(ids.length<=100)configure(ids)}} />
+  if (activeRows.length <= 100) return <ExcelPayrollSetup key={`${clientId}:${batch.id}:${activeRows.join('|')}`} clientId={clientId} batch={batch} rowIds={activeRows} sourceRowIds={rowIds} onRowsChange={changeRows} onClose={onClose} onApplied={result => { onApplied(result); if (rowIds.length > 100) void load() }} />
+  if (context && !advanced && !context.clientConfiguration) return <ExcelPayrollSetup key={`${clientId}:${batch.id}:first-group:${activeRows.join('|')}`} clientId={clientId} batch={batch} rowIds={activeRows.slice(0,100)} sourceRowIds={rowIds} onRowsChange={changeRows} onClose={onClose} onApplied={result=>{onApplied(result);void load()}} />
+  if (context && !advanced) return <ExcelPayrollQuickPrepare key={`${clientId}:${batch.id}:${activeRows.join('|')}`} clientId={clientId} batch={batch} rowIds={activeRows} context={context} onClose={onClose} onApplied={result=>{onApplied(result);void load()}} onAdvanced={ids=>{setAdvanced(true);setGroup('All');setSelected(ids);if(ids.length<=100)configure(ids)}} />
   return <>
     <Drawer open title={`Master setup · ${batch.month}`} width="min(1160px, 98vw)" className="excel-payroll-setup" onClose={onClose} footer={<Space wrap className="excel-payroll-setup-footer">
       <Button disabled={loading || !!cohort} onClick={onClose}>Close</Button>
@@ -62,6 +71,6 @@ export default function ExcelPayrollSetupWorkspace({ clientId, batch, rowIds, on
         <DataTable rows={missing} getRowId={row => String(row.employeeId)} exportDisabled title="Review missing employees" rowSelection={{ selectedRowKeys: missingSelection, onChange: keys => setMissingSelection(keys.map(String)) }} columns={[{ key: 'employeeCode', label: 'Code' }, { key: 'employeeName', label: 'Employee' }, { key: 'workLocation', label: 'Work location' }]} />
       </details>}
     </Drawer>
-    {cohort && <ExcelPayrollSetup key={cohort.join('|')} clientId={clientId} batch={batch} rowIds={cohort} previousBasis={context?.lastImport?.status === 'Applied' ? context.lastImport.savedRequest : undefined} onClose={() => { setCohort(null); void load() }} onApplied={result => { onApplied(result); void load() }} />}
+    {cohort && <ExcelPayrollSetup key={cohort.join('|')} clientId={clientId} batch={batch} rowIds={cohort} sourceRowIds={rowIds} onRowsChange={changeRows} previousBasis={context?.lastImport?.status === 'Applied' ? context.lastImport.savedRequest : undefined} onClose={() => { setCohort(null); void load() }} onApplied={result => { onApplied(result); void load() }} />}
   </>
 }

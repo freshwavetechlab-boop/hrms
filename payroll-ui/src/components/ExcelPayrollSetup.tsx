@@ -23,16 +23,17 @@ import { excelColumnLetter, payslipColumnKinds } from '../utils/excelPayslipImpo
 import { employeeStatutoryTypes, employerStatutoryTypes } from '../utils/salaryComponentConfig'
 import DataTable from './DataTable'
 import ExcelPayrollMasterTabs from './ExcelPayrollMasterTabs'
-import { masterWorkspaceDefaults, reviewedMasterWorkspace } from '../utils/excelPayrollMasterWorkspace'
+import { masterWorkspaceDefaults, masterWorkspaceTemplateDecisions, reviewedMasterWorkspace } from '../utils/excelPayrollMasterWorkspace'
+import { explainedRoundingReviewChange, explainedRoundingReviewRows } from '../utils/excelPayrollRoundingReview'
 import './ExcelPayrollSetup.css'
 
-type Props = { clientId: number; batch: ExcelPayslipBatch; rowIds: string[]; previousBasis?: PayrollSetupRequest; onClose: () => void; onApplied: (result: PayrollSetupResult) => void }
+type Props = { clientId: number; batch: ExcelPayslipBatch; rowIds: string[]; sourceRowIds?: string[]; onRowsChange?: (ids: string[]) => void; previousBasis?: PayrollSetupRequest; onClose: () => void; onApplied: (result: PayrollSetupResult) => void }
 const money = payrollComparisonMoney
 const sourceMoney = (value?: number | null) => <span>{money(value)}<small style={{ display: 'block', overflowWrap: 'anywhere' }}>Raw snapshot: {payrollRawAmount(value)}</small></span>
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const Sections = ({ items, defaultActiveKey }: { items: { key: string; label: ReactNode; children: ReactNode }[]; defaultActiveKey?: string[] }) => <Collapse defaultActiveKey={defaultActiveKey}>{items.map(item => <Collapse.Panel key={item.key} header={item.label}>{item.children}</Collapse.Panel>)}</Collapse>
 
-export default function ExcelPayrollSetup({ clientId, batch, rowIds, previousBasis, onClose, onApplied }: Props) {
+export default function ExcelPayrollSetup({ clientId, batch, rowIds, sourceRowIds, onRowsChange, previousBasis, onClose, onApplied }: Props) {
   const [context, setContext] = useState<PayrollSetupContext | null>(null)
   const [request, setRequest] = useState<PayrollSetupRequest | null>(null)
   const [preview, setPreview] = useState<(PayrollSetupPreview & { reviewRefreshRequired?: boolean }) | null>(null)
@@ -42,6 +43,7 @@ export default function ExcelPayrollSetup({ clientId, batch, rowIds, previousBas
   const [reviewed, setReviewed] = useState(false)
   const [activeTab, setActiveTab] = useState('salary')
   const [showTechnical, setShowTechnical] = useState(false)
+  const [showCalculationDetails, setShowCalculationDetails] = useState(false)
   const [divisorMode, setDivisorMode] = useState<'column' | 'fixed' | null>(null)
   const [transferReceiptId, setTransferReceiptId] = useState('')
   const [applied, setApplied] = useState<PayrollSetupResult | null>(null)
@@ -132,9 +134,15 @@ export default function ExcelPayrollSetup({ clientId, batch, rowIds, previousBas
   })
   const run = async (kind: 'preview' | 'draft' | 'apply', consolidate = false) => {
     if (!request || busy || writePending.current) return
+    if (kind === 'preview' && context && request.components.some(component => [component.formula,...Object.values(component.rowFormulas || {})].some(formula => /\bREVIEW_REQUIRED\b/.test(formula)))) {
+      setActiveTab('review'); setPreview(null)
+      setError('Some Excel formulas need translation support. Needs attention shows the original cells and the next step; no calculation or Master save was submitted.')
+      return
+    }
     if (masterMetadataBlocked) { setError('Persisted component Taxable, Priority or Pay type is unavailable. Refresh the reviewed API context or choose a separate reviewed component; no master settings were inferred.'); return }
     const activeScope = contextScope.current.version
     writePending.current = true; setBusy(kind === 'preview' ? 'Checking calculations' : kind === 'draft' ? 'Saving draft' : 'Applying setup'); setError(''); setNotice('')
+    if (kind === 'preview') { setReviewed(false); setPreview(current=>current?{...current,canApply:false,reviewRefreshRequired:true}:null) }
     try {
       if (kind === 'preview') {
         let reviewedRequest = request
@@ -146,8 +154,22 @@ export default function ExcelPayrollSetup({ clientId, batch, rowIds, previousBas
           reviewedRequest = reviewedMasterWorkspace(request, context, batch, probe.data)
           setRequest(reviewedRequest)
         }
-        const result = await previewPayrollSetup(clientId, reviewedRequest)
+        let result = await previewPayrollSetup(clientId, reviewedRequest)
         if (!result.ok || !result.data) throw new Error(result.error || 'Unable to preview payroll setup.')
+        // Acknowledging source-bound blank operands can make additional rows
+        // calculable. Resolve only their unique safe template choices in this
+        // same check, rather than requiring another user click for those rows.
+        if (consolidate && result.data.transfer) {
+          const sourceHash = reviewedRequest.attendanceReview?.sourceHash
+          if (result.data.transfer.sourceHash !== sourceHash) throw new Error('The saved Excel changed during this check. Refresh the setup before saving.')
+          const decisions = masterWorkspaceTemplateDecisions(reviewedRequest, result.data)
+          if (JSON.stringify(decisions) !== JSON.stringify(reviewedRequest.templateDecisions || [])) {
+            reviewedRequest = { ...reviewedRequest, templateDecisions: decisions }
+            setRequest(reviewedRequest)
+            result = await previewPayrollSetup(clientId, reviewedRequest)
+            if (!result.ok || !result.data || result.data.transfer?.sourceHash !== sourceHash) throw new Error(result.error || 'The saved Excel changed during the final check. No Master setup was saved.')
+          }
+        }
         setPreview(result.data); setReviewed(consolidate && result.data.canApply); setActiveTab('review')
       } else if (kind === 'draft') {
         const result = await savePayrollSetupDraft(clientId, request, requestId.current)
@@ -169,6 +191,19 @@ export default function ExcelPayrollSetup({ clientId, batch, rowIds, previousBas
     finally { writePending.current = false; setBusy('') }
   }
   const selected = batch.rows.filter(row => rowIds.includes(row.id))
+  const reviewExplainedRounding = async () => {
+    if (!request || !preview?.transfer || busy || writePending.current) return
+    const eligible = explainedRoundingReviewRows(request, preview.transfer).filter(row=>request.roundingReviews?.[row.rowId]!==row.proofHash)
+    if (!eligible.length) return
+    writePending.current=true; setBusy('Reviewing explained rounding'); setError('')
+    const updated={...request,...explainedRoundingReviewChange(request,preview.transfer)}
+    try {
+      const checked=await previewPayrollSetup(clientId,updated)
+      if(!checked.ok || !checked.data || checked.data.transfer?.sourceHash!==preview.transfer.sourceHash) throw Error(checked.error || 'The source changed while reviewing rounding. Refresh before saving.')
+      setRequest(updated);setPreview(checked.data);setReviewed(checked.data.canApply);setActiveTab('review')
+    } catch(failure){setError(failure instanceof Error?failure.message:'Unable to verify the explained rounding review.')}
+    finally{writePending.current=false;setBusy('')}
+  }
   const saveDefaults = async () => {
     if (!applied || busy || writePending.current) return
     writePending.current = true; setBusy('Saving draft defaults'); setError(''); setNotice('')
@@ -270,7 +305,7 @@ export default function ExcelPayrollSetup({ clientId, batch, rowIds, previousBas
       {request.templateScopeReviewVersion === 1 && context.templateApplicabilitySupported !== true && <Alert type="warning" showIcon message="Running API has not advertised reviewed template applicability" description="The owner must start the reviewed API build before transferring scoped rules. No legacy fallback or global template overwrite is used." />}
 
       </details>}
-      <ExcelPayrollMasterTabs batch={batch} context={context} request={request} preview={preview} applied={applied} disabled={!!busy || !!applied} activeTab={activeTab} onTabChange={setActiveTab} onChange={patch} items={[
+      <ExcelPayrollMasterTabs batch={batch} context={context} request={request} preview={preview} applied={applied} disabled={!!busy || !!applied} activeTab={activeTab} onTabChange={setActiveTab} onChange={patch} sourceRowIds={sourceRowIds} onRowsChange={onRowsChange} onReviewRounding={()=>void reviewExplainedRounding()} onShowCalculationDetails={()=>{setActiveTab('review');setShowCalculationDetails(true)}} items={[
         { key: 'transfer', label: 'Template & attendance exceptions', children: preview?.transfer ? <ExcelPayrollTransferReview key={`transfer:${preview.planHash}`} sourcePayableOverrideSupported={context.sourcePayableOverrideSupported === true} payableOnlyAttendanceSupported={context.payableOnlyAttendanceSupported === true} transfer={preview.transfer} request={request} disabled={!!busy || !!applied} onChange={patch} /> : <p>Check &amp; preview first. Only unresolved template or attendance choices need individual review.</p> },
         { key: 'location-allocations', label: 'Monthly location allocations from reviewed Settings', children: <ExcelPayrollLocationAllocations batch={batch} context={context} request={request} preview={preview} disabled={!!busy || !!applied} onChange={patch} /> },
         { key: 'basis', label: 'Salary month and attendance', children: <div className="excel-payroll-setup-grid">
@@ -330,7 +365,7 @@ export default function ExcelPayrollSetup({ clientId, batch, rowIds, previousBas
       ]} />
     </Form>}
     {compareCurrent && preview && context && <ExcelPayrollCurrentComparison key={`current:${preview.planHash}`} clientId={clientId} batch={batch} context={context} preview={preview} onClose={() => setCompareCurrent(false)} />}
-    {preview && activeTab === 'review' && <details className="excel-master-details"><summary>Calculation details · {preview.rows.length} source rows</summary><div className="excel-payroll-setup-preview"><Alert type="info" showIcon message="Calculation coverage" description={preview.coverage} /><Alert type="info" showIcon message="Payslip display and raw calculation are separate" description="Comparison amounts use the existing standalone payslip formatter at 2 decimal places: 15 significant digits, then display rounding. Raw snapshot and Raw Δ remain visible; raw comparison precision is unchanged. A separately reviewed server proof may explain deterministic currency-rounding stages; other transfer blockers remain. Same displayed net does not certify component/Employee parity or establish the precision of a previously sent PDF. Display rounding is not a payroll policy." />{preview.issues.map((issue, index) => <Alert key={index} showIcon type={issue.severity === 'Error' ? 'error' : 'warning'} message={[issue.code, issue.message].filter(Boolean).join(': ')} />)}<DataTable title="Source comparison" rows={preview.rows} getRowId={row => row.rowId} exportDisabled columns={[
+    {preview && activeTab === 'review' && <details className="excel-master-details" open={showCalculationDetails} onToggle={event=>setShowCalculationDetails(event.currentTarget.open)}><summary>Calculation details · {preview.rows.length} source rows</summary><div className="excel-payroll-setup-preview"><Alert type="info" showIcon message="Calculation coverage" description={preview.coverage} /><Alert type="info" showIcon message="Payslip display and raw calculation are separate" description="Comparison amounts use the existing standalone payslip formatter at 2 decimal places: 15 significant digits, then display rounding. Raw snapshot and Raw Δ remain visible; raw comparison precision is unchanged. A separately reviewed server proof may explain deterministic currency-rounding stages; other transfer blockers remain. Same displayed net does not certify component/Employee parity or establish the precision of a previously sent PDF. Display rounding is not a payroll policy." />{preview.issues.map((issue, index) => <Alert key={index} showIcon type={issue.severity === 'Error' ? 'error' : 'warning'} message={[issue.code, issue.message].filter(Boolean).join(': ')} />)}<DataTable title="Source comparison" rows={preview.rows} getRowId={row => row.rowId} exportDisabled columns={[
       { key: 'employeeName', label: 'Employee', width: 220 }, { key: 'simulation', label: 'Test inputs', width: 185, render: row => !request?.locationAllocations && <ExcelPayrollWhatIfSimulation key={`${preview.planHash}:${row.rowId}`} clientId={clientId} row={row} disabled={!!busy} /> }, { key: 'action', label: 'Master action', width: 100 }, { key: 'payrollDays', label: 'Divisor', width: 85 }, { key: 'payableDays', label: 'Payable days', width: 110 }, { key: 'gross', label: 'Gross', render: row => money(row.gross) }, { key: 'deductions', label: 'Deductions', render: row => money(row.deductions) }, { key: 'net', label: 'Calculated in hand', render: row => money(row.net) }, { key: 'sourceNet', label: 'Payslip in hand (2dp)', width: 200, wrap: true, render: row => sourceMoney(batch.rows.find(item => item.id === row.rowId)?.netPay) }, { key: 'variance', label: 'Raw Δ (calculated − source)', width: 180, render: row => payrollRawDifference(payrollDisplayEvidence(batch.rows.find(item => item.id === row.rowId)?.netPay, row.net).rawDifference) }, { key: 'displayMatch', label: 'Display comparison', width: 210, render: row => payrollDisplayEvidence(batch.rows.find(item => item.id === row.rowId)?.netPay, row.net).displayStatus },
     ]} /><Sections items={preview.rows.map(row => ({ key: row.rowId, label: `${row.employeeName} · component comparison`, children: <DataTable rows={row.lines} getRowId={line => line.code} exportDisabled hideSearch columns={[{ key: 'code', label: 'Component' }, { key: 'sourceAmount', label: 'Payslip display (2dp)', width: 190, wrap: true, render: line => sourceMoney(line.sourceAmount) }, { key: 'calculatedAmount', label: 'Calculated (2dp)', width: 150, wrap: true, render: line => money(line.calculatedAmount) }, { key: 'variance', label: 'Raw Δ', width: 160, wrap: true, render: line => payrollRawDifference(line.variance) }, { key: 'displayMatch', label: 'Display comparison', width: 210, wrap: true, render: line => payrollDisplayEvidence(line.sourceAmount, line.calculatedAmount).displayStatus }]} /> }))} />{!applied && <Checkbox aria-label="Review payroll setup" disabled={!preview.canApply || !!busy} checked={reviewed} onChange={event => setReviewed(event.target.checked)}>I reviewed employee matches, new masters, formulas, source blanks and comparison results for these {selected.length} employees.</Checkbox>}</div></details>}
   </Drawer>

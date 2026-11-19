@@ -150,6 +150,87 @@ test('ambiguous and invalid location source values never become inferred Head-of
  assert.deepEqual(scope.workLocationIds,[]);assert.deepEqual(scope.newLocationNames,[])
 })
 
+function unmatchedLocationFixture(){
+ const data=fixture()
+ data.request.sourceWorkLocationColumnIndex=undefined;data.request.defaultWorkLocationId=undefined;data.request.defaultWorkLocationName='Head office'
+ data.context.employees=[];data.context.roster.rows.forEach(row=>{row.status='New';row.employeeId=null})
+ data.request.employeeDecisions=data.request.rowIds.map(rowId=>({rowId,allowCreate:false}))
+ return data
+}
+
+test('new employees use a single real client location when the Excel has no location column; zero or multiple locations stay unresolved',()=>{
+ for(const count of [0,1,2]){
+  const {batch,context,request}=unmatchedLocationFixture()
+  context.workLocations=[{id:1,name:'New Delhi'},{id:2,name:'Mumbai'}].slice(0,count)
+  const before=structuredClone({batch,context,request})
+  freeze(batch);freeze(context);freeze(request)
+  const next=masterWorkspaceDefaults(batch,context,request)
+  assert.equal(next.defaultWorkLocationId,count===1?1:undefined)
+  assert.equal(next.templateScope.locationMode,count===1?'Listed':'')
+  assert.deepEqual(next.templateScope.workLocationIds,count===1?[1]:[])
+  assert.deepEqual(next.templateScope.newLocationNames,[])
+  if(count===1)assert.equal(next.defaultWorkLocationName,'New Delhi')
+  assert.equal(next.templateScope.reviewed,false)
+  assert.deepEqual({batch,context,request},before)
+ }
+})
+
+test('a mapped Excel location column retains ownership even when a single client location exists',()=>{
+ const {batch,context,request}=unmatchedLocationFixture()
+ context.workLocations=[{id:1,name:'New Delhi'}];request.sourceWorkLocationColumnIndex=2
+ context.source.rows.filter(row=>row.sourceRow>1).forEach(row=>{row.cells[2].value=''})
+ const blank=masterWorkspaceDefaults(batch,context,request)
+ assert.equal(blank.defaultWorkLocationId,undefined);assert.equal(blank.templateScope.locationMode,'')
+ context.source.rows.filter(row=>row.sourceRow>1).forEach(row=>{row.cells[2].value='New Delhi'})
+ const mapped=masterWorkspaceDefaults(batch,context,request)
+ assert.equal(mapped.defaultWorkLocationId,undefined)
+ assert.deepEqual(mapped.templateScope.workLocationIds,[1])
+})
+
+test('manual defaults and an explicit saved location scope are not replaced by single-location inference',()=>{
+ const {batch,context,request}=unmatchedLocationFixture()
+ context.workLocations=[{id:1,name:'New Delhi'},{id:8,name:'Manual site'}]
+ request.defaultWorkLocationId=8;request.defaultWorkLocationName='Manual site'
+ let next=masterWorkspaceDefaults(batch,context,request)
+ assert.equal(next.defaultWorkLocationId,8);assert.equal(next.defaultWorkLocationName,'Manual site')
+ assert.deepEqual(next.templateScope.workLocationIds,[8])
+ context.workLocations=[{id:1,name:'New Delhi'}]
+ request.defaultWorkLocationId=undefined
+ request.templateScope={reviewed:false,effectiveTo:'2026-10-31',openEnded:false,locationMode:'Listed',workLocationIds:[8],newLocationNames:[],categoryKind:'AllClientCategories',categories:[],divisorMeaning:'ContractFixedDays',payableMeaning:'AlreadyPayable',policyBasis:'SavedSourceRules',policyVersion:''}
+ next=masterWorkspaceDefaults(batch,context,request)
+ assert.equal(next.defaultWorkLocationId,undefined)
+ assert.deepEqual(next.templateScope,request.templateScope)
+ request.defaultWorkLocationId=99
+ assert.equal(masterWorkspaceDefaults(batch,context,request).defaultWorkLocationId,99,'an invalid explicit choice needs review, not silent relocation')
+})
+
+test('existing employee locations remain in scope when a default is used for new employees',()=>{
+ const {batch,context,request}=fixture()
+ request.sourceWorkLocationColumnIndex=undefined
+ context.workLocations=[{id:1,name:'New Delhi'},{id:2,name:'Mumbai'}]
+ context.employees[0].workLocationId=2;context.employees[0].workLocation='Mumbai'
+ context.employees[1].workLocationId=1;context.employees[1].workLocation='New Delhi'
+ context.employees=context.employees.slice(0,2)
+ context.roster.rows[2].status='New';context.roster.rows[2].employeeId=null
+ request.employeeDecisions[2]={rowId:'row-3',allowCreate:false}
+ request.defaultWorkLocationId=1
+ const before=structuredClone({batch,context,request}),next=masterWorkspaceDefaults(batch,context,request)
+ assert.equal(next.defaultWorkLocationId,1)
+ assert.deepEqual(next.templateScope.workLocationIds,[2,1])
+ assert.deepEqual({batch,context,request},before)
+})
+
+test('a matched employee with no actual location is not silently moved to the single client location',()=>{
+ const {batch,context,request}=fixture()
+ request.sourceWorkLocationColumnIndex=undefined;request.defaultWorkLocationId=undefined
+ context.workLocations=[{id:1,name:'New Delhi'}]
+ context.employees.forEach(employee=>{employee.workLocationId=0;employee.workLocation=''})
+ const next=masterWorkspaceDefaults(batch,context,request)
+ assert.equal(next.defaultWorkLocationId,undefined)
+ assert.equal(next.templateScope.locationMode,'')
+ assert.deepEqual(next.templateScope.workLocationIds,[])
+})
+
 test('CalendarDays is proposed only from a complete valid source-month divisor',()=>{
  const {batch,context,request}=fixture()
  assert.equal(masterWorkspaceDefaults(batch,context,request).templateScope.divisorMeaning,'')
@@ -200,6 +281,26 @@ test('one explicit review sets source-bound flags and template reuse without cha
  assert.deepEqual(reviewed.components,proposed.components)
  assert.deepEqual(reviewed.employeeDecisions,proposed.employeeDecisions)
  assert.deepEqual({batch,context,request:proposed,preview},before)
+})
+
+test('row-scoped blank-input version2 is acknowledged only with current source and API capability',()=>{
+ const {batch,context,request}=fixture(),preview=quickPreview(request)
+ request.recurringBlankInputReview={version:2,reviewed:false,sourceHash:'',columnIndices:[6],rowIds:['row-2'],reason:'The independent recurring increment is blank in this source row only.'}
+ context.rowScopedRecurringBlankInputReviewSupported=true
+ const before=structuredClone({batch,context,request,preview})
+ const next=reviewedMasterWorkspace(request,context,batch,preview)
+ assert.deepEqual(next.recurringBlankInputReview,{...request.recurringBlankInputReview,reviewed:true,sourceHash:'a'.repeat(64)})
+ assert.deepEqual(next.recurringBlankInputReview.rowIds,['row-2'])
+ assert.deepEqual(next.recurringBlankInputReview.columnIndices,[6])
+ assert.deepEqual({batch,context,request,preview},before)
+ for(const supported of [false,undefined]){
+  const old=structuredClone(context);old.rowScopedRecurringBlankInputReviewSupported=supported
+  assert.throws(()=>reviewedMasterWorkspace(request,old,batch,preview),/updated API/i)
+ }
+ const stale=structuredClone(preview);stale.transfer.sourceHash='b'.repeat(64)
+ assert.throws(()=>reviewedMasterWorkspace(request,context,batch,stale),/saved Excel|source/i)
+ const malformed=structuredClone(preview);malformed.transfer.sourceHash='not-a-hash'
+ assert.throws(()=>reviewedMasterWorkspace(request,context,batch,malformed),/saved Excel|source/i)
 })
 
 test('review rejects other batches, months, malformed source hashes and stale source snapshots',()=>{

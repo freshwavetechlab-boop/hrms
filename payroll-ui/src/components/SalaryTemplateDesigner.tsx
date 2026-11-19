@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { DownloadOutlined, UploadOutlined, MoreOutlined, PlusOutlined, AppstoreOutlined, ArrowRightOutlined, FileExcelOutlined } from '@ant-design/icons'
 import { Alert, Button, Checkbox, Dropdown, Input, Segmented, Select } from 'antd'
 import RecruitmentRecordList from './RecruitmentRecordList'
@@ -9,6 +9,9 @@ import PayrollScopeSelect from './PayrollScopeSelect'
 import { useAuthSession } from './AuthGate'
 import { RecruitmentViewContext, useSessionPreference } from '../hooks/useRecruitmentPreferences'
 import SalaryTemplateComponents from './SalaryTemplateComponents'
+import SalaryFormulaInput from './SalaryFormulaInput'
+import { salaryFormulaSuggestions } from '../utils/salaryFormulaSuggestions'
+import { salaryComponentLibraryScope } from '../utils/salaryComponentLibraryScope'
 import { moveSalaryTemplateLine } from '../utils/salaryTemplateComponentOrder'
 import { validateSalaryTemplateFormula } from '../utils/salaryTemplateFormulaValidation'
 import { salaryTemplateClientIds, scopeSalaryTemplates, preferredSalaryTemplate, templateForClient } from '../utils/salaryTemplateContext'
@@ -27,7 +30,7 @@ import './SalaryTemplateWorkspace.css'
 
 type FormulaMode = 'default' | 'fixed' | 'percent' | 'ceiling' | 'advanced'
 const functionFormulaTokens = [
-  { token: 'MIN(A, B)', meaning: 'Use the lower value. Example: MIN(PLRS_RATE_EARNED, 15000).' },
+  { token: 'MIN(A, B)', meaning: 'Use the lower value.' },
   { token: 'MAX(A, B)', meaning: 'Use the higher value.' },
   { token: 'ROUND(A)', meaning: 'Round to nearest rupee.' },
   { token: 'ROUNDDOWN(A)', meaning: 'Round down.' },
@@ -53,6 +56,7 @@ type SalaryTemplateDesignerProps = {
 
 export default function SalaryTemplateDesigner({ fixedClientId, clients, employees = [], locations = [], canCreateComponentMasters = false, components: savedComponents, structure, setStructure, templates, saveTemplate, saving = false, templateDownloaded = false, onDownloadTemplate, onUploadTemplate }: SalaryTemplateDesignerProps) {
   const session = useAuthSession()
+  const templateNameId = useId()
   const [draftComponents, setDraftComponents] = useState<Component[]>([])
   const components = useMemo(() => [...savedComponents, ...draftComponents.filter(row => !savedComponents.some(saved => String(saved.id) === String(row.id)))], [savedComponents, draftComponents])
   const [extractOpen, setExtractOpen] = useState(false)
@@ -92,10 +96,17 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
   const componentById = useMemo(() => new Map(components.map(component => [String(component.id), component])), [components])
   const selectedLine = lines.find(line => String(line.componentId) === selectedLineId) ?? lines[0]
   const selectedComponent = selectedLine ? componentById.get(String(selectedLine.componentId)) : undefined
-  const catalogue = usePayrollCatalogue(components, builderOpen, lines.map(l => String(l.componentId)), selectedComponent ? String(selectedComponent.id) : undefined)
-  const baseOptions = valueOptions(catalogue.values)
-  const knownFormulaTokens = useMemo(() => new Set(catalogue.values.filter(v => !v.availability.startsWith('Missing from')).map(v => v.token)), [catalogue.values])
-  const payrollFormulaTokens = catalogue.values.filter(v => !v.componentId).map(v => ({ token: v.token, meaning: v.meaning + ' Source: ' + v.source + '. ' + v.availability }))
+  const editorReady = !!clientId && (editorIntent === 'new' || !!openedTemplateId) && idsFor(structure.clientId).includes(clientId)
+  const includedComponentIds = lines.map(line => String(line.componentId))
+  const catalogueComponents = components.filter(component => includedComponentIds.includes(String(component.id)))
+  const catalogue = usePayrollCatalogue(catalogueComponents, view === 'Designer' && editorReady, includedComponentIds)
+  const availableFormulaValues = salaryFormulaSuggestions(catalogue.values, '', { includedComponentIds, excludeComponentId: selectedComponent ? String(selectedComponent.id) : undefined, limit: Number.MAX_SAFE_INTEGER })
+  const baseOptions = valueOptions(availableFormulaValues)
+  const knownFormulaTokens = new Set(availableFormulaValues.map(value => value.token))
+  const payrollFormulaTokens = availableFormulaValues.filter(v => !v.componentId).map(v => ({ token: v.token, meaning: v.meaning + ' Source: ' + v.source + '. ' + v.availability }))
+  const libraryScope = salaryComponentLibraryScope(components, templates, clientId, clients, includedComponentIds)
+  const exampleEarning = catalogueComponents.find(component => component.active && component.category === 'Earning' && String(component.id) !== String(selectedComponent?.id))
+  const formulaExample = exampleEarning ? `MIN(${exampleEarning.code.toUpperCase()}_EARNED, 15000) * 12%` : 'ROUND(MONTHLY_CTC * 10%, 0)'
 
 
   const updateLine = (id: string, patch: Partial<StructureLine>) => setStructure({ ...structure, lines: lines.map(line => String(line.componentId) === String(id) ? { ...line, ...patch } : line) })
@@ -123,7 +134,7 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
   }
   const formulaText = selectedLine?.formula || selectedLine?.value || selectedComponent?.formula || selectedComponent?.value || ''
   const formulaProblems = validateFormula(formulaText, knownFormulaTokens)
-  const componentTokenRows = catalogue.values.filter(v => v.componentId && (!tokenSearch.trim() || (v.token + ' ' + v.meaning).toLowerCase().includes(tokenSearch.toLowerCase()))).map(v => ({ token: v.token, meaning: v.meaning + '. ' + v.availability, unavailable: v.availability.startsWith('Missing from') }))
+  const componentTokenRows = availableFormulaValues.filter(v => v.componentId && (!tokenSearch.trim() || (v.token + ' ' + v.meaning).toLowerCase().includes(tokenSearch.toLowerCase()))).map(v => ({ token: v.token, meaning: v.meaning + '. ' + v.availability, unavailable: false }))
   const insertFormulaToken = (token: string) => {
     if (!selectedLine) return
     const current = selectedLine.formula || selectedLine.value || ''
@@ -154,7 +165,6 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
     count: new Set(employees.filter(employee => employee.clientId === client.id && employee.isActive).map(employee => employee.id)).size,
     hasTemplate: templates.some(row => row.active && row.lines.length > 0 && idsFor(row.clientId).includes(client.id)) }))
   const newDraft = (id: number): Structure => ({ id: 0, clientId: String(id || ''), name: '', annualCtc: '', active: true, lines: [] })
-  const editorReady = !!clientId && (editorIntent === 'new' || !!openedTemplateId) && idsFor(structure.clientId).includes(clientId)
   const hasUnsavedChanges = (editorIntent === 'new' || !!openedTemplateId) && JSON.stringify(structure) !== editorBaseline.current
   const canLeaveEditor = () => !saving && (!hasUnsavedChanges || window.confirm('Discard unsaved template changes?'))
   const resetDialogs = () => { setBuilderOpen(false); setSimulationOpen(false); setSimulationTemplate(null); setSimulationSourceScenario(undefined); setSelectedLineId(''); setExtractOpen(false); setFormulaDownloadOpen(false) }
@@ -258,9 +268,18 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
       </> : <div className="salary-template-designer salary-workspace-designer">
         <div className="salary-template-contextbar"><label><span>Saved template <small>{scopeTemplates.length} available</small></span><Select aria-label="Choose saved salary template" showSearch optionFilterProp="label" value={openedTemplateId || undefined} placeholder={editorIntent === 'new' ? 'New template — unsaved' : 'Select a template to view its components & formulas'} disabled={saving} options={scopeTemplates.map(row => ({ value: String(row.id), label: `${row.name}${row.active ? '' : ' · Inactive'}${idsFor(row.clientId).length === 1 ? '' : ' · Shared'}` }))} onChange={value => { const row = scopeTemplates.find(row => String(row.id) === value); if (row) editTemplate(row) }} /></label>{editorReady && <Button icon={<PlusOutlined />} disabled={saving} onClick={createTemplate}>New template</Button>}</div>
         {!editorReady ? <section className="salary-template-chooser"><div className="salary-template-chooser-heading"><span className="salary-template-icon"><AppstoreOutlined /></span><div><h2>{scopeTemplates.length ? 'Open an existing template' : 'No saved template for this client'}</h2><p>{scopeTemplates.length ? 'Choose the template you want to work on. Its saved components and formulas will open here.' : 'Create a template to add components and set their formulas.'}</p></div></div><div className="salary-template-choices">{scopeTemplates.map(row => <button type="button" className="salary-template-choice" key={row.id} onClick={() => editTemplate(row)}><span className="salary-template-choice-icon"><AppstoreOutlined /></span><span className="salary-template-choice-copy"><strong>{row.name}</strong><small>{row.lines.length} components{idsFor(row.clientId).length !== 1 ? ' · Shared — creates a client copy' : ''}</small></span><span className={`salary-template-state ${row.active ? 'is-active' : ''}`}>{row.active ? 'Active' : 'Inactive'}</span><ArrowRightOutlined /></button>)}</div></section> : <>
-        <div className="salary-workspace-editor-heading"><label>Template name<Input aria-label="Salary template name" placeholder="e.g. Regular monthly salary" value={structure.name} disabled={saving} onChange={event => setStructure({ ...structure, name: event.target.value })} /></label><span className={`salary-template-edit-state${hasUnsavedChanges ? ' is-dirty' : ''}`}>{hasUnsavedChanges ? 'Unsaved changes' : structure.id ? 'Saved template' : 'New client template'}</span><Checkbox disabled={saving} checked={structure.active} onChange={event => setStructure({ ...structure, active: event.target.checked })}>Active</Checkbox></div>
+        <div className="salary-workspace-editor-heading">
+          <label htmlFor={templateNameId} className={`salary-template-name-field${!structure.name.trim() ? ' is-required' : ''}`}>
+            <span className="salary-template-name-label"><strong>Template name</strong><span className="salary-template-name-required">Required</span></span>
+            <Input id={templateNameId} aria-label="Salary template name" aria-required="true" aria-describedby={!structure.name.trim() ? `${templateNameId}-help` : undefined} placeholder="Enter a name, e.g. Regular monthly salary" value={structure.name} disabled={saving} onChange={event => setStructure({ ...structure, name: event.target.value })} />
+            {!structure.name.trim() && <span id={`${templateNameId}-help`} className="salary-template-name-help">Enter a template name before saving.</span>}
+          </label>
+          <span className={`salary-template-edit-state${hasUnsavedChanges ? ' is-dirty' : ''}`}>{hasUnsavedChanges ? 'Unsaved changes' : structure.id ? 'Saved template' : 'New client template'}</span>
+          <Checkbox disabled={saving} checked={structure.active} onChange={event => setStructure({ ...structure, active: event.target.checked })}>Active</Checkbox>
+        </div>
         {calculationErrors.length > 0 && <Alert type="error" showIcon message="Review template calculation" description={calculationErrors.join(' ')} />}
-        <SalaryTemplateComponents key={`${clientId}:${openedTemplateId || 'new'}`} components={components} lines={lines} selectedLineId={selectedLineId} onSelect={setSelectedLineId} onAdd={add} onRemove={remove} onMove={moveTo} onUpdate={updateLine} onConfigure={configure} disabled={saving} />
+        {catalogue.error && <Alert type="warning" showIcon message="Formula suggestions are unavailable" description={catalogue.error} action={<Button onClick={catalogue.reload}>Retry</Button>} />}
+        <SalaryTemplateComponents key={`${clientId}:${openedTemplateId || 'new'}`} components={components} lines={lines} formulaValues={catalogue.values} libraryPrimaryIds={libraryScope.primaryIds} componentUsageLabels={libraryScope.usageLabels} selectedLineId={selectedLineId} onSelect={setSelectedLineId} onAdd={add} onRemove={remove} onMove={moveTo} onUpdate={updateLine} onConfigure={configure} disabled={saving} />
         <details className="salary-workspace-advanced"><summary>Optional template simulation basis</summary><p>Employee simulation uses the employee’s saved salary and attendance. This optional value is used only by template-input simulation.</p><label>Test annual package<input aria-label="Template test annual package" inputMode="decimal" value={structure.annualCtc} onChange={event => setStructure({ ...structure, annualCtc: event.target.value.replace(/\D/g, '') })} /></label></details>
         {structure.excelSource && <details className="salary-workspace-advanced"><summary>Imported Excel source · {structure.excelSource.sheetName}</summary><p>{structure.excelSource.fileName} · Header row {structure.excelSource.headerRow} · {structure.excelSource.payPeriod}{structure.excelSource.workLocationLabel ? ` · ${structure.excelSource.workLocationLabel}` : ''}. Sample employee amounts are used only in the temporary simulation. Employee salary inputs and location assignments remain in their existing Master flows.</p><div className="salary-template-source-formulas">{structure.excelSource.columns.filter(column => column.originalFormula).map(column => <div key={column.columnIndex}><strong>{column.sourceHeader}</strong><code>Excel: {column.originalFormula}</code><code>Native: {column.nativeFormula || 'Control / source input'}</code></div>)}</div></details>}
         </>}
@@ -290,17 +309,17 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
                 { value: 'advanced', label: 'Advanced formula' }
               ]} /></label>
               {formulaMode !== 'default' && formulaMode !== 'advanced' && <label>{formulaMode === 'fixed' ? 'Amount' : 'Percentage'}<input value={percent} onChange={event => setPercent(event.target.value.replace(/[^\d.]/g, ''))} placeholder={formulaMode === 'fixed' ? '15414' : '12'} /></label>}
-              {(formulaMode === 'percent' || formulaMode === 'ceiling') && <label>Base value<SalaryFieldHelp label="Base value" text="Choose whether the percentage uses a full-period value or an already-earned value. The list below explains every available token." example="Choose WAGES_EARNED for a percentage of wages payable after attendance." options={valueHints(catalogue.values)} /><Select showSearch value={baseToken || undefined} placeholder="Select base component" options={baseOptions} optionFilterProp="label" onChange={setBaseToken} /></label>}
+              {(formulaMode === 'percent' || formulaMode === 'ceiling') && <label>Base value<SalaryFieldHelp label="Base value" text="Choose whether the percentage uses a full-period value or an already-earned value. The list below explains every available token." example="Choose WAGES_EARNED for a percentage of wages payable after attendance." options={valueHints(availableFormulaValues)} /><Select showSearch value={baseToken || undefined} placeholder="Select base component" options={baseOptions} optionFilterProp="label" onChange={setBaseToken} /></label>}
               {formulaMode === 'ceiling' && <label>Ceiling<input value={ceiling} onChange={event => setCeiling(event.target.value.replace(/[^\d.]/g, ''))} placeholder="15000" /></label>}
               <label>Pro-rata<SalaryFieldHelp label="Template attendance adjustment" text="Decide whether to reduce this result for unpaid days. Already-earned formulas usually need no second adjustment." example="18,000 x 26/30 = 15,600; a formula based on WAGES_EARNED already uses attendance." options={[{ label:'Use component setting',meaning:'Inherit the master setting. Future changes to that default can affect this line.',example:'If the master says Yes, this line applies attendance adjustment.' }, { ...attendanceHelp[0], label:'Apply pro-rata' }, { ...attendanceHelp[1], label:'Do not pro-rate' }]} /><Select value={selectedLine.proRataOverride || 'inherit'} onChange={value => updateLine(selectedLine.componentId, { proRataOverride: value })} options={[{ value: 'inherit', label: 'Use component setting' }, { value: 'true', label: 'Apply pro-rata' }, { value: 'false', label: 'Do not pro-rate' }]} /></label>
             </div>
-            {formulaMode === 'advanced' && <label className="formula-editor">Formula<textarea value={selectedLine.formula || selectedLine.value || ''} onChange={event => updateLine(selectedLine.componentId, { calculationType: 'Formula', formula: event.target.value, value: '' })} placeholder="Example: MIN(PLRS_RATE_EARNED, 15000) * 12%" /></label>}
+            {formulaMode === 'advanced' && <label className="formula-editor">Formula<SalaryFormulaInput label="Advanced salary formula" multiline value={selectedLine.formula || selectedLine.value || ''} values={catalogue.values} includedComponentIds={includedComponentIds} excludeComponentId={String(selectedComponent.id)} onChange={value => updateLine(selectedLine.componentId, { calculationType: 'Formula', formula: value, value: '' })} placeholder={`Example: ${formulaExample}`} /></label>}
             {formulaMode !== 'advanced' && <button type="button" className="formula-apply" onClick={applyGeneratedFormula}>{formulaMode === 'default' ? 'Reset to component default' : 'Apply formula'}</button>}
             {catalogue.loading && <Alert type="info" message="Loading engine inputs..." />}
             {catalogue.error && <Alert type="error" message={catalogue.error} action={<Button onClick={catalogue.reload}>Retry</Button>} />}
             <section className="formula-help-panel">
               <div className="formula-help-head">
-                <div><b>Supported tokens</b><p>Use these names in formulas. Component tokens are generated from active salary component codes.</p></div>
+                <div><b>Supported tokens</b><p>Use the exact code from a component added to this template. MONTHLY is before attendance; EARNED is after attendance.</p></div>
                 <input value={tokenSearch} onChange={event => setTokenSearch(event.target.value)} placeholder="Search token or component..." />
               </div>
               <div className="formula-help-grid">

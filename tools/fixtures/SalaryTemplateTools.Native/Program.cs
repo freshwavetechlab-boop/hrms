@@ -10,7 +10,9 @@ try
     using var document = JsonDocument.Parse(await Console.In.ReadToEndAsync());
     var root = document.RootElement;
     object result;
-    if (root.GetProperty("operation").GetString() == "simulate")
+    if (root.GetProperty("operation").GetString() == "catalogue")
+        result = PayrollValueCatalogue.Build(root.GetProperty("request").Deserialize<PayrollCatalogueRequest>(json)!);
+    else if (root.GetProperty("operation").GetString() == "simulate")
         result = PayRunRepository.SimulateTemplate(root.GetProperty("request").Deserialize<PayrollSimulationRequest>(json)!);
     else
     {

@@ -159,7 +159,7 @@ public sealed partial class ExcelPayrollSetupRepository
                 var cell = capturedRows.Count == 1 ? capturedRows[0].Cells.ElementAtOrDefault(column) : null;
                 if (cell is null || cell.Error is not null || cell.CalculationError is not null || cell.MissingCachedValue)
                     throw new InvalidOperationException("A recurring INFO dependency is missing or contains a captured calculation error. No cache or zero is substituted.");
-                if(request.RecurringBlankInputReview?.ColumnIndices.Contains(column)==true)
+                if(IsReviewedRecurringBlankOperand(request,row.Id,column))
                 {
                     RequireReviewedBlankOperand(request,source,row,column);
                     dependencies[column]=new(row.SourceRow,column,metadata.SourceHeader,"reviewed-blank-zero",null,"0");

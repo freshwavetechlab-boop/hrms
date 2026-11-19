@@ -4,7 +4,7 @@ import { excelColumnLetter, parsePayslipAmount } from './excelPayslipImport'
 import { payslipAttendanceBasis } from './excelPayslipAttendance'
 import { sharedPayrollDivisor } from './payrollSourceEvidence'
 import { payrollSourceColumns } from './excelPayrollColumns'
-import { evaluatePayrollFormula } from './payrollFormula'
+import { evaluatePayrollFormula, inspectPayrollFormula } from './payrollFormula'
 
 const normalized = (text: string) => text.normalize('NFKC').trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
 const componentCode = (label: string) => {
@@ -44,6 +44,53 @@ function numericEntryInput(cell: ExcelPayslipCalculationSource['rows'][number]['
     const value = evaluatePayrollFormula(formula, {}), cache = Number(cell.value)
     return !!cell.value.trim() && Number.isFinite(cache) && value === cache && value >= 0 && value <= 1_000_000_000 && Number.isInteger(value * 10000)
   } catch { return false }
+}
+
+// Resolve only the specific blank ESIC auxiliary/output collision. The saved
+// payslip/source stays intact; complete numeric controls must identify the real
+// deduction and exclude the blank column in every selected row.
+function blankAuxiliaryEsicColumns(source: ExcelPayslipCalculationSource, rows: ExcelPayslipRow[], roles: Record<number,string>) {
+  const deductions=source.columns.filter(column=>column.kind==='deduction'&&componentCode(column.sourceHeader||column.label)==='ESIC')
+  const totals=source.columns.filter(column=>column.kind==='deductionTotal'),nets=source.columns.filter(column=>column.kind==='netPay')
+  const result=new Set<number>()
+  if(!rows.length||deductions.length<2||totals.length!==1||nets.length!==1)return result
+  for(const candidate of deductions){
+    if(candidate.componentId||Object.prototype.hasOwnProperty.call(roles,candidate.columnIndex))continue
+    if(!rows.every(row=>{
+      const captured=source.rows.filter(item=>item.sourceRow===row.sourceRow),cell=captured.length===1?captured[0].cells[candidate.columnIndex]:undefined
+      const amounts=(row.deductions||[]).filter(line=>normalized(line.label)===normalized(candidate.label))
+      return cell?.dataType==='Blank'&&cell.value===''&&!cell.formula&&!cell.formulaText&&!cell.error&&!cell.calculationError&&!cell.missingCachedValue&&amounts.length===1&&amounts[0].amount===0
+    }))continue
+    const actual=deductions.filter(column=>column.columnIndex!==candidate.columnIndex&&rows.every(row=>{
+      const cells=source.rows.filter(item=>item.sourceRow===row.sourceRow),cell=cells.length===1?cells[0].cells[column.columnIndex]:undefined
+      return cell?.dataType==='Number'&&!!cell.formulaText&&!cell.error&&!cell.calculationError&&!cell.missingCachedValue&&numeric(cell.value)!==undefined
+    }))
+    if(actual.length!==1)continue
+    const proof=rows.every(row=>{
+      const captured=source.rows.filter(item=>item.sourceRow===row.sourceRow)
+      if(captured.length!==1)return false
+      const graph=(index:number,seen=new Set<number>()):Set<number>|null=>{
+        if(index<0||index>=source.columnCount||seen.has(index)||seen.size>=20)return null
+        const metadata=source.columns.filter(column=>column.columnIndex===index),cell=captured[0].cells[index]
+        if(metadata.length!==1||!cell||cell.error||cell.calculationError||cell.missingCachedValue)return null
+        if(['info','ignore'].includes(metadata[0].kind)&&/employee|\bemp\b|uan|pan|aadh?aar|bank|account|ifsc|phone|mobile|identifier|qualification|birth|joining|e-?mail|\bdob\b/i.test(metadata[0].sourceHeader+' '+metadata[0].label))return null
+        const visited=new Set([index])
+        if(!cell.formulaText)return cell.dataType==='Number'&&numeric(cell.value)!==undefined||cell.dataType==='Blank'&&cell.value===''?visited:null
+        if(cell.dataType!=='Number'||numeric(cell.value)===undefined)return null
+        const formula=expression(cell.formulaText)
+        if(/[!\[\]":]/.test(formula))return null
+        const refs=[...formula.matchAll(/\b([A-Z]{1,3})([1-9]\d*)\b/g)]
+        if(refs.some(match=>Number(match[2])!==row.sourceRow))return null
+        try{if(inspectPayrollFormula(formula.replace(/\b([A-Z]{1,3})([1-9]\d*)\b/g,'1')).variables.length)return null}catch{return null}
+        for(const ref of refs){const child=graph(letterIndex(ref[1]),new Set([...seen,index]));if(!child)return null;for(const dependency of child)visited.add(dependency)}
+        return visited
+      }
+      const total=graph(totals[0].columnIndex),net=graph(nets[0].columnIndex),actualGraph=graph(actual[0].columnIndex)
+      return !!total&&!!net&&!!actualGraph&&total.has(actual[0].columnIndex)&&net.has(actual[0].columnIndex)&&!total.has(candidate.columnIndex)&&!net.has(candidate.columnIndex)&&!actualGraph.has(candidate.columnIndex)
+    })
+    if(proof)result.add(candidate.columnIndex)
+  }
+  return result
 }
 
 // These properties are read from the shared component by regular payroll.
@@ -97,8 +144,8 @@ function nativeRounding(text: string): string {
   }
 }
 
-// Resolve conditions only from imported fixed inputs. Attendance-based conditions
-// require a reviewed rule, so they cannot be frozen as an employee exemption.
+// Preserve native IF and its complete dependency expression. Only exact cap and
+// nonnegative-day normalisations shared by the server may rewrite its shape.
 function resolveFixedCondition(formula: string, source: ExcelPayslipCalculationSource, row: number, daysColumns: Set<number>): string {
   const text = expression(formula)
   const position = text.indexOf('IF(')
@@ -128,20 +175,14 @@ function resolveFixedCondition(formula: string, source: ExcelPayslipCalculationS
       && args.slice(1).every(value => /^[\d.()+*/%+-]+$/.test(value)))
       return replace(`MIN(1,MAX(0,ROUNDUP(${reference})))*(${args[1]})+(1-MIN(1,MAX(0,ROUNDUP(${reference}))))*(${args[2]})`)
   }
-  const condition = args[0].match(/^([A-Z]+)(\d+)(<=|>=|<>|=|<|>)(-?\d+(?:\.\d+)?)$/)
-  if (!condition || Number(condition[2]) !== row || daysColumns.has(letterIndex(condition[1]))) throw new Error('Review the conditional formula; its condition cannot be inferred from fixed inputs.')
-  const limit = condition[4]
-  const cell = sourceCell(source, row, letterIndex(condition[1]))
-  if (cell?.formulaText || cell?.error || cell?.missingCachedValue || cell?.calculationError) throw new Error('Review the conditional formula; a calculated condition cannot be frozen from its saved result.')
-  const left = numeric(cell?.value), right = Number(limit)
-  if (left === undefined) throw new Error('The conditional formula has a missing input.')
-  const choose = ({ '<=': left <= right, '>=': left >= right, '<>': left !== right, '=': left === right, '<': left < right, '>': left > right })[condition[3]]
-  return replace(args[choose ? 1 : 2])
+  return text
 }
 
 export function proposeExcelPayrollSetup(batch: ExcelPayslipBatch, context: PayrollSetupContext, rowIds: string[], roles: Record<number, string> = {}) {
   const rows = batch.rows.filter(row => rowIds.includes(row.id)), notes: string[] = []
   const source = { ...context.source, columns: payrollSourceColumns(context.source, roles, rows.map(row => row.sourceRow)) }
+  const blankEsic=blankAuxiliaryEsicColumns(source,rows,roles)
+  if(blankEsic.size){source.columns=source.columns.map(column=>blankEsic.has(column.columnIndex)?{...column,kind:'info' as const}:column);notes.push('A blank auxiliary ESIC field is kept as Information; the captured deduction total and net formulas identify the separate monetary ESI output.')}
   const dayColumn = source.columns.find(c => /^(?:WORKINGDAYS?|TOTALWORKINGDAYS?|ATTENDANCE|ATTEDANCE|PAIDDAYS?|PAYABLEDAYS?|PAYBLEDAYS?|NUMBEROFWORKINGDAYSATTENDED)$/.test(normalized(c.sourceHeader)))
   // A present-day heading is a separate candidate, never a substitute for paid
   // salary units. Its actual-worked meaning still needs the attendance review.
@@ -152,6 +193,35 @@ export function proposeExcelPayrollSetup(batch: ExcelPayslipBatch, context: Payr
   const locations = source.columns.filter(column => /^(?:WORKLOCATION.*|LOCATION|LOCATIONNAME.*|PLACEOFPOSTING|POSTING)$/.test(normalized(column.sourceHeader)))
   const locationIndex = locations.length === 1 ? locations[0].columnIndex : undefined
   const outputColumns = source.columns.filter(c => ['earning', 'deduction', 'employer'].includes(c.kind))
+  // A bounded v2 proposal names the exact typed-blank operand rows. It is not a
+  // zero approval: the API proves the full source and each cell after Check.
+  const blankOperands = new Map<number, Set<string>>()
+  if (context.rowScopedRecurringBlankInputReviewSupported) for (const row of rows) {
+    const captured = source.rows.filter(item => item.sourceRow === row.sourceRow)
+    if (captured.length !== 1) continue
+    const visit = (index: number, seen = new Set<number>()) => {
+      if (seen.has(index) || seen.size >= 20) return
+      const cell = captured[0].cells[index], metadata = source.columns.filter(column => column.columnIndex === index)
+      if (!cell || metadata.length !== 1 || cell.error || cell.calculationError || cell.missingCachedValue) return
+      if (cell.formulaText) {
+        const formula = expression(cell.formulaText)
+        if (/[!\[\]"]/.test(formula) || [...formula.matchAll(/\b([A-Z][A-Z0-9_]*)\(/g)].some(match => !['SUM','MIN','MAX','ROUND','ROUNDUP','ROUNDDOWN','IF'].includes(match[1]))) return
+        const refs = [...formula.matchAll(/\b([A-Z]+)(\d+)\b/g)]
+        if (refs.some(match => Number(match[2]) !== row.sourceRow)) return
+        for (const match of refs) visit(letterIndex(match[1]), new Set([...seen,index]))
+      } else if (cell.dataType === 'Blank' && cell.value === '' && ['info','ignore'].includes(metadata[0].kind)
+        && ![periodIndex,daysIndex,presentIndex,locationIndex].includes(index) && !outputColumns.some(column=>column.columnIndex===index)
+        && !/employee|\bemp\b|uan|pan|aadh?aar|bank|account|ifsc|phone|mobile|identifier|qualification|birth|joining|e-?mail|earned|net[\s_-]*(?:pay|salary)|\b(?:days?|hours?|attendance|ctc|salary|total|sub\s*total|gross|lwp|lop|id|code|serial|sr\s*no|name|location|city|state)\b/i.test(metadata[0].sourceHeader+' '+metadata[0].label)) {
+        const ids=blankOperands.get(index)||new Set<string>();ids.add(row.id);blankOperands.set(index,ids)
+      }
+    }
+    for (const output of outputColumns) visit(output.columnIndex)
+  }
+  const blankGroups = new Set([...blankOperands.values()].map(ids=>JSON.stringify([...ids].sort())))
+  const recurringBlankInputReview: PayrollSetupRequest['recurringBlankInputReview'] = blankOperands.size>0 && blankOperands.size<=10 && blankGroups.size===1 ? {
+    version:2,reviewed:false,sourceHash:'',columnIndices:[...blankOperands.keys()].sort((a,b)=>a-b),rowIds:[...(blankOperands.values().next().value || [])].sort(),
+    reason:'Reviewed typed-blank increment operands in the displayed source rows retain Excel numeric zero semantics.',
+  } : undefined
   const codes = new Map<number, string>(), components: PayrollSetupComponent[] = []
   for (const column of outputColumns) {
     let code = componentCode(column.sourceHeader || column.label)
@@ -215,6 +285,7 @@ export function proposeExcelPayrollSetup(batch: ExcelPayslipBatch, context: Payr
       if (inputToCode.has(index)) return `${inputToCode.get(index)}_MONTHLY`
       const cell = sourceCell(source, row.sourceRow, index), value = numeric(cell?.value)
       if (cell?.error || cell?.missingCachedValue || cell?.calculationError) throw new Error(`Review source column ${letters}.`)
+      if (recurringBlankInputReview?.columnIndices.includes(index) && recurringBlankInputReview.rowIds?.includes(row.id)) return '0'
       if (cell?.formulaText) {
         if (expanding.has(index) || expanding.size >= 20) throw new Error('Review the circular or deeply nested formula dependency.')
         return `(${translate(cell.formulaText, row, new Set([...expanding, index]))})`
@@ -222,7 +293,7 @@ export function proposeExcelPayrollSetup(batch: ExcelPayslipBatch, context: Payr
       if (value === undefined) throw new Error(`Review source column ${letters}.`)
       return String(value)
     })
-    if (/!|\[|IF\(|VLOOKUP|SUM\(/.test(formula) || [...formula.matchAll(/\b([A-Z][A-Z0-9_]*)\(/g)].some(match => !['MIN', 'MAX', 'ROUND', 'ROUNDUP', 'ROUNDDOWN'].includes(match[1]))) throw new Error('This formula needs an explicit payroll rule.')
+    if (/!|\[|VLOOKUP|SUM\(/.test(formula) || [...formula.matchAll(/\b([A-Z][A-Z0-9_]*)\(/g)].some(match => !['MIN', 'MAX', 'ROUND', 'ROUNDUP', 'ROUNDDOWN', 'IF'].includes(match[1]))) throw new Error('This formula needs an explicit payroll rule.')
     if (formula.length > 4096) throw new Error('Split formulas longer than 4096 characters into reviewed salary components.')
     return formula
   }
@@ -282,9 +353,9 @@ export function proposeExcelPayrollSetup(batch: ExcelPayslipBatch, context: Payr
   const sharedDivisor = periodIndex < 0 ? sharedPayrollDivisor(source, daysIndex) : null
   const fixedDays = periodIndex < 0 ? sharedDivisor?.days ?? payslipAttendanceBasis(source, daysIndex < 0 ? undefined : daysIndex).fixedDays : undefined
   const request: PayrollSetupRequest = { updateExistingConfiguration: true, batchId: batch.id, rowIds: rows.map(r => r.id), templateName: `${(batch.clientName || 'Client').slice(0, 70)} salary template`, effectiveFrom: `${batch.month}-01`,
-    payrollDaysColumnIndex: periodIndex, fixedPayrollDays: fixedDays, payrollDaysCell: sharedDivisor?.cell, sourceColumnRoles: Object.fromEntries(source.columns.map(column => [column.columnIndex, numericEntryColumns.has(column.columnIndex) ? 'info' : column.kind])), payableDaysColumnIndex: daysIndex, presentDaysColumnIndex: presentIndex, workWeek: suggested?.workWeek || context.workWeeks.find(w => normalized(w.label) === 'SUNDAYOFF')?.value || context.workWeeks[0]?.value || 'Sunday off',
+    payrollDaysColumnIndex: periodIndex, fixedPayrollDays: fixedDays, payrollDaysCell: sharedDivisor?.cell, sourceColumnRoles: Object.fromEntries(source.columns.map(column => [column.columnIndex, numericEntryColumns.has(column.columnIndex) || recurringBlankInputReview?.columnIndices.includes(column.columnIndex) ? 'info' : column.kind])), payableDaysColumnIndex: daysIndex, presentDaysColumnIndex: presentIndex, workWeek: suggested?.workWeek || context.workWeeks.find(w => normalized(w.label) === 'SUNDAYOFF')?.value || context.workWeeks[0]?.value || 'Sunday off',
     attendanceCycleStartDay: suggested?.attendanceCycleStartDay ?? 1, attendanceCycleEndDay: suggested?.attendanceCycleEndDay ?? new Date(Number(batch.month.slice(0,4)), Number(batch.month.slice(5,7)), 0).getDate(), payrollReportGenerationDay: suggested?.payrollReportGenerationDay ?? 3, defaultDepartment: suggested?.department || '', defaultDesignation: suggested?.designation || '', defaultGrade: suggested?.grade || '', defaultWorkLocationName: context.workLocations.length === 1 ? context.workLocations[0].name : 'Head office', sourceWorkLocationColumnIndex: locationIndex, defaultWorkLocationState: suggested?.workLocationState || '', createMissingWorkLocations: true, createMissingDropdownValues: true, preserveExistingAttendancePolicies: true,
-    components, employeeDecisions: decisions, editableDefaults: { leave: { status: 'Draft', quotaApproved: false, proposedAnnualPaidLeave: 0, active: false },
+    components, employeeDecisions: decisions, ...(recurringBlankInputReview ? {recurringBlankInputReview} : {}), editableDefaults: { leave: { status: 'Draft', quotaApproved: false, proposedAnnualPaidLeave: 0, active: false },
       holiday: { status: 'Draft', year: Number(batch.month.slice(0, 4)), dates: [] }, shift: { status: 'Draft', requiredForMonthlyTotals: false }, attendance: { mode: 'Monthly', payableDaysSource: 'Uploaded salary workbook' } } }
   if (suggested) notes.push(suggested.attendanceSource, ...suggested.notes)
   if (periodIndex < 0) notes.push(fixedDays ? `Saved formulas use a fixed ${fixedDays}-day divisor. Review this basis; later payroll months retain it until you change the client policy.` : 'Select the calculation-days column or enter a reviewed fixed divisor. No attendance days are invented.')

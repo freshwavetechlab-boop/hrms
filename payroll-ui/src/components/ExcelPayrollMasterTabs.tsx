@@ -1,20 +1,26 @@
-import { useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode, type SyntheticEvent } from 'react'
 import { Alert, Button, Form, Input, InputNumber, Select, Space, Switch, Tabs, Tag } from 'antd'
 import { ApartmentOutlined, CalendarOutlined, CheckCircleOutlined, TeamOutlined, WalletOutlined } from '@ant-design/icons'
 import type { ExcelPayslipBatch } from '../services/excelPayslipService'
 import type { PayrollSetupContext, PayrollSetupPreview, PayrollSetupRequest, PayrollSetupResult } from '../services/excelPayrollSetupService'
 import { excelColumnLetter } from '../utils/excelPayslipImport'
-import { masterWorkspaceIssues, sourceMonthEnd } from '../utils/excelPayrollMasterWorkspace'
+import { sourceMonthEnd } from '../utils/excelPayrollMasterWorkspace'
+import { diagnoseSetup, type SetupDiagnosis } from '../utils/excelPayrollSetupDiagnostics'
+import { explainedRoundingReviewRows } from '../utils/excelPayrollRoundingReview'
+import ExcelPayrollSetupIssues from './ExcelPayrollSetupIssues'
+import { masterReadySubset } from '../utils/excelPayrollReadySubset'
 import { payrollComparisonMoney, payrollDisplayEvidence } from '../utils/payrollRoundingEvidence'
 import DataTable from './DataTable'
 
 export type MasterSetupSection = { key: string; label: ReactNode; children: ReactNode }
 type Props = { batch: ExcelPayslipBatch; context: PayrollSetupContext; request: PayrollSetupRequest; preview: PayrollSetupPreview | null; applied: PayrollSetupResult | null;
-  disabled: boolean; activeTab: string; onTabChange: (key: string) => void; onChange: (change: Partial<PayrollSetupRequest>) => void; items: MasterSetupSection[] }
+  disabled: boolean; activeTab: string; onTabChange: (key: string) => void; onChange: (change: Partial<PayrollSetupRequest>) => void; items: MasterSetupSection[]; onRowsChange?: (rowIds: string[]) => void; sourceRowIds?: string[]; onShowCalculationDetails?: () => void; onReviewRounding?: () => void }
 
-export default function ExcelPayrollMasterTabs({ batch, context, request, preview, applied, disabled, activeTab, onTabChange, onChange, items }: Props) {
+export default function ExcelPayrollMasterTabs({ batch, context, request, preview, applied, disabled, activeTab, onTabChange, onChange, items, onRowsChange, sourceRowIds, onShowCalculationDetails, onReviewRounding }: Props) {
   const [inspecting, setInspecting] = useState(false)
-  const detail = (keys: string[], label = 'Advanced details') => <details className="excel-master-details"><summary>{label}</summary>{keys.map(key => {
+  const [sourceDetails, setSourceDetails] = useState(false)
+  const content = useRef<HTMLDivElement>(null)
+  const detail = (keys: string[], label = 'Advanced details') => <details className="excel-master-details" {...(keys.includes('source-evidence')?{open:sourceDetails,onToggle:(event:SyntheticEvent<HTMLDetailsElement>)=>setSourceDetails(event.currentTarget.open)}:{})}><summary>{label}</summary>{keys.map(key => {
     const section = items.find(item => item.key === key)
     return section ? <section key={key} className="excel-master-detail-section"><h3>{section.label}</h3>{section.children}</section> : null
   })}</details>
@@ -34,14 +40,25 @@ export default function ExcelPayrollMasterTabs({ batch, context, request, previe
     <button type="button" onClick={() => onTabChange('location')}><ApartmentOutlined /><span>Location & month<strong>{batch.month}</strong><small>{locations.join(', ') || 'Location needs review'}</small></span></button>
     <button type="button" onClick={() => onTabChange('employees')}><TeamOutlined /><span>Employees<strong>{rows.length} selected rows</strong><small>{matched} matched · {newEmployees} new{unresolved ? ` · ${unresolved} need attention` : ''}</small></span></button>
   </div>
-  const issues = preview ? masterWorkspaceIssues(preview) : []
+  const diagnoses = diagnoseSetup(batch,context,request,preview).map(item=>preview?.canApply?{...item,blocking:false}:item)
+  const roundingCount=preview?.transfer?explainedRoundingReviewRows(request,preview.transfer).filter(row=>request.roundingReviews?.[row.rowId]!==row.proofHash).length:0
+  const dayValues=[...new Set(rows.map(row=>context.source.rows.find(source=>source.sourceRow===row.sourceRow)?.cells[request.payrollDaysColumnIndex]?.value).map(value=>Number(value)).filter(value=>Number.isFinite(value)&&value>=1&&value<=31))]
+  const dayBasis=request.fixedPayrollDays?`${request.fixedPayrollDays} fixed salary days` : request.payrollDaysColumnIndex>=0 ? `${excelColumnLetter(request.payrollDaysColumnIndex)} · ${context.source.columns.find(column=>column.columnIndex===request.payrollDaysColumnIndex)?.sourceHeader || 'Salary divisor'}${dayValues.length?` = ${dayValues.join(', ')}`:''}. Calendar days and salary days can differ.` : undefined
+  const dayMeaning=request.templateScope?.divisorMeaning ? ({CalendarDays:'Calendar days',ContractFixedDays:'Source salary divisor',WorkingDays:'Working-day divisor'}[request.templateScope.divisorMeaning]) : 'Choose day meaning'
+  const resolve=(item:SetupDiagnosis)=>{onTabChange(item.tab);if(['translation','master'].includes(item.category))setInspecting(true);if(item.category==='source')setSourceDetails(true);if(['rounding','salary','api','unknown'].includes(item.category))onShowCalculationDetails?.();content.current?.scrollIntoView({block:'start',behavior:'auto'})}
+  const readySubset = masterReadySubset(context, request.rowIds)
+  const originalRows = sourceRowIds || request.rowIds
+  const changedSelection = originalRows.length !== request.rowIds.length || originalRows.some(id => !request.rowIds.includes(id))
   return <div className="excel-master-workspace">
     <div className="excel-master-context"><Space wrap><Tag color="purple">{batch.clientName}</Tag><Tag>{batch.month}</Tag><span>{rows.length} selected Excel rows</span></Space><Tag color={applied ? 'green' : 'blue'}>{applied ? 'Saved in Master' : 'Proposed setup'}</Tag></div>
+    {!applied && onRowsChange && changedSelection && <Alert type="info" showIcon message={`${request.rowIds.length} of ${originalRows.length} selected source rows are open`} description="Other rows remain in the original saved Excel batch. Changing this review selection does not remove source rows or change their salary or mail history." action={<Button disabled={disabled} onClick={() => onRowsChange(originalRows)}>Return to all {originalRows.length} selected rows</Button>} />}
     {summary}
-    <Tabs activeKey={activeTab} onChange={onTabChange} className="excel-master-tabs" items={[
+    {!applied&&<ExcelPayrollSetupIssues diagnoses={diagnoses} disabled={disabled} onResolve={resolve} dayBasis={dayBasis} readyCount={readySubset.readyRowIds.length} onContinueReady={onRowsChange&&readySubset.canContinue?()=>onRowsChange(readySubset.readyRowIds):undefined} roundingCount={roundingCount} onReviewRounding={onReviewRounding} sourceLabel={[batch.sourceFileName,batch.sheetName].filter(Boolean).join(' · ')}/>}
+    <div ref={content}><Tabs activeKey={activeTab} onChange={onTabChange} className="excel-master-tabs" items={[
       { key: 'salary', label: 'Salary setup', children: <section>
         <div className="excel-master-section-heading"><div><h3>Salary template & components</h3><p>Your Excel formulas are carried into payroll. Existing Masters are reused; missing components are listed as New.</p></div><Tag>{request.components.length} components</Tag></div>
         <Form.Item label="Salary template"><Input aria-label="Payroll setup Template name" value={request.templateName} onChange={event => onChange({ templateName: event.target.value })} /></Form.Item>
+        {request.recurringBlankInputReview?.version === 2 && <Alert type="info" showIcon message={`${request.recurringBlankInputReview.rowIds?.length || 0} blank formula inputs: ${request.recurringBlankInputReview.columnIndices.map(index=>context.source.columns.find(column=>column.columnIndex===index)?.sourceHeader || excelColumnLetter(index)).join(', ')}`} description={`Use Excel's zero arithmetic only for column ${request.recurringBlankInputReview.columnIndices.map(excelColumnLetter).join(', ')}, rows ${batch.rows.filter(row=>request.recurringBlankInputReview?.rowIds?.includes(row.id)).map(row=>row.sourceRow).join(', ')}. Check & preview confirms this scope; original cells and formulas stay unchanged.`} />}
         <DataTable title="Salary components" rows={request.components} getRowId={component => component.key} exportDisabled hideExport hideSearch columns={[
           { key: 'name', label: 'Component', width: 190 }, { key: 'category', label: 'Type', width: 110 },
           { key: 'source', label: 'Excel input / formula', width: 300, wrap: true, value: component => needsFormula(component) ? 'Needs formula mapping' : formulaLabel(component), render: component => needsFormula(component) ? <Tag color="red">Needs formula mapping</Tag> : formulaLabel(component) },
@@ -79,17 +96,18 @@ export default function ExcelPayrollMasterTabs({ batch, context, request, previe
       </section> },
       { key: 'review', label: 'Review & save', children: <section>
         <div className="excel-master-section-heading"><div><h3>{applied ? 'Master setup saved' : 'Check once, save together'}</h3><p>Check & preview confirms the displayed employee actions, component inputs, day meanings, policies and source-month scope together.</p></div></div>
-        <div className="excel-master-review-list"><p><CheckCircleOutlined /> {matched} existing employees reused · {newEmployees} new employees</p><p><CheckCircleOutlined /> {request.components.length} salary components · {newComponents} missing Masters to create</p><p><CheckCircleOutlined /> {request.templateName} · {request.effectiveFrom} through {request.templateScope?.openEnded ? 'open-ended (saved choice)' : request.templateScope?.effectiveTo || 'choose end date'}</p><p><CheckCircleOutlined /> Locations: {locations.join(', ') || (request.templateScope?.locationMode === 'AllClientLocations' ? 'All client locations (saved choice)' : 'Choose location')}</p><p><CheckCircleOutlined /> Salary day basis: {request.templateScope?.divisorMeaning || 'Choose day meaning'} · source payable units already include paid credits</p><p><CheckCircleOutlined /> {request.importAttendance ? 'Import the reviewed source monthly totals' : 'Retain existing attendance'} · no leave or weekly-off credits added</p></div>
-        {preview?.canApply ? <Alert type="success" showIcon message="Calculations checked — ready to save" description={`${preview.rows.length} source rows checked against the saved Excel. Save master setup applies this reviewed plan.`}/> : preview && <div className="excel-master-issues">{issues.slice(0,6).map((issue,index)=><Alert key={index} type={issue.severity==='Error'?'error':'info'} showIcon message={issue.message} description={issue.rowIds.length>1?`${issue.rowIds.length} source rows affected`:undefined}/>)}{issues.length>6&&<p>{issues.length-6} more checks are available in calculation details below.</p>}</div>}
+        <div className="excel-master-review-list"><p><CheckCircleOutlined /> {matched} existing employees reused · {newEmployees} new employees</p><p><CheckCircleOutlined /> {request.components.length} salary components · {newComponents} missing Masters to create</p><p><CheckCircleOutlined /> {request.templateName} · {request.effectiveFrom} through {request.templateScope?.openEnded ? 'open-ended (saved choice)' : request.templateScope?.effectiveTo || 'choose end date'}</p><p><CheckCircleOutlined /> Locations: {locations.join(', ') || (request.templateScope?.locationMode === 'AllClientLocations' ? 'All client locations (saved choice)' : 'Choose location')}</p><p><CheckCircleOutlined /> Salary day basis: {dayMeaning}{dayValues.length?` (${dayValues.join(', ')})`:''} · source payable units already include paid credits</p><p><CheckCircleOutlined /> {request.importAttendance ? 'Import the reviewed source monthly totals' : 'Retain existing attendance'} · no leave or weekly-off credits added</p></div>
+        {request.recurringBlankInputReview?.version === 2 && <p>{request.recurringBlankInputReview.rowIds?.length || 0} selected blank inputs are reviewed as zero in the saved source arithmetic. Other blanks and salary outputs are unchanged.</p>}
+        {preview?.canApply ? <Alert type="success" showIcon message="Calculations checked — ready to save" description={`${preview.rows.length} source rows checked against the saved Excel. Save master setup applies this reviewed plan.`}/> : preview && <p>Resolve the items in Needs attention above, then check again. Exact API messages remain available in calculation details.</p>}
         {preview && <DataTable title="Salary comparison" rows={preview.rows} getRowId={row=>row.rowId} exportDisabled hideExport columns={[
           {key:'employeeName',label:'Employee',width:200},{key:'sourceNet',label:'Excel net pay',width:140,render:row=>payrollComparisonMoney(batch.rows.find(source=>source.id===row.rowId)?.netPay)},
           {key:'net',label:'Calculated net pay',width:150,render:row=>payrollComparisonMoney(row.net)},
-          {key:'difference',label:'Difference',width:120,render:row=>payrollComparisonMoney(payrollDisplayEvidence(batch.rows.find(source=>source.id===row.rowId)?.netPay,row.net).rawDifference)},
+          {key:'difference',label:'Difference (2dp)',width:140,render:row=>{const evidence=payrollDisplayEvidence(batch.rows.find(source=>source.id===row.rowId)?.netPay,row.net);return payrollComparisonMoney(evidence.displayStatus.startsWith('Same at 2dp')?0:evidence.rawDifference)}},
           {key:'comparison',label:'Comparison',width:190,value:row=>{const status=payrollDisplayEvidence(batch.rows.find(source=>source.id===row.rowId)?.netPay,row.net).displayStatus;return status.startsWith('Same at 2dp')?'Matches Excel display':status}},
         ]}/>}
         <p className="excel-master-save-note">Saving configures Master records and salary assignments. Payroll runs and approvals remain in Regular Run. Existing payslip amounts and sent-mail history are retained.</p>
         {detail(['transfer'], 'Resolve template / attendance exceptions')}
       </section> },
-    ]}/>
+    ]}/></div>
   </div>
 }

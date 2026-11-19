@@ -1,0 +1,8 @@
+.salary-formula-input { width: 100%; min-width: 0; }
+.salary-template-components .salary-formula-input .ant-input { height: 32px; min-height: 32px; width: 100%; min-width: 0; padding: 5px 8px; border: 1px solid #d7dbe8; border-radius: 5px; background: #fcfcfe; color: #33415e; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; }
+.salary-template-components .salary-formula-input .ant-input:focus { border-color: #957af4; box-shadow: 0 0 0 2px #ede7ff; }
+.salary-formula-input.is-multiline textarea.ant-input { width: 100%; min-width: 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; }
+.salary-formula-suggestions { max-width: calc(100vw - 24px); z-index: 1900; }
+.salary-formula-suggestion { display: grid; gap: 3px; white-space: normal; padding-block: 3px; }
+.salary-formula-suggestion > strong { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: #5934af; overflow-wrap: anywhere; }
+.salary-formula-suggestion > span { font-size: 11px; color: #475467; line-height: 1.5; }
