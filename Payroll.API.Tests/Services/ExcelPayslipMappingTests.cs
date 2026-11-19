@@ -42,7 +42,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("blank/zero actual ESIC output used by those controls remains the deduction", lesson.Content);
         Assert.Contains("Mapping suggestions cannot approve", lesson.Content);
         using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, references));
-        Assert.Equal("excel-payroll-mapping-v76", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v77", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(lesson.Content, prompt.RootElement.GetProperty("references").EnumerateArray().Single(reference => reference.GetProperty("title").GetString() == lesson.Title).GetProperty("content").GetString());
         Assert.False(prompt.RootElement.TryGetProperty("rows", out _));
         using var response = JsonDocument.Parse("""{"columns":[{"columnIndex":0,"kind":"earning","confidence":1},{"columnIndex":2,"kind":"earning","confidence":1},{"columnIndex":12,"kind":"deduction","confidence":1}],"recurringBlankInputReview":{"version":2,"reviewed":true}}""");
@@ -93,7 +93,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("Anchored A1 references remain captured cells", lesson.Content);
         Assert.Contains("employee-specific sample bases stay blank", lesson.Content);
         using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(new() { Columns = columns }, null, [lesson]));
-        Assert.Equal("excel-payroll-mapping-v76", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v77", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(before, JsonSerializer.Serialize(columns));
     }
 
@@ -120,7 +120,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("unrelated cost without a direct formula dependency", lesson.Content);
         Assert.Contains("source employee's amount is a temporary simulation input", lesson.Content);
         using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, references));
-        Assert.Equal("excel-payroll-mapping-v76", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v77", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(lesson.Content, prompt.RootElement.GetProperty("references").EnumerateArray().Single(reference => reference.GetProperty("title").GetString() == lesson.Title).GetProperty("content").GetString());
         Assert.Equal(before, JsonSerializer.Serialize(request));
         if (inputKind == "info")
@@ -176,7 +176,7 @@ public sealed class ExcelPayslipMappingTests
         var references=ExcelPayslipMappingService.Retrieve(request.Columns,knowledge,[]);
         var lesson=Assert.Single(references,r=>r.Title.StartsWith("Professional Tax P.Tax deduction:"));
         Assert.True(lesson.Content.Length<2600);Assert.Contains("statutory type Professional Tax",lesson.Content);Assert.Contains("statutory type None remains separate",lesson.Content);Assert.Contains("Never force a PT-zero control",lesson.Content);
-        using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,references));Assert.Equal("excel-payroll-mapping-v76",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,references));Assert.Equal("excel-payroll-mapping-v77",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(before,JsonSerializer.Serialize(request));
     }
     [Fact]
@@ -194,7 +194,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("not new payroll arithmetic",lesson.Content);
         Assert.Contains("still needs a fresh exact review",lesson.Content);
         using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(new(){Columns=columns},null,refs));
-        Assert.Equal("excel-payroll-mapping-v76",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v77",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(before,JsonSerializer.Serialize(columns));
     }
 
@@ -219,7 +219,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("creates no named-input profile", lesson.Content);
         Assert.Contains("acknowledge the exact complete component/total ledger", lesson.Content);
         using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, references));
-        Assert.Equal("excel-payroll-mapping-v76", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v77", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(lesson.Content, prompt.RootElement.GetProperty("references").EnumerateArray()
             .Single(item => item.GetProperty("title").GetString() == lesson.Title).GetProperty("content").GetString());
         Assert.Equal(original, JsonSerializer.Serialize(request));
@@ -244,7 +244,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("unknown state is not a tax exemption",lesson.Content);
         Assert.Contains("jurisdiction or gender",lesson.Content);
         using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,references));
-        Assert.Equal("excel-payroll-mapping-v76",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v77",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(lesson.Content,prompt.RootElement.GetProperty("references").EnumerateArray().Single(r=>r.GetProperty("title").GetString()==lesson.Title).GetProperty("content").GetString());
         Assert.Equal(original,JsonSerializer.Serialize(request));
     }
@@ -282,7 +282,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("unreviewed blank", lesson.Content);
         Assert.Contains("must not be frozen", lesson.Content);
         using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, references));
-        Assert.Equal("excel-payroll-mapping-v76", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v77", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(before, JsonSerializer.Serialize(request));
     }
 
@@ -303,7 +303,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("=A7+B7", lesson.Content);
         Assert.Contains("four-decimal", lesson.Content);
         using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, references));
-        Assert.Equal("excel-payroll-mapping-v76", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v77", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(before, JsonSerializer.Serialize(request));
     }
 
@@ -323,7 +323,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("genuinely different source name", lesson.Content);
         Assert.Contains("do not approve a named source row", lesson.Content);
         using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, references));
-        Assert.Equal("excel-payroll-mapping-v76", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v77", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(before, JsonSerializer.Serialize(request));
     }
 
@@ -339,7 +339,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("Preview/Apply do not run DDL or truncate",lesson.Content);Assert.Contains("dropping range gaps",lesson.Content);
         Assert.Contains("not certify actual saved payroll parity",lesson.Content);
         using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,references));
-        Assert.Equal("excel-payroll-mapping-v76",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v77",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(lesson.Content,prompt.RootElement.GetProperty("references").EnumerateArray().Single(r=>r.GetProperty("title").GetString()==lesson.Title).GetProperty("content").GetString());
         Assert.Equal(before,JsonSerializer.Serialize(request));
     }
@@ -355,7 +355,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("DifferentScope",lesson.Content);Assert.Contains("must reuse",lesson.Content);Assert.Contains("not proof of attendance",lesson.Content);
         Assert.Contains("legacy personal combined-deduction seed",lesson.Content);Assert.Contains("template-only default zero",lesson.Content);
         using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,refs));
-        Assert.Equal("excel-payroll-mapping-v76",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v77",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(lesson.Content,prompt.RootElement.GetProperty("references").EnumerateArray().Single(r=>r.GetProperty("title").GetString()==lesson.Title).GetProperty("content").GetString());
         Assert.Equal(before,JsonSerializer.Serialize(request));
     }
@@ -365,7 +365,7 @@ public sealed class ExcelPayslipMappingTests
     {
         var headers=new[]{"Old VDA","New VDA","Old Basic","New Basic","Wages","Special Allowance","Total Earning payment","Net Working Days","Arrears"};var request=new ExcelPayslipMappingRequest{Columns=headers.Select((h,i)=>new ExcelPayslipMappingColumn{ColumnIndex=i,SourceHeader=h,Kind="info",HasNumbers=true}).ToList()};var before=JsonSerializer.Serialize(request);var knowledge=File.ReadAllText(Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md"));var refs=ExcelPayslipMappingService.Retrieve(request.Columns,knowledge,[]);var lesson=Assert.Single(refs,r=>r.Title.StartsWith("Old VDA Old Basic New VDA New Basic"));
         Assert.True(lesson.Content.Length<2600);Assert.Contains("never justifies dropping the old-rate earnings",lesson.Content);Assert.Contains("not full declared gross",lesson.Content);Assert.Contains("stale hash rejects the entire Save",lesson.Content);Assert.Contains("does not create a batch/version",lesson.Content);
-        using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,refs));Assert.Equal("excel-payroll-mapping-v76",prompt.RootElement.GetProperty("knowledgeVersion").GetString());Assert.Equal(lesson.Content,prompt.RootElement.GetProperty("references").EnumerateArray().Single(r=>r.GetProperty("title").GetString()==lesson.Title).GetProperty("content").GetString());Assert.Equal(before,JsonSerializer.Serialize(request));
+        using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,refs));Assert.Equal("excel-payroll-mapping-v77",prompt.RootElement.GetProperty("knowledgeVersion").GetString());Assert.Equal(lesson.Content,prompt.RootElement.GetProperty("references").EnumerateArray().Single(r=>r.GetProperty("title").GetString()==lesson.Title).GetProperty("content").GetString());Assert.Equal(before,JsonSerializer.Serialize(request));
     }
     [Fact]
     public void NormalCtcOperandLessonDoesNotAliasAnIndependentEntrySalaryBase()
@@ -373,7 +373,7 @@ public sealed class ExcelPayslipMappingTests
         var headers=new[]{"Revised CTC","Increment","Hardship Allowance","Monthly Target","Old CTC"};var request=new ExcelPayslipMappingRequest{Columns=headers.Select((h,i)=>new ExcelPayslipMappingColumn{ColumnIndex=i,SourceHeader=h,Kind="info",HasNumbers=true,HasFormula=i is 0 or 2}).ToList()};
         var before=JsonSerializer.Serialize(request);var knowledge=File.ReadAllText(Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md"));var refs=ExcelPayslipMappingService.Retrieve(request.Columns,knowledge,[]);var lesson=Assert.Single(refs,r=>r.Title.StartsWith("Revised CTC Increment Hardship Allowance Monthly Target:"));
         Assert.True(lesson.Content.Length<2600);Assert.Contains("aliasing disabled",lesson.Content);Assert.Contains("distinct entry/prior salary base stays separate",lesson.Content);Assert.Contains("existing native MONTHLY_CTC",lesson.Content);Assert.Contains("Historical and reported payroll reject",lesson.Content);
-        using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,refs));Assert.Equal("excel-payroll-mapping-v76",prompt.RootElement.GetProperty("knowledgeVersion").GetString());Assert.Equal(lesson.Content,prompt.RootElement.GetProperty("references").EnumerateArray().Single(r=>r.GetProperty("title").GetString()==lesson.Title).GetProperty("content").GetString());Assert.Equal(before,JsonSerializer.Serialize(request));
+        using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,refs));Assert.Equal("excel-payroll-mapping-v77",prompt.RootElement.GetProperty("knowledgeVersion").GetString());Assert.Equal(lesson.Content,prompt.RootElement.GetProperty("references").EnumerateArray().Single(r=>r.GetProperty("title").GetString()==lesson.Title).GetProperty("content").GetString());Assert.Equal(before,JsonSerializer.Serialize(request));
     }
     [Fact]
     public void ReviewedEmptyArrearsLessonPreservesSubtotalAndCannotApproveMissingData()
@@ -384,7 +384,7 @@ public sealed class ExcelPayslipMappingTests
         var refs=ExcelPayslipMappingService.Retrieve(request.Columns,knowledge,[]);var lesson=Assert.Single(refs,r=>r.Title.StartsWith("Arrears Blank Subtotal Professional Tax:"));
         Assert.True(lesson.Content.Length<2600);Assert.Contains("current full batch/source hash",lesson.Content);Assert.Contains("typed Blank",lesson.Content);
         Assert.Contains("final gross is a different quantity",lesson.Content);Assert.Contains("Historical and reported-input adapters reject",lesson.Content);Assert.Contains("Suggestions and RAG cannot grant",lesson.Content);
-        using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,refs));Assert.Equal("excel-payroll-mapping-v76",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,refs));Assert.Equal("excel-payroll-mapping-v77",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(lesson.Content,prompt.RootElement.GetProperty("references").EnumerateArray().Single(r=>r.GetProperty("title").GetString()==lesson.Title).GetProperty("content").GetString());
         using var response=JsonDocument.Parse("""{"columns":[],"recurringBlankInputReview":{"reviewed":true}}""");var result=ExcelPayslipMappingService.ApplyResponse(request,null,refs,response.RootElement,"synthetic-model");
         Assert.Equal(request.Columns.Select(c=>c.Kind),result.Columns.Select(c=>c.Kind));Assert.Equal(before,JsonSerializer.Serialize(request));
@@ -400,7 +400,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("Keep the ordinary exact structure/signature API",lesson.Content);Assert.Contains("Numeric sampling",lesson.Content);
         using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,refs));
         Assert.Equal(lesson.Content,prompt.RootElement.GetProperty("references").EnumerateArray().Single(r=>r.GetProperty("title").GetString()==lesson.Title).GetProperty("content").GetString());
-        Assert.Equal("excel-payroll-mapping-v76",prompt.RootElement.GetProperty("knowledgeVersion").GetString());Assert.Equal(original,JsonSerializer.Serialize(request));
+        Assert.Equal("excel-payroll-mapping-v77",prompt.RootElement.GetProperty("knowledgeVersion").GetString());Assert.Equal(original,JsonSerializer.Serialize(request));
     }
     [Fact]
     public void ConfigurationCurrencyReviewLessonCannotBecomePayrollOrMappingApproval()
@@ -417,7 +417,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("never certifies saved Employee payroll",rule.Content);Assert.Contains("Missing identity",rule.Content);Assert.Contains("Suggestions and RAG cannot grant",rule.Content);
         using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,references));
         Assert.Equal(rule.Content,prompt.RootElement.GetProperty("references").EnumerateArray().Single(r=>r.GetProperty("title").GetString()==rule.Title).GetProperty("content").GetString());
-        Assert.Equal("excel-payroll-mapping-v76",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v77",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         using var response=JsonDocument.Parse("""{"columns":[],"approveConfiguration":true}""");
         var result=ExcelPayslipMappingService.ApplyResponse(request,null,references,response.RootElement,"synthetic-model");
         Assert.Equal(request.Columns.Select(c=>c.Kind),result.Columns.Select(c=>c.Kind));Assert.Equal(before,JsonSerializer.Serialize(request));
@@ -438,7 +438,7 @@ public sealed class ExcelPayslipMappingTests
         using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,references));
         Assert.Equal(lesson.Content,prompt.RootElement.GetProperty("references").EnumerateArray()
             .Single(r=>r.GetProperty("title").GetString()==lesson.Title).GetProperty("content").GetString());
-        Assert.Equal("excel-payroll-mapping-v76",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v77",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         using var response=JsonDocument.Parse("""{"columns":[],"approveAllDifferences":true}""");
         var mapped=ExcelPayslipMappingService.ApplyResponse(request,null,references,response.RootElement,"synthetic-model");
         Assert.Equal(request.Columns.Select(c=>c.Kind),mapped.Columns.Select(c=>c.Kind));Assert.Equal(before,JsonSerializer.Serialize(request));
@@ -464,7 +464,7 @@ public sealed class ExcelPayslipMappingTests
         using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,references));
         Assert.Equal(lesson.Content,prompt.RootElement.GetProperty("references").EnumerateArray()
             .Single(r=>r.GetProperty("title").GetString()==lesson.Title).GetProperty("content").GetString());
-        Assert.Equal("excel-payroll-mapping-v76",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v77",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(before,JsonSerializer.Serialize(request));
         Assert.Equal("ignore",request.Columns[9].Kind);
         Assert.All(request.Columns.Take(8),column=>Assert.Equal("info",column.Kind));
@@ -525,7 +525,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("top-level profileLinks",lesson.Content);
         using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,references));
         Assert.Equal(lesson.Content,prompt.RootElement.GetProperty("references").EnumerateArray().Single(item=>item.GetProperty("title").GetString()==lesson.Title).GetProperty("content").GetString());
-        Assert.Equal("excel-payroll-mapping-v76",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v77",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
     }
 
     [Fact]
@@ -658,7 +658,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("Ordinary setup and default historical coverage remain unchanged",lesson.Content);
         using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,references));
         var supplied=prompt.RootElement.GetProperty("references").EnumerateArray().Single(r=>r.GetProperty("title").GetString()==lesson.Title).GetProperty("content").GetString();
-        Assert.Equal(lesson.Content,supplied);Assert.Equal("excel-payroll-mapping-v76",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal(lesson.Content,supplied);Assert.Equal("excel-payroll-mapping-v77",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         var before=JsonSerializer.Serialize(request);
         using var response=JsonDocument.Parse("""{"columns":[{"columnIndex":0,"kind":"earning","confidence":1}]}""");
         var result=ExcelPayslipMappingService.ApplyResponse(request,null,references,response.RootElement,"synthetic-model");
@@ -825,7 +825,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("identity review", lesson.Content); Assert.True(lesson.Content.Length < 2600);
         Assert.Contains("explicitly fill literal blanks", lesson.Content);
         Assert.Contains("Mixed-location files require row-specific evidence", lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v76", ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Equal("excel-payroll-mapping-v77", ExcelPayslipMappingService.KnowledgeVersion);
     }
     [Fact]
     public void SplitWagePeriodLessonIsRetrievedFromAnonymousStructuralHeadings()
@@ -900,7 +900,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("Never ignore a true full-gross control",lesson.Content);
         Assert.Contains("Retain its exact original cell, value and formula",lesson.Content);
         using var prompt=JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request,null,references));
-        Assert.Equal("excel-payroll-mapping-v76",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v77",prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         Assert.Equal(lesson.Content,prompt.RootElement.GetProperty("references").EnumerateArray().Single(r=>r.GetProperty("title").GetString()==lesson.Title).GetProperty("content").GetString());
         Assert.Equal(before,JsonSerializer.Serialize(request));Assert.Equal("grossTotal",request.Columns[0].Kind);
     }
@@ -942,7 +942,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("identity-review evidence",lesson.Content);
         Assert.Contains("Aadhaar Number and Aadhar Number as the same canonical Master field",lesson.Content);
         Assert.Contains("requires an existing verified same-client Master link",lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v76",ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Equal("excel-payroll-mapping-v77",ExcelPayslipMappingService.KnowledgeVersion);
     }
     [Fact]
     public void NativePayslipDesignLessonIncludesEffectiveMasterLabelsWithoutSalaryAuthority()
@@ -1035,7 +1035,7 @@ public sealed class ExcelPayslipMappingTests
         Assert.Contains("never freeze formula caches",lesson.Content);
         Assert.Contains("absent Professional Tax column is not a zero instruction", lesson.Content);
         Assert.Contains("employee/client/month", lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v76",ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Equal("excel-payroll-mapping-v77",ExcelPayslipMappingService.KnowledgeVersion);
     }
     [Fact]
     public void HistoricalSetupBoundaryIsRetrievedFromAnonymousPeriodRateHeadings()
@@ -1305,7 +1305,7 @@ public sealed class ExcelPayslipMappingTests
         var references = ExcelPayslipMappingService.Retrieve(request.Columns, File.ReadAllText(path), []);
         var pattern = Assert.Single(references, item => item.Title.StartsWith("TMT pattern:"));
         using var prompt = JsonDocument.Parse(ExcelPayslipMappingService.BuildPrompt(request, null, references));
-        Assert.Equal("excel-payroll-mapping-v76", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
+        Assert.Equal("excel-payroll-mapping-v77", prompt.RootElement.GetProperty("knowledgeVersion").GetString());
         var supplied = prompt.RootElement.GetProperty("references").EnumerateArray()
             .Single(item => item.GetProperty("title").GetString() == pattern.Title).GetProperty("content").GetString()!;
         Assert.Equal(pattern.Content, supplied); // The critical case must fit without prompt truncation.

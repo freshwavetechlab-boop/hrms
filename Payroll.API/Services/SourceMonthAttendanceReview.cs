@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 using Payroll.API.Models;
 
 namespace Payroll.API.Services;
@@ -28,8 +29,10 @@ internal static class SourceMonthAttendanceReview
             var metadata=source.Columns.Where(value=>value.ColumnIndex==column).ToArray();
             var rows=source.Rows.Where(row=>row.SourceRow==sourceRow).ToArray();
             var cell=rows.Length==1?rows[0].Cells.ElementAtOrDefault(column):null;
+            var numericText=cell is { DataType:"Text" }&&string.IsNullOrWhiteSpace(cell.FormulaText)
+                &&Regex.IsMatch(cell.Value.Trim(),"^(?:0|[1-9][0-9]{0,2})(?:\\.[0-9]{1,2})?$");
             if(metadata.Length!=1||metadata[0].Kind is not("info" or "ignore")||cell is null||cell.Error is not null
-                ||cell.CalculationError is not null||cell.MissingCachedValue||cell.DataType is not("" or "Number")
+                ||cell.CalculationError is not null||cell.MissingCachedValue||cell.DataType is not("" or "Number")&&!numericText
                 ||string.IsNullOrWhiteSpace(cell.Value)||!decimal.TryParse(cell.Value,NumberStyles.Number|NumberStyles.AllowExponent,CultureInfo.InvariantCulture,out var value))
                 throw new InvalidOperationException("Divisor and payable units need distinct, numeric, error-free captured source cells. Financial outputs or missing values cannot become attendance.");
             return value;
