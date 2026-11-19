@@ -1,6 +1,6 @@
 namespace Payroll.API.Models;
 
-public sealed class SendPayslipsRequest
+public class SendPayslipsRequest
 {
     public List<int> EmployeeIds { get; set; } = [];
 }
@@ -9,6 +9,9 @@ public sealed class PayslipDeliveryItem
 {
     public int EmployeeId { get; set; }
     public string EmployeeCode { get; set; } = "";
+    public string Email { get; set; } = "";
+    public long QueueId { get; set; }
+    public string Reason { get; set; } = "";
     public string Status { get; set; } = "Excluded";
     public string Message { get; set; } = "";
 }

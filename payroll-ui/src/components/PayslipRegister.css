@@ -2,6 +2,7 @@
 .payslip-preview-panel footer .payslip-pdf-button{border:1px solid #fca5a5;background:#fef2f2;color:#dc2626}.payslip-preview-panel footer .payslip-pdf-button:hover{border-color:#f87171;background:#fee2e2;color:#b91c1c}.payslip-preview-panel footer .payslip-pdf-button:disabled{opacity:.6;cursor:wait}
 .payslip-register{display:flex;flex:1;flex-direction:column;min-height:0;min-width:0;max-width:none}
 .payslip-register .payslip-list{display:flex;flex:1;flex-direction:column;min-height:0;min-width:0}
+.payslip-email-filter{width:185px;max-width:100%}.payslip-register .bulk-mail-progress{flex-shrink:0}.payslip-register .payslip-list .ant-space-vertical{max-width:100%;overflow-wrap:anywhere}
 .payslip-toolbar{max-width:100%;align-items:center}
 .payslip-period-control{display:flex;align-items:center;gap:8px;font-size:.75rem;font-weight:700}
 .payslip-period-control .app-search-select{width:220px;max-width:100%}

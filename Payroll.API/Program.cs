@@ -4830,6 +4830,8 @@ app.MapPost("/api/pay-runs/{id:int}/payslips/send", async (PayRunRepository repo
     return Results.Ok(result);
 }).WithName("SendRegisterPayslips").WithOpenApi();
 
+PayslipMailEndpoints.Map(app, CanViewPayslipRegister, CanSendPayslips, CanAccessClient, CurrentUser);
+
 app.MapGet("/api/pay-runs/{id:int}/diagnostics", async (PayRunRepository repository, int id, HttpContext context) =>
 {
     if (!HasPermission(context, "payroll.run") && !HasPermission(context, "payroll.approve"))

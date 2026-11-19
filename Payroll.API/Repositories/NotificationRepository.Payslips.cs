@@ -46,8 +46,9 @@ WHERE p.Id=@ResourceId AND p.ClientId=@ClientId AND r.ClientId=@ClientId AND p.I
 AND r.Status IN ('Approved','Partially Paid','Paid') FOR UPDATE", new { evt.ResourceId, evt.ClientId }, tx);
         if (rowId is null) return ("Excluded", "The payslip is no longer eligible for delivery.");
         var existing = await db.ExecuteScalarAsync<long?>(@"SELECT Id FROM notification_queue
-WHERE EventCode='PAYSLIP.SEND' AND ResourceType='PayRunEmployee' AND ResourceId=@ResourceId
-AND ClientId=@ClientId AND Status IN ('Pending','Processing','Sent') ORDER BY Id DESC LIMIT 1", new { evt.ResourceId, evt.ClientId }, tx);
+WHERE ClientId=@ClientId AND ((EventCode='PAYSLIP.SEND' AND ResourceType='PayRunEmployee' AND ResourceId=@ResourceId
+AND Status IN ('Pending','Retry','Processing','Sent')) OR (EventCode=@PdfEvent AND ResourceType=@PdfResource AND ResourceId LIKE @PdfRow))
+ORDER BY Id DESC LIMIT 1", new { evt.ResourceId, evt.ClientId, PdfEvent=RegisterPdfEvent,PdfResource=RegisterPdfResource,PdfRow="%:"+evt.ResourceId+":%" }, tx);
         if (existing.HasValue) return ("Already queued", "This payslip is already queued or sent. Check Settings > Notifications > Delivery Monitor.");
         await db.ExecuteAsync(@"INSERT INTO notification_queue
 (RuleId,EventCode,ResourceType,ResourceId,ClientId,ToJson,CcJson,BccJson,Subject,BodyHtml,Status)

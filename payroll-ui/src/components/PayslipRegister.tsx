@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Alert, Button, Drawer, Space, Spin, Tag } from 'antd'
+import { Alert, Button, Checkbox, Drawer, Select, Space, Spin, Tag } from 'antd'
 import { getClients, getPayRuns } from '../services/payrollService'
-import { getRegisterPayRun, getRegisterPayslip, getRegisterPayslipPdf, sendRegisterPayslips, type PayslipDeliveryItem, type PayslipDocument } from '../services/payslipService'
+import { getRegisterPayRun, getRegisterPayslip, getRegisterPayslipPdf, queueRegisterPayslipMail, type PayslipDeliveryItem, type PayslipDocument, type PayslipMailJobRequest } from '../services/payslipService'
 import { PayslipPreviewLease } from '../utils/payslipDesign'
 import { payslipRegisterRunError } from '../utils/payslipRegister'
 import type { Client, PayRun, RunEmployee } from '../types/payroll'
@@ -17,6 +17,10 @@ import { useToast } from './ToastProvider'
 import './PayslipRegister.css'
 import PayrollLocationPayslips from './PayrollLocationPayslips'
 import PdfCanvasPreview from './PdfCanvasPreview'
+import BulkMailProgress from './BulkMailProgress'
+import { usePayslipRegisterMail } from '../hooks/usePayslipRegisterMail'
+import { registerMailFilter, validRegisterMailSubmission } from '../utils/payslipRegisterMail'
+import { payslipSentCopyLabel } from '../utils/excelPayslipDelivery'
 
 export default function PayslipRegister() {
   const session = useAuthSession()
@@ -44,9 +48,14 @@ export default function PayslipRegister() {
   const [previewLease] = useState(() => new PayslipPreviewLease())
   const [pdfBusy, setPdfBusy] = useState(false)
   const [sending, setSending] = useState(false)
-  const [sendProgress, setSendProgress] = useState('')
   const [deliveryItems, setDeliveryItems] = useState<PayslipDeliveryItem[]>([])
   const [deliveryOpen, setDeliveryOpen] = useState(false)
+  const [mailFilter, setMailFilter] = useSessionPreference(`payslips.mail-filter:${session?.user.id}:${clientId}:${runId}`, 'All')
+  const [pendingRequests, setPendingRequests] = useSessionPreference<PayslipMailJobRequest[]>(`payslips.mail-request:${session?.user.id}:${clientId}:${runId}`, [])
+  const [resendIds, setResendIds] = useState<number[] | null>(null)
+  const [resendConfirmed, setResendConfirmed] = useState(false)
+  const [mailError, setMailError] = useState('')
+  const [jobId, setJobId] = useState('')
   const previewAbort = useRef<AbortController | null>(null)
   const sendInFlight = useRef(false)
 
@@ -70,6 +79,14 @@ export default function PayslipRegister() {
   const clientRuns = useMemo(() => runs.filter(item => item.clientId === clientId && ['Approved', 'Partially Paid', 'Paid'].includes(item.status)), [runs, clientId])
   const rows = useMemo(() => run?.clientId === clientId && run.id === runId ? run.employees.filter(employee => !employee.isSkipped) : [], [run, clientId, runId])
   const validSelection = selectedIds.filter(id => rows.some(row => row.employeeId === id))
+  const mail = usePayslipRegisterMail(clientId, run?.clientId === clientId && run.id === runId ? runId : 0)
+  const mailStatuses = new Map(mail.data?.items.map(item => [item.employeeId, item]) ?? [])
+  const visibleRows = rows.filter(row => registerMailFilter(mailStatuses.get(row.employeeId)?.status || 'Checking', mailFilter))
+  const sendIds = validSelection.filter(id => mailStatuses.get(id)?.canSend)
+  const selectedResendIds = validSelection.filter(id => mailStatuses.get(id)?.canResend)
+  const withEmail = visibleRows.filter(row => mailFilter === 'Sent' || mailFilter === 'Needs attention'
+    ? mailStatuses.get(row.employeeId)?.canResend : mailStatuses.get(row.employeeId)?.canSend)
+  const pendingRequest = pendingRequests[0]
 
   useEffect(() => {
     if (!runsReady) return
@@ -82,6 +99,7 @@ export default function PayslipRegister() {
     setSelected(null); setDocument(null); setNativePdf(null); setPreviewError(''); setPreviewLoading(false)
     setRun(null); setRunError(''); setRunLoading(available > 0)
     setDeliveryItems([]); setDeliveryOpen(false)
+    setResendIds(null); setResendConfirmed(false); setMailError(''); setJobId('')
     if (available !== runId) setRunId(available)
     else if (available > 0) void getRegisterPayRun(available, { signal: controller.signal }).then(result => {
       if (!active || controller.signal.aborted) return
@@ -155,43 +173,55 @@ export default function PayslipRegister() {
     finally { setPdfBusy(false) }
   }
   const openNativePdf = () => { if (nativePdf) window.open(nativePdf.url, '_blank', 'noopener,noreferrer') }
-  const send = async (employeeIds: number[]) => {
-    if (!run || run.clientId !== clientId || run.id !== runId || !canSend || sendInFlight.current || !employeeIds.length) return
+  const send = async (employeeIds: number[], resend = false) => {
+    if (!run || run.clientId !== clientId || run.id !== runId || !canSend || sendInFlight.current || (!pendingRequest && (!mail.ready || !employeeIds.length))) return
+    if (!pendingRequest && resend && !resendConfirmed) return
+    const request = pendingRequest || { requestId: crypto.randomUUID().replaceAll('-', ''), employeeIds, resend, acknowledgeResend: resend }
+    setPendingRequests([request])
     sendInFlight.current = true
-    setSending(true)
-    const items: PayslipDeliveryItem[] = []
+    setSending(true); setMailError('')
     try {
-      for (let index = 0; index < employeeIds.length; index += 25) {
-        setSendProgress(`${Math.min(index + 25, employeeIds.length)}/${employeeIds.length}`)
-        const result = await sendRegisterPayslips(run.id, employeeIds.slice(index, index + 25))
-        if (!result.ok) { toast(result.error || 'Unable to queue payslips.', 'error'); break }
-        items.push(...result.data.items)
+      const result = await queueRegisterPayslipMail(run.id, request)
+      if (!result.ok || !validRegisterMailSubmission(result.data, clientId, run.id, request)) {
+        setMailError(result.error || 'The email request outcome could not be verified. Retry the same request to check it safely.')
+        setResendIds(null); setDeliveryOpen(true)
+        return
       }
-      setDeliveryItems(items)
-      if (items.length) {
-        setDeliveryOpen(true)
-        const handledIds = new Set(items.filter(item => item.status !== 'Excluded').map(item => item.employeeId))
-        setSelectedIds(current => current.filter(id => !handledIds.has(id)))
-      }
-    } finally { sendInFlight.current = false; setSending(false); setSendProgress('') }
+      setPendingRequests([]); setDeliveryItems(result.data.items); setJobId(result.data.job.id)
+      setResendIds(null); setResendConfirmed(false); setDeliveryOpen(true); mail.refresh()
+      const handledIds = new Set(result.data.items.filter(item => item.status !== 'Excluded').map(item => item.employeeId))
+      setSelectedIds(current => current.filter(id => !handledIds.has(id)))
+      window.dispatchEvent(new Event('hrms:actions-changed'))
+    } finally { sendInFlight.current = false; setSending(false) }
   }
   const queued = deliveryItems.filter(item => item.status === 'Queued').length
   const excluded = deliveryItems.filter(item => item.status === 'Excluded').length
+  const deliveryRows: Array<{ employeeId: number; employeeCode: string; email?: string; status: string; message: string }> = deliveryItems.length ? deliveryItems : mail.data?.items ?? []
 
   return <section className="payslip-register recruitment-viewport">
     {!clientScoped && <PageHeaderPortal slot="payslips-client-controls"><SearchSelect value={clientId} disabled={sending || pdfBusy} onChange={value => { closePreview(); setClientId(Number(value)) }} options={clients.map(client => ({ value: client.id, label: client.name }))} /></PageHeaderPortal>}
     <PageHeaderPortal slot="payslips-page-controls"><Space wrap className="payslip-toolbar">
       <label className="payslip-period-control"><span>Pay period</span><SearchSelect value={runId} disabled={sending || pdfBusy} onChange={value => { closePreview(); setRunId(Number(value)) }} options={selectOptions(clientRuns.map(item => ({ value: item.id, label: `${item.payPeriod} - ${item.status}` })), 'Select approved pay run', 0)} /></label>
-      {canSend && <><Button disabled={!rows.length || sending} onClick={() => setSelectedIds(rows.map(row => row.employeeId))}>Select all ({rows.length})</Button><Button disabled={!validSelection.length || sending} onClick={() => setSelectedIds([])}>Clear selection</Button><Button type="primary" loading={sending} disabled={!validSelection.length} onClick={() => void send(validSelection)}>{sending ? `Queuing ${sendProgress}` : `Send selected (${validSelection.length})`}</Button></>}
+      <Select aria-label="Payslip email status" className="payslip-email-filter" value={mailFilter} disabled={sending} onChange={setMailFilter} options={['All', 'Not sent', 'Sent', 'Queued', 'Email missing', 'Needs attention'].map(value => ({ value, label: `${value} (${rows.filter(row => registerMailFilter(mailStatuses.get(row.employeeId)?.status || 'Checking', value)).length})` }))} />
+      {canSend && <><Button disabled={!mail.ready || sending || !!pendingRequest || !withEmail.length} onClick={() => setSelectedIds(withEmail.map(row => row.employeeId))}>Select with email ({withEmail.length})</Button><Button disabled={!validSelection.length || sending} onClick={() => setSelectedIds([])}>Clear selection ({validSelection.length})</Button><Button type="primary" loading={sending} disabled={sending || !pendingRequest && (!mail.ready || !sendIds.length)} onClick={() => void send(sendIds)}>{pendingRequest ? 'Retry same email request' : `Send selected (${sendIds.length})`}</Button><Button disabled={!mail.ready || sending || !!pendingRequest || !selectedResendIds.length} onClick={() => { setResendConfirmed(false); setResendIds(selectedResendIds) }}>Resend selected ({selectedResendIds.length})</Button></>}
+      <Button onClick={() => setDeliveryOpen(true)}>Email progress</Button>
       <Button href="/security/apps/notifications">Notification settings</Button>
       {run && <PayrollLocationPayslips key={run.id} run={run} />}
     </Space></PageHeaderPortal>
-    {!runsReady || runLoading ? <section className="card report-empty" role="status"><Space><Spin /><span>Loading approved pay run…</span></Space></section> : runError ? <section className="card report-empty"><Alert type="error" showIcon message={runError} /><Button onClick={() => setRunLoadRevision(current => current + 1)}>Retry loading pay run</Button></section> : run ? <section className="card payslip-list"><DataTable rows={rows} fillHeight getRowId={row => row.employeeId} exportFileName={`payslip-register-${run.payPeriod}`} rowSelection={canSend ? { selectedRowKeys: validSelection, onChange: keys => setSelectedIds(keys.map(Number)), getCheckboxProps: () => ({ disabled: sending }) } : undefined} columns={[
+    {!runsReady || runLoading ? <section className="card report-empty" role="status"><Space><Spin /><span>Loading approved pay run…</span></Space></section> : runError ? <section className="card report-empty"><Alert type="error" showIcon message={runError} /><Button onClick={() => setRunLoadRevision(current => current + 1)}>Retry loading pay run</Button></section> : run ? <section className="card payslip-list">
+      {mail.error && <Alert type="warning" showIcon message={mail.error} action={<Button onClick={mail.refresh}>Refresh email status</Button>} />}
+      <BulkMailProgress jobs={mail.data?.jobs ?? []} selectedId={jobId} onSelect={setJobId} loading={mail.loading} error="" onRefresh={mail.refresh} expanded={false} onToggle={() => setDeliveryOpen(true)} />
+      <DataTable rows={visibleRows} fillHeight getRowId={row => row.employeeId} exportFileName={`payslip-register-${run.payPeriod}`} rowSelection={canSend ? { selectedRowKeys: validSelection, onChange: keys => setSelectedIds(keys.map(Number)), getCheckboxProps: row => ({ disabled: sending || !!pendingRequest || !mail.ready || !(mailStatuses.get(row.employeeId)?.canSend || mailStatuses.get(row.employeeId)?.canResend) }) } : undefined} columns={[
       { key: 'employee', label: 'Employee', value: row => row.employeeName, render: row => <>{row.employeeName}<small>{row.employeeCode}</small></> },
+      { key: 'emailStatus', label: 'Email status', width: 230, value: row => mailStatuses.get(row.employeeId)?.status || 'Checking', render: row => {
+        const item = mailStatuses.get(row.employeeId)
+        return <Space direction="vertical" size={2}><Tag color={item?.status === 'Sent' || item?.status === 'Delivered' ? 'green' : item?.canSend ? 'default' : 'orange'}>{item?.status === 'Sent' ? 'SMTP accepted' : item?.status || 'Checking...'}</Tag>{item && ['Sent', 'Delivered'].includes(item.status) && <Tag color={item.sentCopyStatus === 'Saved' ? 'green' : 'orange'}>{payslipSentCopyLabel(item.sentCopyStatus)}</Tag>}{item?.lastRecipient && <small title={item.message}>To: {item.lastRecipient}</small>}</Space>
+      } },
       { key: 'department', label: 'Department' }, { key: 'grossPay', label: 'Gross', value: row => money(row.grossPay + row.oneTimeEarnings) },
       { key: 'deductions', label: 'Deductions', value: row => money(row.statutoryDeductions + row.oneTimeDeductions) },
-      { key: 'netPay', label: 'Net pay', value: row => money(row.netPay) }, { key: 'paymentStatus', label: 'Payment' }
-    ]} actionsWidth={canSend ? 180 : 100} actions={row => <Space size={6}><Button size="small" disabled={pdfBusy} onClick={() => void preview(row)}>Preview</Button>{canSend && <Button size="small" disabled={sending} onClick={() => void send([row.employeeId])}>Send</Button>}</Space>} /></section> : <section className="card report-empty"><p>No approved pay run is available for this client.</p></section>}
+      { key: 'netPay', label: 'Net pay', value: row => money(row.netPay) }, { key: 'paymentStatus', label: 'Payment' },
+      { key: 'email', label: 'Work email', width: 230, value: row => mailStatuses.get(row.employeeId)?.email || 'Missing / invalid' }
+    ]} actionsWidth={canSend ? 180 : 100} actions={row => <Space size={6}><Button size="small" disabled={pdfBusy} onClick={() => void preview(row)}>Preview</Button>{canSend && (mailStatuses.get(row.employeeId)?.canResend ? <Button size="small" disabled={sending || !!pendingRequest || !mail.ready} onClick={() => { setResendConfirmed(false); setResendIds([row.employeeId]) }}>Resend</Button> : <Button size="small" disabled={sending || !!pendingRequest || !mail.ready || !mailStatuses.get(row.employeeId)?.canSend} onClick={() => void send([row.employeeId])}>Send PDF</Button>)}</Space>} /></section> : <section className="card report-empty"><p>No approved pay run is available for this client.</p></section>}
     {selected && run?.clientId === clientId && run.id === runId && <div className="payslip-modal-backdrop" onClick={closePreview}>
       <section className="payslip-preview-panel payslip-document-panel" role="dialog" aria-modal="true" aria-label="Payslip preview" onClick={event => event.stopPropagation()}>
         <header><div><span className="eyebrow purple">{run.payPeriod}</span><h3>{selected.employeeName}</h3><p>{selected.employeeCode} - {selected.department}</p></div><button type="button" className="payslip-close" aria-label="Close payslip preview" onClick={closePreview}>x</button></header>
@@ -206,13 +236,21 @@ export default function PayslipRegister() {
           {document?.pdfPreferred
             ? <><button type="button" disabled={!nativePdf || previewLoading || !!previewError} onClick={openNativePdf}>Open PDF</button><button type="button" className="payslip-pdf-button" disabled={!nativePdf || previewLoading || !!previewError} onClick={() => void downloadPdf()}>Download PDF</button></>
             : <><button type="button" disabled={!document || previewLoading || !!previewError} onClick={printPreview}>Open printable</button><button type="button" disabled={!document || previewLoading || !!previewError} onClick={download}>Download HTML</button><button type="button" className="payslip-pdf-button" disabled={!document || pdfBusy || previewLoading || !!previewError} onClick={() => void downloadPdf()}>{pdfBusy ? 'Preparing PDF...' : 'Export PDF'}</button></>}
-          {canSend && <button type="button" disabled={!document || sending || previewLoading || !!previewError} onClick={() => void send([selected.employeeId])}>{sending ? 'Queuing...' : 'Send'}</button>}
+          {canSend && <button type="button" disabled={!document || sending || !!pendingRequest || !mail.ready || !mailStatuses.get(selected.employeeId)?.canSend || previewLoading || !!previewError} onClick={() => void send([selected.employeeId])}>{sending ? 'Queuing...' : 'Send PDF'}</button>}
         </div></footer>
       </section>
     </div>}
-    <Drawer title="Payslip delivery" open={deliveryOpen} width={720} onClose={() => setDeliveryOpen(false)}>
-      <Alert type={excluded ? 'warning' : 'success'} showIcon message={`${queued} queued, ${deliveryItems.length - queued - excluded} already queued/sent, ${excluded} excluded`} description={<>Email templates, recipients, SMTP and delivery audit are managed in <a href="/security/apps/notifications">Security &gt; Apps &gt; Notifications</a>. Each email includes a printable HTML payslip attachment.</>} />
-      <DataTable rows={deliveryItems} getRowId={row => row.employeeId} columns={[{ key: 'employeeCode', label: 'Employee' }, { key: 'status', label: 'Status', render: row => <Tag color={row.status === 'Excluded' ? 'orange' : 'blue'}>{row.status}</Tag> }, { key: 'message', label: 'Details', wrap: true }]} />
+    <Drawer title="Payslip delivery" open={deliveryOpen} width="min(720px, 98vw)" rootClassName="payslip-register-mail-drawer" contentWrapperStyle={{ width: 'min(720px, 98vw)', maxWidth: '100vw' }} style={{ width: '100%', maxWidth: '100%', minWidth: 0 }} onClose={() => setDeliveryOpen(false)}>
+      {mailError && <Alert type="error" showIcon message={mailError} action={pendingRequest && <Button loading={sending} onClick={() => void send([])}>Retry same email request</Button>} />}
+      <BulkMailProgress jobs={mail.data?.jobs ?? []} selectedId={jobId} onSelect={setJobId} loading={mail.loading} error={mail.error} onRefresh={mail.refresh} />
+      {!!deliveryItems.length && <Alert type={excluded ? 'warning' : 'info'} showIcon message={`${queued} queued, ${deliveryItems.length - queued - excluded} already handled, ${excluded} excluded`} />}
+      <p>Each employee receives their own PDF, including their location slips. Sender, Sent-folder settings and delivery audit use <a href="/security/apps/notifications">Security &gt; Apps &gt; Notifications</a>.</p>
+      <DataTable rows={deliveryRows} getRowId={row => row.employeeId} columns={[{ key: 'employeeCode', label: 'Employee' }, { key: 'email', label: 'Recipient' }, { key: 'status', label: 'Status' }, { key: 'message', label: 'Details', wrap: true }]} />
+    </Drawer>
+    <Drawer title="Resend payslips" open={resendIds !== null} width="min(800px, 98vw)" rootClassName="payslip-register-mail-drawer" contentWrapperStyle={{ width: 'min(800px, 98vw)', maxWidth: '100vw' }} style={{ width: '100%', maxWidth: '100%', minWidth: 0 }} onClose={() => !sending && setResendIds(null)} footer={<Space wrap><Button disabled={sending} onClick={() => setResendIds(null)}>Cancel</Button><Button type="primary" loading={sending} disabled={!resendConfirmed || !resendIds?.length || !mail.ready || !!pendingRequest} onClick={() => void send(resendIds || [], true)}>Resend PDF ({resendIds?.length || 0})</Button></Space>}>
+      <Alert type="warning" showIcon message="These employees will receive another email for this pay run." description="The approved salary amounts stay unchanged. Queued, delayed or uncertain deliveries cannot be resent." />
+      <DataTable rows={rows.filter(row => resendIds?.includes(row.employeeId))} getRowId={row => row.employeeId} exportDisabled columns={[{ key: 'employeeCode', label: 'Code' }, { key: 'employeeName', label: 'Employee' }, { key: 'email', label: 'Recipient', value: row => mailStatuses.get(row.employeeId)?.email || '' }]} />
+      <Checkbox checked={resendConfirmed} disabled={sending} onChange={event => setResendConfirmed(event.target.checked)}>I confirm these {resendIds?.length || 0} employees should receive this payslip again.</Checkbox>
     </Drawer>
   </section>
 }

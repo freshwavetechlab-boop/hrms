@@ -2,12 +2,20 @@ import { apiRequest, getJsonResult, postJson, readError, type ApiOptions, type A
 import type { PayRun } from '../types/payroll'
 
 export type PayslipDocument = { payRunId: number; payPeriod: string; employeeCode: string; fileName: string; html: string; pdfPreferred?: boolean }
-export type PayslipDeliveryItem = { employeeId: number; employeeCode: string; status: 'Queued' | 'Already queued' | 'Excluded'; message: string }
+export type PayslipDeliveryItem = { employeeId: number; employeeCode: string; email?: string; queueId?: number; reason?: string; status: 'Queued' | 'Already queued' | 'Excluded'; message: string }
 export type PayslipDeliveryResult = { items: PayslipDeliveryItem[]; queuedCount: number; alreadyQueuedCount: number; excludedCount: number }
 export const getRegisterPayRun = (payRunId: number, options: ApiOptions = {}) => getJsonResult<PayRun | null>('/api/pay-runs/' + payRunId, null, { loader: false, toast: false, ...options })
 
 export const getRegisterPayslip = (payRunId: number, employeeId: number, options: ApiOptions = {}) => getJsonResult<PayslipDocument | null>(`/api/pay-runs/${payRunId}/payslips/${employeeId}`, null, { loader: false, ...options })
 export const sendRegisterPayslips = (payRunId: number, employeeIds: number[]) => postJson(`/api/pay-runs/${payRunId}/payslips/send`, { employeeIds }, { items: [], queuedCount: 0, alreadyQueuedCount: 0, excludedCount: 0 } as PayslipDeliveryResult, { loader: false, toast: false, timeoutMs: 120000 })
+
+export type PayslipEmailStatus = { employeeId: number; employeeCode: string; email: string; lastRecipient: string; status: string; sentCopyStatus: string; sentAtUtc?: string; canSend: boolean; canResend: boolean; message: string }
+export type PayslipMailJob = import('../components/BulkMailProgress').BulkMailJob & { clientId: number; payRunId: number; month: string; resend: boolean }
+export type PayslipMailOverview = { clientId: number; payRunId: number; items: PayslipEmailStatus[]; jobs: PayslipMailJob[] }
+export type PayslipMailJobRequest = { requestId: string; employeeIds: number[]; resend: boolean; acknowledgeResend: boolean }
+export type PayslipMailJobSubmission = { job: PayslipMailJob; items: PayslipDeliveryItem[] }
+export const getRegisterPayslipMail = (payRunId: number) => getJsonResult<PayslipMailOverview | null>(`/api/pay-runs/${payRunId}/payslips/mail-status`, null, { loader: false, toast: false })
+export const queueRegisterPayslipMail = (payRunId: number, request: PayslipMailJobRequest) => postJson<PayslipMailJobRequest, PayslipMailJobSubmission | null>(`/api/pay-runs/${payRunId}/payslips/send-job`, request, null, { loader: false, toast: false, timeoutMs: 120000 })
 
 export type PayslipDesignKind = 'info' | 'earning' | 'deduction' | 'employer'
 export type PayslipDesignField = { sourceColumn: number; label: string; kind: PayslipDesignKind; nativeCode: string; infoToken: string; visible: boolean }
