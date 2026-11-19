@@ -4,6 +4,7 @@ import { excelColumnLetter, parsePayslipAmount } from './excelPayslipImport'
 import { payslipAttendanceBasis } from './excelPayslipAttendance'
 import { sharedPayrollDivisor } from './payrollSourceEvidence'
 import { payrollSourceColumns } from './excelPayrollColumns'
+import { evaluatePayrollFormula } from './payrollFormula'
 
 const normalized = (text: string) => text.normalize('NFKC').trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
 const componentCode = (label: string) => {
@@ -31,6 +32,19 @@ const sourceCell = (source: ExcelPayslipCalculationSource, row: number, column: 
 const expression = (text: string) => text.replace(/^=/, '').replace(/\$/g, '').replace(/\s+/g, '').toUpperCase()
 const identityText = (text: string) => text.normalize('NFKC').trim().toUpperCase().replace(/[^\p{L}\p{N}]/gu, '')
 const employeeName = (text: string) => identityText(text.normalize('NFKC').trim().replace(/^(?:MR|MS|MRS)\.?\s+/i, ''))
+
+// Draft recognition only. The API independently evaluates the preserved entry
+// expression with decimal arithmetic after the explicit fixed-input review.
+// Never treat a cell-reference/lookup cache as a recurring monthly salary input.
+function numericEntryInput(cell: ExcelPayslipCalculationSource['rows'][number]['cells'][number] | undefined) {
+  if (!cell || cell.dataType !== 'Number' || cell.error || cell.calculationError || cell.missingCachedValue) return false
+  const formula = cell.formulaText?.trim().replace(/^=/, '') || ''
+  if (!formula || formula.length > 1000 || !/^[0-9eE.\s()+*/%\-]+$/.test(formula)) return false
+  try {
+    const value = evaluatePayrollFormula(formula, {}), cache = Number(cell.value)
+    return !!cell.value.trim() && Number.isFinite(cache) && value === cache && value >= 0 && value <= 1_000_000_000 && Number.isInteger(value * 10000)
+  } catch { return false }
+}
 
 // These properties are read from the shared component by regular payroll.
 // Template-level formula and attendance overrides must not invent replacements.
@@ -145,16 +159,20 @@ export function proposeExcelPayrollSetup(batch: ExcelPayslipBatch, context: Payr
     if ([...codes.values()].includes(code)) code += `_${excelColumnLetter(column.columnIndex)}`
     codes.set(column.columnIndex, code)
   }
-  const inputToCode = new Map<number, string>(), selfMonthly = new Set<string>(), dailyRates = new Set<string>()
+  const inputToCode = new Map<number, string>(), selfMonthly = new Set<string>(), dailyRates = new Set<string>(), numericEntryColumns = new Set<number>()
   for (const column of outputColumns.filter(c => c.kind === 'earning')) {
     const code = codes.get(column.columnIndex)!
     const matching = source.columns.filter(c => ['info', 'ignore'].includes(c.kind) && componentCode(c.sourceHeader) === code
       && !/^(ER|EARNED)/.test(normalized(c.sourceHeader))
       && !/employee|\bemp\b|\buan\b|\bpan\b|aadh?aar|bank|account|ifsc|phone|mobile|identifier|qualification|(?:birth|joining)\s*date/i.test(c.sourceHeader))
     if (matching.length === 1 && rows.every(row => {
-      const cell = sourceCell(source, row.sourceRow, matching[0].columnIndex)
-      return cell && !cell.formulaText?.trim() && !cell.error && !cell.calculationError && !cell.missingCachedValue && (numeric(cell.value) !== undefined || !cell.value.trim())
-    })) inputToCode.set(matching[0].columnIndex, code)
+      const captured = source.rows.filter(item => item.sourceRow === row.sourceRow)
+      const cell = captured.length === 1 ? captured[0].cells[matching[0].columnIndex] : undefined
+      return cell && !cell.error && !cell.calculationError && !cell.missingCachedValue && (cell.formulaText?.trim() ? numericEntryInput(cell) : numeric(cell.value) !== undefined || !cell.value.trim())
+    })) {
+      inputToCode.set(matching[0].columnIndex, code)
+      if (rows.some(row => sourceCell(source, row.sourceRow, matching[0].columnIndex)?.formulaText?.trim())) numericEntryColumns.add(matching[0].columnIndex)
+    }
     else if (!matching.length && /^(?:BASIC|BESIC|DA|HRA|SPECIALALLOWANCE|EXPALLOWANCE|OTHERALLOWANCE|CITYALLOWANCE|CONVEYANCEALLOWANCE)$/.test(normalized(column.sourceHeader))
       && rows.every(row => { const cell = sourceCell(source, row.sourceRow, column.columnIndex); return !cell?.formulaText && numeric(cell?.value) !== undefined })) {
       inputToCode.set(column.columnIndex, code); selfMonthly.add(code)
@@ -264,7 +282,7 @@ export function proposeExcelPayrollSetup(batch: ExcelPayslipBatch, context: Payr
   const sharedDivisor = periodIndex < 0 ? sharedPayrollDivisor(source, daysIndex) : null
   const fixedDays = periodIndex < 0 ? sharedDivisor?.days ?? payslipAttendanceBasis(source, daysIndex < 0 ? undefined : daysIndex).fixedDays : undefined
   const request: PayrollSetupRequest = { updateExistingConfiguration: true, batchId: batch.id, rowIds: rows.map(r => r.id), templateName: `${(batch.clientName || 'Client').slice(0, 70)} salary template`, effectiveFrom: `${batch.month}-01`,
-    payrollDaysColumnIndex: periodIndex, fixedPayrollDays: fixedDays, payrollDaysCell: sharedDivisor?.cell, sourceColumnRoles: Object.fromEntries(source.columns.map(column => [column.columnIndex, column.kind])), payableDaysColumnIndex: daysIndex, presentDaysColumnIndex: presentIndex, workWeek: suggested?.workWeek || context.workWeeks.find(w => normalized(w.label) === 'SUNDAYOFF')?.value || context.workWeeks[0]?.value || 'Sunday off',
+    payrollDaysColumnIndex: periodIndex, fixedPayrollDays: fixedDays, payrollDaysCell: sharedDivisor?.cell, sourceColumnRoles: Object.fromEntries(source.columns.map(column => [column.columnIndex, numericEntryColumns.has(column.columnIndex) ? 'info' : column.kind])), payableDaysColumnIndex: daysIndex, presentDaysColumnIndex: presentIndex, workWeek: suggested?.workWeek || context.workWeeks.find(w => normalized(w.label) === 'SUNDAYOFF')?.value || context.workWeeks[0]?.value || 'Sunday off',
     attendanceCycleStartDay: suggested?.attendanceCycleStartDay ?? 1, attendanceCycleEndDay: suggested?.attendanceCycleEndDay ?? new Date(Number(batch.month.slice(0,4)), Number(batch.month.slice(5,7)), 0).getDate(), payrollReportGenerationDay: suggested?.payrollReportGenerationDay ?? 3, defaultDepartment: suggested?.department || '', defaultDesignation: suggested?.designation || '', defaultGrade: suggested?.grade || '', defaultWorkLocationName: context.workLocations.length === 1 ? context.workLocations[0].name : 'Head office', sourceWorkLocationColumnIndex: locationIndex, defaultWorkLocationState: suggested?.workLocationState || '', createMissingWorkLocations: true, createMissingDropdownValues: true, preserveExistingAttendancePolicies: true,
     components, employeeDecisions: decisions, editableDefaults: { leave: { status: 'Draft', quotaApproved: false, proposedAnnualPaidLeave: 0, active: false },
       holiday: { status: 'Draft', year: Number(batch.month.slice(0, 4)), dates: [] }, shift: { status: 'Draft', requiredForMonthlyTotals: false }, attendance: { mode: 'Monthly', payableDaysSource: 'Uploaded salary workbook' } } }

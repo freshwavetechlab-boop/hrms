@@ -15,6 +15,52 @@ const { proposeExcelPayrollSetup } = load('excelPayrollSetup')
 const { defaultPayslipMapping, payslipHeaders, buildExcelPayslipRows, buildPayslipCalculationSource } = load('excelPayslipImport')
 const { validateSalaryComponent } = load('salaryComponentConfig')
 
+function numericEntryFixture(formula='24000+(24000*5%)',cache='25200',kind='info') {
+  const headers=['Employee name','Total Days','Paid Days','Basic','Basic','ESI']
+  const source={headerRow:1,columnCount:headers.length,columns:headers.map((sourceHeader,columnIndex)=>({sourceHeader,label:sourceHeader,columnIndex,kind:['employeeName','info','info',kind,'earning','deduction'][columnIndex]})),
+    rows:[{sourceRow:2,cells:['Synthetic Person','30','20',cache,'16800','126'].map((value,index)=>({value,dataType:index?'Number':'Text',...(index===3?{formulaText:formula}:index===4?{formulaText:'D2/B2*C2'}:index===5?{formulaText:'E2*0.0075'}:{})}))}]}
+  const batch={id:'numeric-entry-proposal',clientId:9,clientName:'Synthetic',month:'2026-10',rows:[{id:'row',sourceRow:2,employeeCode:'SYN-1',employeeName:'Synthetic Person',earnings:[{label:'Basic',amount:16800}],deductions:[{label:'ESI',amount:126}],netPay:16674}]}
+  const context={source,components:[],employees:[],workWeeks:[],workLocations:[]}
+  return {source,batch,context}
+}
+
+for(const kind of ['info','ignore']) test(`independent numeric-entry ${kind} monthly bases are proposed without flattening their source expressions or approving writes`,()=>{
+  const {source,batch,context}=numericEntryFixture(undefined,undefined,kind),before=JSON.stringify({source,batch,context})
+  const {request}=proposeExcelPayrollSetup(batch,context,['row'])
+  const basic=request.components.find(component=>component.code==='BASIC')
+  assert.equal(basic.sourceColumnIndex,3);assert.equal(basic.expectedColumnIndex,4)
+  assert.equal(basic.calculationType,'Fixed Amount');assert.equal(basic.proRata,true)
+  assert.equal(basic.formula,'');assert.equal(basic.rowFormulas,undefined)
+  assert.equal(request.sourceColumnRoles[3],'info','explicit preview can review the proposed numeric INFO role')
+  assert.equal(request.components.find(component=>component.code==='ESIC').rowFormulas.row,'BASIC_EARNED*0.0075')
+  assert.notEqual(request.reviewedFixedInputs,true);assert.notEqual(request.reviewedPolicyScope,true)
+  assert.equal(JSON.stringify({source,batch,context}),before)
+})
+
+for(const issue of ['reference','e-column','lookup','lazy-function','divide-zero','negative','precision','overflow','overlength','cache-mismatch','text','error','calculation-error','missing-cache','duplicate-row','ambiguous-column','protected-header']) test(`numeric-entry proposal cannot adopt ${issue} as a recurring cache`,()=>{
+  const {source,batch,context}=numericEntryFixture(),cell=source.rows[0].cells[3]
+  if(issue==='reference')cell.formulaText='B2+1'
+  if(issue==='e-column')cell.formulaText='E2+1'
+  if(issue==='lookup')cell.formulaText="'[other.xlsx]Sheet1'!A2"
+  if(issue==='lazy-function')cell.formulaText='IF(1,25200,E2)'
+  if(issue==='divide-zero')cell.formulaText='25200/0'
+  if(issue==='negative'){cell.formulaText='-25200';cell.value='-25200'}
+  if(issue==='precision'){cell.formulaText='1/3';cell.value=String(1/3)}
+  if(issue==='overflow'){cell.formulaText='1E10';cell.value='10000000000'}
+  if(issue==='overlength')cell.formulaText='0'.repeat(1001)
+  if(issue==='cache-mismatch')cell.value='25201'
+  if(issue==='text')cell.dataType='Text'
+  if(issue==='error')cell.error='#VALUE!'
+  if(issue==='calculation-error')cell.calculationError='#REF!'
+  if(issue==='missing-cache')cell.missingCachedValue=true
+  if(issue==='duplicate-row')source.rows.push(structuredClone(source.rows[0]))
+  if(issue==='ambiguous-column')source.columns.push({columnIndex:6,sourceHeader:'Basic',label:'Basic',kind:'info'})
+  if(issue==='protected-header')source.columns[3].sourceHeader='Employee Basic'
+  const before=JSON.stringify({source,batch,context}),{request}=proposeExcelPayrollSetup(batch,context,['row'])
+  assert.notEqual(request.components.find(component=>component.code==='BASIC').sourceColumnIndex,3)
+  assert.equal(JSON.stringify({source,batch,context}),before)
+})
+
 for (const repeats of [8, 22]) test(`expanded native formula uses the bounded 4096 limit (${repeats} source groups)`, () => {
   const names = Array.from({ length: 8 }, (_, i) => `Auxiliary allowance source ${i + 1}`)
   const headers = ['Employee name', 'Total Days', 'Payable Days', ...names, 'Computed earning']

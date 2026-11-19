@@ -36,6 +36,7 @@ type DataTableProps<T> = {
   onExcelExport?: (visibleRows: T[]) => void
   onVisibleRowsChange?: (visibleRows: T[]) => void
   exportDisabled?: boolean
+  hideExport?: boolean
   hideInactiveClear?: boolean
   hideSearch?: boolean
   actionsWidth?: number
@@ -224,10 +225,10 @@ export default function DataTable<T extends object>(props: DataTableProps<T>) {
       <div className="ant-table-actions">
         {!props.hideSearch && <Input allowClear className="table-filter" placeholder="Search table..." value={query} onChange={event => setQuery(event.target.value)} />}
         {(props.hideInactiveClear === false || query || dirtyTable) && <Button onClick={clear}>Reset</Button>}
-        {exportFormat === 'excel' && props.exportToolbar}
-        <Dropdown.Button className={`export-split-btn export-${exportFormat}`} menu={exportMenu} icon={<DownOutlined />} onClick={() => downloadExport()} disabled={!exportRows.length || props.exportDisabled}>
+        {!props.hideExport && exportFormat === 'excel' && props.exportToolbar}
+        {!props.hideExport && <Dropdown.Button className={`export-split-btn export-${exportFormat}`} menu={exportMenu} icon={<DownOutlined />} onClick={() => downloadExport()} disabled={!exportRows.length || props.exportDisabled}>
           <span className="export-button-label">{exportIcons[exportFormat]} Export {exportLabels[exportFormat]}</span>
-        </Dropdown.Button>
+        </Dropdown.Button>}
         {props.primaryAction}
       </div>
     </div>

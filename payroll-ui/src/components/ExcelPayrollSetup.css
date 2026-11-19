@@ -1,2 +1,40 @@
 .excel-payroll-setup .ant-drawer-body{min-height:0;overflow-y:auto}.excel-payroll-setup .ant-alert{margin-bottom:14px}.excel-payroll-setup .ant-collapse{margin:14px 0}.excel-payroll-setup-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 18px}.excel-payroll-setup-grid .ant-form-item{min-width:0}.excel-payroll-setup .ant-select,.excel-payroll-setup .ant-input-number{width:100%;min-width:0}.excel-payroll-setup-wide{grid-column:1/-1;min-width:0}.excel-payroll-setup-footer{display:flex;justify-content:flex-end}.excel-payroll-setup-preview{margin-top:20px}.excel-payroll-setup code{display:block;white-space:pre-wrap;overflow-wrap:anywhere}.excel-payroll-setup .ant-collapse-header-text{min-width:0;overflow-wrap:anywhere}.excel-payroll-setup p{color:var(--hrms-muted);font-size:13px}.excel-payroll-setup .ant-table-cell .ant-select{min-width:240px}@media(max-width:640px){.excel-payroll-setup-grid{grid-template-columns:minmax(0,1fr)}.excel-payroll-setup .ant-drawer-body{padding:16px}.excel-payroll-setup-footer{justify-content:flex-start}}
 .excel-payroll-quick-summary{margin-block:14px}.excel-payroll-quick-options{width:100%;margin-block:0 16px}.excel-payroll-quick-prepare .ant-alert{margin-block:12px}.excel-payroll-quick-prepare .table-wrap{min-width:0}
+.excel-payroll-master .ant-drawer-body{padding:18px 22px;background:var(--hrms-bg,#f8f9fd)}
+.excel-payroll-master .ant-drawer-header{background:var(--hrms-surface,#fff)}
+.excel-master-workspace{min-width:0}
+.excel-master-context{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;color:var(--hrms-muted,#6f7388);font-size:13px}
+.excel-master-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:20px}
+.excel-master-summary button{display:flex;text-align:left;align-items:flex-start;gap:10px;border:1px solid var(--hrms-border,#e2e2f0);background:var(--hrms-surface,#fff);border-radius:12px;padding:15px;min-width:0;cursor:pointer;transition:border-color .15s ease,box-shadow .15s ease}
+.excel-master-summary button:hover,.excel-master-summary button:focus-visible{border-color:var(--hrms-primary,#7855f8);box-shadow:0 2px 10px #7755f812;outline:none}
+.excel-master-summary .anticon{color:var(--hrms-primary,#7855f8);padding:8px;background:#7855f80d;border-radius:9px;font-size:17px}
+.excel-master-summary button>span:last-child{min-width:0;color:var(--hrms-muted,#6f7388);font-size:12px}
+.excel-master-summary strong{display:block;font-size:15px;margin:5px 0;color:var(--hrms-text,#25293d);line-height:1.4;overflow-wrap:anywhere}
+.excel-master-summary small{display:block;font-size:11px;line-height:1.5;overflow-wrap:anywhere}
+.excel-master-tabs{border:1px solid var(--hrms-border,#e2e2f0);background:var(--hrms-surface,#fff);border-radius:12px;min-width:0}
+.excel-master-tabs>.ant-tabs-nav{margin:0;padding:0 18px;background:#7855f805;border-radius:12px 12px 0 0}
+.excel-master-tabs>.ant-tabs-content-holder{padding:20px;min-width:0}
+.excel-master-section-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:18px}
+.excel-master-section-heading h3{font-size:16px;margin:0 0 5px}
+.excel-master-section-heading p{margin:0;max-width:760px;line-height:1.6}
+.excel-master-details{background:var(--hrms-surface,#fff);border:1px solid var(--hrms-border,#e2e2f0);border-radius:9px;padding:12px 14px;margin:14px 0;min-width:0}
+.excel-master-details>summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--hrms-muted,#6f7388)}
+.excel-master-details[open]>summary{margin-bottom:16px;color:var(--hrms-text,#25293d)}
+.excel-master-detail-section{margin-top:18px;min-width:0}
+.excel-master-detail-section>h3{font-size:14px}
+.excel-master-technical:not([open]){margin-top:0;padding-block:8px;border-style:dashed}
+.excel-master-detail-toggle{display:flex;justify-content:flex-end;margin:12px 0}
+.excel-master-policy-note{display:flex;gap:12px;background:#29ad740a;border:1px solid #29ad7426;padding:18px;border-radius:10px;margin-bottom:18px}
+.excel-master-policy-note>.anticon{font-size:20px;color:#279b6b;padding-top:3px}
+.excel-master-policy-note p{margin-bottom:0}
+.excel-master-review-list{background:#7855f805;border:1px solid #7855f820;border-radius:10px;padding:12px 18px;margin-bottom:18px}
+.excel-master-review-list p{display:flex;align-items:flex-start;gap:10px;line-height:1.6}
+.excel-master-review-list .anticon{color:var(--hrms-primary,#7855f8);margin-top:4px}
+.excel-master-issues .ant-alert{margin-bottom:10px}
+.excel-master-save-note{line-height:1.6}
+.excel-master-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%}
+.excel-master-footer-hint{font-size:12px;color:var(--hrms-muted,#6f7388);max-width:370px}
+.excel-master-loading{display:flex;align-items:center;gap:12px;padding:12px 0 18px;font-size:13px;color:var(--hrms-muted,#6f7388)}
+@media(max-width:900px){.excel-master-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.excel-master-footer{align-items:flex-start;flex-direction:column}.excel-master-footer-hint{max-width:none}}
+@media(max-width:540px){.excel-payroll-master .ant-drawer-body{padding:12px}.excel-master-summary{gap:8px}.excel-master-summary button{padding:10px;gap:6px}.excel-master-summary .anticon{padding:5px;font-size:14px}.excel-master-summary strong{font-size:13px}.excel-master-context{align-items:flex-start;flex-direction:column}.excel-master-tabs>.ant-tabs-content-holder{padding:12px}.excel-master-tabs>.ant-tabs-nav{padding-inline:12px}.excel-master-section-heading{flex-direction:column}.excel-master-footer .ant-space{display:flex;gap:6px!important}.excel-master-footer .ant-btn{padding-inline:9px;font-size:12px}}
+@media(prefers-reduced-motion:reduce){.excel-master-summary button{transition:none}}

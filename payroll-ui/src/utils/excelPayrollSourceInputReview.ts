@@ -36,3 +36,28 @@ export function reviewMissingMonthlyInputs(batch: ExcelPayslipBatch, source: Exc
     }
   })).slice(0, 1000)
 }
+
+type MonthlyInputReviewRow = ReturnType<typeof reviewMissingMonthlyInputs>[number]
+
+// Summarise repeated per-employee evidence for display only. A column pattern
+// is not an approved input mapping; the original row proof is retained intact.
+export function summarizeMissingMonthlyInputs(rows: readonly MonthlyInputReviewRow[]) {
+  const groups = new Map<string, {
+    key: string; component: string; status: string; employees: number; outputColumn: string
+    inputColumns: string; sourceRounding: string; action: string; evidence: MonthlyInputReviewRow[]
+  }>()
+  const columnPattern = (text: string) => text.replace(/\b([A-Z]{1,3})[1-9]\d*\b/g, '$1')
+  for (const row of rows) {
+    const inputColumns = columnPattern(row.references), outputColumn = columnPattern(row.outputCell)
+    const key = JSON.stringify([row.component, row.status, outputColumn, inputColumns, row.sourceRounding, row.action])
+    let group = groups.get(key)
+    if (!group) {
+      group = { key, component: row.component, status: row.status, employees: 0, outputColumn,
+        inputColumns, sourceRounding: row.sourceRounding, action: row.action, evidence: [] }
+      groups.set(key, group)
+    }
+    group.evidence.push(row)
+    group.employees = new Set(group.evidence.map(item => item.sourceRow)).size
+  }
+  return [...groups.values()]
+}

@@ -23,7 +23,7 @@ export default function ExcelPayrollSetupWorkspace({ clientId, batch, rowIds, on
     } catch (failure) { setError(failure instanceof Error ? failure.message : 'Unable to inspect payroll setup.') }
     finally { setLoading(false) }
   }, [clientId, batch.id])
-  useEffect(() => { void load() }, [load])
+  useEffect(() => { if (rowIds.length > 100) void load() }, [load, rowIds.length])
   const rows = context?.roster?.rows.filter(row => rowIds.includes(row.rowId)) || []
   const visible = rows.filter(row => group === 'All' || row.status === group)
   const pending = visible.filter(row => row.status !== 'Applied')
@@ -31,6 +31,10 @@ export default function ExcelPayrollSetupWorkspace({ clientId, batch, rowIds, on
   const missing = context?.roster?.missingEmployees || []
   const exited = missing.filter(row => missingSelection.includes(String(row.employeeId))).map(row => ({ id: row.employeeId, employeeCode: row.employeeCode, name: row.employeeName }))
   const configure = (ids: string[]) => { setSelected([]); setCohort(ids.slice(0, 100)) }
+  // Open the actual proposed configuration, including first-time clients,
+  // directly. The queue is only needed to preserve larger cohort boundaries.
+  if (rowIds.length <= 100) return <ExcelPayrollSetup key={`${clientId}:${batch.id}:${rowIds.join('|')}`} clientId={clientId} batch={batch} rowIds={rowIds} onClose={onClose} onApplied={onApplied} />
+  if (context && !advanced && !context.clientConfiguration) return <ExcelPayrollSetup key={`${clientId}:${batch.id}:first-group`} clientId={clientId} batch={batch} rowIds={rowIds.slice(0,100)} onClose={onClose} onApplied={result=>{onApplied(result);void load()}} />
   if (context && !advanced) return <ExcelPayrollQuickPrepare key={`${clientId}:${batch.id}:${rowIds.join('|')}`} clientId={clientId} batch={batch} rowIds={rowIds} context={context} onClose={onClose} onApplied={result=>{onApplied(result);void load()}} onAdvanced={ids=>{setAdvanced(true);setGroup('All');setSelected(ids);if(ids.length<=100)configure(ids)}} />
   return <>
     <Drawer open title={`Master setup · ${batch.month}`} width="min(1160px, 98vw)" className="excel-payroll-setup" onClose={onClose} footer={<Space wrap className="excel-payroll-setup-footer">

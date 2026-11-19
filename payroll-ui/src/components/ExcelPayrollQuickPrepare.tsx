@@ -15,7 +15,7 @@ export default function ExcelPayrollQuickPrepare({ clientId, batch, rowIds, cont
   const session = useAuthSession()
   const [attempts, setAttempts] = useSessionPreference<Attempt[]>(`excel-payroll.prepare:${session?.user.email || 'local'}:${clientId}:${batch.id}`, [])
   const [plans, setPlans] = useState<QuickPayrollPlan[]>([]), [error, setError] = useState(''), [busy, setBusy] = useState('')
-  const [includeNew, setIncludeNew] = useState(false)
+  const includeNew = true // Source employees are part of the visible final-save plan.
   const [importAttendance, setImportAttendance] = useState(context.clientConfiguration?.savedRequest.importAttendance === true)
   const [previewed, setPreviewed] = useState(false)
   const flight = useRef(false), active = useRef(true)
@@ -33,7 +33,7 @@ export default function ExcelPayrollQuickPrepare({ clientId, batch, rowIds, cont
     flight.current = true; setBusy('Preparing combined preview'); setError(''); setPreviewed(false)
     const next: QuickPayrollPlan[] = []
     try {
-      if (!context.clientConfiguration) throw Error('Configure this client once in Advanced setup, or review its changed Excel layout. Later compatible imports will reuse the saved setup.')
+      if (!context.clientConfiguration) { onAdvanced(rowIds); return }
       const groups = quickPayrollGroups(context, rowIds)
       for (const ids of groups) {
         if (!active.current) return
@@ -120,7 +120,7 @@ export default function ExcelPayrollQuickPrepare({ clientId, batch, rowIds, cont
     {context.clientConfiguration?.savedRequest.reviewedExtraDutyUnits && <Alert type="info" message="Saved extra-duty salary units" description="The saved setup uses extra-duty salary units. They remain separate from actual Present days." />}
     <Space direction="vertical" className="excel-payroll-quick-options">
       <Checkbox checked={importAttendance} disabled={!!busy || done>0} onChange={event => { setImportAttendance(event.target.checked); setPreviewed(false) }}>Import source-month attendance ({batch.month})</Checkbox>
-      {!!newCount && <Checkbox checked={includeNew} disabled={!!busy || done>0} onChange={event => { setIncludeNew(event.target.checked); setPreviewed(false) }}>Include {newCount} new employees shown in this source</Checkbox>}
+      {!!newCount && <Tag color="gold">{newCount} new employees included in this setup</Tag>}
       {context.quickPreparation && <span>Attendance cycle: {context.quickPreparation.cycleStart} → {context.quickPreparation.cycleEnd}. {importAttendance ? 'Actual Present and Payable totals from the reviewed source columns.' : 'Recorded attendance is retained.'}</span>}
     </Space>
     {busy && <div role="status" aria-live="polite"><Spin size="small" /> {busy}</div>}

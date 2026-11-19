@@ -25,3 +25,35 @@ export function quickPreview(request) {
   rows:request.rowIds.map(rowId=>({rowId,employeeId:Number(rowId.split('-')[1]),employeeCode:`TEST-${rowId.split('-')[1]}`,employeeName:`Synthetic employee ${rowId.split('-')[1]}`,action:request.employeeDecisions.find(d=>d.rowId===rowId)?.allowCreate?'Create':'Update',payrollDays:30,presentDays:24,payableDays:24,annualCtc:12000,gross:800,deductions:96,benefits:0,net:704,lines:[{code:'BASIC',sourceAmount:800,calculatedAmount:800,variance:0}]})),
   transfer:{version:1,sourceMonth:'2026-10',sourceBatchId:request.batchId,sourceHash:'a'.repeat(64),effectiveFrom:request.effectiveFrom,preparationStatus:'Ready',parityStatus:'Not verified',tolerance:0,components:[],formulas:[],attendanceProofs:[],amountComparisons:[],templates:[{variantKey:'rules',templateId:'template-1',name:'Synthetic salary',action:'Reuse',rowIds:request.rowIds,existingResults:[],keptAssignments:[],candidates:[{id:'template-1',name:'Synthetic salary',exact:true,configurationExact:true,differences:[],details:[]}]}]}}
 }
+
+// Isolated Master setup scenarios. These synthetic identities and amounts are
+// independent of the user's saved workbooks; the HTTP harness never uses a DB.
+export function masterWorkspaceFixture(scenario='fresh') {
+ const allowed=['fresh','saved','conflict','partial','applied']
+ if(!allowed.includes(scenario)) throw Error('Unknown synthetic Master setup scenario')
+ const value=quickPreparationFixture(33),{batch,context}=value
+ batch.id=({fresh:'1',saved:'2',conflict:'3',partial:'4',applied:'5'}[scenario]).repeat(32)
+ batch.clientName='Example client (DST layout)';batch.sourceFileName='Synthetic research salary.xlsx'
+ context.defaults.workLocationState='Maharashtra'
+ context.salaryCorrectionSupported=true;context.calculationOnlySimulationSupported=true
+ context.sourceCtcAndExtraDutySupported=true;context.sourcePayableOverrideSupported=true
+ context.payableOnlyAttendanceSupported=true;context.payableOnlyAttendanceSchemaReady=true
+ context.salaryTemplates=[{id:'template-1',name:'Research salary',clientId:42,active:true,lines:[]}]
+ if(scenario==='fresh'||scenario==='partial') {
+  context.employees=[];context.components=[];context.clientConfiguration=null;context.salaryTemplates=[]
+  context.roster.rows.forEach(row=>{row.status='New';row.employeeId=null;row.message='No existing Employee Master match. This source employee can be created after review.'})
+ }
+ if(scenario==='conflict') {
+  const source=batch.rows[0]
+  context.employees.push({...context.employees[0],id:9001,employeeName:'Synthetic conflicting identity'})
+  context.roster.rows[0]={...context.roster.rows[0],status:'Review',employeeId:null,message:'Two Employee Master records have the same source employee code. Choose the correct record; no name-only merge.'}
+  source.warnings.push('Employee identity needs review')
+ }
+ if(scenario==='partial') {
+  context.source.columns[4].sourceHeader='Site Days';context.source.columns[4].label='Site Days'
+  context.source.rows[0].cells[4].value='Site Days'
+  context.defaults.workWeek='';context.workWeeks=[]
+  context.defaults.notes.push('No saved weekly-off policy is available. Select a real policy before creating new employee settings.')
+ }
+ return {...value,scenario}
+}
