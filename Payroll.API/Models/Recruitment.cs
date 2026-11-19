@@ -10,6 +10,7 @@ public class RecruitmentRequisition
     public DateTime RequestDate { get; set; } = DateTime.Today;
     public int RequestedByEmployeeId { get; set; }
     public int RequestedByUserId { get; set; }
+    public int? RequesterUserId { get; set; }
     public string RequestedByName { get; set; } = "";
     public int ClientId { get; set; }
     public string ClientName { get; set; } = "";
@@ -84,6 +85,7 @@ public class SaveRecruitmentRequisition
     public long Id { get; set; }
     public DateTime? RequestDate { get; set; }
     public int? RequestedByEmployeeId { get; set; }
+    public int? RequesterUserId { get; set; }
     public int BranchId { get; set; }
     public string BusinessUnit { get; set; } = "";
     public string Department { get; set; } = "";

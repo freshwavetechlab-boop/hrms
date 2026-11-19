@@ -6,7 +6,7 @@ using System.Text.Json;
 
 namespace Payroll.API.Repositories;
 
-public class RecruitmentRepository(IConfiguration configuration)
+public partial class RecruitmentRepository(IConfiguration configuration)
 {
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
     private static readonly HashSet<string> CentralDropdownTypes = new(StringComparer.OrdinalIgnoreCase)
@@ -40,7 +40,7 @@ public class RecruitmentRepository(IConfiguration configuration)
         await using var db = Db();
         await db.OpenAsync();
         await EnsureTablesAsync(db);
-        var employee = await db.QueryFirstOrDefaultAsync<RequesterRow>("SELECT Id,ClientId,Department FROM employees WHERE Id=@EmployeeId", new { EmployeeId = employeeId });
+        var employee = employeeId > 0 ? await db.QueryFirstOrDefaultAsync<RequesterRow>("SELECT Id,ClientId,Department FROM employees WHERE Id=@EmployeeId", new { EmployeeId = employeeId }) : null;
         var scopeClientId = clientId ?? user.ClientId ?? employee?.ClientId ?? 0;
         var moduleEnabled = HasRecruitmentAccess(user);
         var enabled = HasRecruitmentCreateAccess(user);
@@ -76,7 +76,16 @@ public class RecruitmentRepository(IConfiguration configuration)
     {
         await using var db = Db();
         await db.OpenAsync();
-        return await db.QueryAsync<RecruitmentRequisition>(ListSql("WHERE r.RequestedByEmployeeId=@EmployeeId AND (@ClientId IS NULL OR r.ClientId=@ClientId) ORDER BY r.UpdatedAt DESC"), new { EmployeeId = employeeId, ClientId = clientId });
+        return await db.QueryAsync<RecruitmentRequisition>(ListSql("WHERE @EmployeeId>0 AND r.RequestedByEmployeeId=@EmployeeId AND (@ClientId IS NULL OR r.ClientId=@ClientId) ORDER BY r.UpdatedAt DESC"), new { EmployeeId = employeeId, ClientId = clientId });
+    }
+
+    public async Task<IEnumerable<RecruitmentRequisition>> GetMineAsync(AuthUser user)
+    {
+        await using var db = Db(); await db.OpenAsync();
+        var rows = await db.QueryAsync<RecruitmentRequisition>(ListSql(@"WHERE
+(r.RequesterUserId=@UserId OR r.RequestedByUserId=@UserId OR (@EmployeeId>0 AND r.RequestedByEmployeeId=@EmployeeId))
+AND (@ClientId IS NULL OR r.ClientId=@ClientId) ORDER BY r.UpdatedAt DESC"), new { UserId = user.Id, user.EmployeeId, user.ClientId });
+        return await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
     }
 
     public async Task<IEnumerable<RecruitmentRequisition>> SearchAsync(RecruitmentSearchRequest request, AuthUser user)
@@ -100,7 +109,7 @@ AND (@BudgetMin IS NULL OR r.BudgetAmount>=@BudgetMin)
 AND (@BudgetMax IS NULL OR r.BudgetAmount<=@BudgetMax)
 AND (@DateFrom IS NULL OR r.RequestDate>=@DateFrom)
 AND (@DateTo IS NULL OR r.RequestDate<=@DateTo)
-AND (@Query='' OR CONCAT(r.RfrNumber,' ',r.PositionTitle,' ',r.Department,' ',r.Project,' ',COALESCE(c.Name,''),' ',COALESCE(requester.FirstName,''),' ',COALESCE(requester.LastName,'')) LIKE CONCAT('%',@Query,'%'))
+AND (@Query='' OR CONCAT(r.RfrNumber,' ',r.PositionTitle,' ',r.Department,' ',r.Project,' ',COALESCE(c.Name,''),' ',COALESCE(requesterUser.DisplayName,''),' ',COALESCE(requesterUser.Email,''),' ',COALESCE(requester.FirstName,''),' ',COALESCE(requester.LastName,'')) LIKE CONCAT('%',@Query,'%'))
 ORDER BY r.UpdatedAt DESC LIMIT 500";
         var rows = await db.QueryAsync<RecruitmentRequisition>(ListSql(where), new { ClientId = clientId, request.Status, request.Department, request.HiringType, request.EmploymentType, request.Priority, request.BusinessUnit, request.PositionCategory, request.Experience, request.Location, request.Project, request.ReplacementHiring, request.BudgetMin, request.BudgetMax, request.DateFrom, request.DateTo, request.Query });
         return await RecruitmentAccessScope.FilterAsync(db, user, rows, row => row.ClientId, row => row.JobLocation);
@@ -138,6 +147,8 @@ ORDER BY r.UpdatedAt DESC LIMIT 500";
                 return (null, "A requisition's client cannot be changed after creation.");
             if (request.RequestedByEmployeeId is > 0 && request.RequestedByEmployeeId.Value != existing.RequestedByEmployeeId)
                 return (null, "A requisition's requester cannot be changed after creation.");
+            if (request.RequesterUserId is > 0 && request.RequesterUserId != existing.RequesterUserId)
+                return (null, "A requisition's requester cannot be changed after creation.");
             if (canEditApproved)
             {
                 var consumedPositions = await db.ExecuteScalarAsync<int?>(@"SELECT FilledPositions+CancelledPositions+OnHoldPositions
@@ -146,13 +157,16 @@ FROM recruitment_open_positions WHERE RequisitionId=@Id", new { request.Id });
                     return (null, $"Openings cannot be less than {consumedPositions.Value}; that many positions are already filled, cancelled, or on hold.");
             }
         }
-        var requesterEmployeeId = existing?.RequestedByEmployeeId
-            ?? (canManage && request.RequestedByEmployeeId is > 0 ? request.RequestedByEmployeeId : user.EmployeeId);
-        if (requesterEmployeeId is null)
-            return (null, "Select an active requester employee for this hiring request.");
-        var employee = await db.QueryFirstOrDefaultAsync<RequesterRow>("SELECT Id,ClientId,Department FROM employees WHERE Id=@EmployeeId AND IsActive=TRUE", new { EmployeeId = requesterEmployeeId.Value });
-        if (employee is null) return (null, "Requester employee profile was not found.");
-        var clientId = existing?.ClientId ?? user.ClientId ?? request.ClientId ?? employee.ClientId;
+        var clientId = existing?.ClientId ?? user.ClientId ?? request.ClientId ?? 0;
+        if (!SelectedClientAccess.Allows(user, clientId)) return (null, "Select a client within your assigned scope.");
+        request.RequesterUserId = existing is not null ? existing.RequesterUserId
+            : request.RequesterUserId ?? (canManage ? (int?)null : user.Id);
+        if (existing is null && (request.RequesterUserId is not > 0
+            || !await IsRequesterUserSelectionAllowedAsync(db, user, clientId, request.RequesterUserId.Value)))
+            return (null, "Select an active authorized employer user for this client's hiring request. Configure a requester user if none is available.");
+        // Legacy employee identity is kept only for existing history. New
+        // requester selection uses auth users and never creates/looks up staff.
+        var employee = new RequesterRow { Id = existing?.RequestedByEmployeeId ?? 0, ClientId = clientId, Department = existing?.Department ?? "" };
         var budgetChanged = request.BudgetAvailable && (existing is null || !existing.BudgetAvailable
             || existing.BudgetApprovalStatus is "Rejected" or "Sent Back" or "Failed" or "Cancelled"
             || existing.BudgetAmount != request.BudgetAmount || existing.Currency != request.Currency
@@ -166,7 +180,6 @@ FROM recruitment_open_positions WHERE RequisitionId=@Id", new { request.Id });
             var validApprover = await db.ExecuteScalarAsync<bool>("SELECT COUNT(*)>0 FROM authusers WHERE Id=@Id AND IsActive=TRUE AND (ClientId=@ClientId OR ClientId IS NULL)", new { Id = request.BudgetApproverUserId, ClientId = clientId });
             if (!validApprover) return (null, "Select an active budget approver from this client or central administration.");
         }
-        if (employee.ClientId != clientId) return (null, "Requester employee must belong to the selected client.");
         if (!await RecruitmentAccessScope.CanAccessLocationAsync(db, user, clientId, request.JobLocation)) return (null, "The selected job location is outside your recruitment visibility scope.");
         var enabled = canManage || await IsRequesterAllowedAsync(user);
         if (!enabled) return (null, "Your role does not allow hiring request creation.");
@@ -511,20 +524,20 @@ PositionName=@PositionName,NumberOfPositions=@NumberOfPositions,Location=@Locati
         {
             var scopedRequests = await db.QueryAsync<RecruitmentRequisition>(ListSql("WHERE (@ClientId IS NULL OR r.ClientId=@ClientId) ORDER BY r.UpdatedAt DESC"), new { ClientId = scopedClientId });
             var visibleRequests = await RecruitmentAccessScope.FilterAsync(db, user, scopedRequests, row => row.ClientId, row => row.JobLocation);
-            if (own && user.EmployeeId is > 0) visibleRequests = visibleRequests.Where(row => row.RequestedByEmployeeId == user.EmployeeId.Value).ToList();
+            if (own) visibleRequests = visibleRequests.Where(row => IsOwnRequisition(row, user)).ToList();
             var scopedPositions = await db.QueryAsync<RecruitmentOpenPosition>(OpenPositionSql("WHERE (@ClientId IS NULL OR p.ClientId=@ClientId) ORDER BY p.CreatedAt DESC"), new { ClientId = scopedClientId });
             var visiblePositions = await RecruitmentAccessScope.FilterAsync(db, user, scopedPositions, row => row.ClientId, row => row.JobLocation);
-            if (own && user.EmployeeId is > 0)
+            if (own)
             {
                 var ownedRequestIds = visibleRequests.Select(row => row.Id).ToHashSet();
                 visiblePositions = visiblePositions.Where(row => ownedRequestIds.Contains(row.RequisitionId)).ToList();
             }
             return BuildScopedDashboard(visibleRequests, visiblePositions);
         }
-        var filter = own && user.EmployeeId is not null ? "RequestedByEmployeeId=@EmployeeId" : "(@ClientId IS NULL OR ClientId=@ClientId)";
-        var rows = (await db.QueryAsync<StatusCount>($"SELECT Status,COUNT(*) Count FROM recruitment_requisitions WHERE {filter} GROUP BY Status", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId })).ToDictionary(x => x.Status, x => x.Count);
-        var positionFilter = own && user.EmployeeId is not null
-            ? "p.RequisitionId IN (SELECT Id FROM recruitment_requisitions WHERE RequestedByEmployeeId=@EmployeeId)"
+        var filter = own ? "(RequesterUserId=@UserId OR RequestedByUserId=@UserId OR (@EmployeeId>0 AND RequestedByEmployeeId=@EmployeeId)) AND (@ClientId IS NULL OR ClientId=@ClientId)" : "(@ClientId IS NULL OR ClientId=@ClientId)";
+        var rows = (await db.QueryAsync<StatusCount>($"SELECT Status,COUNT(*) Count FROM recruitment_requisitions WHERE {filter} GROUP BY Status", new { UserId = user.Id, EmployeeId = user.EmployeeId, ClientId = scopedClientId })).ToDictionary(x => x.Status, x => x.Count);
+        var positionFilter = own
+            ? $"p.RequisitionId IN (SELECT Id FROM recruitment_requisitions WHERE {filter})"
             : "(@ClientId IS NULL OR p.ClientId=@ClientId)";
         return new RecruitmentDashboard
         {
@@ -534,16 +547,16 @@ PositionName=@PositionName,NumberOfPositions=@NumberOfPositions,Location=@Locati
             Rejected = rows.GetValueOrDefault("Rejected"),
             Returned = rows.GetValueOrDefault("Sent Back"),
             Withdrawn = rows.GetValueOrDefault("Withdrawn"),
-            OpenPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(RemainingPositions),0) FROM recruitment_open_positions p WHERE {positionFilter} AND p.Status NOT IN ('Closed','Cancelled','Filled')", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
-            FilledPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(FilledPositions),0) FROM recruitment_open_positions p WHERE {positionFilter}", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
-            CancelledPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(CancelledPositions),0) FROM recruitment_open_positions p WHERE {positionFilter}", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
-            OnHoldPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(OnHoldPositions),0) FROM recruitment_open_positions p WHERE {positionFilter}", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
-            RemainingPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(RemainingPositions),0) FROM recruitment_open_positions p WHERE {positionFilter}", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
-            AverageApprovalHours = await db.ExecuteScalarAsync<decimal>($"SELECT COALESCE(AVG(TIMESTAMPDIFF(MINUTE,SubmittedAt,UpdatedAt))/60,0) FROM recruitment_requisitions WHERE {filter} AND Status='Approved' AND SubmittedAt IS NOT NULL", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
-            DepartmentWiseHiring = await db.QueryAsync<RecruitmentMetric>($"SELECT COALESCE(NULLIF(Department,''),'Not specified') Label, COALESCE(SUM(RemainingPositions),0) Value FROM recruitment_open_positions p WHERE {positionFilter} GROUP BY Department ORDER BY Value DESC LIMIT 8", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
-            CompanyWiseHiring = await db.QueryAsync<RecruitmentMetric>($"SELECT COALESCE(c.Name,'Not specified') Label, COALESCE(SUM(p.RemainingPositions),0) Value FROM recruitment_open_positions p LEFT JOIN clients c ON c.Id=p.ClientId WHERE {positionFilter} GROUP BY c.Name ORDER BY Value DESC LIMIT 8", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
-            PriorityWiseHiring = await db.QueryAsync<RecruitmentMetric>($"SELECT COALESCE(NULLIF(HiringPriority,''),'Normal') Label, COALESCE(SUM(RemainingPositions),0) Value FROM recruitment_open_positions p WHERE {positionFilter} GROUP BY HiringPriority ORDER BY Value DESC", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
-            UpcomingJoiningTargets = await db.QueryAsync<RecruitmentMetric>($"SELECT DATE_FORMAT(TargetJoiningDate,'%d-%m-%Y') Label, COALESCE(SUM(RemainingPositions),0) Value FROM recruitment_open_positions p WHERE {positionFilter} AND TargetJoiningDate IS NOT NULL AND TargetJoiningDate>=CURRENT_DATE GROUP BY TargetJoiningDate ORDER BY TargetJoiningDate LIMIT 8", new { EmployeeId = user.EmployeeId, ClientId = scopedClientId })
+            OpenPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(RemainingPositions),0) FROM recruitment_open_positions p WHERE {positionFilter} AND p.Status NOT IN ('Closed','Cancelled','Filled')", new { UserId = user.Id, EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            FilledPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(FilledPositions),0) FROM recruitment_open_positions p WHERE {positionFilter}", new { UserId = user.Id, EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            CancelledPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(CancelledPositions),0) FROM recruitment_open_positions p WHERE {positionFilter}", new { UserId = user.Id, EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            OnHoldPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(OnHoldPositions),0) FROM recruitment_open_positions p WHERE {positionFilter}", new { UserId = user.Id, EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            RemainingPositions = await db.ExecuteScalarAsync<int>($"SELECT COALESCE(SUM(RemainingPositions),0) FROM recruitment_open_positions p WHERE {positionFilter}", new { UserId = user.Id, EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            AverageApprovalHours = await db.ExecuteScalarAsync<decimal>($"SELECT COALESCE(AVG(TIMESTAMPDIFF(MINUTE,SubmittedAt,UpdatedAt))/60,0) FROM recruitment_requisitions WHERE {filter} AND Status='Approved' AND SubmittedAt IS NOT NULL", new { UserId = user.Id, EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            DepartmentWiseHiring = await db.QueryAsync<RecruitmentMetric>($"SELECT COALESCE(NULLIF(Department,''),'Not specified') Label, COALESCE(SUM(RemainingPositions),0) Value FROM recruitment_open_positions p WHERE {positionFilter} GROUP BY Department ORDER BY Value DESC LIMIT 8", new { UserId = user.Id, EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            CompanyWiseHiring = await db.QueryAsync<RecruitmentMetric>($"SELECT COALESCE(c.Name,'Not specified') Label, COALESCE(SUM(p.RemainingPositions),0) Value FROM recruitment_open_positions p LEFT JOIN clients c ON c.Id=p.ClientId WHERE {positionFilter} GROUP BY c.Name ORDER BY Value DESC LIMIT 8", new { UserId = user.Id, EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            PriorityWiseHiring = await db.QueryAsync<RecruitmentMetric>($"SELECT COALESCE(NULLIF(HiringPriority,''),'Normal') Label, COALESCE(SUM(RemainingPositions),0) Value FROM recruitment_open_positions p WHERE {positionFilter} GROUP BY HiringPriority ORDER BY Value DESC", new { UserId = user.Id, EmployeeId = user.EmployeeId, ClientId = scopedClientId }),
+            UpcomingJoiningTargets = await db.QueryAsync<RecruitmentMetric>($"SELECT DATE_FORMAT(TargetJoiningDate,'%d-%m-%Y') Label, COALESCE(SUM(RemainingPositions),0) Value FROM recruitment_open_positions p WHERE {positionFilter} AND TargetJoiningDate IS NOT NULL AND TargetJoiningDate>=CURRENT_DATE GROUP BY TargetJoiningDate ORDER BY TargetJoiningDate LIMIT 8", new { UserId = user.Id, EmployeeId = user.EmployeeId, ClientId = scopedClientId })
         };
     }
 
@@ -951,7 +964,7 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
     private static bool CanView(RecruitmentRequisition row, AuthUser user)
     {
         if (user.ClientId is not null && user.ClientId != row.ClientId) return false;
-        if (row.RequestedByUserId == user.Id || (user.EmployeeId.HasValue && row.RequestedByEmployeeId == user.EmployeeId.Value)) return true;
+        if (IsOwnRequisition(row, user)) return true;
         return user.Permissions.Contains("recruitment.manage", StringComparer.OrdinalIgnoreCase) ||
                user.Permissions.Contains("recruitment.rfr.view", StringComparer.OrdinalIgnoreCase);
     }
@@ -959,8 +972,10 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
     private static bool CanModify(RecruitmentRequisition row, AuthUser user, bool canManage)
     {
         if (user.ClientId is not null && user.ClientId != row.ClientId) return false;
-        return canManage || row.RequestedByUserId == user.Id || (user.EmployeeId.HasValue && row.RequestedByEmployeeId == user.EmployeeId.Value);
+        return canManage || IsOwnRequisition(row, user);
     }
+    private static bool IsOwnRequisition(RecruitmentRequisition row, AuthUser user) => row.RequestedByUserId == user.Id
+        || row.RequesterUserId == user.Id || (user.EmployeeId is > 0 && row.RequestedByEmployeeId == user.EmployeeId.Value);
     private static Task<bool> IsRequesterAllowedAsync(AuthUser user) => Task.FromResult(HasRecruitmentCreateAccess(user));
 
     public static bool HasRecruitmentAccess(AuthUser user) =>
@@ -1211,6 +1226,7 @@ WHERE IsActive=TRUE AND (ClientId=@ClientId OR ClientId IS NULL) ORDER BY Displa
         RequestDate = request.RequestDate?.Date ?? requestDate.Date,
         RequestedByEmployeeId = employee.Id,
         RequestedByUserId = user.Id,
+        request.RequesterUserId,
         ClientId = clientId,
         request.BranchId,
         request.BusinessUnit,
@@ -1258,8 +1274,8 @@ WHERE IsActive=TRUE AND (ClientId=@ClientId OR ClientId IS NULL) ORDER BY Displa
         request.WorkOrderLineNumber
     };
 
-    private const string InsertSql = @"INSERT INTO recruitment_requisitions (RfrNumber,RequestDate,RequestedByEmployeeId,RequestedByUserId,ClientId,BranchId,BusinessUnit,Department,CostCenter,PositionTitle,PositionCategory,EmploymentType,HiringType,NumberOfOpenings,IsReplacement,ReplacementEmployeeId,TargetJoiningDate,JobLocation,WorkMode,ClientProjectId,Project,BudgetAvailable,BudgetAmount,HiringPriority,BusinessJustification,ReasonForHiring,ExperienceRange,Qualification,RequiredSkills,PreferredSkills,Certifications,Languages,SalaryMin,SalaryMax,Currency,Benefits,ExternalPositionCode,SourceType,SourceReference,SourceDocumentName,SourceDocumentDate,SourceAuthority,ExternalApprovalStatus,CtcFlexibilityPercent,NegotiationSlaExtensionMinutes,SourceNotes,SourceParsedJson,WorkOrderId,WorkOrderLineNumber)
-VALUES (@RfrNumber,@RequestDate,@RequestedByEmployeeId,@RequestedByUserId,@ClientId,@BranchId,@BusinessUnit,@Department,@CostCenter,@PositionTitle,@PositionCategory,@EmploymentType,@HiringType,@NumberOfOpenings,@IsReplacement,@ReplacementEmployeeId,@TargetJoiningDate,@JobLocation,@WorkMode,@ClientProjectId,@Project,@BudgetAvailable,@BudgetAmount,@HiringPriority,@BusinessJustification,@ReasonForHiring,@ExperienceRange,@Qualification,@RequiredSkills,@PreferredSkills,@Certifications,@Languages,@SalaryMin,@SalaryMax,@Currency,@Benefits,@ExternalPositionCode,@SourceType,@SourceReference,@SourceDocumentName,@SourceDocumentDate,@SourceAuthority,@ExternalApprovalStatus,@CtcFlexibilityPercent,@NegotiationSlaExtensionMinutes,@SourceNotes,@SourceParsedJson,@WorkOrderId,@WorkOrderLineNumber);";
+    private const string InsertSql = @"INSERT INTO recruitment_requisitions (RfrNumber,RequestDate,RequestedByEmployeeId,RequestedByUserId,RequesterUserId,ClientId,BranchId,BusinessUnit,Department,CostCenter,PositionTitle,PositionCategory,EmploymentType,HiringType,NumberOfOpenings,IsReplacement,ReplacementEmployeeId,TargetJoiningDate,JobLocation,WorkMode,ClientProjectId,Project,BudgetAvailable,BudgetAmount,HiringPriority,BusinessJustification,ReasonForHiring,ExperienceRange,Qualification,RequiredSkills,PreferredSkills,Certifications,Languages,SalaryMin,SalaryMax,Currency,Benefits,ExternalPositionCode,SourceType,SourceReference,SourceDocumentName,SourceDocumentDate,SourceAuthority,ExternalApprovalStatus,CtcFlexibilityPercent,NegotiationSlaExtensionMinutes,SourceNotes,SourceParsedJson,WorkOrderId,WorkOrderLineNumber)
+VALUES (@RfrNumber,@RequestDate,@RequestedByEmployeeId,@RequestedByUserId,@RequesterUserId,@ClientId,@BranchId,@BusinessUnit,@Department,@CostCenter,@PositionTitle,@PositionCategory,@EmploymentType,@HiringType,@NumberOfOpenings,@IsReplacement,@ReplacementEmployeeId,@TargetJoiningDate,@JobLocation,@WorkMode,@ClientProjectId,@Project,@BudgetAvailable,@BudgetAmount,@HiringPriority,@BusinessJustification,@ReasonForHiring,@ExperienceRange,@Qualification,@RequiredSkills,@PreferredSkills,@Certifications,@Languages,@SalaryMin,@SalaryMax,@Currency,@Benefits,@ExternalPositionCode,@SourceType,@SourceReference,@SourceDocumentName,@SourceDocumentDate,@SourceAuthority,@ExternalApprovalStatus,@CtcFlexibilityPercent,@NegotiationSlaExtensionMinutes,@SourceNotes,@SourceParsedJson,@WorkOrderId,@WorkOrderLineNumber);";
     private const string UpdateSql = @"UPDATE recruitment_requisitions SET RequestDate=@RequestDate,BranchId=@BranchId,BusinessUnit=@BusinessUnit,Department=@Department,CostCenter=@CostCenter,PositionTitle=@PositionTitle,PositionCategory=@PositionCategory,EmploymentType=@EmploymentType,HiringType=@HiringType,NumberOfOpenings=@NumberOfOpenings,IsReplacement=@IsReplacement,ReplacementEmployeeId=@ReplacementEmployeeId,TargetJoiningDate=@TargetJoiningDate,JobLocation=@JobLocation,WorkMode=@WorkMode,ClientProjectId=@ClientProjectId,Project=@Project,BudgetAvailable=@BudgetAvailable,BudgetAmount=@BudgetAmount,HiringPriority=@HiringPriority,BusinessJustification=@BusinessJustification,ReasonForHiring=@ReasonForHiring,ExperienceRange=@ExperienceRange,Qualification=@Qualification,RequiredSkills=@RequiredSkills,PreferredSkills=@PreferredSkills,Certifications=@Certifications,Languages=@Languages,SalaryMin=@SalaryMin,SalaryMax=@SalaryMax,Currency=@Currency,Benefits=@Benefits,ExternalPositionCode=@ExternalPositionCode,SourceType=@SourceType,SourceReference=@SourceReference,SourceDocumentName=@SourceDocumentName,SourceDocumentDate=@SourceDocumentDate,SourceAuthority=@SourceAuthority,ExternalApprovalStatus=@ExternalApprovalStatus,CtcFlexibilityPercent=@CtcFlexibilityPercent,NegotiationSlaExtensionMinutes=@NegotiationSlaExtensionMinutes,SourceNotes=@SourceNotes,SourceParsedJson=@SourceParsedJson,WorkOrderId=@WorkOrderId,WorkOrderLineNumber=@WorkOrderLineNumber,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id";
 
     private static string ValidJsonOrEmpty(string? value)
@@ -1268,7 +1284,7 @@ VALUES (@RfrNumber,@RequestDate,@RequestedByEmployeeId,@RequestedByUserId,@Clien
         try { using var _ = JsonDocument.Parse(value); return value; }
         catch { return "{}"; }
     }
-    private static string ListSql(string where) => $@"SELECT r.*,c.Name ClientName,COALESCE(w.Name,'') BranchName,CONCAT(requester.FirstName,' ',COALESCE(requester.LastName,'')) RequestedByName,CONCAT(repl.FirstName,' ',COALESCE(repl.LastName,'')) ReplacementEmployeeName,
+    private static string ListSql(string where) => $@"SELECT r.*,c.Name ClientName,COALESCE(w.Name,'') BranchName,COALESCE(NULLIF(requesterUser.DisplayName,''),NULLIF(requesterUser.Email,''),CONCAT(requester.FirstName,' ',COALESCE(requester.LastName,'')),'') RequestedByName,CONCAT(repl.FirstName,' ',COALESCE(repl.LastName,'')) ReplacementEmployeeName,
 (SELECT jd.Id FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=r.Id ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1) LatestJobDescriptionVersionId,
 (SELECT jd.VersionNumber FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=r.Id ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1) LatestJobDescriptionVersionNumber,
 COALESCE((SELECT jd.Status FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=r.Id ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1),'Not Started') JobDescriptionStatus,
@@ -1313,6 +1329,7 @@ CASE
 FROM recruitment_requisitions r
 LEFT JOIN clients c ON c.Id=r.ClientId
 LEFT JOIN worklocations w ON w.Id=r.BranchId
+LEFT JOIN authusers requesterUser ON requesterUser.Id=r.RequesterUserId
 LEFT JOIN employees requester ON requester.Id=r.RequestedByEmployeeId
 LEFT JOIN employees repl ON repl.Id=r.ReplacementEmployeeId
 {where}";
@@ -1385,7 +1402,7 @@ ON DUPLICATE KEY UPDATE ResourceType=VALUES(ResourceType),ResourceIdSource=VALUE
     private static async Task EnsureTablesAsync(MySqlConnection db)
     {
         await db.ExecuteAsync(@"CREATE TABLE IF NOT EXISTS recruitment_requisitions (
-Id BIGINT PRIMARY KEY AUTO_INCREMENT,RfrNumber VARCHAR(80) NOT NULL,RequestDate DATE NOT NULL DEFAULT (CURRENT_DATE),RequestedByEmployeeId INT NOT NULL,RequestedByUserId INT NOT NULL,ClientId INT NOT NULL,BranchId INT NOT NULL DEFAULT 0,BusinessUnit VARCHAR(120) NOT NULL DEFAULT '',Department VARCHAR(120) NOT NULL DEFAULT '',CostCenter VARCHAR(120) NOT NULL DEFAULT '',PositionTitle VARCHAR(180) NOT NULL,PositionCategory VARCHAR(120) NOT NULL DEFAULT '',EmploymentType VARCHAR(80) NOT NULL DEFAULT '',HiringType VARCHAR(80) NOT NULL DEFAULT '',NumberOfOpenings INT NOT NULL DEFAULT 1,IsReplacement BOOLEAN NOT NULL DEFAULT FALSE,ReplacementEmployeeId INT NULL,TargetJoiningDate DATE NULL,JobLocation VARCHAR(160) NOT NULL DEFAULT '',WorkMode VARCHAR(40) NOT NULL DEFAULT 'Office',ClientProjectId INT NULL,Project VARCHAR(160) NOT NULL DEFAULT '',BudgetAvailable BOOLEAN NOT NULL DEFAULT FALSE,BudgetAmount DECIMAL(18,2) NOT NULL DEFAULT 0,HiringPriority VARCHAR(40) NOT NULL DEFAULT 'Normal',BusinessJustification TEXT NULL,ReasonForHiring VARCHAR(500) NOT NULL DEFAULT '',ExperienceRange VARCHAR(80) NOT NULL DEFAULT '',Qualification VARCHAR(250) NOT NULL DEFAULT '',RequiredSkills TEXT NULL,PreferredSkills TEXT NULL,Certifications VARCHAR(500) NOT NULL DEFAULT '',Languages VARCHAR(250) NOT NULL DEFAULT '',SalaryMin DECIMAL(18,2) NOT NULL DEFAULT 0,SalaryMax DECIMAL(18,2) NOT NULL DEFAULT 0,Currency VARCHAR(10) NOT NULL DEFAULT 'INR',Benefits TEXT NULL,Status VARCHAR(40) NOT NULL DEFAULT 'Draft',WorkflowInstanceId BIGINT NULL,OpenPositionId BIGINT NULL,SubmittedAt DATETIME NULL,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,UNIQUE KEY UX_recruitment_rfr_number (RfrNumber),INDEX IX_recruitment_rfr_client_status (ClientId,Status),INDEX IX_recruitment_rfr_requester (RequestedByEmployeeId,Status));
+Id BIGINT PRIMARY KEY AUTO_INCREMENT,RfrNumber VARCHAR(80) NOT NULL,RequestDate DATE NOT NULL DEFAULT (CURRENT_DATE),RequestedByEmployeeId INT NOT NULL,RequestedByUserId INT NOT NULL,RequesterUserId INT NULL,ClientId INT NOT NULL,BranchId INT NOT NULL DEFAULT 0,BusinessUnit VARCHAR(120) NOT NULL DEFAULT '',Department VARCHAR(120) NOT NULL DEFAULT '',CostCenter VARCHAR(120) NOT NULL DEFAULT '',PositionTitle VARCHAR(180) NOT NULL,PositionCategory VARCHAR(120) NOT NULL DEFAULT '',EmploymentType VARCHAR(80) NOT NULL DEFAULT '',HiringType VARCHAR(80) NOT NULL DEFAULT '',NumberOfOpenings INT NOT NULL DEFAULT 1,IsReplacement BOOLEAN NOT NULL DEFAULT FALSE,ReplacementEmployeeId INT NULL,TargetJoiningDate DATE NULL,JobLocation VARCHAR(160) NOT NULL DEFAULT '',WorkMode VARCHAR(40) NOT NULL DEFAULT 'Office',ClientProjectId INT NULL,Project VARCHAR(160) NOT NULL DEFAULT '',BudgetAvailable BOOLEAN NOT NULL DEFAULT FALSE,BudgetAmount DECIMAL(18,2) NOT NULL DEFAULT 0,HiringPriority VARCHAR(40) NOT NULL DEFAULT 'Normal',BusinessJustification TEXT NULL,ReasonForHiring VARCHAR(500) NOT NULL DEFAULT '',ExperienceRange VARCHAR(80) NOT NULL DEFAULT '',Qualification VARCHAR(250) NOT NULL DEFAULT '',RequiredSkills TEXT NULL,PreferredSkills TEXT NULL,Certifications VARCHAR(500) NOT NULL DEFAULT '',Languages VARCHAR(250) NOT NULL DEFAULT '',SalaryMin DECIMAL(18,2) NOT NULL DEFAULT 0,SalaryMax DECIMAL(18,2) NOT NULL DEFAULT 0,Currency VARCHAR(10) NOT NULL DEFAULT 'INR',Benefits TEXT NULL,Status VARCHAR(40) NOT NULL DEFAULT 'Draft',WorkflowInstanceId BIGINT NULL,OpenPositionId BIGINT NULL,SubmittedAt DATETIME NULL,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,UNIQUE KEY UX_recruitment_rfr_number (RfrNumber),INDEX IX_recruitment_rfr_client_status (ClientId,Status),INDEX IX_recruitment_rfr_requester (RequestedByEmployeeId,Status));
 CREATE TABLE IF NOT EXISTS recruitment_open_positions (
 Id BIGINT PRIMARY KEY AUTO_INCREMENT,RequisitionId BIGINT NOT NULL,PositionCode VARCHAR(80) NOT NULL,ClientId INT NOT NULL,BranchId INT NOT NULL DEFAULT 0,BusinessUnit VARCHAR(120) NOT NULL DEFAULT '',Department VARCHAR(120) NOT NULL DEFAULT '',CostCenter VARCHAR(120) NOT NULL DEFAULT '',PositionTitle VARCHAR(180) NOT NULL,PositionCategory VARCHAR(120) NOT NULL DEFAULT '',EmploymentType VARCHAR(80) NOT NULL DEFAULT '',HiringType VARCHAR(80) NOT NULL DEFAULT '',NumberOfPositions INT NOT NULL DEFAULT 1,ApprovedPositions INT NOT NULL DEFAULT 1,FilledPositions INT NOT NULL DEFAULT 0,CancelledPositions INT NOT NULL DEFAULT 0,OnHoldPositions INT NOT NULL DEFAULT 0,RemainingPositions INT NOT NULL DEFAULT 1,TargetJoiningDate DATE NULL,JobLocation VARCHAR(160) NOT NULL DEFAULT '',Project VARCHAR(160) NOT NULL DEFAULT '',BudgetAvailable BOOLEAN NOT NULL DEFAULT FALSE,BudgetAmount DECIMAL(18,2) NOT NULL DEFAULT 0,SalaryMin DECIMAL(18,2) NOT NULL DEFAULT 0,SalaryMax DECIMAL(18,2) NOT NULL DEFAULT 0,Currency VARCHAR(10) NOT NULL DEFAULT 'INR',HiringPriority VARCHAR(40) NOT NULL DEFAULT '',RequiredSkills TEXT NULL,PreferredSkills TEXT NULL,ExperienceRange VARCHAR(80) NOT NULL DEFAULT '',Status VARCHAR(40) NOT NULL DEFAULT 'Open',RecruiterUserId INT NOT NULL DEFAULT 0,CandidateCount INT NOT NULL DEFAULT 0,InterviewCount INT NOT NULL DEFAULT 0,OfferCount INT NOT NULL DEFAULT 0,JoinedCount INT NOT NULL DEFAULT 0,SnapshotJson JSON NULL,PublishedAt DATETIME NULL,ClosedAt DATETIME NULL,CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,UpdatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,UNIQUE KEY UX_recruitment_open_position_rfr (RequisitionId),UNIQUE KEY UX_recruitment_position_code (PositionCode),INDEX IX_recruitment_position_client_status (ClientId,Status));
 CREATE TABLE IF NOT EXISTS recruitment_number_sequences (
@@ -1434,6 +1451,9 @@ Id BIGINT PRIMARY KEY AUTO_INCREMENT,EntityType VARCHAR(80) NOT NULL,EntityId BI
         await EnsureColumnAsync(db, "recruitment_open_positions", "publishedat", "DATETIME NULL");
         await EnsureColumnAsync(db, "recruitment_open_positions", "closedat", "DATETIME NULL");
         await EnsureColumnAsync(db, "recruitment_requisitions", "externalpositioncode", "VARCHAR(80) NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(db, "recruitment_requisitions", "requesteruserid", "INT NULL");
+        var requesterIndex = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='recruitment_requisitions' AND index_name='IX_recruitment_rfr_requester_user'");
+        if (requesterIndex == 0) await db.ExecuteAsync("CREATE INDEX IX_recruitment_rfr_requester_user ON recruitment_requisitions (RequesterUserId,Status)");
         await EnsureColumnAsync(db, "recruitment_requisitions", "sourcetype", "VARCHAR(80) NOT NULL DEFAULT ''");
         await EnsureColumnAsync(db, "recruitment_requisitions", "sourcereference", "VARCHAR(240) NOT NULL DEFAULT ''");
         await EnsureColumnAsync(db, "recruitment_requisitions", "sourcedocumentname", "VARCHAR(500) NOT NULL DEFAULT ''");

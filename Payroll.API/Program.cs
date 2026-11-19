@@ -1390,17 +1390,17 @@ app.MapDelete("/api/ess/admin/expenses/claims/{id:long}", async (EssMssRepositor
 app.MapGet("/api/ess/recruitment/options", async (RecruitmentRepository repository, HttpContext context) =>
 {
     var user = CurrentUser(context);
-    return user.EmployeeId is null ? Results.StatusCode(403) : Results.Ok(await repository.GetOptionsAsync(user.EmployeeId.Value, user.ClientId, user));
+    return !RecruitmentRepository.HasRecruitmentAccess(user) ? Results.StatusCode(403) : Results.Ok(await repository.GetOptionsAsync(user.EmployeeId ?? 0, user.ClientId, user));
 });
 app.MapGet("/api/ess/recruitment/dashboard", async (RecruitmentRepository repository, HttpContext context) =>
 {
     var user = CurrentUser(context);
-    return user.EmployeeId is null || !RecruitmentRepository.HasRecruitmentAccess(user) ? Results.StatusCode(403) : Results.Ok(await repository.DashboardAsync(user, true));
+    return !RecruitmentRepository.HasRecruitmentAccess(user) ? Results.StatusCode(403) : Results.Ok(await repository.DashboardAsync(user, true));
 });
 app.MapGet("/api/ess/recruitment/requisitions", async (RecruitmentRepository repository, HttpContext context) =>
 {
     var user = CurrentUser(context);
-    return user.EmployeeId is null || !RecruitmentRepository.HasRecruitmentAccess(user) ? Results.StatusCode(403) : Results.Ok(await repository.GetMineAsync(user.EmployeeId.Value, user.ClientId));
+    return !RecruitmentRepository.HasRecruitmentAccess(user) ? Results.StatusCode(403) : Results.Ok(await repository.GetMineAsync(user));
 });
 app.MapGet("/api/ess/recruitment/requisitions/{id:long}", async (RecruitmentRepository repository, long id, HttpContext context) =>
 {
@@ -1411,7 +1411,7 @@ app.MapGet("/api/ess/recruitment/requisitions/{id:long}", async (RecruitmentRepo
 app.MapPost("/api/ess/recruitment/requisitions", async (RecruitmentRepository repository, RecruitmentCaseRepository hiringCases, SaveRecruitmentRequisition request, HttpContext context) =>
 {
     var user = CurrentUser(context);
-    if (user.EmployeeId is null || !RecruitmentRepository.HasRecruitmentCreateAccess(user)) return Results.StatusCode(403);
+    if (!RecruitmentRepository.HasRecruitmentCreateAccess(user)) return Results.StatusCode(403);
     var (row, error) = await repository.SaveDraftAsync(request, user);
     if (row is null) return Results.BadRequest(new { error });
     await hiringCases.EnsureHiringCaseForRequisitionAsync(row.Id, user);
@@ -1496,6 +1496,11 @@ app.MapGet("/api/recruitment/requisitions", async (RecruitmentRepository reposit
 app.MapGet("/api/recruitment/budget-approvers", async (RecruitmentRepository repository, int clientId, HttpContext context) =>
     RecruitmentPermissions.CanCreateRequisitions(CurrentUser(context))
         ? Results.Ok(await repository.GetBudgetApproversAsync(clientId,CurrentUser(context))) : Results.StatusCode(403));
+app.MapGet("/api/recruitment/requesters", async (RecruitmentRepository repository, int clientId, HttpContext context) =>
+{
+    try { return Results.Ok(await repository.GetRequestersAsync(clientId, CurrentUser(context))); }
+    catch (UnauthorizedAccessException) { return Results.StatusCode(403); }
+});
 app.MapGet("/api/recruitment/clients/{clientId:int}/final-offer-settings", async (RecruitmentTalentRepository repository, int clientId, HttpContext context) =>
 {
     if (!IsSuperAdmin(context)) return Results.StatusCode(403);

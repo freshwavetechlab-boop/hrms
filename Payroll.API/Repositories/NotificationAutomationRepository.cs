@@ -268,7 +268,7 @@ WHERE head.ClientId=@ClientId AND head.Department=@Department AND u.Email<>''", 
         "TRAVELREQUEST" => await db.ExecuteScalarAsync<int?>("SELECT EmployeeId FROM ess_travel_requests WHERE Id=@ResourceId", new { evt.ResourceId }),
         "EXPENSECLAIM" => await db.ExecuteScalarAsync<int?>("SELECT EmployeeId FROM ess_expense_claims WHERE Id=@ResourceId", new { evt.ResourceId }),
         "EMPLOYEE" or "EMPLOYEEACTION" => int.TryParse(evt.ResourceId, out var employeeId) ? employeeId : null,
-        "RECRUITMENTREQUISITION" => await db.ExecuteScalarAsync<int?>("SELECT RequestedByEmployeeId FROM recruitment_requisitions WHERE Id=@ResourceId", new { evt.ResourceId }),
+        "RECRUITMENTREQUISITION" => await db.ExecuteScalarAsync<int?>("SELECT NULLIF(RequestedByEmployeeId,0) FROM recruitment_requisitions WHERE Id=@ResourceId", new { evt.ResourceId }),
         _ => null
     };
 

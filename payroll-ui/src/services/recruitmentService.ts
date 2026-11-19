@@ -1,7 +1,11 @@
-import { apiRequest, deleteJson, getJson, postEmpty, postForm, postJson } from './apiClient'
+import { apiRequest, deleteJson, getJson, getJsonResult, postEmpty, postForm, postJson } from './apiClient'
+import type { RecruitmentRequester } from '../utils/recruitmentRequesters'
 import type { RecruitmentDashboard, RecruitmentOpenPosition, RecruitmentOperationsOptions, RecruitmentPositionDetail, RecruitmentRequisition, RecruitmentRequestDocumentParseResult, SaveRecruitmentRequisition } from '../types/payroll'
 
 const emptyDashboard: RecruitmentDashboard = { drafts: 0, pendingApproval: 0, approved: 0, rejected: 0, returned: 0, withdrawn: 0, openPositions: 0, filledPositions: 0, cancelledPositions: 0, onHoldPositions: 0, remainingPositions: 0, averageApprovalHours: 0, departmentWiseHiring: [], companyWiseHiring: [], priorityWiseHiring: [], upcomingJoiningTargets: [] }
+
+export const getRecruitmentRequesters = (clientId: number, signal?: AbortSignal) =>
+  getJsonResult<RecruitmentRequester[]>(`/api/recruitment/requesters?clientId=${clientId}`, [], { signal, toast: false, loader: false })
 
 export const getRecruitmentDashboard = (clientId = 0) => getJson<RecruitmentDashboard>(`/api/recruitment/dashboard${clientId ? `?clientId=${clientId}` : ''}`, emptyDashboard)
 export const getRecruitmentRequisitionApprovalMode = (clientId = 0) =>

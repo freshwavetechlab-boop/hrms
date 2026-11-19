@@ -78,18 +78,18 @@ public sealed class RecruitmentWorkflowRegressionTests
             await db.ExecuteAsync("""
                 CREATE TABLE recruitment_requisitions(Id BIGINT PRIMARY KEY,BudgetAvailable BOOLEAN,BudgetApproverUserId INT NULL,BudgetApprovalWorkflowInstanceId BIGINT NULL,BudgetApprovalStatus VARCHAR(30) DEFAULT '',UpdatedAt DATETIME);
                 CREATE TABLE recruitment_open_positions(Id BIGINT PRIMARY KEY,RequisitionId BIGINT);
-                CREATE TABLE recruitment_candidate_applications(Id BIGINT PRIMARY KEY,PositionId BIGINT,JoinedEmployeeId INT NULL,CurrentStage VARCHAR(100));
+                CREATE TABLE recruitment_candidate_applications(Id BIGINT PRIMARY KEY,PositionId BIGINT,JoinedEmployeeId INT NULL,CurrentStage VARCHAR(100),TermsVersion INT NOT NULL DEFAULT 0);
                 CREATE TABLE recruitment_position_pipeline_instances(Id BIGINT PRIMARY KEY,PositionId BIGINT,CurrentStageInstanceId BIGINT,Status VARCHAR(30),PipelineVersionId BIGINT DEFAULT 0);
                 CREATE TABLE recruitment_position_stage_instances(Id BIGINT PRIMARY KEY,PipelineStageId BIGINT,PositionPipelineInstanceId BIGINT,Status VARCHAR(30));
                 CREATE TABLE recruitment_pipeline_stages(Id BIGINT PRIMARY KEY,StageCode VARCHAR(80),StageType VARCHAR(80),StageName VARCHAR(100),PipelineVersionId BIGINT DEFAULT 0,CardScope VARCHAR(40),IsActive BOOLEAN DEFAULT TRUE,RequiresApproval BOOLEAN DEFAULT FALSE,DisplayOrder INT DEFAULT 0);
-                CREATE TABLE recruitment_stage_process_document_requirements(PipelineStageId BIGINT,IsRequired BOOLEAN);
+                CREATE TABLE recruitment_stage_process_document_requirements(PipelineStageId BIGINT,IsRequired BOOLEAN,DocumentType VARCHAR(30) NOT NULL DEFAULT '');
                 CREATE TABLE recruitment_application_pipeline_instances(Id BIGINT PRIMARY KEY,ApplicationId BIGINT,CurrentStageInstanceId BIGINT);
                 CREATE TABLE recruitment_application_stage_instances(Id BIGINT PRIMARY KEY,ApplicationId BIGINT,PipelineStageId BIGINT,Status VARCHAR(30));
                 CREATE TABLE recruitment_interviews(Id BIGINT PRIMARY KEY,ApplicationId BIGINT,Status VARCHAR(30));
                 CREATE TABLE recruitment_offers(Id BIGINT PRIMARY KEY,ApplicationId BIGINT,Status VARCHAR(30));
                 INSERT INTO recruitment_requisitions(Id,BudgetAvailable) VALUES(1,TRUE);
                 INSERT INTO recruitment_open_positions VALUES(10,1);
-                INSERT INTO recruitment_candidate_applications VALUES(100,10,NULL,'New Application / Resume Intake');
+                INSERT INTO recruitment_candidate_applications(Id,PositionId,JoinedEmployeeId,CurrentStage) VALUES(100,10,NULL,'New Application / Resume Intake');
                 INSERT INTO recruitment_pipeline_stages(Id,StageCode,StageType,StageName) VALUES(1,'SIGNING_MOM','Approval','Signing of MOM'),(2,'NEGOTIATION_AND_MOM_TO_HR','HR','Negotiation'),(3,'OFFER_ISSUANCE','Offer','Offer'),(4,'INTERVIEW_PANEL_ASSESSMENT','Interview','Interview'),(5,'REJECTED','Rejected','Rejected');
                 INSERT INTO recruitment_position_stage_instances(Id,PipelineStageId) VALUES(1,1),(2,2),(3,3);
                 INSERT INTO recruitment_position_pipeline_instances(Id,PositionId,CurrentStageInstanceId,Status) VALUES(1,10,1,'Active');

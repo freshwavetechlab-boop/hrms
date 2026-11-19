@@ -18,7 +18,7 @@ import { getJson } from '../services/apiClient'
 import { requisitionTextError, requisitionTextErrors, type RequisitionTextLimit } from '../services/requisitionTextLimits'
 import {
   deleteRecruitmentRequisition, getRecruitmentMasterOptions, getRecruitmentRequisitions, saveRecruitmentRequisition,
-  parseRecruitmentRequestDocument, submitRecruitmentRequisition,
+  parseRecruitmentRequestDocument, submitRecruitmentRequisition, getRecruitmentRequesters,
 } from '../services/recruitmentService'
 import { getEffectiveAttachmentConfigurations, uploadEntityAttachment } from '../services/attachmentService'
 import { getDropdowns, getWorkLocations } from '../services/settingsService'
@@ -28,6 +28,7 @@ import type {
   Client, Drop, Employee, RecruitmentOpenPosition, RecruitmentRequisition, RecruitmentRequestDocumentParseResult, SaveRecruitmentRequisition, WorkLocation,
 } from '../types/payroll'
 import { recruitmentStageColor } from '../utils/recruitmentStage'
+import { eligibleRecruitmentRequesters, recruitmentRequesterSelection, type RecruitmentRequesterSnapshot } from '../utils/recruitmentRequesters'
 import RecruitmentEditorDrawer from './RecruitmentEditorDrawer'
 import RecruitmentMasterSelect from './RecruitmentMasterSelect'
 import RecruitmentSeedPackModal from './RecruitmentSeedPackModal'
@@ -87,6 +88,8 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const [dropdowns, setDropdowns] = useState<Drop[]>([])
   const [locations, setLocations] = useState<WorkLocation[]>([])
   const [employees, setEmployees] = useState<Employee[]>([])
+  const [requesterSnapshot, setRequesterSnapshot] = useState<RecruitmentRequesterSnapshot>({ clientId: 0, rows: [], status: 'idle', error: '' })
+  const [requesterRetry, setRequesterRetry] = useState(0)
   const [masters, setMasters] = useState<MasterOptions>(emptyMasters)
   const [textLimits, setTextLimits] = useState<RequisitionTextLimit[]>([])
   const [textErrors, setTextErrors] = useState<string[]>([])
@@ -232,7 +235,8 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       ...draft,
       id: Number(draft.id || 0),
       clientId: Number(draft.clientId || 0),
-      requestedByEmployeeId: Number(draft.requestedByEmployeeId || 0) || null,
+      requesterUserId: Number(draft.requesterUserId || 0) || null,
+      requestedByEmployeeId: draft.id ? Number(draft.requestedByEmployeeId || 0) || null : null,
     }
     form.setFieldsValue(normalized)
     setTextErrors(requisitionTextErrors(normalized, textLimits).flatMap(row => row.errors))
@@ -288,9 +292,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
               : 'The linked work order could not be loaded. A new blank hiring request is open; return to Work Orders and retry from the active order.')
           }
         }
-        draft.requestedByEmployeeId = session?.user.employeeId
-          ?? data.employeeRows.find(row => row.isActive && (!draft.clientId || row.clientId === draft.clientId))?.id
-          ?? null
+        draft.requesterUserId = recruitmentRequesterSelection(requesterSnapshot, Number(draft.clientId || 0), null, session?.user.id)
         draft = restoreBrowserDraft(draft, newBrowserDraftKey())
         targetJoiningManual.current = Boolean(draft.targetJoiningDate)
         applyDraft(draft)
@@ -371,9 +373,38 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     .map(row => ({ value: row.id, label: `${row.employeeCode} · ${row.firstName} ${row.lastName}` })), [employees, selectedClientId])
   const positionByRequisition = useMemo(() => new Map(pipelinePositions.map(position => [position.requisitionId, position])), [pipelinePositions])
 
-  const requesterOptions = useMemo(() => employees
-    .filter(row => row.isActive && (!selectedClientId || row.clientId === selectedClientId))
-    .map(row => ({ value: row.id, label: `${row.employeeCode} - ${row.firstName} ${row.lastName}` })), [employees, selectedClientId])
+  const requesterOptions = useMemo(() => {
+    const options = eligibleRecruitmentRequesters(requesterSnapshot, selectedClientId)
+      .map(row => ({ value: row.userId, label: `${row.displayName}${row.email ? ` · ${row.email}` : ''}` }))
+    if (activeRequest && activeRequest.id === watchedForm.id && activeRequest.requesterUserId && !options.some(row => row.value === activeRequest.requesterUserId)) {
+      options.push({ value: activeRequest.requesterUserId, label: activeRequest.requestedByName || `Saved requester (${activeRequest.requesterUserId})` })
+    }
+    return options
+  }, [requesterSnapshot, selectedClientId, activeRequest, watchedForm.id])
+  const requesterUnresolved = !watchedForm.id && selectedClientId > 0
+    && (requesterSnapshot.clientId !== selectedClientId || requesterSnapshot.status !== 'ready')
+  useEffect(() => {
+    if (!dialogOpen || selectedClientId <= 0) return
+    let active = true
+    const controller = new AbortController()
+    setRequesterSnapshot({ clientId: selectedClientId, rows: [], status: 'loading', error: '' })
+    void getRecruitmentRequesters(selectedClientId, controller.signal).then(response => {
+      if (!active || controller.signal.aborted) return
+      const snapshot: RecruitmentRequesterSnapshot = { clientId: selectedClientId, rows: response.ok ? response.data : [], status: response.ok ? 'ready' : 'error', error: response.ok ? '' : response.error || 'Requesters could not be loaded. Retry before saving.' }
+      setRequesterSnapshot(snapshot)
+    })
+    return () => { active = false; controller.abort() }
+  }, [dialogOpen, selectedClientId, requesterRetry, form, session?.user.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!dialogOpen || watchedForm.id || requesterSnapshot.status !== 'ready' || requesterSnapshot.clientId !== selectedClientId) return
+    const current = form.getFieldsValue(true) as SaveRecruitmentRequisition
+    if (current.id || Number(current.clientId) !== selectedClientId) return
+    const requesterUserId = recruitmentRequesterSelection(requesterSnapshot, selectedClientId, current.requesterUserId, session?.user.id)
+    if ((current.requesterUserId || null) !== requesterUserId) {
+      form.setFieldValue('requesterUserId', requesterUserId)
+      persistBrowserDraft({ ...current, requesterUserId })
+    }
+  }, [dialogOpen, requesterSnapshot, selectedClientId, watchedForm, form, session?.user.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const columns: ColumnsType<RecruitmentRequisition> = [
     {
@@ -475,13 +506,13 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     setJdOpen([])
     const nextClientId = initialClientId || clientFilter || clients[0]?.id || 0
     let draft = blankRequest(nextClientId)
-    draft.requestedByEmployeeId = session?.user.employeeId
-      ?? employees.find(row => row.isActive && (!nextClientId || row.clientId === nextClientId))?.id
-      ?? null
+    draft.requesterUserId = recruitmentRequesterSelection(requesterSnapshot, nextClientId, null, session?.user.id)
     draft = restoreBrowserDraft(draft, key)
     const restoredRequest = draft.id ? rows.find(row => row.id === draft.id) : undefined
     if (restoredRequest) {
       setActiveRequest(restoredRequest)
+      draft.requesterUserId = restoredRequest.requesterUserId
+      draft.requestedByEmployeeId = restoredRequest.requestedByEmployeeId
       setReadOnly(!editableStatuses.has(restoredRequest.status) && !(canDelete && restoredRequest.status === 'Approved'))
     }
     targetJoiningManual.current = Boolean(draft.targetJoiningDate)
@@ -507,9 +538,10 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     setSourcePrefillWarning('')
     setAdvancedOpen([])
     setJdOpen(['job-description'])
-    applyDraft(!forceReadOnly && editableStatuses.has(row.status)
+    const draft = !forceReadOnly && editableStatuses.has(row.status)
       ? restoreBrowserDraft(fromRow(row), activeBrowserDraftKey.current)
-      : fromRow(row))
+      : fromRow(row)
+    applyDraft({ ...draft, requesterUserId: row.requesterUserId, requestedByEmployeeId: row.requestedByEmployeeId })
     setSourceUploadProgress(0)
     setDialogOpen(true)
   }
@@ -544,7 +576,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       const patch: Partial<SaveRecruitmentRequisition> = {}
       for (const field of result.detectedFields) {
         const key = field as keyof SaveRecruitmentRequisition
-        if (['id', 'clientId', 'requestedByEmployeeId', 'requestDate', 'branchId'].includes(field)) continue
+        if (['id', 'clientId', 'requesterUserId', 'requestedByEmployeeId', 'requestDate', 'branchId'].includes(field)) continue
         const value = suggested[key]
         if (value !== undefined && value !== null && value !== '') Object.assign(patch, { [key]: value })
       }
@@ -564,7 +596,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       setWatchedForm({ id: next.id || 0, clientId: next.clientId || 0, isReplacement: Boolean(next.isReplacement), budgetAvailable: Boolean(next.budgetAvailable) })
       updateSourceParse({
         ...result,
-        reviewFields: result.reviewFields.filter(field => !(field === 'Client' && next.clientId) && !(field === 'Requested by' && next.requestedByEmployeeId)),
+        reviewFields: result.reviewFields.filter(field => !(field === 'Client' && next.clientId) && !(field === 'Requested by' && next.requesterUserId)),
       })
       setAdvancedOpen(['advanced'])
       setJdOpen(['job-description'])
@@ -607,6 +639,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   }
 
   async function openSubmissionReview() {
+    if (requesterUnresolved) return void message.warning('Wait for the requester list or retry loading it before reviewing this request.')
     const current = form.getFieldsValue(true) as SaveRecruitmentRequisition
     if (!checkTextLengths(current, true)) {
       message.error('Review the field-length messages before opening the final review.')
@@ -659,6 +692,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
 
   async function saveRequest(submitAfterSave: boolean, reviewedValues?: SaveRecruitmentRequisition) {
     if (saving || sourceParsing || sourcePrefillLoading) return
+    if (requesterUnresolved) return void message.warning('Wait for the requester list or retry loading it before saving this request.')
     if (reviewedValues) form.setFieldsValue(reviewedValues)
     persistBrowserDraft()
     if (!checkTextLengths((reviewedValues || form.getFieldsValue(true)) as SaveRecruitmentRequisition, true)) {
@@ -840,10 +874,10 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
         <div className="rfr-dialog-action-buttons">
         <Button disabled={saving || sourceParsing} onClick={() => { persistBrowserDraft(); setDialogOpen(false) }}>Close</Button>
         {!readOnly && !approvedEdit && <Popconfirm title="Clear this browser draft and start a new request?" description="Browser-only changes will be removed. An existing submitted or server-saved record is not deleted." onConfirm={() => openNew(true)}><Button disabled={saving || sourceParsing} data-testid="clear-hiring-request-draft">Clear draft / New</Button></Popconfirm>}
-        {!readOnly && !approvedEdit && <Button icon={<SaveOutlined />} loading={saving} disabled={sourceParsing || sourcePrefillLoading || !textLimits.length} onClick={() => void saveRequest(false)} data-testid="save-draft-open-jd">{watchedForm.id ? 'Save draft' : 'Save draft & open JD / ATS'}</Button>}
+        {!readOnly && !approvedEdit && <Button icon={<SaveOutlined />} loading={saving} disabled={sourceParsing || sourcePrefillLoading || !textLimits.length || requesterUnresolved} onClick={() => void saveRequest(false)} data-testid="save-draft-open-jd">{watchedForm.id ? 'Save draft' : 'Save draft & open JD / ATS'}</Button>}
         {!readOnly && (approvedEdit
           ? <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={() => void saveRequest(false)} data-testid="update-approved-requisition">Update approved request</Button>
-          : <><Button icon={<EyeOutlined />} disabled={saving || sourceParsing || sourcePrefillLoading || !textLimits.length || !canReviewWorkOrder} loading={reviewLoading} onClick={() => void openSubmissionReview()} data-testid="review-work-order">Review Work Order</Button><Button type="primary" icon={<SendOutlined />} loading={saving} onClick={() => void saveRequest(true)} data-testid="save-submit-requisition" data-mail-event="RFR.SUBMIT" data-mail-resource-type="RecruitmentRequisition" data-mail-client-id={watchedForm.clientId} data-mail-action-label="Save and submit hiring request">Save & submit</Button></>)}
+          : <><Button icon={<EyeOutlined />} disabled={saving || sourceParsing || sourcePrefillLoading || !textLimits.length || !canReviewWorkOrder || requesterUnresolved} loading={reviewLoading} onClick={() => void openSubmissionReview()} data-testid="review-work-order">Review Work Order</Button><Button type="primary" icon={<SendOutlined />} loading={saving} disabled={requesterUnresolved} onClick={() => void saveRequest(true)} data-testid="save-submit-requisition" data-mail-event="RFR.SUBMIT" data-mail-resource-type="RecruitmentRequisition" data-mail-client-id={watchedForm.clientId} data-mail-action-label="Save and submit hiring request">Save & submit</Button></>)}
         </div>
       </div>}>
       {readOnly && activeRequest?.status === 'Pending Approval' && <Alert
@@ -891,14 +925,17 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
           <Form.Item className="rfr-span-2" name="clientId" label="Client" rules={[{ required: true, message: 'Select the hiring client.' }]}>
             <Select showSearch optionFilterProp="label" optionLabelProp="label" placeholder={clients.length ? 'Select client' : 'Loading client...'} loading={!clients.length} disabled={clientScopeManaged && initialClientId > 0} options={clientOptions}
               onChange={value => {
-                const linkedRequester = session?.user.employeeId
-                const belongs = employees.some(row => row.id === linkedRequester && row.clientId === value && row.isActive)
-                form.setFieldValue('requestedByEmployeeId', belongs ? linkedRequester : undefined)
+                form.setFieldValue('requesterUserId', recruitmentRequesterSelection(requesterSnapshot, value, null, session?.user.id))
               }} />
           </Form.Item>
-          <Form.Item className="rfr-span-2" name="requestedByEmployeeId" label="Requested by" rules={[{ required: true, message: 'Select the requester employee.' }]}>
-            <Select showSearch optionFilterProp="label" placeholder="Select active employee" disabled={approvedEdit} options={requesterOptions} />
-          </Form.Item>
+          {watchedForm.id > 0 && !activeRequest?.requesterUserId ? <Form.Item className="rfr-span-2" label="Requested by">
+            <Input aria-label="Saved hiring request requester" value={activeRequest?.requestedByName || 'Saved legacy requester'} readOnly />
+          </Form.Item> : <Form.Item className="rfr-span-2" name="requesterUserId" label="Requested by" rules={[{ required: true, message: 'Select the requester user.' }]}
+            extra={!watchedForm.id && requesterSnapshot.clientId === selectedClientId && (requesterSnapshot.status === 'error'
+              ? <span>{requesterSnapshot.error} <Button type="link" size="small" onClick={() => setRequesterRetry(value => value + 1)}>Retry</Button></span>
+              : requesterSnapshot.status === 'ready' && !requesterOptions.length ? 'No active requester is configured for this client. Contact your administrator.' : undefined)}>
+            <Select aria-label="Hiring request requester" showSearch optionFilterProp="label" placeholder={watchedForm.id ? 'Saved requester' : 'Select requester'} loading={requesterUnresolved && requesterSnapshot.status !== 'error'} disabled={!!watchedForm.id || !selectedClientId || requesterUnresolved} options={requesterOptions} notFoundContent={requesterUnresolved ? 'Requesters are unavailable. Retry loading the list.' : 'No eligible requester for this client.'} />
+          </Form.Item>}
           <Form.Item name="requestDate" label="Request date" rules={[{ required: true, message: 'Enter the hiring request date.' }]}><Input type="date" /></Form.Item>
           <Form.Item name="positionTitle" label="Role / position" rules={[...textRules('positionTitle'), { required: true, whitespace: true, message: 'Enter the position title.' }]}>
             <Input placeholder="For example, Senior .NET Engineer" />
@@ -1044,7 +1081,7 @@ function autoSaveLabel(state: AutoSaveState, savedAt: Date | null) {
 
 function blankRequest(clientId: number): SaveRecruitmentRequisition {
   return {
-    id: 0, requestDate: today(), requestedByEmployeeId: null, clientId: clientId || undefined, workOrderId: null, workOrderLineNumber: null, branchId: 0, businessUnit: '', department: '', costCenter: '', positionTitle: '',
+    id: 0, requestDate: today(), requesterUserId: null, requestedByEmployeeId: null, clientId: clientId || undefined, workOrderId: null, workOrderLineNumber: null, branchId: 0, businessUnit: '', department: '', costCenter: '', positionTitle: '',
     positionCategory: '', employmentType: 'Contractual', hiringType: 'Contractual', numberOfOpenings: 1, isReplacement: false,
     replacementEmployeeId: null, targetJoiningDate: null, jobLocation: '', workMode: 'Office', project: '', budgetAvailable: false,
     budgetAmount: null, hiringPriority: 'High', businessJustification: '', reasonForHiring: '', experienceRange: '', qualification: '',
@@ -1089,7 +1126,7 @@ async function fetchWorkspace() {
 
 function fromRow(row: RecruitmentRequisition): SaveRecruitmentRequisition {
   return {
-    id: row.id, requestDate: row.requestDate?.slice(0, 10) || today(), requestedByEmployeeId: row.requestedByEmployeeId, clientId: row.clientId, workOrderId: row.workOrderId ?? null, workOrderLineNumber: row.workOrderLineNumber ?? null, branchId: row.branchId || 0, businessUnit: row.businessUnit || '', department: row.department || '',
+    id: row.id, requestDate: row.requestDate?.slice(0, 10) || today(), requesterUserId: row.requesterUserId, requestedByEmployeeId: row.requestedByEmployeeId, clientId: row.clientId, workOrderId: row.workOrderId ?? null, workOrderLineNumber: row.workOrderLineNumber ?? null, branchId: row.branchId || 0, businessUnit: row.businessUnit || '', department: row.department || '',
     costCenter: row.costCenter || '', positionTitle: row.positionTitle || '', positionCategory: row.positionCategory || '',
     employmentType: row.employmentType || '', hiringType: row.hiringType || '', numberOfOpenings: row.numberOfOpenings || 1,
     isReplacement: row.isReplacement, replacementEmployeeId: row.replacementEmployeeId ?? null,
@@ -1110,7 +1147,7 @@ function fromRow(row: RecruitmentRequisition): SaveRecruitmentRequisition {
 function normalize(row: SaveRecruitmentRequisition): SaveRecruitmentRequisition {
   const clean = (value?: string | null) => String(value || '').trim()
   return {
-    ...row, id: Number(row.id || 0), requestedByEmployeeId: Number(row.requestedByEmployeeId || 0) || null, clientId: Number(row.clientId || 0) || undefined, workOrderId: Number(row.workOrderId || 0) || null, workOrderLineNumber: Number(row.workOrderLineNumber || 0) || null, branchId: Number(row.branchId || 0),
+    ...row, id: Number(row.id || 0), requesterUserId: Number(row.requesterUserId || 0) || null, requestedByEmployeeId: row.id ? Number(row.requestedByEmployeeId || 0) || null : null, clientId: Number(row.clientId || 0) || undefined, workOrderId: Number(row.workOrderId || 0) || null, workOrderLineNumber: Number(row.workOrderLineNumber || 0) || null, branchId: Number(row.branchId || 0),
     positionTitle: clean(row.positionTitle), department: clean(row.department), businessUnit: clean(row.businessUnit), costCenter: clean(row.costCenter),
     positionCategory: clean(row.positionCategory), employmentType: clean(row.employmentType), hiringType: clean(row.hiringType),
     numberOfOpenings: Number(row.numberOfOpenings || 1), replacementEmployeeId: row.isReplacement ? Number(row.replacementEmployeeId || 0) || null : null,

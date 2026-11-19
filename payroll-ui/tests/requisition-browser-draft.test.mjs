@@ -5,6 +5,8 @@ import vm from 'node:vm'
 import ts from 'typescript'
 
 const source = readFileSync(new URL('../src/components/RecruitmentRequisitionManager.tsx', import.meta.url), 'utf8')
+const requesters = {}
+new Function('exports', ts.transpileModule(readFileSync(new URL('../src/utils/recruitmentRequesters.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText)(requesters)
 const functions = source.slice(source.indexOf('  function newBrowserDraftKey()'), source.indexOf('  function textRules('))
   + source.slice(source.indexOf('  async function openNew('), source.indexOf('  function openRequest('))
 
@@ -18,6 +20,8 @@ function harness() {
       setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key),
     } }, URLSearchParams,
     session: { user: { id: 7, employeeId: 8 } }, initialClientId: 42, clientFilter: 42,
+    requesterSnapshot: { clientId: 42, rows: [{ userId: 7, displayName: 'Requester', email: 'requester@example.invalid', clientId: 42 }], status: 'ready', error: '' },
+    recruitmentRequesterSelection: requesters.recruitmentRequesterSelection,
     initialWorkOrderId: 0, initialWorkOrderLineId: 0,
     activeBrowserDraftKey: { current: '' }, sourceFileRef: { current: null }, sourceParseRef: { current: null },
     targetJoiningManual: { current: false }, readOnly: false, approvedEdit: false,

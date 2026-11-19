@@ -102,9 +102,6 @@ public sealed class RecruitmentSeedPackService(
         {
             var client = await ResolveClientAsync(row.Value("Client Code"), user);
             if (client.Id <= 0) throw new ImportValidationException($"Client code '{row.Value("Client Code")}' was not found in your access scope.");
-            var requesterId = await ResolveRequesterAsync(client.Id, row.Value("Requester Employee Code"));
-            if (requesterId <= 0) throw new ImportValidationException($"Active requester '{row.Value("Requester Employee Code")}' was not found for {client.Code}.");
-
             var marker = $"[IMPORT:{key}]";
             var existing = (await requisitions.SearchAsync(new RecruitmentSearchRequest { ClientId = client.Id }, user))
                 .SingleOrDefault(item => item.SourceNotes.Contains(marker, StringComparison.OrdinalIgnoreCase));
@@ -117,7 +114,19 @@ public sealed class RecruitmentSeedPackService(
             }
             else
             {
-                var saved = await requisitions.SaveDraftAsync(BuildRequest(row, client.Id, requesterId, marker, existing), user);
+                // Existing imported requests keep their historical requester,
+                // including a legacy employee identity. New rows require an
+                // authorized employer user from the same picker as the UI.
+                var requesterUserId = existing?.RequesterUserId;
+                if (existing is null)
+                {
+                    if (!row.Values.ContainsKey("Requester User") || row.Value("Requester User").Length == 0 && row.Value("Requester Employee Code").Length > 0)
+                        throw new ImportValidationException("Use the latest template's Requester User column with the employer user's login email or user ID. Employee codes cannot identify a requester for a new hiring request.");
+                    var (selectedUserId, requesterError) = ResolveRequesterUserSelection(await requisitions.GetRequestersAsync(client.Id, user), row.Value("Requester User"), user.Id);
+                    if (requesterError.Length > 0) throw new ImportValidationException(requesterError);
+                    requesterUserId = selectedUserId;
+                }
+                var saved = await requisitions.SaveDraftAsync(BuildRequest(row, client.Id, requesterUserId, marker, existing), user);
                 if (saved.Row is null) throw new ImportValidationException(saved.Error);
                 request = saved.Row;
             }
@@ -294,7 +303,7 @@ public sealed class RecruitmentSeedPackService(
         }
     }
 
-    private static SaveRecruitmentRequisition BuildRequest(SheetRow row, int clientId, int requesterId, string marker, RecruitmentRequisition? existing)
+    private static SaveRecruitmentRequisition BuildRequest(SheetRow row, int clientId, int? requesterUserId, string marker, RecruitmentRequisition? existing)
     {
         var notes = row.Value("Source Notes");
         if (!notes.Contains(marker, StringComparison.OrdinalIgnoreCase)) notes = string.Join(Environment.NewLine, new[] { notes, marker }.Where(value => value.Length > 0));
@@ -302,7 +311,8 @@ public sealed class RecruitmentSeedPackService(
         {
             Id = existing?.Id ?? 0,
             ClientId = clientId,
-            RequestedByEmployeeId = existing?.RequestedByEmployeeId ?? requesterId,
+            RequesterUserId = existing?.RequesterUserId ?? requesterUserId,
+            RequestedByEmployeeId = existing?.RequestedByEmployeeId,
             RequestDate = row.Date("Request Date") ?? DateTime.Today,
             PositionTitle = row.Required("Position Title"),
             Department = row.Required("Department"),
@@ -334,7 +344,7 @@ public sealed class RecruitmentSeedPackService(
     {
         if (hiringRows.Count > 0)
         {
-            var error = workbook.Require("Hiring Requests", "Source Key", "Client Code", "Requester Employee Code", "Position Title", "Department", "Openings", "Request Action")
+            var error = workbook.Require("Hiring Requests", "Source Key", "Client Code", "Position Title", "Department", "Openings", "Request Action")
                 ?? workbook.Require("JD Overview", "Source Key", "Title", "Summary", "JD Action")
                 ?? workbook.Require("JD Responsibilities", "Source Key", "Responsibility")
                 ?? workbook.Require("ATS Skills", "Source Key", "Skill", "Must Have", "Minimum Years", "Weight Percent");
@@ -357,11 +367,22 @@ public sealed class RecruitmentSeedPackService(
         return await db.QueryFirstOrDefaultAsync<(int Id, string Code)>("SELECT Id,Code FROM clients WHERE UPPER(Code)=UPPER(@Code) AND IsActive=TRUE AND (@ClientId IS NULL OR Id=@ClientId)", new { Code = code.Trim(), user.ClientId });
     }
 
-    private async Task<int> ResolveRequesterAsync(int clientId, string employeeCode)
+    internal static (int UserId, string Error) ResolveRequesterUserSelection(IReadOnlyList<RecruitmentRequesterOption> options, string identity, int actorUserId)
     {
-        await using var db = Db();
-        await db.OpenAsync();
-        return await db.ExecuteScalarAsync<int?>("SELECT Id FROM employees WHERE ClientId=@ClientId AND UPPER(EmployeeCode)=UPPER(@EmployeeCode) AND IsActive=TRUE LIMIT 1", new { ClientId = clientId, EmployeeCode = employeeCode.Trim() }) ?? 0;
+        var value = identity.Trim();
+        if (value.Length > 0)
+        {
+            var matches = options.Where(option => int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var id)
+                ? option.UserId == id
+                : option.Email.Equals(value, StringComparison.OrdinalIgnoreCase)).ToList();
+            return matches.Count == 1 ? (matches[0].UserId, "")
+                : (0, "Requester User must exactly match the login email or numeric user ID of an authorized employer user for this client. Employee codes and display names are not accepted.");
+        }
+        var own = options.FirstOrDefault(option => option.UserId == actorUserId);
+        if (own is not null) return (own.UserId, "");
+        if (options.Count == 1) return (options[0].UserId, "");
+        return (0, options.Count == 0 ? "Configure a requester user for this client before importing new hiring requests."
+            : "Enter Requester User with the employer user's login email or numeric user ID; more than one authorized requester is available.");
     }
 
     private async Task<RecruitmentOpenPosition?> ResolvePositionAsync(int clientId, string positionCode, AuthUser user)

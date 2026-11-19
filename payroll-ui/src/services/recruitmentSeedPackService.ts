@@ -47,9 +47,10 @@ function hiringSheets(): XlsxSheet[] {
   return [
     {
       name: 'Instructions', rows: [
-        ['Frevo Hiring Request + JD + ATS Seed Pack', 'Version 1'],
+        ['Frevo Hiring Request + JD + ATS Seed Pack', 'Version 2'],
         ['How to use', 'Replace EXAMPLE source keys, complete the rows, then upload this workbook from Hiring Requests.'],
         ['Safe rerun', 'Source Key is the idempotency key. Uploading the same completed pack updates editable drafts and never clones approved records.'],
+        ['Requester User', 'Enter an authorized employer user\'s login email or numeric user ID for this client. Leave blank only to use your own eligible user or the sole eligible requester. Employee codes and employee names are not accepted. Existing imported requests keep their saved requester.'],
         ['Request Action', 'Draft keeps the request editable. Submit starts the configured approval workflow.'],
         ['JD Action', 'Draft keeps the JD editable. Submit uses the default JD workflow after request approval. Approve is admin-only and explicit.'],
         ['ATS', 'Every ATS Skills row becomes a weighted JD skill. At least one skill must be marked Yes under Must Have.'],
@@ -58,8 +59,8 @@ function hiringSheets(): XlsxSheet[] {
     },
     {
       name: 'Hiring Requests', rows: [
-        ['Source Key', 'Client Code', 'Requester Employee Code', 'Request Date', 'Position Title', 'Department', 'Openings', 'Hiring Type', 'Employment Type', 'Position Category', 'Priority', 'Work Location', 'Work Mode', 'Target Joining Date', 'Project', 'Business Unit', 'Cost Center', 'Budget Available', 'Budget Amount', 'Currency', 'CTC Flexibility Percent', 'Experience', 'Qualification', 'Required Skills', 'Preferred Skills', 'Certifications', 'Languages', 'Benefits', 'Business Justification', 'Hiring Notes', 'External Position Code', 'Source Type', 'Source Reference', 'Source Document', 'Source Document Date', 'Source Authority', 'Client Approval State', 'Source Notes', 'Request Action'],
-        ['EXAMPLE-ROLE-001', 'UIDAI', 'REQUESTER-EMPLOYEE-CODE', '2026-09-09', 'Senior Application Developer', 'Information Technology', '1', 'New', 'Contract', 'Technical', 'High', 'Technology Centre Bengaluru', 'Office', '2026-11-01', 'Digital Platform', '', '', 'Yes', '1500000', 'INR', '30', '5-8 years', 'B.E./B.Tech', 'React, Node.js, SQL', 'Docker, Kubernetes', 'Cloud certification', 'English, Hindi', 'Medical insurance', 'Approved delivery requirement', 'Replace this example row with source-backed details.', 'CLIENT-POSITION-001', 'Formal Approval Letter', 'CLIENT-FILE-001', 'approval-letter.pdf', '2026-09-01', 'Client HR', 'Approved for Hiring', '', 'Draft'],
+        ['Source Key', 'Client Code', 'Requester User', 'Request Date', 'Position Title', 'Department', 'Openings', 'Hiring Type', 'Employment Type', 'Position Category', 'Priority', 'Work Location', 'Work Mode', 'Target Joining Date', 'Project', 'Business Unit', 'Cost Center', 'Budget Available', 'Budget Amount', 'Currency', 'CTC Flexibility Percent', 'Experience', 'Qualification', 'Required Skills', 'Preferred Skills', 'Certifications', 'Languages', 'Benefits', 'Business Justification', 'Hiring Notes', 'External Position Code', 'Source Type', 'Source Reference', 'Source Document', 'Source Document Date', 'Source Authority', 'Client Approval State', 'Source Notes', 'Request Action'],
+        ['EXAMPLE-ROLE-001', 'UIDAI', 'employer-user@example.com', '2026-09-09', 'Senior Application Developer', 'Information Technology', '1', 'New', 'Contract', 'Technical', 'High', 'Technology Centre Bengaluru', 'Office', '2026-11-01', 'Digital Platform', '', '', 'Yes', '1500000', 'INR', '30', '5-8 years', 'B.E./B.Tech', 'React, Node.js, SQL', 'Docker, Kubernetes', 'Cloud certification', 'English, Hindi', 'Medical insurance', 'Approved delivery requirement', 'Replace this example row with source-backed details.', 'CLIENT-POSITION-001', 'Formal Approval Letter', 'CLIENT-FILE-001', 'approval-letter.pdf', '2026-09-01', 'Client HR', 'Approved for Hiring', '', 'Draft'],
       ],
     },
     {
