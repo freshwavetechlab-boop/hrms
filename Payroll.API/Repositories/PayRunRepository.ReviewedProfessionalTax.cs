@@ -110,7 +110,7 @@ WHERE b.client_id=@ClientId AND b.id=@Id" + (locked ? " FOR UPDATE" : ""), new {
         if (batch.ClientId != clientId || batch.Id != id) throw new InvalidOperationException("The saved source ownership differs from this client and batch.");
         // Hash exact raw source text before any response-only employment annotation.
         var hash = ExcelPayslipLegacyReview.SnapshotHash(raw.Batch, raw.Source);
-        await ExcelPayslipRepository.AnnotateEmploymentAsync(db, batch, tx, annotateMasterDetails: false);
+        await ExcelPayslipRepository.AnnotateEmploymentAsync(db, batch, tx, annotateMasterDetails: false, reviewedSourceIdentity: true);
         var source = JsonSerializer.Deserialize<ExcelPayslipCalculationSource>(raw.Source, ExcelPayslipRepository.JsonOptions)
             ?? throw new InvalidOperationException("The captured statutory calculation source is invalid.");
         return new(batch, hash, source);
@@ -188,6 +188,7 @@ WHERE e.ClientId=@ClientId AND e.Id IN @Ids AND " + EmployeeEmploymentRules.Elig
         await LoadEmployeeTablesAsync(db, tx, employees, request.PayPeriod, loadReviewedProfessionalTax: false);
         if (locked) await LockPtConfigurationAsync(db, tx, employees);
         var attendance = (await GetPayRunAttendanceAsync(db, tx, request.ClientId, request.PayPeriod)).ToDictionary(row => row.EmployeeId);
+        BindReviewedMonthAttendance(employees, attendance);
         var setupJson = await PayrollDataTableStore.GetSetupJsonAsync(db, tx); var setup = ReadPayrollSetup(setupJson);
         await LoadPfPolicyPeriodsAsync(db, tx, employees.Where(employee => request.Rows.Any(row => row.EmployeeId == employee.Id && row.Mode == ReviewedPeriodProfessionalTax.Reviewed)).ToList(), request.PayPeriod, setupJson);
         var records = (await db.QueryAsync<PtSetting>(@"SELECT ModuleCode Code,CAST(SettingsJson AS CHAR) Json,IsEnabled Enabled FROM modulesettings
@@ -257,6 +258,15 @@ AND p.IsSkipped=FALSE AND p.EmployeeId IN @Ids)", new { request.ClientId, reques
             preview.Rows, preview.Blockers, Records = hashes.OrderBy(pair => pair.Key),
             Attendance = attendance.Where(pair => ids.Contains(pair.Key)).OrderBy(pair => pair.Key) });
         return new(preview, employees, previous, hashes);
+    }
+    private static void BindReviewedMonthAttendance(IEnumerable<PayRunSourceEmployee> employees, IReadOnlyDictionary<int, PayRunAttendance> attendance)
+    {
+        foreach (var employee in employees)
+            if (attendance.TryGetValue(employee.Id, out var input))
+            {
+                employee.PayableOnlyAttendance = input.PayableOnlyEvidence;
+                employee.AttendancePolicySnapshot = input.PolicySnapshot;
+            }
     }
     public async Task<ReviewedProfessionalTaxPreview> PreviewReviewedProfessionalTaxAsync(ReviewedProfessionalTaxRequest request, AuthUser actor)
     {

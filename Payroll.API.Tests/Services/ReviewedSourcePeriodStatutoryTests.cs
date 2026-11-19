@@ -69,9 +69,20 @@ public sealed class ReviewedSourcePeriodStatutoryTests
         var wrong=ReviewedPeriodProfessionalTaxTests.Control();wrong.Version=2;wrong.ClientId=999;
         Assert.Throws<InvalidOperationException>(()=>Build(wrong,"2026-10"));
     }
+    [Fact]
+    public void Reviewed_month_calculation_reuses_saved_unknown_presence_evidence()
+    {
+        var control=ReviewedPeriodProfessionalTaxTests.Control();control.Version=2;
+        control.SourceZeroStatutoryColumns=new(){{"PF",1},{"ESIC",2},{"EPF_ER",3},{"ESIC_ER",4}};
+        Assert.Throws<InvalidOperationException>(()=>Build(control,"2026-10",unknownPresence:true));
+        var result=Build(control,"2026-10",unknownPresence:true,bindRecordedAttendance:true);
+        Assert.Null(result.PresentDays);Assert.Equal(31,result.PayableDays);
+        Assert.Equal(75000,result.GrossPay);Assert.Equal(73433,result.NetPay);
+        Assert.Throws<InvalidOperationException>(()=>Build(control,"2026-10",unknownPresence:true,bindRecordedAttendance:true,wrongEmployee:true));
+    }
     private static ReviewedProfessionalTaxRequest Request()=>new(){SourcePeriodReviewVersion=2,ClientId=17,PayPeriod="2026-10",
         SourceBatchId=new('a',32),Reason="Reviewed final source zero amounts",Rows=[new(){EmployeeId=21,SourceRowId="row-7",Mode="ReviewedAmount",Amount=0,SourceZeroStatutoryColumns=new(){{"PF",1}}}]};
-    private static PayRunEmployee Build(ReviewedProfessionalTaxControl? control,string period)
+    private static PayRunEmployee Build(ReviewedProfessionalTaxControl? control,string period,bool unknownPresence=false,bool bindRecordedAttendance=false,bool wrongEmployee=false)
     {
         var type=typeof(PayRunRepository).GetNestedType("PayRunSourceEmployee",BindingFlags.NonPublic)!;
         var employee=Activator.CreateInstance(type)!;
@@ -79,6 +90,14 @@ public sealed class ReviewedSourcePeriodStatutoryTests
         Set("Id",21);Set("ClientId",17);Set("EmployeeCode","SYNTH-21");Set("FirstName","Synthetic");Set("AnnualCtc",0m);
         Set("SalaryStructureId","501");Set("SalaryJson","{}");Set("SalaryComponents",new Dictionary<string,decimal>{{"1",75000m}});
         Set("HasPersonalDetails",true);Set("WorkState","Synthetic State");Set("ReviewedProfessionalTax",control);
+        if(bindRecordedAttendance)
+        {
+            var employees=Array.CreateInstance(type,1);employees.SetValue(employee,0);
+            var id=wrongEmployee?22:21;
+            var attendance=new Dictionary<int,PayRunRepository.PayRunAttendance>{{id,new(){EmployeeId=id,WorkingDays=31,PresentDays=null,PayableDays=31,
+                PayableOnlyEvidence=new(1,17,id,period,new('a',32),"row-7",new('b',32),new('c',64),31,31)}}};
+            typeof(PayRunRepository).GetMethod("BindReviewedMonthAttendance",BindingFlags.NonPublic|BindingFlags.Static)!.Invoke(null,[employees,attendance]);
+        }
         var definitions=new[]{("1","BASIC","Earning","None","Fixed Amount","0",true),
             ("2","PF","Deduction","PF Employee","Formula","MIN(BASIC_EARNED,25000)*12%",false),
             ("3","ESIC","Deduction","ESI Employee","Formula","BASIC_EARNED*0.75%",false),
@@ -89,7 +108,7 @@ public sealed class ReviewedSourcePeriodStatutoryTests
         var settings=JsonSerializer.Serialize(new{salaryComponents=components,salaryStructures=new[]{new{id="501",clientId="17",active=true,annualCtc="0",lines=definitions.Select(d=>new{componentId=d.Item1})}},
             statutory=new{pt=true,ptState="Synthetic State",ptStateSlabs=new[]{new{state="Synthetic State",salaryFrom="0",salaryTo="",deductionAmount="200",active=true,gender="All"}}}});
         try{return (PayRunEmployee)typeof(PayRunRepository).GetMethod("BuildEmployee",BindingFlags.NonPublic|BindingFlags.Static)!
-            .Invoke(null,[0,employee,settings,period,31,31m,31m,Array.Empty<PayrollAdjustment>(),0m,control is null?0m:1567m,-1m,false,"TDS"])!;}
+            .Invoke(null,[0,employee,settings,period,31,unknownPresence?null:(decimal?)31m,31m,Array.Empty<PayrollAdjustment>(),0m,control is null?0m:1567m,-1m,false,"TDS"])!;}
         catch(TargetInvocationException error){throw error.InnerException!;}
     }
 }

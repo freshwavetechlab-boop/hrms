@@ -10,12 +10,12 @@ namespace Payroll.API.Repositories;
 public sealed partial class ExcelPayslipRepository
 {
     internal static async Task AnnotateEmploymentAsync(MySqlConnection db, ExcelPayslipBatch batch, MySqlTransaction? tx = null, IConfiguration? configuration = null, bool annotateMasterDetails = true,
-        IReadOnlySet<string>? salaryDetailRowIds = null)
+        IReadOnlySet<string>? salaryDetailRowIds = null, bool reviewedSourceIdentity = false)
     {
         if(tx is null)
         {
             await using var snapshot=await db.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead,isReadOnly:true);
-            await AnnotateEmploymentAsync(db,batch,snapshot,configuration,annotateMasterDetails,salaryDetailRowIds);
+            await AnnotateEmploymentAsync(db,batch,snapshot,configuration,annotateMasterDetails,salaryDetailRowIds,reviewedSourceIdentity);
             await snapshot.RollbackAsync();
             return;
         }
@@ -39,6 +39,11 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@Id AND 
             }
         }
         AnnotateEmployment(batch, source, masters, reviews);
+        if (reviewedSourceIdentity)
+        {
+            var unresolved = batch.Rows.Where(row => row.Employment?.EmployeeId is null).Select(row => row.Id).ToHashSet(StringComparer.Ordinal);
+            if (unresolved.Count > 0) AnnotateEmployment(batch, source, masters, reviews, unresolved);
+        }
         if (!annotateMasterDetails) return;
         await PayrollDataTableStore.ApplyEmployeeTablesAsync(db,masters,tx);
         AnnotateCurrentProfiles(batch,source,masters);
@@ -48,7 +53,7 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@Id AND 
 
     // Response-only annotation. The source codes, captured identifiers, masters and receipts stay immutable.
     internal static void AnnotateEmployment(ExcelPayslipBatch batch, ExcelPayslipCalculationSource? source,
-        IReadOnlyList<EmploymentMaster> allMasters, IReadOnlyList<AppliedEmploymentReview> reviews)
+        IReadOnlyList<EmploymentMaster> allMasters, IReadOnlyList<AppliedEmploymentReview> reviews, IReadOnlySet<string>? capturedIdentityRows = null)
     {
         foreach (var row in batch.Rows) { row.Employment = null; row.MasterDetails = null; }
         var sourceHash = EmploymentSourceHash(batch, source);
@@ -65,7 +70,9 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@Id AND 
             var bound = reviews.Where(r => ReviewedEmploymentBinding(batch, row, sourceHash, r)).ToList();
             var ids = bound.SelectMany(r => r.Result.TransferRows.Where(v => v.RowId == row.Id).Select(v => v.EmployeeId)).Distinct().ToArray();
             var issues = new List<ExcelPayrollSetupIssue>();
-            var selected = ExcelPayrollSetupRepository.MatchIdentity(row, information, identities,
+            var matchingRow = capturedIdentityRows?.Contains(row.Id) == true
+                ? CapturedSourceIdentity(row, source, information, issues) : row;
+            var selected = ExcelPayrollSetupRepository.MatchIdentity(matchingRow, information, identities,
                 ids.Length == 1 ? new() { RowId=row.Id, MatchedEmployeeId=ids[0] } : null, issues);
             if (selected is null) continue;
             var master = masters.Single(m => m.Id == selected.Id);
@@ -78,7 +85,7 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@Id AND 
                 Regex.IsMatch(ExcelPayrollSetupRepository.PayrollIdentityValue(value), pattern)
                 && masters.Count(m => ExcelPayrollSetupRepository.PayrollIdentityValue(read(m)) == ExcelPayrollSetupRepository.PayrollIdentityValue(value)) == 1
                 && ExcelPayrollSetupRepository.PayrollIdentityValue(read(master)) == ExcelPayrollSetupRepository.PayrollIdentityValue(value);
-            var anchored = masters.Count(m => m.EmployeeCode.Equals(row.EmployeeCode, StringComparison.OrdinalIgnoreCase)) == 1
+            var anchored = masters.Count(m => m.EmployeeCode.Equals(matchingRow.EmployeeCode, StringComparison.OrdinalIgnoreCase)) == 1
                 || UniqueStrong(pan,"^[A-Z]{5}[0-9]{4}[A-Z]$",m => m.Pan)
                 || UniqueStrong(aadhaar,"^[2-9][0-9]{11}$",m => m.Aadhaar)
                 || UniqueStrong(uan,"^[0-9]{12}$",m => m.Uan);
@@ -89,7 +96,7 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@Id AND 
                 && (district.Length == 0 || ExcelPayrollSetupRepository.Normalize(district) == ExcelPayrollSetupRepository.Normalize(master.LocationCity));
             var review = issues.Count > 0 || !anchored || ids.Length > 1 || !exactLocation && !reviewedLocation
                 || batch.Rows.Count(r => r.Id == row.Id || r.SourceRow == row.SourceRow) != 1
-                || !string.IsNullOrWhiteSpace(row.EmployeeCode) && batch.Rows.Count(r => r.EmployeeCode.Equals(row.EmployeeCode, StringComparison.OrdinalIgnoreCase)) != 1;
+                || !string.IsNullOrWhiteSpace(matchingRow.EmployeeCode) && batch.Rows.Count(r => r.EmployeeCode.Equals(row.EmployeeCode, StringComparison.OrdinalIgnoreCase)) != 1;
             row.Employment = new(review ? null : master.Id, master.EmployeeCode, master.EmploymentStatus, master.LastWorkingDate,
                 !master.Eligible, review);
         }
