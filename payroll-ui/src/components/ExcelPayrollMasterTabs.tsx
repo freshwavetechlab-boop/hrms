@@ -29,7 +29,7 @@ export default function ExcelPayrollMasterTabs({ batch, context, request, previe
   const matched = request.employeeDecisions.filter(decision => !!decision.matchedEmployeeId).length
   const unresolved = rows.length - newEmployees - matched
   const newComponents = request.components.filter(component => !component.existingComponentId).length
-  const needsFormula = (component: PayrollSetupRequest['components'][number]) => [component.formula, ...Object.values(component.rowFormulas || {})].some(formula => formula.includes('REVIEW_REQUIRED'))
+  const needsFormula = (component: PayrollSetupRequest['components'][number]) => rows.some(row => /\bREVIEW_REQUIRED\b/i.test(component.rowFormulas?.[row.id] ?? component.formula ?? ''))
   const formulaReviews = request.components.filter(needsFormula).length
   const formulaLabel = (component: PayrollSetupRequest['components'][number]) => component.sourceColumnIndex != null ? `${excelColumnLetter(component.sourceColumnIndex)} · ${context.source.columns.find(column => column.columnIndex === component.sourceColumnIndex)?.sourceHeader || 'Source input'}` : component.formula || component.value || 'Needs mapping'
   const columnOptions = context.source.columns.map(column => ({ value: column.columnIndex, label: `${excelColumnLetter(column.columnIndex)} · ${column.sourceHeader || column.label}` }))

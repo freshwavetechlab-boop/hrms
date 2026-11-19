@@ -35,6 +35,7 @@ import { getClientBillingAdvanced, getClientBillingConfigurations, getClientBill
 import type { AttendanceGroup, Client, ClientBillingConfiguration, ClientBillingCostRuleHeader, ClientBillingCostRuleLine, ClientBillingRateCardType, ClientBillingRateType, Component, Drop, Employee, Org, ProfessionalTaxSlab, Setup, Structure, WorkLocation } from '../types/payroll'
 import { money } from '../utils/salary'
 import { mergeSalaryTemplateDraftComponents } from '../utils/salaryTemplateDraftComponents'
+import { createClientSalaryTemplate } from '../services/settingsService'
 import { isSelectedClientUser } from '../utils/clientAccess'
 import { parseImportPreviewFile, parseImportPreviewSheets, validateImportPreview, type ImportPreviewData, type ImportPreviewIssue, type ImportPreviewRules } from '../utils/importPreview'
 import { downloadXlsx } from '../utils/xlsx'
@@ -769,6 +770,19 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     if (!structure.id && structure.excelSource && setup.salaryStructures.some(item => targetClientIds.includes(refId(item.clientId)) && item.name.trim().toLowerCase() === templateName.toLowerCase())) {
       notify('A saved template already uses this name for the client. Give the extracted draft a different name; the saved template has not been replaced.', 'error')
       return false
+    }
+    // A new single-client template reuses masters by reference. Do not submit
+    // the complete setup or rewrite any other client's saved configuration.
+    if (!structure.id && !draftComponents.length && targetClientIds.length === 1 && Number(targetClientIds[0]) > 0) {
+      setTemplateSaving(true)
+      try {
+        const response = await createClientSalaryTemplate(Number(targetClientIds[0]), { ...structure, name: templateName }, { toast: false })
+        if (!response.ok) { notify(response.error || 'Unable to save salary template.', 'error'); return false }
+        setSetup({ ...setup, salaryStructures: [...setup.salaryStructures, response.data] })
+        setStructure(clientScopedAdmin ? { ...structure0, clientId: String(session?.user.clientId || '') } : structure0)
+        notify('Salary template saved.')
+        return true
+      } finally { setTemplateSaving(false) }
     }
     const templateKey = (row: Structure) => `${refId(row.clientId)}:${row.name.trim().toLowerCase()}`
     const rows = targetClientIds.map((clientId, index) => {

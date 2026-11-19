@@ -3514,6 +3514,8 @@ app.MapPost("/api/organization", async (OrganizationRepository repository, Organ
 .WithName("SaveOrganization")
 .WithOpenApi();
 
+SalaryTemplateEndpoints.Map(app, CurrentUser, CanAccessClient);
+
 app.MapGet("/api/setup", async (SettingsRepository repository, HttpContext context) =>
 {
     if (HasPermission(context, "settings.manage") && !SelectedClientAccess.IsSelected(CurrentUser(context)))

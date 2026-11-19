@@ -47,6 +47,19 @@ public sealed class SelectedClientSetupFlowTests
     }
 
     [Theory]
+    [InlineData(20, true)]
+    [InlineData(21, false)]
+    [InlineData(99, false)]
+    public async Task SalaryTemplateCreateUsesOnlyTheActiveAssignedClient(int clientId, bool allowed)
+    {
+        var context = Context("POST", $"/api/clients/{clientId}/salary-templates", "{\"name\":\"New template\",\"lines\":[]}");
+        var called = false;
+        await new SelectedClientScopeMiddleware(_ => { called = true; return Task.CompletedTask; }).InvokeAsync(context, new PolicyLookup(20));
+        Assert.Equal(allowed, called);
+        Assert.Equal(allowed ? 200 : 403, context.Response.StatusCode);
+    }
+
+    [Theory]
     [InlineData(false, 20, true)]
     [InlineData(false, 21, false)]
     [InlineData(true, 20, true)]

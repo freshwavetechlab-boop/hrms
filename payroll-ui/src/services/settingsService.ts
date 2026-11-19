@@ -1,5 +1,6 @@
 import type { Client, ClientBillingAdvancedSetup, ClientBillingConfiguration, ClientBillingCostRuleHeader, ClientBillingCostRuleLine, ClientBillingModule, Drop, Employee, EmployeeActionRequest, EmployeeAuditTrail, EmployeeInfotypeRecord, EssClientSetting, Org, PayTravelAdvanceRequest, RecoverTravelAdvanceRequest, RecruitmentAdminSetup, RecruitmentApprovalMapping, RecruitmentAssignmentRule, RecruitmentDocumentChecklist, RecruitmentMasterValue, RecruitmentPartner, RecruitmentSetting, RecruitmentSlaRule, RecruitmentTemplate, ScheduledJob, ScheduledJobAction, ScheduledJobHandlerOption, ScheduledJobRun, SettleTravelAdvanceRequest, Setup, TravelAdvance, TravelExpenseCategory, TravelExpenseClientSetting, TravelExpenseSetup, TravelPolicy, TravelPolicyAssignment, TravelPolicyRule, WorkLocation, WorkflowApprover } from '../types/payroll'
 import { apiRequest, deleteJson, getBlob, getJson, getJsonResult, postForm, postJson, type ApiOptions, type ApiResult } from './apiClient'
+import type { Structure } from '../types/payroll'
 
 export type BulkImportStatus = { jobId: string; state: 'Queued' | 'Processing' | 'NeedsConfirmation' | 'Completed' | 'Failed'; totalRows: number; completedRows: number; inserted: number; updated: number; errors: string[] }
 export type EmployeeDeletePreview = { employeeId: number; employeeCode: string; employeeName: string; links: string[]; canDelete: boolean }
@@ -67,6 +68,13 @@ export const getPublicOrganizationBrand = () => getJson<{ name: string; logoData
 export const saveOrganization = (organization: Org) => postJson('/api/organization', organization, organization)
 export const getSetup = (fallback: Setup) => getJson<Setup>('/api/setup', fallback)
 export const saveSetup = (setup: Setup, options: ApiOptions = {}) => postJson('/api/setup', setup, setup, options)
+export const createClientSalaryTemplate = (clientId: number, template: Structure, options: ApiOptions = {}) =>
+  postJson(`/api/clients/${clientId}/salary-templates`, {
+    name: template.name, annualCtc: template.annualCtc, active: template.active,
+    lines: template.lines.map(line => ({ componentId: line.componentId, value: line.value,
+      calculationType: line.calculationType || '', formula: line.formula || '', baseComponent: line.baseComponent || '',
+      proRataOverride: line.proRataOverride || '', roundingMode: line.roundingMode || '' }))
+  }, template, options)
 export const getClientBillingModule = () => getJson<ClientBillingModule>('/api/client-billing/module', { isEnabled: false, advancedCostingEnabled: false })
 export const saveClientBillingModule = (module: ClientBillingModule) => postJson('/api/client-billing/module', module, module, { toast: false })
 export const getClientBillingConfigurations = () => getJson<ClientBillingConfiguration[]>('/api/client-billing/configurations', [])
