@@ -85,7 +85,7 @@ WHERE r.Id=@PayRunId AND a.client_id=@ClientId", new { PayRunId = payRunId, Clie
                         Information = [new() { Label = "Location", Value = locationName }, new() { Label = "Designation", Value = saved.Designation },
                             new() { Label = "Present days", Value = saved.PresentDays?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "Not supplied" },
                             new() { Label = "Payable days", Value = saved.PayableDays.ToString(System.Globalization.CultureInfo.InvariantCulture) },
-                            new() { Label = "Payroll divisor", Value = saved.TotalWorkingDays.ToString() },
+                            new() { Label = "Payroll divisor", Value = (SavedPayrollAttendancePresentation.PayrollDays(saved.DetailsJson,saved.ClientId,saved.EmployeeId,saved.PayPeriod,saved.PresentDays,saved.PayableDays)??saved.TotalWorkingDays).ToString() },
                             new() { Label = "Account No", Value = PayslipPresentation.AccountNumber(saved.BankAccountNo) }, new() { Label = "IFSC", Value = saved.IfscCode }] }
                 });
             }

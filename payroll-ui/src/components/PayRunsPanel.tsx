@@ -6,6 +6,7 @@ import { getAttendanceGroups, getMonthlyAttendance } from '../services/leaveAtte
 import { cancelPayrollAdjustment, createPayRun, createSelectedPayRunDraft, deletePayRun, exportPayRunUrl, getClients, getPayrollEmployeeOptions, getPayRun, getPayRunDiagnostics, getPayrollAdjustments, getPayRuns, runPayRunAction, savePayrollAdjustment } from '../services/payrollService'
 import { getSetup, getWorkLocations } from '../services/settingsService'
 import type { AttendanceGroup, Client, Component, Employee, EmployeeMonthlyAttendance, PayRun, PayRunDiagnostics, PayrollAdjustment, PayRunSalaryLine, RunEmployee, Setup, WorkLocation } from '../types/payroll'
+import { savedPayrollDays } from '../utils/savedPayrollAttendance'
 import { setup0 } from '../data/payrollDefaults'
 import { canCreateSelectedPayRunDraft, matchesSelectedPayRunDraftResponse, selectedPayRunDraftRequest, selectedDraftApplicableAdjustments, selectedDraftAdjustmentReviewKey, selectedDraftSourceReviewKey, withSelectedDraftSourceReview, type SelectedDraftSourceReviewChoice } from '../utils/selectedPayRunDraft'
 import { presentDayText, presentDayTotal } from '../utils/payrollAttendanceDisplay'
@@ -631,7 +632,7 @@ export function PayRunReview(p: { selected: PayRun; diagnostics: PayRunDiagnosti
   const includedEmployees = selected.employees.filter(employee => !employee.isSkipped)
   const presentDays = presentDayTotal(includedEmployees.map(employee => employee.presentDays))
   const payableDays = includedEmployees.reduce((sum, employee) => sum + Number(employee.payableDays || 0), 0)
-  const workingDays = selected.runType === 'Off Cycle' ? 0 : selected.totalWorkingDays * includedEmployees.length
+  const workingDays = selected.runType === 'Off Cycle' ? 0 : includedEmployees.reduce((sum, employee) => sum + savedPayrollDays(employee, selected.totalWorkingDays, selected.clientId, selected.payPeriod), 0)
   const lopDays = Math.max(0, workingDays - payableDays)
   const isHeld = selected.status === 'AwaitingProcessing'
   const isProcessing = processingStatuses.has(selected.status)
@@ -646,7 +647,7 @@ export function PayRunReview(p: { selected: PayRun; diagnostics: PayRunDiagnosti
     { key: 'employeeName', label: 'Employee', width: '190px', render: employee => <>{employee.employeeName}<small>{employee.department || employee.employeeCode}</small></>, exportValue: row => `${row.employeeName} ${row.employeeCode}`.trim() },
     { key: 'presentDays', label: 'Present', width: '110px', value: row => row.presentDays, render: row => presentDayText(row.presentDays), exportValue: row => row.presentDays ?? 'Not supplied' },
     { key: 'payableDays', label: 'Payable', width: '95px', value: row => row.payableDays ?? 0 },
-    { key: 'leaveBreakdown', label: 'Leave', sortable: false, filterable: false, render: employee => <LeaveChips employee={employee} totalWorkingDays={selected.totalWorkingDays} offcycle={selected.runType === 'Off Cycle'} />, exportValue: row => leaveText(row, selected.totalWorkingDays, selected.runType === 'Off Cycle') },
+    { key: 'leaveBreakdown', label: 'Leave', sortable: false, filterable: false, render: employee => <LeaveChips employee={employee} totalWorkingDays={savedPayrollDays(employee, selected.totalWorkingDays, selected.clientId, selected.payPeriod)} offcycle={selected.runType === 'Off Cycle'} />, exportValue: row => leaveText(row, savedPayrollDays(row, selected.totalWorkingDays, selected.clientId, selected.payPeriod), selected.runType === 'Off Cycle') },
     ...salaryRegisterColumns,
     { key: 'grossPay', label: 'Gross', value: row => row.grossPay, render: row => money(row.grossPay) },
     { key: 'deductions', label: 'Total deductions', value: row => row.statutoryDeductions + row.oneTimeDeductions, render: row => money(row.statutoryDeductions + row.oneTimeDeductions) },
