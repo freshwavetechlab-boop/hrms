@@ -48,6 +48,8 @@ export async function loadEmployeeProvisionPreview(clientId?: string | number) {
   return getJson<EmployeeLoginProvisionPreview[]>(`/api/security/users/employee-provision-preview${query}`, [])
 }
 
-export async function provisionEmployeeLogins(body: unknown) {
+export type EmployeePasswordMode = 'Shared' | 'EmployeeCode' | 'Email' | 'Mobile' | 'ClientPolicy'
+export type EmployeeProvisionRequest = { employeeIds: number[]; roles: string[]; temporaryPassword: string; mustChangePassword: boolean; passwordMode?: EmployeePasswordMode }
+export async function provisionEmployeeLogins(body: EmployeeProvisionRequest) {
   return postJson('/api/security/users/provision-employees', body, null as EmployeeLoginProvisionResponse | null)
 }

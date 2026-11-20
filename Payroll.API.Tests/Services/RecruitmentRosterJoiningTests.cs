@@ -37,6 +37,9 @@ public sealed class RecruitmentRosterJoiningTests
         row.EmployeeId = null; row.EmployeeCode = "";
         Assert.Equal("Review", RecruitmentDocumentRepository.RosterJoiningProjection(row, "Synthetic client", 81, false).ImportStatus);
         Assert.Equal("Ready", RecruitmentDocumentRepository.RosterJoiningProjection(row, "Synthetic client", 81, true).ImportStatus);
+        var simple = RecruitmentDocumentRepository.RosterJoiningProjection(row, "Synthetic client", 81, false, importReleasedForEss: true);
+        Assert.Equal("Ready", simple.ImportStatus); Assert.Empty(simple.Issue);
+        Assert.False(simple.AcceptanceRecorded); Assert.Equal("Released", simple.OfferStatus);
     }
 
     [Fact]
@@ -105,5 +108,19 @@ public sealed class RecruitmentRosterJoiningTests
         Assert.Equal(0, await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM notification_queue WHERE ClientId=@Client", new { Client = client }));
         var employeeOnly = new AuthUser { Id = 2, IsActive = true, ClientId = client, Permissions = ["employees.manage"] };
         Assert.Equal(employee, Assert.Single(await repository.GetRosterJoiningCandidatesAsync(client, employeeOnly)).EmployeeId);
+
+        var simpleCandidate = await db.ExecuteScalarAsync<long>("INSERT INTO recruitment_candidates(CandidateCode,ClientId,FirstName,LastName,Email,Phone,PreferredLocationsJson,CreatedByUserId) VALUES(@Code,@ClientId,'Simple','Joiner',@Email,'','[]',1);SELECT LAST_INSERT_ID();", new { Code = "SIMPLE-" + token, ClientId = client, Email = token + "simple@example.invalid" });
+        var simpleRoster = await db.ExecuteScalarAsync<long>("INSERT INTO recruitment_document_roster(ClientId,CandidateId,TemplateId,WorkLocationId,SourceGroup,SourceFileName,SourceFileHash,SourceSheetName,SourceRow,TemplateHash,ValuesJson,SourceValuesJson,CreatedByUserId,UpdatedByUserId) VALUES(@ClientId,@CandidateId,@TemplateId,@Location,'Synthetic','synthetic.xlsx',@Hash,'Employees',2,@Hash,@Json,@Json,1,1);SELECT LAST_INSERT_ID();", new { ClientId = client, CandidateId = simpleCandidate, TemplateId = template, Location = location, Hash = new string('a', 64), Json = values });
+        await repository.ReleaseAsync(client, simpleRoster, false, user);
+        Assert.Equal("Review", (await repository.GetRosterJoiningCandidatesAsync(client, user)).Single(row => row.SourceId == simpleRoster).ImportStatus);
+        Assert.Equal("Ready", (await repository.GetRosterJoiningCandidatesAsync(client, user, true)).Single(row => row.SourceId == simpleRoster).ImportStatus);
+        var simpleImport = await repository.ImportSelectedRosterJoiningCandidatesAsync(client, [simpleRoster, long.MaxValue], employeeOnly, true);
+        Assert.Equal(1, simpleImport.Imported); Assert.Equal(1, simpleImport.Review);
+        var simpleEmployeeId = Assert.Single(simpleImport.Items, row => row.Status == "Imported").EmployeeId;
+        Assert.True(await db.ExecuteScalarAsync<bool>("SELECT PortalAccess FROM employees WHERE Id=@Id", new { Id = simpleEmployeeId }));
+        Assert.Equal(0, await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_document_roster_audit WHERE RosterId=@Id AND Action='Candidate acceptance recorded'", new { Id = simpleRoster }));
+        Assert.False((await repository.GetRosterJoiningCandidatesAsync(client, user, true)).Single(row => row.SourceId == simpleRoster).AcceptanceRecorded);
+        Assert.Equal(1, (await repository.ImportSelectedRosterJoiningCandidatesAsync(client, [simpleRoster], employeeOnly, true)).AlreadyImported);
+        Assert.Equal(2, await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employees WHERE ClientId=@Client", new { Client = client }));
     }
 }

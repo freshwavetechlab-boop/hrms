@@ -57,6 +57,20 @@ public sealed class RecruitmentJoiningTests
         Assert.Equal("document-roster", reference.Resource);
     }
 
+    [Fact]
+    public void ReleasedEssIntakeKeepsRecordedValuesWithoutGuessingPayrollOrAcceptance()
+    {
+        var row = new RecruitmentJoiningCandidate { CandidateCode = "CAND-17", ProposedJoiningDate = new DateTime(2026, 11, 2), OfferedCtc = 840000, OfferStatus = "Released", AcceptanceRecorded = false };
+        var request = RecruitmentTalentRepository.JoiningDefaults(row, [9], [15], importReleasedForEss: true);
+        Assert.True(request.PortalAccess); Assert.Empty(request.SalaryStructureId);
+        Assert.Equal("CAND-17", request.EmployeeCode); Assert.Equal("2026-11-02", request.DateOfJoining); Assert.Equal(840000, request.AnnualCtc);
+        Assert.False(row.AcceptanceRecorded); Assert.Equal("Released", row.OfferStatus);
+        Assert.True(RecruitmentTalentRepository.SameIntakeName("Synthetic A. Person", "SYNTHETIC A PERSON"));
+        Assert.False(RecruitmentTalentRepository.SameIntakeName("Synthetic Person", "Different Person"));
+        Assert.False(RecruitmentTalentRepository.SameIntakeName("", ""));
+        Assert.False(new RecruitmentJoiningSelection().ImportReleasedForEss);
+    }
+
     private sealed class IsolatedFactAttribute : FactAttribute
     {
         public IsolatedFactAttribute() { if (Environment.GetEnvironmentVariable("FREVO_JOINING_TEST_DB") is null) Skip = "Explicit isolated localhost joining schema required."; }
@@ -120,5 +134,27 @@ public sealed class RecruitmentJoiningTests
         Assert.DoesNotContain(await repository.GetJoiningCandidatesAsync(client,user), row => row.OfferId == pending.Offer);
         var stale = await repository.ImportSelectedJoiningCandidatesAsync(new() { ClientId = client, OfferIds = [pending.Offer] }, user);
         Assert.Equal(1, stale.Review); Assert.Contains("superseded", stale.Items[0].Message);
+
+        var simple = await Add("simple");
+        await db.ExecuteAsync("INSERT INTO recruitment_candidate_checklist_items(ApplicationId,CandidateId,ChecklistConfigurationId,ChecklistName,Mandatory,Status) VALUES(@Application,@Candidate,1,'Complete later in ESS',TRUE,'Pending')", new { simple.Application, simple.Candidate });
+        Assert.Equal("Review", (await repository.GetJoiningCandidatesAsync(client, user)).Single(row => row.OfferId == simple.Offer).ImportStatus);
+        var simpleRow = (await repository.GetJoiningCandidatesAsync(client, user, true)).Single(row => row.OfferId == simple.Offer);
+        Assert.Equal("Ready", simpleRow.ImportStatus); Assert.False(simpleRow.AcceptanceRecorded);
+        var simpleSelection = new RecruitmentJoiningSelection { ClientId = client, OfferIds = [simple.Offer, draft.Offer], ImportReleasedForEss = true };
+        var simpleImport = await repository.ImportSelectedJoiningCandidatesAsync(simpleSelection, user);
+        Assert.Equal(1, simpleImport.Imported); Assert.Equal(1, simpleImport.Review);
+        var simpleEmployeeId = Assert.Single(simpleImport.Items, row => row.Status == "Imported").EmployeeId;
+        Assert.True(await db.ExecuteScalarAsync<bool>("SELECT PortalAccess FROM employees WHERE Id=@Id", new { Id = simpleEmployeeId }));
+        Assert.Equal("", await db.ExecuteScalarAsync<string>("SELECT SalaryStructureId FROM employees WHERE Id=@Id", new { Id = simpleEmployeeId }));
+        Assert.Equal("Pending Candidate", await db.ExecuteScalarAsync<string>("SELECT Status FROM recruitment_offers WHERE Id=@Id", new { Id = simple.Offer }));
+        Assert.Equal("Pending", await db.ExecuteScalarAsync<string>("SELECT Status FROM recruitment_candidate_checklist_items WHERE ApplicationId=@Id", new { Id = simple.Application }));
+        var acceptedLater = await repository.UpdateOfferStatusAsync(simple.Offer, "Accepted", "Legitimate response received after Employee Master intake.", user);
+        Assert.NotNull(acceptedLater.Row); Assert.Empty(acceptedLater.Error);
+        Assert.Equal("Accepted", await db.ExecuteScalarAsync<string>("SELECT Status FROM recruitment_offers WHERE Id=@Id", new { Id = simple.Offer }));
+        var joinedState = await db.QuerySingleAsync<(string CurrentStage,string CurrentStatus)>("SELECT CurrentStage,CurrentStatus FROM recruitment_candidate_applications WHERE Id=@Id", new { Id = simple.Application });
+        Assert.Equal("Joined", joinedState.CurrentStage); Assert.Equal("Joined", joinedState.CurrentStatus);
+        Assert.Equal(0, await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_application_stage_history WHERE ApplicationId=@Id AND ToStage='Offer Accepted'", new { Id = simple.Application }));
+        Assert.Equal(1, (await repository.ImportSelectedJoiningCandidatesAsync(simpleSelection, user)).AlreadyImported);
+        Assert.Equal(beforeMail, await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM notification_queue"));
     }
 }

@@ -22,13 +22,15 @@ public static class RecruitmentJoiningEndpoints
             catch (UnauthorizedAccessException) { return Results.StatusCode(403); }
             catch (InvalidOperationException error) { return Results.BadRequest(new { error = error.Message }); }
         });
-        app.MapGet("/api/recruitment/joining-candidates", async (RecruitmentTalentRepository repository, RecruitmentDocumentRepository documents, int clientId, HttpContext context) =>
+        app.MapGet("/api/recruitment/joining-candidates", async (RecruitmentTalentRepository repository, RecruitmentDocumentRepository documents, int clientId, bool? importReleasedForEss, HttpContext context) =>
         {
             var user = currentUser(context);
             if (!CanImport(user) && !RecruitmentPermissions.Has(user, "recruitment.offer.issue", "recruitment.candidate.manage")) return Results.StatusCode(403);
             try
             {
-                var rows = (await repository.GetJoiningCandidatesAsync(clientId, user)).Concat(await documents.GetRosterJoiningCandidatesAsync(clientId, user));
+                var simple = importReleasedForEss == true;
+                if (simple && !CanImport(user)) return Results.StatusCode(403);
+                var rows = (await repository.GetJoiningCandidatesAsync(clientId, user, simple)).Concat(await documents.GetRosterJoiningCandidatesAsync(clientId, user, simple));
                 return Results.Ok(rows.OrderBy(row => row.ProposedJoiningDate).ThenBy(row => row.CandidateName).ThenBy(row => row.RowKey));
             }
             catch (UnauthorizedAccessException) { return Results.StatusCode(403); }
@@ -41,7 +43,7 @@ public static class RecruitmentJoiningEndpoints
             {
                 var result = await repository.ImportSelectedJoiningCandidatesAsync(request, user);
                 if (request.RosterRowIds.Count > 0)
-                    result.Items.AddRange((await documents.ImportSelectedRosterJoiningCandidatesAsync(request.ClientId, request.RosterRowIds, user)).Items);
+                    result.Items.AddRange((await documents.ImportSelectedRosterJoiningCandidatesAsync(request.ClientId, request.RosterRowIds, user, request.ImportReleasedForEss)).Items);
                 await Synchronize(result, "Imported", "Joined", context, user, applyDecision);
                 return Results.Ok(result);
             }

@@ -2,7 +2,7 @@ import EmployeeResignationAction from '../components/EmployeeResignationAction'
 import EmptySalarySetupCleanup from '../components/EmptySalarySetupCleanup'
 import TalentAcquisitionEmployeeImport from '../components/TalentAcquisitionEmployeeImport'
 import '../components/EmployeeResignation.css'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useEmployeeProfileCompletion } from '../components/EmployeeProfileCompletionControls'
 import EmployeeMissingInformation, { createEmployeeDocumentCheck } from '../components/EmployeeMissingInformation'
 import { useLocation, useSearchParams } from 'react-router-dom'
@@ -18,6 +18,8 @@ import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewC
 import BulkUploadProgressModal, { type BulkUploadState, type BulkUploadSummary } from '../components/BulkUploadProgressModal'
 import DataTable, { type Column } from '../components/DataTable'
 import SearchSelect, { selectOptions } from '../components/SearchSelect'
+import PayrollScopeSelect, { type PayrollScopeOption } from '../components/PayrollScopeSelect'
+import { employeeClientOptions } from '../utils/employeeClientOptions'
 import { useToast } from '../components/ToastProvider'
 import { employee0, setup0 } from '../data/payrollDefaults'
 import { getClients, getEmployees } from '../services/payrollService'
@@ -42,6 +44,7 @@ import '../components/Employee360.css'
 import '../TemplateDesigner.css'
 import './EmployeeWorkspace.css'
 import { useAuthSession } from '../components/AuthGate'
+import { createEmployeePageLoader } from '../utils/employeePageLoading'
 
 const employeeInfotypes = [
   { code: '0000', name: 'Actions' },
@@ -54,6 +57,8 @@ const employeeInfotypes = [
   { code: '360', name: 'Employee 360 Activity' }
 ] as const
 type EmployeeInfotypeCode = typeof employeeInfotypes[number]['code']
+type EmployeeEditorReferences = { setup: Setup; dropdowns: Drop[]; managers: WorkflowApprover[]; locations: WorkLocation[] }
+type EmployeeDirectoryReads = { clients: Client[]; employees: Employee[]; locations: WorkLocation[] }
 const personal0 = employee0.personalDetails
 const payment0 = employee0.paymentDetails
 const defaultSkillCategories = ['Highly skilled', 'Skilled', 'Semi-skilled', 'Unskilled']
@@ -66,6 +71,11 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const session = useAuthSession()
   const scopedClientId = Number(session?.user.clientId || 0)
   const clientScoped = scopedClientId > 0 && !session?.user.permissions.includes('security.manage')
+  const dataScope = `${session?.user.id || 0}:${session?.user.clientAccessMode || ''}:${scopedClientId}:${clientScoped}:${session?.user.assignedClientIds?.join(',') || ''}`
+  const currentDataScope = useRef(dataScope); currentDataScope.current = dataScope
+  const pageReads = useRef<{ scope: string; loader: ReturnType<typeof createEmployeePageLoader<EmployeeDirectoryReads, EmployeeEditorReferences>> } | null>(null)
+  const locationRead = useRef<{ scope: string; promise: Promise<WorkLocation[]> } | null>(null)
+  const editorGeneration = useRef(0)
   const [clients, setClients] = useState<Client[]>([]), [locations, setLocations] = useState<WorkLocation[]>([]), [drops, setDrops] = useState<Drop[]>([]), [setup, setSetup] = useState<Setup>(setup0), [managerUsers, setManagerUsers] = useState<WorkflowApprover[]>([])
   const [employees, setEmployees] = useState<Employee[]>([]), [employee, setEmployee] = useState(employee0), [employeeInfotype, setEmployeeInfotype] = useState<EmployeeInfotypeCode>('0001')
   const [salaryOverrides, setSalaryOverrides] = useState<Record<string, string>>({})
@@ -82,6 +92,7 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const [savedClient, setClientFilter] = useSessionPreference('employees.ui:' + session?.user.id + ':client', 0)
   useEffect(() => { const id = Number(searchParams.get('clientId')); if (!fromDashboard && clients.some(client => client.id === id) && (!clientScoped || id === scopedClientId)) setClientFilter(id) }, [searchParams, clients, clientScoped, scopedClientId, fromDashboard])
   const clientFilter = clientScoped ? scopedClientId : fromDashboard ? Number(searchParams.get('clientId') || 0) : savedClient
+  const currentClientFilter = useRef(clientFilter); currentClientFilter.current = clientFilter
   useEffect(() => {
     let active = true; setFieldExchange(emptyEmployeeFields); setFieldError('')
     if (clientFilter) void getEmployeeFields(clientFilter).then(data => { if (active) setFieldExchange(data) }).catch(error => { if (active) setFieldError(error.message) })
@@ -90,7 +101,13 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const bulkDefinition = useMemo(() => employeeImportDefinition(fieldExchange), [fieldExchange])
   const exportEmployees = async (rows: Employee[]) => {
     if (!clientFilter) { notify('Select a client before exporting complete employee data.', 'warning'); return }
-    try { exportCompleteEmployees(rows, await getEmployeeFields(clientFilter), locations, managerUsers, setup.salaryStructures) }
+    try {
+      const refs = await editorReferences()
+      if (!refs || currentClientFilter.current !== clientFilter) return
+      const exchange = await getEmployeeFields(clientFilter)
+      if (currentClientFilter.current !== clientFilter || currentDataScope.current !== dataScope) return
+      exportCompleteEmployees(rows, exchange, refs.locations, refs.managers, refs.setup.salaryStructures)
+    }
     catch (error) { notify(error instanceof Error ? error.message : 'Employee export failed.', 'error') }
   }
   const [upload, setUpload] = useState<{ open: boolean; state: BulkUploadState; percent: number; summary: BulkUploadSummary }>({ open: false, state: 'uploading', percent: 0, summary: { totalRows: 0 } })
@@ -115,36 +132,59 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const grades = drops.filter(item => item.type === 'Employee Grade' && item.isActive && (!item.clientId || item.clientId === employee.clientId)).map(item => item.value)
   const skillCategories = Array.from(new Set([...defaultSkillCategories, ...drops.filter(item => item.type === 'Employee Category' && item.isActive && (!item.clientId || item.clientId === employee.clientId)).map(item => item.value)]))
 
-  const load = async () => {
-    const [clientRows, locationRows, dropdownRows, employeeRows, rawSetup, managerRows] = await Promise.all([getClients(), getWorkLocations(), getDropdowns(), getEmployees(), getSetup(setup0), getEmployeeManagerUsers()])
-    setClients(clientRows); setLocations(locationRows); setDrops(dropdownRows); setEmployees(employeeRows.map(normalizeEmployeeDetails))
-    if (clientScoped) setClientFilter(scopedClientId)
-    setManagerUsers(managerRows)
-    setSetup({ ...setup0, ...rawSetup, salaryComponents: rawSetup.salaryComponents ?? [], salaryStructures: rawSetup.salaryStructures ?? [] })
+  const readers = () => {
+    if (currentDataScope.current !== dataScope) return null
+    if (pageReads.current?.scope === dataScope) return pageReads.current.loader
+    pageReads.current?.loader.dispose()
+    const loader = createEmployeePageLoader<EmployeeDirectoryReads, EmployeeEditorReferences>({
+      clients: () => getClients(true), employees: getEmployees,
+      locations: () => {
+        const promise = getWorkLocations(); locationRead.current = { scope: dataScope, promise }; return promise
+      },
+    }, {
+      clients: rows => { setClients(rows); if (clientScoped) setClientFilter(scopedClientId) },
+      employees: rows => setEmployees(rows.map(normalizeEmployeeDetails)), locations: setLocations,
+    }, async () => {
+      const [dropdowns, rawSetup, managers, editorLocations] = await Promise.all([
+        getDropdowns(), getSetup(setup0), getEmployeeManagerUsers(),
+        locationRead.current?.scope === dataScope ? locationRead.current.promise : getWorkLocations(),
+      ])
+      return { dropdowns, managers, locations: editorLocations, setup: { ...setup0, ...rawSetup, salaryComponents: rawSetup.salaryComponents ?? [], salaryStructures: rawSetup.salaryStructures ?? [] } }
+    }, refs => { setDrops(refs.dropdowns); setSetup(refs.setup); setManagerUsers(refs.managers); setLocations(refs.locations) })
+    pageReads.current = { scope: dataScope, loader }
+    return loader
   }
-
-  useEffect(() => { void load() }, [clientScoped, scopedClientId])
+  const load = () => readers()?.load() ?? Promise.resolve()
+  const editorReferences = async () => {
+    try { const refs = await readers()?.editor(); return currentDataScope.current === dataScope ? refs : undefined }
+    catch (error) { if (currentDataScope.current === dataScope) notify(error instanceof Error ? error.message : 'Unable to load employee settings.', 'error'); return undefined }
+  }
+  useEffect(() => {
+    setClients([]); setEmployees([]); setLocations([]); setDrops([]); setManagerUsers([]); setSetup(setup0)
+    const current = readers(); void current?.load()
+    return () => { current?.dispose(); if (pageReads.current?.loader === current) pageReads.current = null }
+  }, [dataScope])
   const changeClientFilter = (id: number) => { setClientFilter(id); if (fromDashboard) setSearchParams({}) }
-  const calcSalary = (ctc: number, salaryStructure = chosenStructure, overrides: Record<string, string | number> = {}) => calculateSalaryJson(ctc, setup.salaryComponents, salaryStructure, overrides)
+  const calcSalary = (ctc: number, salaryStructure = chosenStructure, overrides: Record<string, string | number> = {}, sourceSetup = setup) => calculateSalaryJson(ctc, sourceSetup.salaryComponents, salaryStructure, overrides)
   const withSalary = (row: Employee, salaryJson: string): Employee => ({ ...row, salaryJson, salaryComponents: numberRecord(salaryJson) })
-  const inferSalaryOverrides = (row: Employee, salaryStructure?: Structure) => {
-    if (!salaryStructure || (!row.annualCtc && !hasDailyRateComponents(setup.salaryComponents, salaryStructure))) return {}
+  const inferSalaryOverrides = (row: Employee, salaryStructure?: Structure, sourceSetup = setup) => {
+    if (!salaryStructure || (!row.annualCtc && !hasDailyRateComponents(sourceSetup.salaryComponents, salaryStructure))) return {}
     const stored = salaryRecord(row)
-    const dailyRates = Object.fromEntries(Object.entries(stored).filter(([id]) => setup.salaryComponents.some(component => String(component.id) === id && component.calculationType === 'Daily Rate')))
-    const baseline = safeJsonRecord(calcSalary(row.annualCtc, salaryStructure, dailyRates))
-    const componentById = new Map(setup.salaryComponents.map(component => [String(component.id), component]))
+    const dailyRates = Object.fromEntries(Object.entries(stored).filter(([id]) => sourceSetup.salaryComponents.some(component => String(component.id) === id && component.calculationType === 'Daily Rate')))
+    const baseline = safeJsonRecord(calcSalary(row.annualCtc, salaryStructure, dailyRates, sourceSetup))
+    const componentById = new Map(sourceSetup.salaryComponents.map(component => [String(component.id), component]))
     return Object.fromEntries(Object.entries(stored).filter(([componentId, value]) => {
       const component = componentById.get(componentId)
       if (!component || !canOverrideSalaryComponent(component)) return false
       return component.calculationType === 'Daily Rate' || Math.abs(Number(value || 0) - Number(baseline[componentId] || 0)) > 0.009
     }))
   }
-  const normalizeEmployeeSalary = (row: Employee, overrides?: Record<string, string | number>) => {
+  const normalizeEmployeeSalary = (row: Employee, overrides?: Record<string, string | number>, sourceSetup = setup) => {
     row = normalizeEmployeeDetails(row)
-    const salaryStructure = setup.salaryStructures.find(item => String(item.id) === row.salaryStructureId) ?? templatesForClient(setup.salaryStructures, row.clientId)[0]
-    if (!salaryStructure || (!row.annualCtc && !hasDailyRateComponents(setup.salaryComponents, salaryStructure))) return row
+    const salaryStructure = sourceSetup.salaryStructures.find(item => String(item.id) === row.salaryStructureId) ?? templatesForClient(sourceSetup.salaryStructures, row.clientId)[0]
+    if (!salaryStructure || (!row.annualCtc && !hasDailyRateComponents(sourceSetup.salaryComponents, salaryStructure))) return row
     const normalized = String(row.salaryStructureId) === String(salaryStructure.id) ? row : { ...row, salaryStructureId: String(salaryStructure.id) }
-    return withSalary(normalized, calcSalary(row.annualCtc, salaryStructure, overrides ?? inferSalaryOverrides(row, salaryStructure)))
+    return withSalary(normalized, calcSalary(row.annualCtc, salaryStructure, overrides ?? inferSalaryOverrides(row, salaryStructure, sourceSetup), sourceSetup))
   }
   const empLine = (componentId: string, value: string) => {
     const nextOverrides = { ...salaryOverrides, [componentId]: value }
@@ -155,18 +195,31 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const applyStructure = (id: string) => { const selectedId = id.split(':')[0]; const selectedStructure = setup.salaryStructures.find(item => String(item.id) === selectedId); const ctc = Number(selectedStructure?.annualCtc || employee.annualCtc || 0); setSalaryOverrides({}); setEmployee(withSalary({ ...employee, salaryStructureId: selectedId, annualCtc: ctc }, calcSalary(ctc, selectedStructure))) }
   const applyCtc = (ctc: number) => setEmployee(withSalary({ ...employee, salaryStructureId: chosenStructure ? String(chosenStructure.id) : employee.salaryStructureId, annualCtc: ctc }, calcSalary(ctc, chosenStructure, salaryOverrides)))
   const applyClient = (value: string) => { const clientId = Number(value.split(':')[0] || 0); const selectedStructure = templatesForClient(setup.salaryStructures, clientId)[0]; const ctc = Number(selectedStructure?.annualCtc || employee.annualCtc || 0); setSalaryOverrides({}); setEmployee(withSalary({ ...employee, clientId, salaryStructureId: selectedStructure ? String(selectedStructure.id) : '', annualCtc: ctc }, selectedStructure ? calcSalary(ctc, selectedStructure) : '{}')) }
-  const newEmployee = () => {
-    const selectedStructure = templatesForClient(setup.salaryStructures, clientFilter)[0]
+  const newEmployee = async () => {
+    const token = ++editorGeneration.current
+    const refs = await editorReferences()
+    if (!refs || token !== editorGeneration.current || currentClientFilter.current !== clientFilter) return
+    const selectedStructure = templatesForClient(refs.setup.salaryStructures, clientFilter)[0]
     const ctc = Number(selectedStructure?.annualCtc || 0)
     setSalaryOverrides({})
-    setEmployee(clientFilter ? withSalary({ ...employee0, clientId: clientFilter, salaryStructureId: selectedStructure ? String(selectedStructure.id) : '', annualCtc: ctc }, selectedStructure ? calcSalary(ctc, selectedStructure) : '{}') : employee0)
+    setEmployee(clientFilter ? withSalary({ ...employee0, clientId: clientFilter, salaryStructureId: selectedStructure ? String(selectedStructure.id) : '', annualCtc: ctc }, selectedStructure ? calcSalary(ctc, selectedStructure, {}, refs.setup) : '{}') : employee0)
     setEmployeeInfotype('0001'); setChangeReason(''); setModalOpen(true)
   }
   const loadEmployeeHistory = async (id: number) => {
-    setInfotypes(await getEmployeeInfotypes(id))
+    const token = editorGeneration.current
+    const rows = await getEmployeeInfotypes(id)
+    if (token === editorGeneration.current && currentDataScope.current === dataScope) setInfotypes(rows)
   }
-  const editEmployee = (row: Employee, infotype: EmployeeInfotypeCode = '0001') => { const normalized = normalizeEmployeeDetails(row); const salaryStructure = setup.salaryStructures.find(item => String(item.id) === normalized.salaryStructureId) ?? templatesForClient(setup.salaryStructures, normalized.clientId)[0]; const overrides = inferSalaryOverrides(normalized, salaryStructure); setSalaryOverrides(overrides); setEmployee(normalizeEmployeeSalary(normalized, overrides)); setEmployeeInfotype(infotype); setChangeReason(''); setModalOpen(true); void loadEmployeeHistory(row.id) }
-  const closeModal = () => { setDocumentRevision(value => value + 1); setModalOpen(false); setEmployee(employee0); setSalaryOverrides({}); setEmployeeInfotype('0001'); setChangeReason(''); setInfotypes([]) }
+  const editEmployee = async (row: Employee, infotype: EmployeeInfotypeCode = '0001') => {
+    const token = ++editorGeneration.current
+    const refs = await editorReferences()
+    if (!refs || token !== editorGeneration.current || currentClientFilter.current !== clientFilter) return
+    const normalized = normalizeEmployeeDetails(row)
+    const salaryStructure = refs.setup.salaryStructures.find(item => String(item.id) === normalized.salaryStructureId) ?? templatesForClient(refs.setup.salaryStructures, normalized.clientId)[0]
+    const overrides = inferSalaryOverrides(normalized, salaryStructure, refs.setup)
+    setSalaryOverrides(overrides); setEmployee(normalizeEmployeeSalary(normalized, overrides, refs.setup)); setEmployeeInfotype(infotype); setChangeReason(''); setModalOpen(true); void loadEmployeeHistory(row.id)
+  }
+  const closeModal = () => { editorGeneration.current++; setDocumentRevision(value => value + 1); setModalOpen(false); setEmployee(employee0); setSalaryOverrides({}); setEmployeeInfotype('0001'); setChangeReason(''); setInfotypes([]) }
   const saveEmployee = async () => {
     if (chosenStructure && (employee.annualCtc || dailyRateSalary)) {
       const invalid = calculateSalaryDetails(employee.annualCtc, setup.salaryComponents, chosenStructure, salaryOverrides).find(row => row.error || !Number.isFinite(row.monthly))
@@ -205,17 +258,19 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   }
   const downloadTemplate = async (operation?: BulkImportOperation, selectedFieldCodes?: string[]) => {
     if (!clientFilter) { setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors: ['Select a client before downloading employee template.'] } }); return }
+    const refs = await editorReferences()
+    if (!refs || currentClientFilter.current !== clientFilter) return
     operation ??= 'insert'
     if (operation) {
       const exchange = await getEmployeeFields(clientFilter).catch(error => { notify(error.message, 'error'); return null })
-      if (!exchange) return
+      if (!exchange || currentClientFilter.current !== clientFilter || currentDataScope.current !== dataScope) return
       const definition = employeeImportDefinition(exchange)
       selectedFieldCodes ??= definition.fields.map(field => field.code)
       const selectedCodes = selectedFieldCodes
       const selected = definition.fields.filter(field => selectedCodes.includes(field.code) || field.required && !(field.requiredForNew && operation === 'update'))
       const headers = selected.map(field => field.header)
       const rows = operation === 'update'
-        ? employees.filter(row => row.clientId === clientFilter).map(row => selected.map(field => exchange.values[row.id]?.[field.code] ?? employeeImportFieldValue(row, field.code, locations, managerUsers, setup.salaryStructures)))
+        ? employees.filter(row => row.clientId === clientFilter).map(row => selected.map(field => exchange.values[row.id]?.[field.code] ?? employeeImportFieldValue(row, field.code, refs.locations, refs.managers, refs.setup.salaryStructures)))
         : []
       const instructions = [
         ['Mode', operation],
@@ -326,10 +381,11 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     setEmployeePreviewSource({ sheets: data.sourceSheets, clientId: employeePreviewSource.clientId, fileName: resolvedFile.name, operation: employeePreviewSource.operation })
   }
   const visibleEmployees = useMemo(() => employees.filter(row => (row.isActive || !fromDashboard && !!row.lastWorkingDate) && (!clientFilter || row.clientId === clientFilter) && (!fromDashboard || matchesWorkforce(row, searchParams, locations))), [employees, clientFilter, fromDashboard, searchParams, locations])
+  const clientScopeOptions = useMemo(() => employeeClientOptions(clients, employees), [clients, employees])
 
   return <section className={`employee-master${view === 'master' ? ' employee-record-page' : ''}`}>
     {fieldError && <Alert type="error" showIcon message={fieldError} action={<Button onClick={() => setDocumentRevision(value => value + 1)}>Retry</Button>} />}
-    {view === 'master' ? <EmployeeDirectory onEmployeesChanged={load} fieldExchange={fieldExchange} configureFields={setFieldClient} onExcelExport={exportEmployees} documentRevision={documentRevision} clientScoped={clientScoped} clients={clients} locations={locations} employees={visibleEmployees} clientFilter={clientFilter} setClientFilter={changeClientFilter} dashboardKey={fromDashboard ? route.key : ''} dashboardFilters={fromDashboard ? workforceFields.filter(key => searchParams.has(key)).map(key => searchParams.get(key)!).join(' / ') || 'All active employees' : ''} clearDashboard={() => { setClientFilter(clientFilter); setSearchParams({}) }} onNew={newEmployee} onEdit={editEmployee} onDelete={deleteEmployee} onDownloadTemplate={downloadTemplate} onBulkUpload={openEmployeeBulkUpload} /> : <EmployeeOrgStructure clientScoped={clientScoped} clients={clients} locations={locations} employees={employees.filter(row => row.isActive)} clientFilter={clientFilter} setClientFilter={changeClientFilter} />}
+    {view === 'master' ? <EmployeeDirectory onEmployeesChanged={load} fieldExchange={fieldExchange} configureFields={setFieldClient} onExcelExport={exportEmployees} documentRevision={documentRevision} clientScoped={clientScoped} clients={clients} clientScopeOptions={clientScopeOptions} locations={locations} employees={visibleEmployees} clientFilter={clientFilter} setClientFilter={changeClientFilter} dashboardKey={fromDashboard ? route.key : ''} dashboardFilters={fromDashboard ? workforceFields.filter(key => searchParams.has(key)).map(key => searchParams.get(key)!).join(' / ') || 'All active employees' : ''} clearDashboard={() => { setClientFilter(clientFilter); setSearchParams({}) }} onNew={newEmployee} onEdit={editEmployee} onDelete={deleteEmployee} onDownloadTemplate={downloadTemplate} onBulkUpload={openEmployeeBulkUpload} /> : <EmployeeOrgStructure clientScoped={clientScoped} clients={clients} locations={locations} employees={employees.filter(row => row.isActive)} clientFilter={clientFilter} setClientFilter={changeClientFilter} />}
     {modalOpen && <div className="employee-modal-backdrop" onClick={closeModal}>
       <section className="employee-modal" role="dialog" aria-modal="true" aria-label="Employee details" onClick={event => event.stopPropagation()}>
         <EmployeePanel clientScoped={clientScoped} employee={employee} setEmployee={row => setEmployee(normalizeEmployeeSalary(row, salaryOverrides))} employeeInfotype={employeeInfotype} setEmployeeInfotype={value => { setEmployeeInfotype(value as EmployeeInfotypeCode); setChangeReason('') }} changeReason={changeReason} setChangeReason={setChangeReason} clients={clients} locations={locations} managerUsers={managerUsers} templates={setup.salaryStructures} salaryComponents={setup.salaryComponents} deps={deps} desigs={desigs} grades={grades} skillCategories={skillCategories} employmentTypes={employmentTypes} applyClient={applyClient} applyStructure={applyStructure} applyCtc={applyCtc} structureComponents={structureComponents} employeeSalary={employeeSalary} salaryOverrides={salaryOverrides} empLine={empLine} empMonthly={empMonthly} saveEmployee={saveEmployee} closeModal={closeModal} infotypes={infotypes} runEmployeeAction={runEmployeeAction} />
@@ -438,7 +494,7 @@ function EmployeeOrgStructure(p: { clientScoped: boolean; clients: Client[]; loc
   return <section className="card employee-org-page">
     <header><i className="blue"><ApartmentOutlined /></i><div><h3>Organization chart</h3><p>Teams-style reporting hierarchy built from each active employee's reporting manager.</p></div></header>
     <div className="employee-org-toolbar">
-      {!p.clientScoped && <label><span>Client</span><SearchSelect value={p.clientFilter} onChange={value => p.setClientFilter(Number(value))} options={selectOptions(p.clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} /></label>}
+      {!p.clientScoped && <label><span>Client</span><PayrollScopeSelect ariaLabel="Organization chart client" value={p.clientFilter} onChange={value => p.setClientFilter(Number(value))} options={employeeClientOptions(p.clients, p.employees)} /></label>}
       <div><span>Total employees</span><b>{employeeCount}</b></div>
       <div className="employee-org-view-toggle"><span>Layout</span><div><button type="button" aria-pressed={orientation === 'vertical'} className={orientation === 'vertical' ? 'active' : ''} onClick={() => setOrientation('vertical')}><ApartmentOutlined /> Vertical</button><button type="button" aria-pressed={orientation === 'horizontal'} className={orientation === 'horizontal' ? 'active' : ''} onClick={() => setOrientation('horizontal')}><NodeIndexOutlined /> Horizontal</button></div></div>
       <div className="employee-org-zoom"><span>Canvas</span><div><button type="button" title="Zoom out" aria-label="Zoom out" onClick={() => changeZoom(-.1)}><ZoomOutOutlined /></button><b>{Math.round(zoom * 100)}%</b><button type="button" title="Zoom in" aria-label="Zoom in" onClick={() => changeZoom(.1)}><ZoomInOutlined /></button><button type="button" title="Fit to default scale" onClick={resetZoom}><AimOutlined /> Fit</button></div></div>
@@ -675,9 +731,9 @@ function previewDate(value: string) {
   return value
 }
 
-function EmployeeDirectory(p: { onEmployeesChanged: () => Promise<void>; fieldExchange: EmployeeFieldExchange; configureFields: (clientId: number) => void; onExcelExport: (rows: Employee[]) => void; documentRevision: number; clientScoped: boolean; clients: Client[]; locations: WorkLocation[]; employees: Employee[]; clientFilter: number; setClientFilter: (id: number) => void; dashboardKey: string; dashboardFilters: string; clearDashboard: () => void; onNew: () => void; onEdit: (employee: Employee, infotype?: EmployeeInfotypeCode) => void; onDelete: (employee: Employee) => void; onDownloadTemplate: () => void; onBulkUpload: () => void }) {
+function EmployeeDirectory(p: { onEmployeesChanged: () => Promise<void>; fieldExchange: EmployeeFieldExchange; configureFields: (clientId: number) => void; onExcelExport: (rows: Employee[]) => void; documentRevision: number; clientScoped: boolean; clients: Client[]; clientScopeOptions: PayrollScopeOption[]; locations: WorkLocation[]; employees: Employee[]; clientFilter: number; setClientFilter: (id: number) => void; dashboardKey: string; dashboardFilters: string; clearDashboard: () => void; onNew: () => void; onEdit: (employee: Employee, infotype?: EmployeeInfotypeCode) => void; onDelete: (employee: Employee) => void; onDownloadTemplate: () => void; onBulkUpload: () => void }) {
   const session = useAuthSession()
-  const completion = useEmployeeProfileCompletion(p.employees, p.clients, p.clientFilter, p.documentRevision, p.configureFields)
+  const completion = useEmployeeProfileCompletion(p.employees, p.clients, p.clientFilter, p.documentRevision, p.configureFields, p.clientScopeOptions)
   const scope = session?.user.id + ':' + p.clientFilter
   const [selectForExit, setSelectForExit] = useState(false)
   const [exitIds, setExitIds] = useState<number[]>([])
@@ -708,7 +764,7 @@ function EmployeeDirectory(p: { onEmployeesChanged: () => Promise<void>; fieldEx
   columns.push(...p.fieldExchange.fields.map(field => ({ key: field.code, label: field.field.label, value: (row: Employee) => p.fieldExchange.values[row.id]?.[field.code] || '' })))
   columns.splice(7, 0, { key: 'employmentType', label: 'Employee type', value: row => workforceValue(row, 'employmentType') })
   return <RecruitmentViewContext.Provider value={{ view, scope, namespace: 'employees.ui' }}>
-    <PageHeaderPortal slot="employees-client-controls">{!p.clientScoped && <SearchSelect testId="employee-client-filter" value={p.clientFilter} onChange={value => p.setClientFilter(Number(value))} options={selectOptions(p.clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} />}</PageHeaderPortal>
+    <PageHeaderPortal slot="employees-client-controls">{!p.clientScoped && <div data-testid="employee-client-filter"><PayrollScopeSelect ariaLabel="Employee Master client" value={p.clientFilter} onChange={value => p.setClientFilter(Number(value))} options={p.clientScopeOptions} /></div>}</PageHeaderPortal>
     <PageHeaderPortal slot="employees-view-controls"><Space wrap><Segmented options={[{ label: 'Card view', value: 'Cards' }, { label: 'Table view', value: 'Table' }]} value={view} onChange={value => setView(value as RecruitmentView)} />{completion.manageButton}</Space></PageHeaderPortal>
     <PageHeaderPortal slot="employees-page-controls">{completion.bulkAction}{canManage && <><Button disabled={!p.clientFilter} onClick={() => { setSelectForExit(value => !value); setExitIds([]) }}>{selectForExit ? 'Finish selection' : 'Select employees'}</Button>{selectForExit && <EmployeeResignationAction clientId={p.clientFilter} employees={exitEmployees.map(row => ({ id: row.id, employeeCode: row.employeeCode, name: (row.firstName + ' ' + row.lastName).trim() }))} onSaved={async () => { setExitIds([]); await p.onEmployeesChanged() }} />}</>}<Button disabled={!p.clientFilter} onClick={p.onDownloadTemplate}>Excel template</Button>{canManage && <><TalentAcquisitionEmployeeImport clientId={p.clientFilter} clientName={clientName(p.clientFilter)} onImported={p.onEmployeesChanged} /><Button data-testid="employee-bulk-upload-open" disabled={!p.clientFilter} onClick={p.onBulkUpload}>Bulk upload</Button><Button type="primary" onClick={p.onNew}>New employee</Button></>}</PageHeaderPortal>
     <section className="recruitment-monitor-page recruitment-experience recruitment-viewport employee-record-workspace">

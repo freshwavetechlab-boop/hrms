@@ -1,17 +1,20 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Input, Modal, Select, Space, Tag } from 'antd'
 import { CopyOutlined, DownloadOutlined, ImportOutlined, KeyOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons'
 import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewState } from './BulkUploadPreviewModal'
 import BulkUploadProgressModal, { type BulkUploadState, type BulkUploadSummary } from './BulkUploadProgressModal'
-import { copySecurityUserRoles, deleteSecurityRole, deleteSecurityUser, loadEmployeeProvisionPreview, loadSecurityData, provisionEmployeeLogins, saveSecurityRole, saveSecurityUser } from '../services/securityService'
+import { copySecurityUserRoles, deleteSecurityRole, deleteSecurityUser, loadEmployeeProvisionPreview, loadSecurityData, provisionEmployeeLogins, saveSecurityRole, saveSecurityUser, type EmployeePasswordMode } from '../services/securityService'
 import type { AuditLog, AuthPermission, AuthRole, AuthUser, Client, Employee, EmployeeLoginProvisionPreview, EmployeeLoginProvisionResponse, WorkLocation } from '../types/payroll'
 import { parseImportPreviewFile, validateImportPreview, type ImportPreviewData, type ImportPreviewRules } from '../utils/importPreview'
 import { downloadXlsx } from '../utils/xlsx'
 import DataTable from './DataTable'
 import SearchSelect from './SearchSelect'
 import { useAuthSession } from './AuthGate'
+import { clearOnboardingSelection, createdEmployeeCredentials, readOnboardingSelection } from '../utils/employeeOnboardingSelection'
 import '../SecurityAccess.css'
 import '../RoleAccessSummary.css'
+import './EmployeeProvisioning.css'
 
 const user0 = { id: 0, email: '', displayName: '', mobile: '', password: '', clientId: '', clientScopeChoice: 'All' as 'All' | 'Single' | 'Selected', assignedClientIds: [] as number[], employeeId: '', recruitmentScopeMode: 'Client' as 'Client' | 'EmployeeLocation' | 'SelectedLocations', recruitmentLocationIds: [] as number[], isActive: true, mustChangePassword: true, roles: ['mss_manager'] }
 const role0 = { id: 0, code: '', name: '', description: '', permissions: [] as string[], isSystem: false }
@@ -164,6 +167,8 @@ const InfoField = ({ label, help, children, className = '' }: { label: string; h
 
 export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: SecurityTab }) {
   const session = useAuthSession()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const provisionRoute = useRef('')
   const clientScopeId = session?.user.clientId
   const clientScopedAdmin = Boolean(clientScopeId && !session?.user.permissions.includes('security.manage'))
   const canAssignSelectedClients = !clientScopeId && session?.user.clientAccessMode === 'Legacy' && Boolean(session?.user.permissions.includes('security.manage'))
@@ -182,8 +187,15 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   const [accessRole, setAccessRole] = useState<AuthRole | null>(null), [accessPermissions, setAccessPermissions] = useState<string[]>([]), [savingAccess, setSavingAccess] = useState(false)
   const [accessModule, setAccessModule] = useState('')
   const [provisionOpen, setProvisionOpen] = useState(false), [provisionLoading, setProvisionLoading] = useState(false), [provisionRows, setProvisionRows] = useState<EmployeeLoginProvisionPreview[]>([])
-  const [selectedProvisionKeys, setSelectedProvisionKeys] = useState<string[]>([]), [provisionPassword, setProvisionPassword] = useState(''), [provisionMustChangePassword, setProvisionMustChangePassword] = useState(true), [provisionRoles, setProvisionRoles] = useState<string[]>(['employee'])
+  const [selectedProvisionKeys, setSelectedProvisionKeys] = useState<string[]>([]), [provisionPassword, setProvisionPassword] = useState(''), [provisionRoles, setProvisionRoles] = useState<string[]>(['employee'])
   const [provisionResult, setProvisionResult] = useState<EmployeeLoginProvisionResponse | null>(null)
+  const [provisionPasswordMode, setProvisionPasswordMode] = useState<EmployeePasswordMode>('Shared')
+  const [provisionVisibleKeys, setProvisionVisibleKeys] = useState<string[]>([])
+  const provisionGeneration = useRef(0), provisionSubmitting = useRef<number | null>(null)
+  const provisionScope = `${session?.user.id || 0}:${directoryClientId}`
+  const provisionScopeRef = useRef(provisionScope)
+  provisionScopeRef.current = provisionScope
+  const [provisionOpenedScope, setProvisionOpenedScope] = useState('')
   const [userTemplateDownloaded, setUserTemplateDownloaded] = useState(false), [userImportData, setUserImportData] = useState<ImportPreviewData | null>(null), [userImportPreview, setUserImportPreview] = useState<BulkUploadPreviewState>(emptyBulkUploadPreview), [userImporting, setUserImporting] = useState(false)
   const [userUpload, setUserUpload] = useState<SecurityUpload>({ open: false, state: 'uploading', percent: 0, summary: { totalRows: 0 } })
 
@@ -206,6 +218,13 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   const visibleUsers = users.filter(item => (!item.clientId || activeClientIds.has(item.clientId)) && (!directoryClientId || item.clientId === Number(directoryClientId) || item.clientAccessMode === 'Selected' && item.assignedClientIds?.includes(Number(directoryClientId))))
   const rolePermissions = rolePermissionCodes
   const clientName = (clientId?: number | null) => clientId ? clients.find(client => client.id === clientId)?.name || `Client #${clientId}` : 'All clients'
+  const selectDirectoryClient = (value: string) => {
+    setDirectoryClientId(value); setUserTemplateDownloaded(false)
+    const next = new URLSearchParams(searchParams)
+    if (value) next.set('clientId', value); else next.delete('clientId')
+    next.delete('provision')
+    setSearchParams(next, { replace: true })
+  }
   const userClientNames = (item: AuthUser) => item.clientAccessMode === 'Selected' ? `Selected: ${(item.assignedClientIds || []).map(id => clientName(id)).join(', ') || 'No active clients'}` : clientName(item.clientId)
   const roleName = (code: string) => roles.find(item => item.code === code)?.name || code
   const parseRoleCodes = (value: string, fallback: string[] = []) => {
@@ -220,6 +239,17 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   useEffect(() => {
     if (clientScopeId) setDirectoryClientId(String(clientScopeId))
   }, [clientScopeId])
+  useEffect(() => {
+    const requested = Number(searchParams.get('clientId'))
+    if (requested > 0 && clients.some(client => client.id === requested) && (!clientScopeId || requested === clientScopeId)) setDirectoryClientId(String(requested))
+  }, [searchParams, clients, clientScopeId])
+  useEffect(() => {
+    provisionGeneration.current++
+    provisionSubmitting.current = null
+    setProvisionOpen(false); setProvisionRows([]); setProvisionVisibleKeys([]); setSelectedProvisionKeys([])
+    setProvisionResult(null); setProvisionPassword(''); setProvisionLoading(false)
+    return () => { provisionGeneration.current++ }
+  }, [provisionScope])
   useEffect(() => { setUserDrawerOpen(false); setRoleDrawerOpen(false); setAccessRole(null) }, [initialTab])
   useEffect(() => {
     if (!accessRole) return
@@ -240,7 +270,6 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   }
 
   const toggle = (list: string[], value: string) => list.includes(value) ? list.filter(item => item !== value) : [...list, value]
-  const toggleProvisionRole = (code: string) => setProvisionRoles(current => current.includes(code) ? current.length === 1 ? current : current.filter(item => item !== code) : [...current, code])
   const setAllAccess = (items: AuthPermission[], selected: boolean) => {
     const codes = items.map(permission => permission.code)
     setAccessPermissions(current => selected ? Array.from(new Set([...current, ...codes])) : current.filter(code => !codes.includes(code)))
@@ -449,43 +478,67 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   }
 
   const openProvisionModal = async () => {
+    const token = ++provisionGeneration.current, scope = provisionScope
+    setProvisionOpenedScope(scope)
     setProvisionOpen(true)
     setProvisionLoading(true)
+    setProvisionRows([]); setProvisionVisibleKeys([]); setSelectedProvisionKeys([])
     setProvisionResult(null)
     setProvisionPassword('')
+    setProvisionPasswordMode('Shared')
     setProvisionRoles(['employee'])
     try {
       const rows = await loadEmployeeProvisionPreview(directoryClientId)
+      if (token !== provisionGeneration.current || scope !== provisionScopeRef.current) return
       setProvisionRows(rows)
-      setSelectedProvisionKeys(rows.map(row => String(row.employeeId)))
+      const handed = readOnboardingSelection(sessionStorage, session?.user.id || 0, Number(directoryClientId), 'employees')
+      setSelectedProvisionKeys(rows.filter(row => handed === null || handed.includes(String(row.employeeId))).map(row => String(row.employeeId)))
+      setProvisionVisibleKeys(rows.map(row => String(row.employeeId)))
       setMsg(rows.length ? `${rows.length} employees are ready for login provisioning.` : 'No pending employees found for login provisioning.')
     } catch {
+      if (token !== provisionGeneration.current || scope !== provisionScopeRef.current) return
       setProvisionRows([])
       setSelectedProvisionKeys([])
       setMsg('Unable to load employee provisioning preview.')
     } finally {
-      setProvisionLoading(false)
+      if (token === provisionGeneration.current && scope === provisionScopeRef.current) setProvisionLoading(false)
     }
   }
+  useEffect(() => {
+    const clientId = Number(searchParams.get('clientId'))
+    const routeKey = `${session?.user.id}:${clientId}`
+    if (searchParams.get('provision') !== '1') { provisionRoute.current = ''; return }
+    if (clientId <= 0 || directoryClientId !== String(clientId) || !clients.some(client => client.id === clientId) || provisionRoute.current === routeKey) return
+    provisionRoute.current = routeKey
+    void openProvisionModal()
+    const next = new URLSearchParams(searchParams); next.delete('provision'); setSearchParams(next, { replace: true })
+  }, [searchParams, directoryClientId, clients, session?.user.id, setSearchParams])
   const runProvision = async () => {
+    if (provisionSubmitting.current !== null || provisionLoading || provisionOpenedScope !== provisionScope) return
     if (selectedProvisionKeys.length === 0) { setMsg('Select at least one employee to import.'); return }
     if (provisionRoles.length === 0) { setMsg('Select at least one role for imported employees.'); return }
+    const token = ++provisionGeneration.current, scope = provisionScope
+    provisionSubmitting.current = token
     setProvisionLoading(true)
     try {
-      const response = await provisionEmployeeLogins({ employeeIds: selectedProvisionKeys.map(Number), roles: provisionRoles, temporaryPassword: provisionPassword.trim(), mustChangePassword: provisionMustChangePassword })
+      const response = await provisionEmployeeLogins({ employeeIds: selectedProvisionKeys.map(Number), roles: [...new Set(['employee', ...provisionRoles])], passwordMode: provisionPasswordMode, temporaryPassword: provisionPasswordMode === 'Shared' ? provisionPassword.trim() : '', mustChangePassword: true })
+      if (token !== provisionGeneration.current || scope !== provisionScopeRef.current) return
       if (response.ok && response.data) {
         setProvisionResult(response.data)
         setProvisionRows([])
         setSelectedProvisionKeys([])
+        setProvisionPassword('')
+        clearOnboardingSelection(sessionStorage, session?.user.id || 0, Number(directoryClientId), 'employees')
         setMsg(`${response.data.createdCount} employee logins created, ${response.data.skippedCount} skipped.`)
         await load()
       } else {
         setMsg(response.error || 'Employee login import failed.')
       }
     } catch {
-      setMsg('Unable to reach the server while importing employees.')
+      if (token === provisionGeneration.current && scope === provisionScopeRef.current) setMsg('Unable to reach the server while importing employees.')
     } finally {
-      setProvisionLoading(false)
+      if (provisionSubmitting.current === token) provisionSubmitting.current = null
+      if (token === provisionGeneration.current && scope === provisionScopeRef.current) setProvisionLoading(false)
     }
   }
 
@@ -667,22 +720,35 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     </aside>
   </div> : null
 
-  const renderProvisionModal = () => <Modal className="employee-provision-modal" title="Import Employees as Users" open={provisionOpen} onCancel={() => setProvisionOpen(false)} footer={<Space><Button disabled={provisionLoading} onClick={() => setProvisionOpen(false)}>Close</Button><Button type="primary" icon={<ImportOutlined />} loading={provisionLoading} disabled={!selectedProvisionKeys.length || Boolean(provisionResult)} onClick={() => void runProvision()}>Create selected users</Button></Space>} width="min(1120px, 96vw)">
-    <div className="employee-provision-controls">
-      <label><span>Assign roles</span><div className="permission-matrix role-picker import-role-picker">{roles.map(item => <label className={provisionRoles.includes(item.code) ? 'selected' : ''} key={item.code}><input type="checkbox" checked={provisionRoles.includes(item.code)} onChange={() => toggleProvisionRole(item.code)} /><strong>{item.name}</strong><small>{item.code}</small></label>)}</div></label>
-      <label><span>Temporary password</span><Input.Password value={provisionPassword} onChange={event => setProvisionPassword(event.target.value)} placeholder="Leave blank to auto-generate one password for this batch" /></label>
-      <AntCheckbox checked={provisionMustChangePassword} onChange={event => setProvisionMustChangePassword(event.target.checked)}>Require password change on first login</AntCheckbox>
-    </div>
+  const downloadCreatedLogins = () => {
+    if (!provisionResult) return
+    const credentials = createdEmployeeCredentials(provisionResult)
+    if (!credentials.length) return
+    downloadXlsx('new-employee-ess-logins.xlsx', [{ name: 'New ESS logins', rows: [
+      ['Employee code', 'Employee name', 'Login ID', 'Temporary password', 'ESS portal', 'First login'],
+      ...credentials.map(row => [row.employeeCode, row.employeeName, row.loginId, row.temporaryPassword, row.essUrl, 'Change temporary password']),
+    ] }])
+  }
+  const renderProvisionModal = () => <Modal className="employee-provision-modal employee-provision-simple" title="Create ESS logins" open={provisionOpen && provisionOpenedScope === provisionScope} maskClosable={!provisionLoading} closable={!provisionLoading} onCancel={() => { if (!provisionLoading) setProvisionOpen(false) }} footer={<Space wrap><Button disabled={provisionLoading} onClick={() => setProvisionOpen(false)}>Close</Button>{!provisionResult && <Button type="primary" icon={<ImportOutlined />} loading={provisionLoading} disabled={!selectedProvisionKeys.length} onClick={() => void runProvision()}>Create logins ({selectedProvisionKeys.length})</Button>}</Space>} width="min(1120px, 96vw)">
+    {!provisionResult && <><div className="employee-provision-intro"><strong>{directoryClientId ? clientName(Number(directoryClientId)) : 'All permitted clients'}</strong><span>Employees are selected below. Choose their role and temporary password format, then create logins once.</span></div><div className="employee-provision-controls">
+      <label><span>Roles for all selected employees</span><Select aria-label="Roles for selected ESS employees" mode="multiple" disabled={provisionLoading} showSearch optionFilterProp="label" maxTagCount="responsive" value={provisionRoles} onChange={values => setProvisionRoles([...new Set(['employee', ...values])])} options={roles.filter(item => item.code === 'employee' || (!roleAccessFacts(item, permissions).adminPortal && rolePermissionCodes(item).some(code => /^(?:ess|mss)\./i.test(code)))).map(item => ({ value: item.code, label: item.name, disabled: item.code === 'employee' }))} /><small>Employee self-service is always included. Add an ESS/MSS role when needed.</small></label>
+      <label><span>Temporary password format</span><Select aria-label="Temporary password format" disabled={provisionLoading} value={provisionPasswordMode} onChange={setProvisionPasswordMode} options={[
+        { value: 'Shared', label: 'One password for this selection' }, { value: 'EmployeeCode', label: 'Employee code' }, { value: 'Email', label: 'Employee email' }, { value: 'Mobile', label: 'Employee mobile number' }, { value: 'ClientPolicy', label: 'Existing client ESS policy' },
+      ]} /><small>{provisionPasswordMode === 'Shared' ? 'Enter one password or leave it blank to generate one for this selection.' : provisionPasswordMode === 'ClientPolicy' ? 'Uses the configured client policy. Existing user passwords stay unchanged.' : 'Uses each employee’s value. A generated temporary password covers missing values.'}</small></label>
+      {provisionPasswordMode === 'Shared' && <label className="employee-provision-password"><span>Temporary password</span><Input.Password disabled={provisionLoading} value={provisionPassword} onChange={event => setProvisionPassword(event.target.value)} placeholder="Leave blank to generate one password" autoComplete="new-password" /></label>}
+      <AntCheckbox disabled checked>Change password on first login</AntCheckbox>
+    </div><div className="employee-provision-selection"><Space wrap><Button size="small" disabled={provisionLoading || !provisionVisibleKeys.length} onClick={() => setSelectedProvisionKeys(current => [...new Set([...current, ...provisionVisibleKeys])])}>Select all matching</Button><Button size="small" disabled={provisionLoading || !selectedProvisionKeys.length} onClick={() => setSelectedProvisionKeys([])}>Clear selection</Button><span>{selectedProvisionKeys.length} selected</span></Space><small>Existing logins are skipped; their passwords are kept.</small></div></>}
     {provisionResult ? <div className="provision-result">
-      <div className="access-credentials"><b>Employee import completed</b><span>{provisionResult.createdCount} created, {provisionResult.skippedCount} skipped. Temporary password: <strong>{provisionResult.temporaryPassword || provisionPassword || '-'}</strong></span></div>
-      <DataTable rows={provisionResult.results} getRowId={(row, index) => row.userId || `${row.employeeId}-${index}`} exportFileName="employee-login-import-result" columns={[
+      <div className="access-credentials"><b>{provisionResult.createdCount} logins created · {provisionResult.skippedCount} skipped</b><span>Download login details for newly created accounts. Existing accounts and passwords were kept.</span>{provisionPasswordMode === 'Shared' && provisionResult.createdCount > 0 && provisionResult.temporaryPassword && <span>Temporary password: <strong>{provisionResult.temporaryPassword}</strong></span>}<Button icon={<DownloadOutlined />} disabled={!createdEmployeeCredentials(provisionResult).length} onClick={downloadCreatedLogins}>Download new login details</Button></div>
+      <DataTable rows={provisionResult.results} hideExport getRowId={(row, index) => row.userId || `${row.employeeId}-${index}`} exportFileName="employee-login-import-result" columns={[
         { key: 'employeeCode', label: 'Employee Code' },
         { key: 'employeeName', label: 'Employee' },
         { key: 'email', label: 'Login ID' },
+        { key: 'temporaryPassword', label: 'Temporary password', value: row => row.status === 'Created' ? row.temporaryPassword || provisionResult.temporaryPassword || 'Not returned' : 'Existing password kept' },
         { key: 'status', label: 'Status', render: row => <Tag color={row.status === 'Created' ? 'green' : 'gold'}>{row.status}</Tag> },
         { key: 'message', label: 'Message', width: '240px' }
       ]} />
-    </div> : <DataTable rows={provisionRows} getRowId={row => row.employeeId} emptyText={provisionLoading ? 'Loading employees...' : 'No employees are pending login creation.'} exportFileName="employee-login-provision-preview" rowSelection={{ selectedRowKeys: selectedProvisionKeys, onChange: keys => setSelectedProvisionKeys(keys.map(key => String(key))) }} columns={[
+    </div> : <DataTable rows={provisionRows} getRowId={row => row.employeeId} loading={provisionLoading} onVisibleRowsChange={visible => setProvisionVisibleKeys(current => { const next = visible.map(row => String(row.employeeId)); return current.length === next.length && current.every((id, index) => id === next[index]) ? current : next })} emptyText={provisionLoading ? 'Loading employees...' : 'No employees are pending login creation.'} exportFileName="employee-login-provision-preview" rowSelection={{ selectedRowKeys: selectedProvisionKeys, onChange: keys => setSelectedProvisionKeys(keys.map(key => String(key))), getCheckboxProps: () => ({ disabled: provisionLoading }) }} columns={[
       { key: 'clientName', label: 'Client', width: '180px' },
       { key: 'employeeCode', label: 'Employee Code' },
       { key: 'employeeName', label: 'Employee', width: '190px' },
@@ -745,7 +811,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
   const renderUsers = () => <section className="security-page-stack">
     {msg && <Alert className="security-message-alert" type={/unable|required|failed|cannot/i.test(msg) ? 'warning' : 'info'} showIcon message={msg} closable onClose={() => setMsg('')} />}
     <AntCard size="small" className="settings-panel settings-table-panel security-table-panel security-user-directory-panel">
-      <div className="component-table-head security-table-head security-directory-head"><div><b>User directory</b><span>{directoryClientId ? clientName(Number(directoryClientId)) : 'All clients'} · {visibleUsers.length} users · {unlinkedEmployees.length} awaiting login</span></div><div className="settings-master-actions security-directory-actions">{!clientScopedAdmin && <label className="security-filter-field"><span>Client</span><SearchSelect value={directoryClientId} onChange={value => { setDirectoryClientId(value); setUserTemplateDownloaded(false) }} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></label>}<Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} disabled={!directoryClientId} title={directoryClientId ? 'Download client-wise template' : 'Select a client first'} onClick={downloadUserTemplate}>Template</Button><label className={`settings-upload-action ${!userTemplateDownloaded || !directoryClientId ? 'disabled' : ''}`} title={!directoryClientId ? 'Select a client first' : userTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!userTemplateDownloaded || !directoryClientId} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadUserImport(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button className="settings-toolbar-secondary" icon={<ImportOutlined />} onClick={() => void openProvisionModal()}>Import Employees</Button><Button type="primary" icon={<PlusOutlined />} onClick={openNewUser}>New user</Button></div></div>
+      <div className="component-table-head security-table-head security-directory-head"><div><b>User directory</b><span>{directoryClientId ? clientName(Number(directoryClientId)) : 'All clients'} · {visibleUsers.length} users · {unlinkedEmployees.length} awaiting login</span></div><div className="settings-master-actions security-directory-actions">{!clientScopedAdmin && <label className="security-filter-field"><span>Client</span><SearchSelect value={directoryClientId} onChange={selectDirectoryClient} options={[{ value: '', label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} /></label>}<Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} disabled={!directoryClientId} title={directoryClientId ? 'Download client-wise template' : 'Select a client first'} onClick={downloadUserTemplate}>Template</Button><label className={`settings-upload-action ${!userTemplateDownloaded || !directoryClientId ? 'disabled' : ''}`} title={!directoryClientId ? 'Select a client first' : userTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!userTemplateDownloaded || !directoryClientId} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadUserImport(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button className="settings-toolbar-secondary" icon={<ImportOutlined />} onClick={() => void openProvisionModal()}>Import Employees</Button><Button type="primary" icon={<PlusOutlined />} onClick={openNewUser}>New user</Button></div></div>
       {createdCredentials && <Alert className="security-message-alert" type="success" showIcon message="Login created" description={`Temporary password for ${createdCredentials.email}: ${createdCredentials.password}`} closable onClose={() => setCreatedCredentials(null)} />}
       <DataTable rows={visibleUsers} getRowId={row => row.id} exportFileName="security-users" actionsWidth={350} actions={row => <Space size={6} wrap><Button size="small" icon={<CopyOutlined />} onClick={() => openRoleCopy(row)}>Copy / transfer roles</Button><Button size="small" type="primary" onClick={() => editUser(row)}>Edit</Button><Button size="small" danger onClick={() => void removeUser(row)}>Delete</Button></Space>} columns={[
       { key: 'displayName', label: 'User', width: '190px' },

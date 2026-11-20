@@ -5,6 +5,9 @@ public sealed class RecruitmentJoiningSelection
     public int ClientId { get; set; }
     public List<long> OfferIds { get; set; } = [];
     public List<long> RosterRowIds { get; set; } = [];
+    // Explicit Employee Master intake. Importing a released letter does not
+    // attest candidate acceptance or create a candidate signature.
+    public bool ImportReleasedForEss { get; set; }
 }
 
 public sealed class RecruitmentJoiningCandidate

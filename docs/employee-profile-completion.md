@@ -2,6 +2,8 @@
 
 Employee Master keeps Table view as the default. In Card view, Missing information starts collapsed with its count visible. Its expanded badges open the relevant employee infotype.
 
+Employee Master now loads its lean client lookup, employee roster and locations independently. Salary setup, dropdown masters and manager-user references load only for editor/export/template actions and share one page-scoped request. Completion status waits until the directory has employee rows. Manage uses a local settings spinner, so its client selector remains usable while settings load. Both client selectors reuse the payroll green/count picker: counts come from the entire authorized active-employee roster, independent of the currently selected client or table filters; clients without active employees remain white. Previous-client responses cannot replace current settings.
+
 ## Reminders and settings
 
 - Use the card's **Send link to fill missing details** action for one employee, or **Select all** and the header's bulk action for all eligible matching employees, including other list pages. Complete profiles, inactive employees, missing/invalid work emails and disabled ESS access cannot receive a reminder through this action.
@@ -19,6 +21,10 @@ Phone aliases apply only to ESS/Employee portal sign-in. A unique, valid Indian 
 The opt-in **Aadhaar — first 8 digits (temporary)** mode is separate from the existing full-Aadhaar mode. When no explicit bulk temporary-password override is supplied, it derives the initial password only from a complete 12-digit current Master Aadhaar and requires a first-login password change. Missing, masked or malformed Aadhaar stops that account's creation with a review message instead of silently choosing another password. A new password must differ from the current one. Format checks do not establish Aadhaar or phone ownership.
 
 Saving a client policy never resets existing passwords. Bulk **Import Employees** skips existing logins. Any reset of an existing employee's initial credential requires an explicit administrative reset; preserve employees who have already logged in or changed their password when preparing a first-access rollout.
+
+The Users bulk modal also offers explicit **Shared**, **Employee Code**, **Email**, **Mobile**, and **Client policy** temporary-password patterns. Shared is the UI default and uses one entered/generated batch password. Missing optional Email/Mobile text uses one batch fallback; it is shown in that created employee's result. This password derivation does not enable or change phone/email login aliases. Explicit patterns require a first-login password change, include the employee self-service role alongside the chosen ESS/MSS roles and enable Portal access for newly created active employee accounts. Only newly created credentials appear in the downloadable result; existing accounts retain their passwords. After their first password change, employee-linked users open **My Profile** automatically. Existing API callers that omit `passwordMode` retain their previous client-policy behavior.
+
+Released-letter bulk intake can carry selected candidate IDs into Employee Master and then selected employee IDs into this Users modal. The handoff is session-scoped to the actor and client; a different client's rows are not carried across. Account creation itself does not send a welcome email from this modal. Use its credential download or the existing employee communication flow. Deploy the API, Payroll UI and ESS UI together to use the complete handoff; these changes need no schema migration.
 
 ## ESS editing and approvals
 

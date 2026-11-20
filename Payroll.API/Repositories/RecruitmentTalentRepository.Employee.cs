@@ -6,6 +6,13 @@ namespace Payroll.API.Repositories;
 
 public sealed partial class RecruitmentTalentRepository
 {
+    internal static bool SameIntakeName(string left, string right)
+    {
+        static string Key(string value) => string.Concat(value.Normalize().Where(char.IsLetterOrDigit)).ToUpperInvariant();
+        var expected = Key(left);
+        return expected.Length > 0 && expected == Key(right);
+    }
+
     public async Task<(EmployeeConversionPreview? Item, string Error)> PreviewEmployeeConversionAsync(long applicationId, ConvertCandidateToEmployeeRequest request, AuthUser user)
     {
         await using var db = Db(); await db.OpenAsync();

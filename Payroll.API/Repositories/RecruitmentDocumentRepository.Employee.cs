@@ -14,7 +14,7 @@ public sealed partial class RecruitmentDocumentRepository
     // an inactive employee or overwrite an existing master's salary/bank values.
     private static async Task LinkReleasedEmployeeAsync(MySqlConnection db, MySqlTransaction tx,
         RecruitmentDocumentRosterRow row, Dictionary<string,string> values, WorkLocation location,
-        List<Employee> current, AuthUser user, string reference, IReadOnlySet<int> permittedLocations)
+        List<Employee> current, AuthUser user, string reference, IReadOnlySet<int> permittedLocations, bool enableNewEssAccess = false)
     {
         var candidateEmployeeId = await db.ExecuteScalarAsync<int?>("SELECT EmployeeId FROM recruitment_candidates WHERE Id=@CandidateId AND ClientId=@ClientId FOR UPDATE", row, tx);
         if(row.EmployeeId.HasValue && candidateEmployeeId.HasValue && row.EmployeeId!=candidateEmployeeId)throw new InvalidOperationException("The source profile and roster have conflicting employee links. Review Employee Master before import.");
@@ -45,6 +45,7 @@ public sealed partial class RecruitmentDocumentRepository
                 throw new InvalidOperationException($"{row.CandidateCode}: contact/bank identifiers match an employee with a different name. Review the identity in Employee Master before import.");
             incoming = FillRosterEmployeeBlanks(existing, incoming);
         }
+        if (enableNewEssAccess && incoming.Id == 0) incoming.PortalAccess = true;
         incoming.Id = await EmployeeRepository.SaveRecruitmentEmployeeAsync(db, tx, incoming, user, reference);
         await RecordRosterEmployeeLinkAsync(db,tx,row,incoming,user,reference);
         current.RemoveAll(employee => employee.Id == incoming.Id); current.Add(incoming);

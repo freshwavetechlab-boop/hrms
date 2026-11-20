@@ -15,5 +15,5 @@ public partial class AuthRepository
         return compact[..8];
     }
 
-    private sealed record InitialEmployeePassword(string Value, bool RequireChange = false);
+    private sealed record InitialEmployeePassword(string Value, bool RequireChange = false, string Notice = "");
 }

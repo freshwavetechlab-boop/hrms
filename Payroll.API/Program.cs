@@ -5277,6 +5277,10 @@ static async Task<string> ApplyRecruitmentDecisionAsync(long applicationId, stri
     RecruitmentCaseRepository hiringCases,
     long? expectedStageInstanceId = null)
 {
+    // A subsequent offer response is still recorded against the offer. It must
+    // not reopen or reject an already imported employee's hiring application.
+    if (!decision.Equals("Joined", StringComparison.OrdinalIgnoreCase)
+        && await candidateActions.PreserveEmployeeApplicationAsync(applicationId, user)) return "";
     var (result, error) = await pipelines.AdvanceApplicationForDecisionAsync(applicationId, decision, user, expectedStageInstanceId);
     if (result?.Status == "Applied")
     {

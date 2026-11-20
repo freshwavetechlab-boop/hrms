@@ -94,6 +94,7 @@ public class ProvisionEmployeeLoginsRequest
     public List<int> EmployeeIds { get; set; } = [];
     public List<string> Roles { get; set; } = ["employee"];
     public string TemporaryPassword { get; set; } = string.Empty;
+    public string? PasswordMode { get; set; }
     public bool MustChangePassword { get; set; } = true;
 }
 
@@ -106,11 +107,11 @@ public class ProvisionEmployeeLoginResult
     public string Email { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public string Message { get; set; } = string.Empty;
+    public string TemporaryPassword { get; set; } = string.Empty;
 }
 
 public class EmployeeLoginProvisionResult : ProvisionEmployeeLoginResult
 {
-    public string TemporaryPassword { get; set; } = string.Empty;
     public int ClientId { get; set; }
     public string NotificationEmail { get; set; } = string.Empty;
 }

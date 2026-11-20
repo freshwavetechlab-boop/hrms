@@ -1,0 +1,9 @@
+.employee-provision-simple .employee-provision-intro{display:grid;gap:4px;margin-bottom:12px;color:#172136;font-size:13px}
+.employee-provision-simple .employee-provision-intro span,.employee-provision-simple small{color:#64748b;font-size:12px;font-weight:400;line-height:1.5}
+.employee-provision-simple .employee-provision-controls{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;padding:14px;background:#f8f7ff;border-color:#e4dff6}
+.employee-provision-simple .employee-provision-controls>label{min-width:0;font-size:12px;align-content:start}
+.employee-provision-simple .employee-provision-controls .ant-select{width:100%;min-width:0}
+.employee-provision-simple .employee-provision-controls>.ant-checkbox-wrapper{align-self:center}
+.employee-provision-simple .employee-provision-selection{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin:12px 0;color:#475569;font-size:12px}
+.employee-provision-simple .access-credentials{display:grid;justify-items:start;gap:6px;overflow-wrap:anywhere}
+@media(max-width:600px){.employee-provision-simple .employee-provision-controls{grid-template-columns:minmax(0,1fr)}.employee-provision-simple .employee-provision-selection{align-items:flex-start;flex-direction:column}}

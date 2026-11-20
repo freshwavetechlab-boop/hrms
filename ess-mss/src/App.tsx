@@ -86,7 +86,10 @@ export default function App() {
   }, [view])
 
   if (!user) return <LoginPage onLogin={setUser} />
-  if (user.mustChangePassword || changePasswordOpen) return <ChangePasswordPage forced={user.mustChangePassword} onChanged={next => { setUser(next); setChangePasswordOpen(false) }} onCancel={() => setChangePasswordOpen(false)} />
+  if (user.mustChangePassword || changePasswordOpen) return <ChangePasswordPage forced={user.mustChangePassword} onChanged={next => {
+    if (user.mustChangePassword && next.employeeId && next.roles.includes('employee')) setView('My Profile')
+    setUser(next); setChangePasswordOpen(false)
+  }} onCancel={() => setChangePasswordOpen(false)} />
 
   const employeeSelf = Boolean(user.employeeId && user.roles.includes('employee'))
   const attendanceManager = user.permissions.some(permission => ['mss.attendance.manage', 'mss.attendance.client.manage'].includes(permission.toLowerCase()))

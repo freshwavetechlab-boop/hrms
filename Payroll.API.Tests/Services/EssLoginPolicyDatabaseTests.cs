@@ -357,6 +357,121 @@ UPDATE authusers SET Mobile='9000000109' WHERE EmployeeId=107");
         Assert.Null(await f.LoginAsync("9000000107", "SyntheticPhone@2026"));
     }
 
+    [IsolatedFact]
+    public async Task Shared_batch_generates_one_credential_for_all_created_employees_and_enables_ESS_once()
+    {
+        await using var f = await Fixture.CreateAsync();
+        await f.AddEmployeeAsync(107, 907, "BULK-107", "");
+        await f.AddEmployeeAsync(108, 907, "BULK-108", "");
+        await f.Db.ExecuteAsync("UPDATE employees SET PortalAccess=FALSE WHERE Id IN (107,108)");
+
+        var result = await f.Auth.ProvisionEmployeeLoginsAsync(new()
+        {
+            EmployeeIds = [107, 108], PasswordMode = "Shared", Roles = ["mss_manager"], MustChangePassword = false
+        });
+
+        Assert.Equal(2, result.CreatedCount);
+        Assert.True(result.TemporaryPassword.Length >= 8);
+        Assert.All(result.Results, row => Assert.Equal(result.TemporaryPassword, row.TemporaryPassword));
+        foreach (var row in result.Results)
+        {
+            var login = await f.LoginAsync(row.Email, result.TemporaryPassword);
+            Assert.NotNull(login);
+            Assert.Equal(row.EmployeeId, login.User.EmployeeId);
+            Assert.True(login.User.MustChangePassword);
+            Assert.Contains("employee", login.User.Roles);
+            Assert.Contains("mss_manager", login.User.Roles);
+            Assert.True(await f.Db.ExecuteScalarAsync<bool>("SELECT PortalAccess FROM employees WHERE Id=@Id", new { Id = row.EmployeeId }));
+        }
+        var hash = await f.Db.ExecuteScalarAsync<string>("SELECT PasswordHash FROM authusers WHERE EmployeeId=107");
+        var again = await f.Auth.ProvisionEmployeeLoginsAsync(new() { EmployeeIds = [107], PasswordMode = "Shared", TemporaryPassword = "AnotherSynthetic@2026" });
+        Assert.Equal(0, again.CreatedCount);
+        Assert.Empty(again.Results.Single().TemporaryPassword);
+        Assert.Equal(hash, await f.Db.ExecuteScalarAsync<string>("SELECT PasswordHash FROM authusers WHERE EmployeeId=107"));
+    }
+
+    [IsolatedFact]
+    public async Task Explicit_email_pattern_uses_master_text_and_one_batch_fallback_when_optional_fields_are_missing()
+    {
+        await using var f = await Fixture.CreateAsync();
+        foreach (var id in new[] { 107, 108, 109, 110 }) await f.AddEmployeeAsync(id, 907, "BULK-" + id, "");
+        await f.Db.ExecuteAsync("UPDATE employees SET PortalAccess=FALSE;UPDATE employees SET WorkEmail='synthetic@example.test' WHERE Id=107;UPDATE employees SET WorkEmail='not-an-email' WHERE Id=109");
+        var result = await f.Auth.ProvisionEmployeeLoginsAsync(new() { EmployeeIds = [107, 108, 109, 110], PasswordMode = "Email" });
+
+        Assert.Equal(4, result.CreatedCount);
+        var created = result.Results.Single(row => row.EmployeeId == 107);
+        Assert.Equal("bulk-107", created.Email);
+        Assert.Equal("synthetic@example.test", created.TemporaryPassword);
+        Assert.NotNull(await f.LoginAsync("BULK-107", created.TemporaryPassword));
+        Assert.Equal("not-an-email", result.Results.Single(row => row.EmployeeId == 109).TemporaryPassword);
+        var fallbackRows = result.Results.Where(row => row.EmployeeId is 108 or 110).ToList();
+        Assert.Equal(2, fallbackRows.Count);
+        Assert.True(fallbackRows[0].TemporaryPassword.Length >= 8);
+        Assert.Equal(fallbackRows[0].TemporaryPassword, fallbackRows[1].TemporaryPassword);
+        Assert.All(fallbackRows, row => Assert.Contains("batch temporary password used", row.Message));
+        Assert.Equal(4, await f.Db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employees WHERE Id IN (107,108,109,110) AND PortalAccess=TRUE"));
+        Assert.All(result.Results, row => Assert.Equal("Created", row.Status));
+    }
+
+    [IsolatedFact]
+    public async Task Mobile_password_pattern_uses_current_master_text_and_batch_fallback_for_a_cleared_number()
+    {
+        await using var f = await Fixture.CreateAsync();
+        await f.AddEmployeeAsync(107, 907, "BULK-107", "", "9000000199");
+        await f.AddEmployeeAsync(108, 907, "BULK-108", "", "9000000199");
+        await f.AddEmployeeAsync(109, 907, "BULK-109", "", "+91 (90000) 00109");
+        await f.Db.ExecuteAsync("INSERT INTO employeepersonaldetails(EmployeeId,Mobile) VALUES(107,'+91 (90000) 00107'),(108,'')");
+        var result = await f.Auth.ProvisionEmployeeLoginsAsync(new() { EmployeeIds = [107, 108, 109], PasswordMode = "Mobile" });
+
+        Assert.Equal(3, result.CreatedCount);
+        Assert.Equal("+91 (90000) 00107", result.Results.Single(row => row.EmployeeId == 107).TemporaryPassword);
+        Assert.Equal("+91 (90000) 00109", result.Results.Single(row => row.EmployeeId == 109).TemporaryPassword);
+        var fallback = result.Results.Single(row => row.EmployeeId == 108);
+        Assert.Equal("Created", fallback.Status);
+        Assert.True(fallback.TemporaryPassword.Length >= 8);
+        Assert.Contains("batch temporary password used", fallback.Message);
+        Assert.NotEqual("9000000199", fallback.TemporaryPassword);
+        Assert.NotNull(await f.LoginAsync("BULK-108", fallback.TemporaryPassword));
+        Assert.NotNull(await f.LoginAsync("BULK-107", "+91 (90000) 00107"));
+        Assert.Null(await f.LoginAsync("BULK-107", "9000000199"));
+    }
+
+    [IsolatedFact]
+    public async Task Explicit_employee_code_pattern_keeps_client_scope_and_skips_inactive_records()
+    {
+        await using var f = await Fixture.CreateAsync();
+        await f.AddEmployeeAsync(107, 907, "SYN-107", "");
+        await f.AddEmployeeAsync(108, 908, "OTHER-108", "");
+        await f.AddEmployeeAsync(109, 907, "INACTIVE-109", "");
+        await f.Db.ExecuteAsync("UPDATE employees SET PortalAccess=FALSE;UPDATE employees SET IsActive=FALSE WHERE Id=109");
+        var result = await f.Auth.ProvisionEmployeeLoginsAsync(new() { EmployeeIds = [107, 108, 109], PasswordMode = "EmployeeCode" }, actorClientId: 907);
+
+        Assert.Equal(1, result.CreatedCount);
+        Assert.Equal("SYN-107", result.Results.Single(row => row.EmployeeId == 107).TemporaryPassword);
+        Assert.NotNull(await f.LoginAsync("SYN-107", "SYN-107"));
+        Assert.All(result.Results.Where(row => row.Status == "Skipped"), row => Assert.Empty(row.TemporaryPassword));
+        Assert.Equal(0, await f.Db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM authusers WHERE EmployeeId IN (108,109)"));
+        Assert.Equal(0, await f.Db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employees WHERE Id IN (108,109) AND PortalAccess=TRUE"));
+    }
+
+    [IsolatedFact]
+    public async Task Legacy_blank_pattern_keeps_client_policy_and_flags_but_returns_created_credentials()
+    {
+        await using var f = await Fixture.CreateAsync();
+        await f.SetPolicyAsync(907, "Fixed", "SyntheticPolicy@2026");
+        await f.AddEmployeeAsync(107, 907, "BULK-107", "");
+        await f.Db.ExecuteAsync("UPDATE employees SET PortalAccess=FALSE WHERE Id=107");
+        var result = await f.Auth.ProvisionEmployeeLoginsAsync(new() { EmployeeIds = [107], MustChangePassword = false });
+
+        Assert.Equal(1, result.CreatedCount);
+        Assert.Empty(result.TemporaryPassword);
+        Assert.Equal("SyntheticPolicy@2026", result.Results.Single().TemporaryPassword);
+        var login = await f.LoginAsync("BULK-107", "SyntheticPolicy@2026");
+        Assert.NotNull(login);
+        Assert.False(login.User.MustChangePassword);
+        Assert.False(await f.Db.ExecuteScalarAsync<bool>("SELECT PortalAccess FROM employees WHERE Id=107"));
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         public MySqlConnection Db { get; }

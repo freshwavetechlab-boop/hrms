@@ -443,6 +443,8 @@ ORDER BY c.Name, e.FirstName, e.LastName, e.EmployeeCode;", new { ClientId = cli
 
     public async Task<ProvisionEmployeeLoginsResponse> ProvisionEmployeeLoginsAsync(ProvisionEmployeeLoginsRequest request, int? actorClientId = null)
     {
+        var passwordMode = NormalizeProvisionPasswordMode(request.PasswordMode);
+        var explicitPasswordMode = !string.IsNullOrWhiteSpace(request.PasswordMode);
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         await SeedSecurityCatalogAsync(connection);
@@ -459,6 +461,8 @@ ORDER BY c.Name, e.FirstName, e.LastName, e.EmployeeCode;", new { ClientId = cli
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .DefaultIfEmpty("employee")
             .ToArray();
+        if (explicitPasswordMode)
+            roles = roles.Append("employee").Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if (actorClientId.HasValue)
         {
             var allowedRoleCodes = (await connection.QueryAsync<string>(@"
@@ -471,7 +475,10 @@ WHERE (ClientId=@ClientId OR (IsSystem=TRUE AND Code IN @AssignableRoleCodes))
         var fixedTemporaryPassword = string.IsNullOrWhiteSpace(request.TemporaryPassword)
             ? ""
             : request.TemporaryPassword.Trim();
-        response.TemporaryPassword = fixedTemporaryPassword;
+        if (passwordMode == "Shared" && fixedTemporaryPassword.Length == 0)
+            fixedTemporaryPassword = GenerateTemporaryPassword();
+        var fallbackTemporaryPassword = passwordMode is "Email" or "Mobile" or "EmployeeCode" ? GenerateTemporaryPassword() : "";
+        response.TemporaryPassword = passwordMode is "Shared" || !explicitPasswordMode ? fixedTemporaryPassword : "";
 
         if (employeeIds.Length == 0)
         {
@@ -494,7 +501,8 @@ FROM employees e
 LEFT JOIN clients c ON c.Id = e.ClientId
 WHERE e.Id IN @EmployeeIds
   AND (@ClientId IS NULL OR e.ClientId=@ClientId)
-ORDER BY c.Name, e.FirstName, e.LastName, e.EmployeeCode;", new { EmployeeIds = employeeIds, ClientId = actorClientId }, transaction)).ToList();
+  AND (@RequireActive=FALSE OR (e.IsActive=TRUE AND c.IsActive=TRUE))
+ORDER BY c.Name, e.FirstName, e.LastName, e.EmployeeCode;", new { EmployeeIds = employeeIds, ClientId = actorClientId, RequireActive = explicitPasswordMode }, transaction)).ToList();
 
         foreach (var employee in employees)
         {
@@ -531,7 +539,7 @@ ORDER BY c.Name, e.FirstName, e.LastName, e.EmployeeCode;", new { EmployeeIds = 
 
             var displayName = string.IsNullOrWhiteSpace(employee.EmployeeName) ? employee.EmployeeCode : employee.EmployeeName;
             InitialEmployeePassword initialPassword;
-            try { initialPassword = await ResolveInitialPasswordAsync(connection, employee, fixedTemporaryPassword, transaction); }
+            try { initialPassword = await ResolveProvisionPasswordAsync(connection, employee, passwordMode, fixedTemporaryPassword, fallbackTemporaryPassword, explicitPasswordMode, transaction); }
             catch (InvalidOperationException ex)
             {
                 result.Status = "Skipped";
@@ -549,7 +557,7 @@ SELECT LAST_INSERT_ID();", new
                 PasswordHash = HashPassword(initialPassword.Value),
                 employee.ClientId,
                 employee.EmployeeId,
-                MustChangePassword = request.MustChangePassword || initialPassword.RequireChange
+                MustChangePassword = explicitPasswordMode || request.MustChangePassword || initialPassword.RequireChange
             }, transaction);
 
             await connection.ExecuteAsync(@"
@@ -567,9 +575,13 @@ INSERT IGNORE INTO authuserroles (UserId, RoleId)
 SELECT @UserId, Id FROM authroles WHERE Code = 'employee';", new { UserId = userId }, transaction);
             }
 
+            if (explicitPasswordMode)
+                await connection.ExecuteAsync("UPDATE employees SET PortalAccess=TRUE WHERE Id=@EmployeeId AND ClientId=@ClientId", new { employee.EmployeeId, employee.ClientId }, transaction);
+
             result.UserId = userId;
             result.Status = "Created";
-            result.Message = "Login created.";
+            result.Message = initialPassword.Notice.Length == 0 ? "Login created." : $"Login created. {initialPassword.Notice}";
+            result.TemporaryPassword = initialPassword.Value;
             response.Results.Add(result);
         }
 

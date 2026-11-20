@@ -13,7 +13,7 @@ public sealed partial class RecruitmentDocumentRepository
 
     // Letter release, HR-recorded acceptance and explicit Employee Master import
     // are separate steps. Acceptance attests the exact letter, never a signature.
-    public async Task<IReadOnlyList<RecruitmentJoiningCandidate>> GetRosterJoiningCandidatesAsync(int clientId, AuthUser user)
+    public async Task<IReadOnlyList<RecruitmentJoiningCandidate>> GetRosterJoiningCandidatesAsync(int clientId, AuthUser user, bool importReleasedForEss = false)
     {
         RosterJoiningReadAccess(user, clientId);
         await using var db = Db(); await db.OpenAsync(); await EnsureAsync(db);
@@ -30,7 +30,7 @@ public sealed partial class RecruitmentDocumentRepository
         {
             var release = releases[row.Id];
             var accepted = audits.GetValueOrDefault(row.Id)?.Any(payload => IsRosterAcceptanceForRelease(payload, release.Id, release.PdfHash, release.RevisionKey)) == true;
-            return RosterJoiningProjection(row, clientName, release.Id, accepted);
+            return RosterJoiningProjection(row, clientName, release.Id, accepted, importReleasedForEss);
         }).ToList();
     }
 
@@ -81,7 +81,7 @@ public sealed partial class RecruitmentDocumentRepository
         return result;
     }
 
-    public async Task<RecruitmentJoiningBatchResult> ImportSelectedRosterJoiningCandidatesAsync(int clientId, IReadOnlyList<long> ids, AuthUser user)
+    public async Task<RecruitmentJoiningBatchResult> ImportSelectedRosterJoiningCandidatesAsync(int clientId, IReadOnlyList<long> ids, AuthUser user, bool importReleasedForEss = false)
     {
         RosterJoiningReadAccess(user, clientId);
         if (!user.Permissions.Any(permission => permission is "employees.manage" or "settings.manage")) throw new UnauthorizedAccessException();
@@ -113,7 +113,7 @@ public sealed partial class RecruitmentDocumentRepository
                 var release = await db.QueryFirstOrDefaultAsync<RosterJoiningRelease>("SELECT Id,RosterId,PdfHash,RevisionKey,InputsHash FROM recruitment_document_roster_releases WHERE ClientId=@ClientId AND RosterId=@Id ORDER BY ReleasedAt DESC,Id DESC LIMIT 1 FOR UPDATE", new { Id = id, ClientId = clientId }, transaction)
                     ?? throw new InvalidOperationException("Release the offer letter and record candidate acceptance before importing.");
                 var payloads = await db.QueryAsync<string>("SELECT CAST(NewValuesJson AS CHAR) FROM recruitment_document_roster_audit WHERE RosterId=@Id AND ClientId=@ClientId AND Action=@Action", new { Id = id, ClientId = clientId, Action = RosterAcceptanceAction }, transaction);
-                if (!payloads.Any(payload => IsRosterAcceptanceForRelease(payload, release.Id, release.PdfHash, release.RevisionKey)))
+                if (!importReleasedForEss && !payloads.Any(payload => IsRosterAcceptanceForRelease(payload, release.Id, release.PdfHash, release.RevisionKey)))
                     throw new InvalidOperationException("Record candidate acceptance for the latest released offer before importing.");
                 if (row.WorkLocationId is null or <= 0) throw new InvalidOperationException("Link the candidate's existing client work location before importing.");
                 var location = await ActiveLocationAsync(db, clientId, row.WorkLocationId.Value, transaction);
@@ -123,7 +123,7 @@ public sealed partial class RecruitmentDocumentRepository
                 if (Hash(SerializeValues(values)) != release.InputsHash)
                     throw new InvalidOperationException("Candidate or offer details changed after release. Release and confirm the updated letter before importing.");
                 var current = await EmployeeRepository.ReadExcelPayrollIdentitySnapshotAsync(db, transaction, clientId);
-                await LinkReleasedEmployeeAsync(db, transaction, row, values, location, current, user, row.OfferNumber, locations.Select(item => item.Id).ToHashSet());
+                await LinkReleasedEmployeeAsync(db, transaction, row, values, location, current, user, row.OfferNumber, locations.Select(item => item.Id).ToHashSet(), importReleasedForEss);
                 item.EmployeeId = row.EmployeeId;
                 item.EmployeeCode = await db.ExecuteScalarAsync<string>("SELECT EmployeeCode FROM employees WHERE Id=@Id AND ClientId=@ClientId", new { Id = row.EmployeeId, ClientId = clientId }, transaction) ?? "";
                 item.Status = "Imported"; item.Message = "Candidate imported into Employee Master.";
@@ -169,7 +169,7 @@ public sealed partial class RecruitmentDocumentRepository
         catch (JsonException) { return false; }
     }
 
-    internal static RecruitmentJoiningCandidate RosterJoiningProjection(RecruitmentDocumentRosterRow row, string clientName, long releaseId, bool accepted)
+    internal static RecruitmentJoiningCandidate RosterJoiningProjection(RecruitmentDocumentRosterRow row, string clientName, long releaseId, bool accepted, bool importReleasedForEss = false)
     {
         var values = ReadValues(row.ValuesJson);
         DateTime.TryParseExact(values.GetValueOrDefault("joiningDate"), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var joining);
@@ -179,8 +179,8 @@ public sealed partial class RecruitmentDocumentRepository
             AcceptanceRecorded = accepted, OfferId = 0, CandidateId = row.CandidateId, CandidateCode = row.CandidateCode, CandidateName = row.CandidateName,
             ClientId = row.ClientId, ClientName = clientName, PositionTitle = values.GetValueOrDefault("positionTitle", ""),
             JobLocation = row.WorkLocation, ProposedJoiningDate = joining, OfferedCtc = ctc, Currency = "INR", OfferStatus = accepted ? "Accepted" : "Released",
-            EmployeeId = row.EmployeeId, EmployeeCode = row.EmployeeCode, ImportStatus = linked ? "Imported" : accepted ? "Ready" : "Review",
-            Issue = linked || accepted ? "" : "Record candidate acceptance before importing into Employee Master." };
+            EmployeeId = row.EmployeeId, EmployeeCode = row.EmployeeCode, ImportStatus = linked ? "Imported" : accepted || importReleasedForEss ? "Ready" : "Review",
+            Issue = linked || accepted || importReleasedForEss ? "" : "Record candidate acceptance before importing into Employee Master." };
     }
 
     private const string RosterJoiningRowsSql = """

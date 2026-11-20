@@ -19,6 +19,17 @@ public sealed class RecruitmentCandidateActionRepository(
     {
         "DOCUMENT_REQUEST", "OFFER_RESPONSE", "PROFILE_UPDATE"
     };
+
+    public async Task<bool> PreserveEmployeeApplicationAsync(long applicationId, AuthUser user)
+    {
+        await using var db = Db(); await db.OpenAsync();
+        var row = await db.QueryFirstOrDefaultAsync<EmployeeApplicationRow>(@"SELECT a.ClientId,a.CurrentStage,a.CurrentStatus,e.Id EmployeeId
+FROM recruitment_candidate_applications a JOIN recruitment_candidates c ON c.Id=a.CandidateId AND c.ClientId=a.ClientId
+LEFT JOIN employees e ON e.Id=COALESCE(a.JoinedEmployeeId,c.EmployeeId) AND e.ClientId=a.ClientId
+WHERE a.Id=@Id", new { Id = applicationId });
+        return row is not null && SelectedClientAccess.Allows(user, row.ClientId)
+            && RecruitmentEmployeeApplicationState.PreserveOfferResponse(row.EmployeeId, row.CurrentStage, row.CurrentStatus);
+    }
     private readonly IDataProtector tokenProtector = dataProtectionProvider.CreateProtector("Payroll.API.RecruitmentCandidateActionToken.v1");
 
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
@@ -442,6 +453,7 @@ SET a.uploaded_by_external_subject_id=s.ExternalSubjectId WHERE a.id=@Attachment
         var decision = NormalizeDecision(request.Decision);
         if (session.PurposeCode == "OFFER_RESPONSE" && decision.Length == 0)
             return (null, "Select Accept, Reject or Request negotiation.");
+        var preserveEmployeeApplication = false;
         await using var transaction = await db.BeginTransactionAsync();
         try
         {
@@ -477,12 +489,16 @@ SET a.uploaded_by_external_subject_id=s.ExternalSubjectId WHERE a.id=@Attachment
                 var releaseError = await RecruitmentOfferReleaseGate.ValidateAsync(db, locked.ApplicationId, transaction: transaction, offerId: locked.OfferId);
                 if (releaseError.Length > 0) return (null, releaseError);
                 var offer = await db.QueryFirstOrDefaultAsync<OfferResponseRow>(@"SELECT offer.Id,offer.Status,offer.ExpiryDate,
-applicationRow.ClientId,applicationRow.CandidateId,applicationRow.PositionId,applicationRow.CurrentStage
+applicationRow.ClientId,applicationRow.CandidateId,applicationRow.PositionId,applicationRow.CurrentStage,applicationRow.CurrentStatus,
+employeeRow.Id EmployeeId
 FROM recruitment_offers offer
 JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=offer.ApplicationId
+JOIN recruitment_candidates candidateRow ON candidateRow.Id=applicationRow.CandidateId AND candidateRow.ClientId=applicationRow.ClientId
+LEFT JOIN employees employeeRow ON employeeRow.Id=COALESCE(applicationRow.JoinedEmployeeId,candidateRow.EmployeeId) AND employeeRow.ClientId=applicationRow.ClientId
 WHERE offer.Id=@Id AND offer.ApplicationId=@ApplicationId FOR UPDATE",
                     new { Id = locked.OfferId.Value, locked.ApplicationId }, transaction);
                 if (offer is null) return (null, "The offer linked to this action is no longer available.");
+                preserveEmployeeApplication = RecruitmentEmployeeApplicationState.PreserveOfferResponse(offer.EmployeeId, offer.CurrentStage, offer.CurrentStatus);
                 if (offer.Status is not ("Pending Candidate" or "Released"))
                     return (null, $"This offer can no longer be changed because it is {offer.Status}.");
                 if (offer.ExpiryDate.HasValue && offer.ExpiryDate.Value.Date < DateTime.UtcNow.Date)
@@ -496,21 +512,21 @@ WHERE Id=@Id AND ApplicationId=@ApplicationId", new { Id = offer.Id, locked.Appl
 
                 var applicationStage = offerStatus == "Accepted" ? "Offer Accepted"
                     : offerStatus == "Rejected" ? "Rejected" : "Offer Negotiation";
-                if (IsBoundToCurrentStage(locked))
+                if (!preserveEmployeeApplication && IsBoundToCurrentStage(locked))
                 {
                     // A published pipeline owns CurrentStage. Offer response is a
                     // business status used by the stage-exit rule; overwriting the
                     // configured stage here strands the card outside its pipeline.
                     await db.ExecuteAsync(@"UPDATE recruitment_candidate_applications
 SET CurrentStatus=@Stage,UpdatedAt=UTC_TIMESTAMP()
-WHERE Id=@ApplicationId;", new { locked.ApplicationId, Stage = applicationStage }, transaction);
+WHERE Id=@ApplicationId AND " + RecruitmentEmployeeApplicationState.MutableApplicationSql, new { locked.ApplicationId, Stage = applicationStage }, transaction);
                 }
-                else if (!offer.CurrentStage.Equals(applicationStage, StringComparison.OrdinalIgnoreCase))
+                else if (!preserveEmployeeApplication && !offer.CurrentStage.Equals(applicationStage, StringComparison.OrdinalIgnoreCase))
                 {
-                    await db.ExecuteAsync(@"UPDATE recruitment_candidate_applications
+                    var changed = await db.ExecuteAsync(@"UPDATE recruitment_candidate_applications
 SET CurrentStage=@Stage,CurrentStatus=@Stage,LastStageChangedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTAMP()
-WHERE Id=@ApplicationId;
-INSERT INTO recruitment_application_stage_history (ApplicationId,FromStage,ToStage,Reason,ChangedByUserId)
+WHERE Id=@ApplicationId AND " + RecruitmentEmployeeApplicationState.MutableApplicationSql, new { locked.ApplicationId, Stage = applicationStage }, transaction);
+                    if (changed > 0) await db.ExecuteAsync(@"INSERT INTO recruitment_application_stage_history (ApplicationId,FromStage,ToStage,Reason,ChangedByUserId)
 VALUES (@ApplicationId,@FromStage,@Stage,@Reason,0);", new
                     {
                         locked.ApplicationId,
@@ -520,7 +536,7 @@ VALUES (@ApplicationId,@FromStage,@Stage,@Reason,0);", new
                     }, transaction);
                 }
 
-                if (offerStatus == "Accepted")
+                if (!preserveEmployeeApplication && offerStatus == "Accepted")
                 {
                     var checklist = (await db.QueryAsync<CandidateChecklistConfigurationRow>(@"SELECT d.Id,d.DocumentName,d.Stage,d.Mandatory,
 d.AttachmentAttributeId,d.RequiresVerification,d.DueOffsetDays,d.DisplayOrder
@@ -595,7 +611,7 @@ Status='Submitted',SubmittedAtUtc=UTC_TIMESTAMP(6),UpdatedAtUtc=UTC_TIMESTAMP(6)
             {
                 ApplicationId = locked.ApplicationId,
                 PipelineStageInstanceId = locked.PipelineStageInstanceId,
-                ShouldResumePipeline = IsBoundToCurrentStage(locked),
+                ShouldResumePipeline = !preserveEmployeeApplication && IsBoundToCurrentStage(locked),
                 Status = decision.Length > 0 ? decision : "COMPLETED",
                 Message = locked.PurposeCode == "OFFER_RESPONSE" ? "Your offer response was submitted successfully." : "Your documents and information were submitted successfully."
             }, "");
@@ -1192,6 +1208,16 @@ WHERE action.TokenHash=@TokenHash";
         public long CandidateId { get; set; }
         public long PositionId { get; set; }
         public string CurrentStage { get; set; } = "";
+        public string CurrentStatus { get; set; } = "";
+        public int? EmployeeId { get; set; }
+    }
+
+    private sealed class EmployeeApplicationRow
+    {
+        public int ClientId { get; set; }
+        public int? EmployeeId { get; set; }
+        public string CurrentStage { get; set; } = "";
+        public string CurrentStatus { get; set; } = "";
     }
 
     private sealed class CandidateChecklistConfigurationRow

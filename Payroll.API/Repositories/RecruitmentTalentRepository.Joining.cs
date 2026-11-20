@@ -52,7 +52,7 @@ public sealed partial class RecruitmentTalentRepository
         return result;
     }
 
-    public async Task<IReadOnlyList<RecruitmentJoiningCandidate>> GetJoiningCandidatesAsync(int clientId, AuthUser user)
+    public async Task<IReadOnlyList<RecruitmentJoiningCandidate>> GetJoiningCandidatesAsync(int clientId, AuthUser user, bool importReleasedForEss = false)
     {
         var scoped = JoiningUser(user, clientId);
         await using var db = Db(); await db.OpenAsync();
@@ -65,36 +65,37 @@ p.PositionTitle,p.JobLocation,p.BranchId WorkLocationId,o.ProposedJoiningDate,o.
 COALESCE(a.JoinedEmployeeId,c.EmployeeId) EmployeeId,COALESCE(employee.EmployeeCode,'') EmployeeCode,
 CASE WHEN COALESCE(a.JoinedEmployeeId,c.EmployeeId) IS NOT NULL AND (employee.Id IS NULL OR employee.ClientId<>a.ClientId) THEN 'The existing employee link needs review.'
  WHEN a.CurrentStatus IN ('Rejected','Withdrawn','Offer Rejected','Offer Withdrawn') THEN 'This application is no longer joining.'
- WHEN EXISTS(SELECT 1 FROM recruitment_candidate_checklist_items checklist WHERE checklist.ApplicationId=a.Id AND checklist.Mandatory=TRUE AND checklist.Status<>'Completed') THEN 'Mandatory pre-onboarding items remain incomplete.'
+ WHEN @ImportReleasedForEss=FALSE AND EXISTS(SELECT 1 FROM recruitment_candidate_checklist_items checklist WHERE checklist.ApplicationId=a.Id AND checklist.Mandatory=TRUE AND checklist.Status<>'Completed') THEN 'Mandatory pre-onboarding items remain incomplete.'
  ELSE '' END Issue
 FROM recruitment_offers o JOIN recruitment_candidate_applications a ON a.Id=o.ApplicationId
 JOIN recruitment_candidates c ON c.Id=a.CandidateId JOIN recruitment_open_positions p ON p.Id=a.PositionId
 JOIN clients client ON client.Id=a.ClientId LEFT JOIN employees employee ON employee.Id=COALESCE(a.JoinedEmployeeId,c.EmployeeId)
-WHERE o.Id IN @Ids AND a.ClientId=@ClientId AND o.Status IN ('Accepted','Pending Candidate','Released') ORDER BY o.ProposedJoiningDate,c.FirstName,o.Id", new { Ids = permitted.Keys.ToArray(), ClientId = clientId })).ToList();
+WHERE o.Id IN @Ids AND a.ClientId=@ClientId AND o.Status IN ('Accepted','Pending Candidate','Released') ORDER BY o.ProposedJoiningDate,c.FirstName,o.Id", new { Ids = permitted.Keys.ToArray(), ClientId = clientId, ImportReleasedForEss = importReleasedForEss })).ToList();
         foreach (var row in rows)
         {
             row.SourceId = row.OfferId; row.RowKey = "offer:" + row.OfferId;
             row.AcceptanceRecorded = row.OfferStatus == "Accepted";
             if (row.Issue.Length == 0 && row.EmployeeId.HasValue) row.ImportStatus = "Imported";
             else if (row.Issue.Length > 0) row.ImportStatus = "Review";
-            else if (!row.AcceptanceRecorded) row.ImportStatus = "Pending acceptance";
+            else if (!row.AcceptanceRecorded && !importReleasedForEss) row.ImportStatus = "Pending acceptance";
         }
         return await RecruitmentAccessScope.FilterWorkLocationsAsync(db, scoped, rows, row => row.ClientId, row => row.WorkLocationId);
     }
 
-    internal static ConvertCandidateToEmployeeRequest JoiningDefaults(RecruitmentJoiningCandidate row, IReadOnlyList<int> locationIds, IReadOnlyList<long> templateIds) => new()
+    internal static ConvertCandidateToEmployeeRequest JoiningDefaults(RecruitmentJoiningCandidate row, IReadOnlyList<int> locationIds, IReadOnlyList<long> templateIds, bool importReleasedForEss = false) => new()
     {
         EmployeeCode = row.CandidateCode.Trim(), DateOfJoining = row.ProposedJoiningDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
         WorkLocationId = locationIds.Count == 1 ? locationIds[0] : 0,
-        SalaryStructureId = templateIds.Count == 1 ? templateIds[0].ToString(CultureInfo.InvariantCulture) : "",
-        AnnualCtc = row.OfferedCtc, PortalAccess = false
+        SalaryStructureId = !importReleasedForEss && templateIds.Count == 1 ? templateIds[0].ToString(CultureInfo.InvariantCulture) : "",
+        AnnualCtc = row.OfferedCtc, PortalAccess = importReleasedForEss
     };
 
     public async Task<RecruitmentJoiningBatchResult> ImportSelectedJoiningCandidatesAsync(RecruitmentJoiningSelection request, AuthUser user)
     {
         var ids = JoiningSelection(request);
         var scoped = JoiningUser(user, request.ClientId);
-        var available = (await GetJoiningCandidatesAsync(request.ClientId, scoped)).ToDictionary(row => row.OfferId);
+        if (!RecruitmentJoiningEndpoints.CanImport(scoped)) throw new UnauthorizedAccessException();
+        var available = (await GetJoiningCandidatesAsync(request.ClientId, scoped, request.ImportReleasedForEss)).ToDictionary(row => row.OfferId);
         await using var db = Db(); await db.OpenAsync();
         var templates = (await db.QueryAsync<long>("SELECT Id FROM salarystructures WHERE ClientId=@ClientId AND Active=TRUE ORDER BY Id", new { ClientId = request.ClientId })).ToArray();
         var result = new RecruitmentJoiningBatchResult();
@@ -103,7 +104,7 @@ WHERE o.Id IN @Ids AND a.ClientId=@ClientId AND o.Status IN ('Accepted','Pending
             var item = new RecruitmentJoiningItemResult { OfferId = id, SourceId = id, RowKey = "offer:" + id }; result.Items.Add(item);
             if (!available.TryGetValue(id, out var row)) { item.Message = "This accepted offer is unavailable in the selected client or has been superseded."; continue; }
             item.ApplicationId = row.ApplicationId; item.CandidateName = row.CandidateName;
-            if (!row.AcceptanceRecorded) { item.Message = "Record candidate acceptance before importing this offer."; continue; }
+            if (!row.AcceptanceRecorded && !request.ImportReleasedForEss) { item.Message = "Record candidate acceptance before importing this offer."; continue; }
             if (row.ImportStatus == "Imported") { item.Status = "Already imported"; item.EmployeeId = row.EmployeeId; item.EmployeeCode = row.EmployeeCode; continue; }
             if (row.ImportStatus == "Review") { item.Message = row.Issue; continue; }
             try
@@ -112,7 +113,7 @@ WHERE o.Id IN @Ids AND a.ClientId=@ClientId AND o.Status IN ('Accepted','Pending
                     ? (await db.QueryAsync<int>("SELECT Id FROM worklocations WHERE ClientId=@ClientId AND IsActive=TRUE AND Id=@Id", new { ClientId = request.ClientId, Id = row.WorkLocationId })).ToArray()
                     : string.IsNullOrWhiteSpace(row.JobLocation) ? [] : (await db.QueryAsync<int>("SELECT Id FROM worklocations WHERE ClientId=@ClientId AND IsActive=TRUE AND (Name=@Location OR City=@Location) ORDER BY Id", new { ClientId = request.ClientId, Location = row.JobLocation })).ToArray();
                 if (row.WorkLocationId > 0 && locations.Length == 0) { item.Message = "The joining work location is unavailable or inactive in this client."; continue; }
-                var (employee, error) = await ConvertToEmployeeAsync(row.ApplicationId, JoiningDefaults(row, locations, templates), scoped);
+                var (employee, error) = await ConvertToEmployeeAsync(row.ApplicationId, JoiningDefaults(row, locations, templates, request.ImportReleasedForEss), scoped, request.ImportReleasedForEss, id);
                 if (employee is null) { item.Message = error; continue; }
                 item.Status = "Imported"; item.EmployeeId = employee.Id; item.EmployeeCode = employee.EmployeeCode;
             }

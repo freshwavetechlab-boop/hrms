@@ -2545,7 +2545,9 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
         var application = await ApplicationByIdAsync(db, offer.ApplicationId, user);
         if (application is not null)
         {
-            if (status.Equals("Negotiation", StringComparison.OrdinalIgnoreCase))
+            var linkedEmployeeId = await db.ExecuteScalarAsync<int?>("SELECT e.Id FROM recruitment_candidates c JOIN employees e ON e.Id=COALESCE(@EmployeeId,c.EmployeeId) AND e.ClientId=@ClientId WHERE c.Id=@Id AND c.ClientId=@ClientId", new { Id = application.CandidateId, application.ClientId, EmployeeId = application.JoinedEmployeeId });
+            var preserveEmployeeApplication = RecruitmentEmployeeApplicationState.PreserveOfferResponse(linkedEmployeeId, application.CurrentStage, application.CurrentStatus);
+            if (!preserveEmployeeApplication && status.Equals("Negotiation", StringComparison.OrdinalIgnoreCase))
                 await ApplyNegotiationSlaExtensionAsync(db, offer, application, remarks, user);
             var stage = status switch
             {
@@ -2558,19 +2560,19 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
                 _ => ""
             };
             var pipelineManagedOffer = offer.PipelineStageInstanceId.HasValue;
-            if (!string.IsNullOrWhiteSpace(stage) && pipelineManagedOffer)
+            if (!preserveEmployeeApplication && !string.IsNullOrWhiteSpace(stage) && pipelineManagedOffer)
             {
                 // The application pipeline is the source of truth for CurrentStage.
                 // Offer lifecycle remains visible through CurrentStatus and the
                 // offer/timeline records until the configured transition is moved.
-                await db.ExecuteAsync("UPDATE recruitment_candidate_applications SET CurrentStatus=@Stage,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = application.Id, Stage = stage });
+                await db.ExecuteAsync("UPDATE recruitment_candidate_applications SET CurrentStatus=@Stage,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id AND " + RecruitmentEmployeeApplicationState.MutableApplicationSql, new { Id = application.Id, Stage = stage });
             }
-            else if (!string.IsNullOrWhiteSpace(stage) && !application.CurrentStage.Equals(stage, StringComparison.OrdinalIgnoreCase))
+            else if (!preserveEmployeeApplication && !string.IsNullOrWhiteSpace(stage) && !application.CurrentStage.Equals(stage, StringComparison.OrdinalIgnoreCase))
             {
-                await db.ExecuteAsync("UPDATE recruitment_candidate_applications SET CurrentStage=@Stage,CurrentStatus=@Stage,LastStageChangedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = application.Id, Stage = stage });
-                await db.ExecuteAsync("INSERT INTO recruitment_application_stage_history (ApplicationId,FromStage,ToStage,Reason,ChangedByUserId) VALUES (@Id,@From,@To,@Reason,@UserId)", new { Id = application.Id, From = application.CurrentStage, To = stage, Reason = $"Offer {status}: {remarks}".Trim(), UserId = user.Id });
+                var changed = await db.ExecuteAsync("UPDATE recruitment_candidate_applications SET CurrentStage=@Stage,CurrentStatus=@Stage,LastStageChangedAt=UTC_TIMESTAMP(),UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id AND " + RecruitmentEmployeeApplicationState.MutableApplicationSql, new { Id = application.Id, Stage = stage });
+                if (changed > 0) await db.ExecuteAsync("INSERT INTO recruitment_application_stage_history (ApplicationId,FromStage,ToStage,Reason,ChangedByUserId) VALUES (@Id,@From,@To,@Reason,@UserId)", new { Id = application.Id, From = application.CurrentStage, To = stage, Reason = $"Offer {status}: {remarks}".Trim(), UserId = user.Id });
             }
-            if (stage == "Offer Accepted") await CreateCandidateChecklistSnapshotAsync(db, application);
+            if (!preserveEmployeeApplication && stage == "Offer Accepted") await CreateCandidateChecklistSnapshotAsync(db, application);
             await AddPositionTimelineAsync(db, application.PositionId, "Offer Status", $"{application.CandidateName}: {stage}", remarks, user.Id);
             await WriteActivityAsync(db, application.ClientId, application.CandidateId, null, "RECRUITMENT", "OFFER_STATUS_CHANGED", $"Offer {status}", remarks, "RecruitmentOffer", id.ToString(), user);
             await RefreshPositionCountersAsync(db, application.PositionId);
@@ -2622,8 +2624,12 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
         return (await db.QueryFirstAsync<RecruitmentCandidateChecklistItem>("SELECT * FROM recruitment_candidate_checklist_items WHERE Id=@Id", new { Id = itemId }), "");
     }
 
-    public async Task<(Employee? Employee, string Error)> ConvertToEmployeeAsync(long applicationId, ConvertCandidateToEmployeeRequest request, AuthUser user)
+    public Task<(Employee? Employee, string Error)> ConvertToEmployeeAsync(long applicationId, ConvertCandidateToEmployeeRequest request, AuthUser user) =>
+        ConvertToEmployeeAsync(applicationId, request, user, false, null);
+
+    private async Task<(Employee? Employee, string Error)> ConvertToEmployeeAsync(long applicationId, ConvertCandidateToEmployeeRequest request, AuthUser user, bool importReleasedForEss, long? selectedOfferId)
     {
+        if (importReleasedForEss && !RecruitmentJoiningEndpoints.CanImport(user)) throw new UnauthorizedAccessException();
         if (string.IsNullOrWhiteSpace(request.EmployeeCode)) return (null, "Employee code is required.");
         if (string.IsNullOrWhiteSpace(request.DateOfJoining)) return (null, "Date of joining is required.");
         if (!DateOnly.TryParse(request.DateOfJoining, CultureInfo.InvariantCulture, DateTimeStyles.None, out _)) return (null, "Enter a valid date of joining.");
@@ -2639,20 +2645,34 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
             return existing?.ClientId == application.ClientId ? (existing, "") : (null, "Candidate is linked to a missing employee or a different client.");
         }
         var acceptedOffer = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_offers WHERE ApplicationId=@Id AND Status='Accepted'", new { Id = applicationId });
-        if (acceptedOffer == 0) return (null, "Accept the candidate offer before converting the profile to an employee.");
-        if ((await ResolveSigningSettingsAsync(db, application.ClientId)).Enabled)
+        if (!importReleasedForEss && acceptedOffer == 0) return (null, "Accept the candidate offer before converting the profile to an employee.");
+        if (!importReleasedForEss && (await ResolveSigningSettingsAsync(db, application.ClientId)).Enabled)
         {
             var joiningError = await RecruitmentCandidateJourneyGate.JoiningAsync(db, applicationId);
             if (joiningError.Length > 0) return (null, joiningError);
         }
         var pendingMandatory = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_candidate_checklist_items WHERE ApplicationId=@Id AND Mandatory=TRUE AND Status<>'Completed'", new { Id = applicationId });
-        if (pendingMandatory > 0) return (null, $"Complete {pendingMandatory} mandatory pre-onboarding checklist item(s) before employee creation.");
+        if (!importReleasedForEss && pendingMandatory > 0) return (null, $"Complete {pendingMandatory} mandatory pre-onboarding checklist item(s) before employee creation.");
         var employee = await BuildConversionEmployeeAsync(db, application, candidate, request);
+        if (importReleasedForEss) employee.AnnualCtc = request.AnnualCtc;
         if (request.WorkLocationId > 0 && await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM worklocations WHERE Id=@Id AND ClientId=@ClientId AND IsActive=TRUE", new { Id = request.WorkLocationId, application.ClientId }) == 0)
             return (null, "Work location does not belong to this client.");
         await EmployeeRepository.PrepareRecruitmentSaveAsync(db);
         await using var tx = await db.BeginTransactionAsync();
         await db.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@ClientId FOR UPDATE", new { application.ClientId }, tx);
+        if (importReleasedForEss)
+        {
+            var latest = await db.QueryFirstOrDefaultAsync<RecruitmentOffer>("SELECT * FROM recruitment_offers WHERE ApplicationId=@Id AND ClientId=@ClientId ORDER BY Id DESC LIMIT 1 FOR UPDATE", new { Id = applicationId, application.ClientId }, tx);
+            if (latest?.Id != selectedOfferId || latest.Status is not ("Accepted" or "Released" or "Pending Candidate"))
+                return (null, "The released offer changed or was superseded. Refresh the list before importing.");
+            if (latest.ProposedJoiningDate.Date != DateTime.Parse(request.DateOfJoining, CultureInfo.InvariantCulture).Date || latest.OfferedCtc != request.AnnualCtc)
+                return (null, "The released offer details changed. Refresh the list before importing.");
+            if (!await db.ExecuteScalarAsync<bool>("SELECT IsActive FROM clients WHERE Id=@Id", new { Id = application.ClientId }, tx))
+                return (null, "Select an active client before importing employees.");
+            var status = await db.ExecuteScalarAsync<string>("SELECT CurrentStatus FROM recruitment_candidate_applications WHERE Id=@Id FOR UPDATE", new { Id = applicationId }, tx);
+            if (status is "Rejected" or "Withdrawn" or "Offer Rejected" or "Offer Withdrawn")
+                return (null, "This application is no longer joining.");
+        }
         var linkedId = await db.ExecuteScalarAsync<int?>("SELECT EmployeeId FROM recruitment_candidates WHERE Id=@Id FOR UPDATE", new { candidate.Id }, tx);
         if (linkedId.HasValue)
         {
@@ -2661,6 +2681,8 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
         }
         var identity = (await employees.PreviewRecruitmentAsync(employee, db, tx)).Rows.Single();
         if (identity.BlockingReasons.Count > 0) return (null, string.Join(" ", identity.BlockingReasons));
+        if (importReleasedForEss && identity.MatchStatus == "ProbableDuplicate") return (null, "The employee identity needs review before importing this candidate.");
+        if (importReleasedForEss && identity.MatchedEmployeeId.HasValue) request.ExistingEmployeeId = identity.MatchedEmployeeId;
         if (identity.MatchedEmployeeId.HasValue && request.ExistingEmployeeId != identity.MatchedEmployeeId)
             return (null, "This candidate matches an existing employee. Review the match and choose Link existing employee.");
         if (request.ExistingEmployeeId.HasValue)
@@ -2669,6 +2691,9 @@ Remarks=@Remarks,UpdatedAt=UTC_TIMESTAMP() WHERE Id=@Id", new { Id = id, Status 
             var existing = await EmployeeRepository.LoadRecruitmentEmployeeAsync(db, request.ExistingEmployeeId.Value, tx);
             if (existing is null || existing.ClientId != application.ClientId) return (null, "Employee was not found in this client.");
             if (!existing.IsActive) return (null, "Rehire the inactive employee from Employee Master before linking this candidate.");
+            if (importReleasedForEss && (!SameIntakeName(existing.FirstName + existing.LastName, employee.FirstName + employee.LastName)
+                || existing.WorkLocationId > 0 && employee.WorkLocationId > 0 && existing.WorkLocationId != employee.WorkLocationId))
+                return (null, "This candidate's identity or posting differs from the matched Employee Master record.");
             employee = FillEmployeeBlanks(existing, employee);
         }
         var forms = await EmployeeAttributeRepository.ExchangeFormsAsync(db, application.ClientId, tx);

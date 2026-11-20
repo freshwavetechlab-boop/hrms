@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import DOMPurify from 'dompurify'
 import { Alert, Button, Checkbox, Drawer, Input, Modal, Select, Space, Spin, Switch, Tag, Tooltip } from 'antd'
 import { MailOutlined, SettingOutlined } from '@ant-design/icons'
@@ -11,9 +11,10 @@ import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
 import { postJson } from '../services/apiClient'
 import { getEmployeeCompletion, previewEmployeeCompletion, saveEmployeeCompletionPolicy, sendEmployeeCompletion, setupEmployeeCompletion, type CompletionMail, type CompletionSetup } from '../services/employeeProfileCompletionService'
 import CommunicationRichEditor from './CommunicationRichEditor'
+import PayrollScopeSelect, { type PayrollScopeOption } from './PayrollScopeSelect'
 
 type Batch = { request: CompletionMail; preview: EmployeeCommunicationPreview; queued: boolean }
-export function useEmployeeProfileCompletion(rows: Employee[], clients: Client[], clientId: number, revision: number, onConfigure?: (clientId: number) => void) {
+export function useEmployeeProfileCompletion(rows: Employee[], clients: Client[], clientId: number, revision: number, onConfigure?: (clientId: number) => void, clientScopeOptions?: PayrollScopeOption[]) {
   const session = useAuthSession(), toast = useToast()
   const canSend = !!session?.user.permissions.includes('employee.communication.send')
   const canManage = !!session?.user.permissions.includes('employees.manage')
@@ -25,33 +26,46 @@ export function useEmployeeProfileCompletion(rows: Employee[], clients: Client[]
   const [savedSelection, setSelection] = useSessionPreference<number[]>('employees.ui:' + session?.user.id + ':' + clientId + ':reminder-selection', [])
   const [manageOpen, setManageOpen] = useState(false)
   const [manageClient, setManageClient] = useState(clientId)
-  const [setup, setSetup] = useState<CompletionSetup | null>(null)
+  const [loadedSetup, setSetup] = useState<CompletionSetup | null>(null)
+  const [setupScope, setSetupScope] = useState('')
   const [manageLoading, setManageLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [batches, setBatches] = useState<Batch[] | null>(null)
   const [previewing, setPreviewing] = useState(false)
   const [sending, setSending] = useState(false)
+  const manageScope = useRef('')
+  manageScope.current = `${session?.user.id || 0}:${manageOpen ? manageClient : 0}`
+  const setup = setupScope === manageScope.current ? loadedSetup : null
   useEffect(() => {
     let active = true
-    setLoading(true); setStatusError('')
-    void getEmployeeCompletion(clientId).then(result => {
+    setStatuses([]); setStatusError('')
+    // The directory starts with no employee rows. Do not launch a second
+    // all-client employee read before its own initial request has completed.
+    if (!session?.user.id || !rows.length) { setLoading(false); return }
+    const controller = new AbortController()
+    setLoading(true)
+    void getEmployeeCompletion(clientId, { signal: controller.signal }).then(result => {
       if (!active) return
       setStatuses(result.ok ? result.data : []); setStatusError(result.ok ? '' : result.error || 'Missing-information status could not be checked.'); setLoading(false)
+    }).catch(() => {
+      if (!active) return
+      setStatuses([]); setStatusError('Missing-information status could not be checked.'); setLoading(false)
     })
-    return () => { active = false }
+    return () => { active = false; controller.abort() }
   }, [clientId, revision, refresh, session?.user.id, rows])
   useEffect(() => {
     if (!manageOpen || !manageClient) { setSetup(null); setManageLoading(false); return }
     let active = true
+    const scope = manageScope.current
     setSetup(null); setManageLoading(true)
     void setupEmployeeCompletion(manageClient).then(result => {
       if (!active) return
       setManageLoading(false)
-      if (result.ok && result.data) setSetup(result.data)
+      if (result.ok && result.data) { setSetup(result.data); setSetupScope(scope) }
       else toast(result.error || 'Unable to load profile-completion settings.', 'error')
-    })
+    }).catch(() => { if (active) { setManageLoading(false); toast('Unable to load profile-completion settings.', 'error') } })
     return () => { active = false }
-  }, [manageOpen, manageClient])
+  }, [manageOpen, manageClient, session?.user.id])
   const byId = useMemo(() => new Map(statuses.map(row => [row.employeeId, row])), [statuses])
   const eligible = (row: Employee) => !loading && !!byId.get(row.id)?.canSendEmail
   const selected = rows.filter(row => savedSelection.includes(row.id) && eligible(row))
@@ -86,18 +100,20 @@ export function useEmployeeProfileCompletion(rows: Employee[], clients: Client[]
   }
   const savePolicy = async () => {
     if (!setup) return
+    const scope = manageScope.current
     setSaving(true)
     try {
       const response = await saveEmployeeCompletionPolicy(manageClient, setup.firstEditEnabled)
-      if (response.ok) toast('First-time profile edit setting saved.', 'success')
+      if (scope === manageScope.current && response.ok) toast('First-time profile edit setting saved.', 'success')
     } finally { setSaving(false) }
   }
   const saveTemplate = async () => {
     if (!setup) return
+    const scope = manageScope.current
     setSaving(true)
     try {
-      const result = await postJson<CommunicationTemplate, CommunicationTemplate | null>('/api/communication-settings/templates', setup.template, null)
-      if (result.ok && result.data) { setSetup({ ...setup, template: result.data }); toast('Mail template saved.', 'success') }
+      const result = await postJson<CommunicationTemplate, CommunicationTemplate | null>('/api/communication-settings/templates', setup.template, null, { loader: false })
+      if (scope === manageScope.current && result.ok && result.data) { setSetup({ ...setup, template: result.data }); toast('Mail template saved.', 'success') }
     } finally { setSaving(false) }
   }
   const rowSelection: TableRowSelection<Employee> | undefined = canSend ? { selectedRowKeys: selectedIds, onChange: keys => setSelection(keys.map(Number)), getCheckboxProps: row => ({ disabled: !eligible(row), title: eligible(row) ? 'Select employee for reminder' : disabledReason(row) }) } : undefined
@@ -112,7 +128,7 @@ export function useEmployeeProfileCompletion(rows: Employee[], clients: Client[]
     dialogs: <>
       <Drawer title="Manage employee master" open={manageOpen} width="min(720px, 96vw)" onClose={() => !saving && setManageOpen(false)}>
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-          {!session?.user.clientId && <Select aria-label="Profile completion client" placeholder="Select client" style={{ width: '100%' }} value={manageClient || undefined} options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={setManageClient} />}
+          {!session?.user.clientId && (clientScopeOptions ? <PayrollScopeSelect ariaLabel="Profile completion client" placeholder="Select client" value={manageClient} options={clientScopeOptions.filter(option => Number(option.value) > 0 && clients.some(client => client.id === Number(option.value)))} onChange={value => setManageClient(Number(value))} /> : <Select aria-label="Profile completion client" placeholder="Select client" style={{ width: '100%' }} value={manageClient || undefined} options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={setManageClient} />)}
           {onConfigure && <Button disabled={!manageClient} onClick={() => { setManageOpen(false); onConfigure(manageClient) }}>Configure fields</Button>}
           {manageLoading && <Spin />}
           {setup && <>
