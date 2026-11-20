@@ -1,6 +1,6 @@
 import { Tag } from 'antd'
 import './ExcelPayslipClientOption.css'
 
-export default function ExcelPayslipClientOption({ name, hasSavedBatch }: { name: string; hasSavedBatch: boolean }) {
-  return <span className="excel-payslip-client-option-label"><span>{name}</span>{hasSavedBatch && <Tag color="green">Saved batch</Tag>}</span>
+export default function ExcelPayslipClientOption({ name, hasSavedBatch, badgeLabel = 'Saved batch' }: { name: string; hasSavedBatch: boolean; badgeLabel?: string }) {
+  return <span className="excel-payslip-client-option-label"><span>{name}</span>{hasSavedBatch && <Tag color="green">{badgeLabel}</Tag>}</span>
 }

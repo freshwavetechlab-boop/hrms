@@ -21,6 +21,7 @@ import BulkMailProgress from './BulkMailProgress'
 import { usePayslipRegisterMail } from '../hooks/usePayslipRegisterMail'
 import { registerMailFilter, validRegisterMailSubmission } from '../utils/payslipRegisterMail'
 import { payslipSentCopyLabel } from '../utils/excelPayslipDelivery'
+import ExcelPayslipClientOption from './ExcelPayslipClientOption'
 
 export default function PayslipRegister() {
   const session = useAuthSession()
@@ -76,7 +77,9 @@ export default function PayslipRegister() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientScoped, scopedClientId, requestedClientId])
 
-  const clientRuns = useMemo(() => runs.filter(item => item.clientId === clientId && ['Approved', 'Partially Paid', 'Paid'].includes(item.status)), [runs, clientId])
+  const approvedRuns = useMemo(() => runs.filter(item => ['Approved', 'Partially Paid', 'Paid'].includes(item.status)), [runs])
+  const clientsWithPayslips = useMemo(() => new Set(approvedRuns.map(item => item.clientId)), [approvedRuns])
+  const clientRuns = useMemo(() => approvedRuns.filter(item => item.clientId === clientId), [approvedRuns, clientId])
   const rows = useMemo(() => run?.clientId === clientId && run.id === runId ? run.employees.filter(employee => !employee.isSkipped) : [], [run, clientId, runId])
   const validSelection = selectedIds.filter(id => rows.some(row => row.employeeId === id))
   const mail = usePayslipRegisterMail(clientId, run?.clientId === clientId && run.id === runId ? runId : 0)
@@ -199,7 +202,7 @@ export default function PayslipRegister() {
   const deliveryRows: Array<{ employeeId: number; employeeCode: string; email?: string; status: string; message: string }> = deliveryItems.length ? deliveryItems : mail.data?.items ?? []
 
   return <section className="payslip-register recruitment-viewport">
-    {!clientScoped && <PageHeaderPortal slot="payslips-client-controls"><SearchSelect value={clientId} disabled={sending || pdfBusy} onChange={value => { closePreview(); setClientId(Number(value)) }} options={clients.map(client => ({ value: client.id, label: client.name }))} /></PageHeaderPortal>}
+    {!clientScoped && <PageHeaderPortal slot="payslips-client-controls"><Select aria-label="Payslip register client" className="app-search-select" showSearch optionFilterProp="label" optionLabelProp="label" value={clientId || undefined} loading={!runsReady} disabled={sending || pdfBusy} placeholder="Select client" onChange={value => { closePreview(); setClientId(Number(value)) }} style={{ width: 260, maxWidth: '100%' }}>{clients.map(client => <Select.Option key={client.id} value={client.id} label={client.name} className={clientsWithPayslips.has(client.id) ? 'excel-payslip-client-has-batches' : 'excel-payslip-client-no-batches'}><ExcelPayslipClientOption name={client.name} hasSavedBatch={clientsWithPayslips.has(client.id)} badgeLabel="Approved payroll" /></Select.Option>)}</Select></PageHeaderPortal>}
     <PageHeaderPortal slot="payslips-page-controls"><Space wrap className="payslip-toolbar">
       <label className="payslip-period-control"><span>Pay period</span><SearchSelect value={runId} disabled={sending || pdfBusy} onChange={value => { closePreview(); setRunId(Number(value)) }} options={selectOptions(clientRuns.map(item => ({ value: item.id, label: `${item.payPeriod} - ${item.status}` })), 'Select approved pay run', 0)} /></label>
       <Select aria-label="Payslip email status" className="payslip-email-filter" value={mailFilter} disabled={sending} onChange={setMailFilter} options={['All', 'Not sent', 'Sent', 'Queued', 'Email missing', 'Needs attention'].map(value => ({ value, label: `${value} (${rows.filter(row => registerMailFilter(mailStatuses.get(row.employeeId)?.status || 'Checking', value)).length})` }))} />
