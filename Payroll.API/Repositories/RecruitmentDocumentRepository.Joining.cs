@@ -18,8 +18,9 @@ public sealed partial class RecruitmentDocumentRepository
         RosterJoiningReadAccess(user, clientId);
         await using var db = Db(); await db.OpenAsync(); await EnsureAsync(db);
         var locations = await RecruitmentAccessScope.WorkLocationsAsync(db, user, clientId);
-        var rows = (await db.QueryAsync<RecruitmentDocumentRosterRow>(RosterJoiningRowsSql + " WHERE r.ClientId=@ClientId ORDER BY r.Id", new { ClientId = clientId }))
-            .Where(row => CanSeeLocation(user, row.WorkLocationId, locations)).ToList();
+        var rows = (await db.QueryAsync<RecruitmentDocumentRosterRow>(RosterJoiningRowsSql + " WHERE r.ClientId=@ClientId ORDER BY r.Id", new { ClientId = clientId })).ToList();
+        await RecruitmentEmployeeMasterSync.ApplyAsync(db, rows);
+        rows = rows.Where(row => CanSeeLocation(user, row.WorkLocationId, locations)).ToList();
         if (rows.Count == 0) return [];
         var releases = (await db.QueryAsync<RosterJoiningRelease>("SELECT Id,RosterId,PdfHash,RevisionKey,InputsHash FROM recruitment_document_roster_releases WHERE ClientId=@ClientId AND RosterId IN @Ids ORDER BY ReleasedAt DESC,Id DESC", new { ClientId = clientId, Ids = rows.Select(row => row.Id).ToArray() }))
             .GroupBy(release => release.RosterId).ToDictionary(group => group.Key, group => group.First());
@@ -53,6 +54,7 @@ public sealed partial class RecruitmentDocumentRepository
                 // Release/edit also lock the roster row, so a concurrent repeat
                 // click cannot write a second acceptance event for this release.
                 var row = await db.QuerySingleOrDefaultAsync<RecruitmentDocumentRosterRow>(RosterJoiningRowsSql + " WHERE r.Id=@Id AND r.ClientId=@ClientId FOR UPDATE", new { Id = id, ClientId = clientId }, transaction);
+                if (row is not null) await RecruitmentEmployeeMasterSync.ApplyAsync(db, [row], transaction);
                 if (row is null || !CanSeeLocation(user, row.WorkLocationId, locations))
                     throw new InvalidOperationException("The selected released letter is unavailable in your client or work locations.");
                 item.CandidateName = row.CandidateName;
@@ -60,6 +62,13 @@ public sealed partial class RecruitmentDocumentRepository
                 if (row.ProfileStatus == "Archived") throw new InvalidOperationException("The linked candidate is archived. Review the candidate before recording acceptance.");
                 var release = await db.QueryFirstOrDefaultAsync<RosterJoiningRelease>("SELECT Id,RosterId,PdfHash,RevisionKey,InputsHash FROM recruitment_document_roster_releases WHERE ClientId=@ClientId AND RosterId=@Id ORDER BY ReleasedAt DESC,Id DESC LIMIT 1 FOR UPDATE", new { Id = id, ClientId = clientId }, transaction)
                     ?? throw new InvalidOperationException("Release this offer letter before recording candidate acceptance.");
+                var currentValues = ReadValues(row.ValuesJson);
+                if (row.WorkLocationId is not > 0) throw new InvalidOperationException("Link a current work location and release the letter before recording acceptance.");
+                ApplyLocationValues(currentValues, await ActiveLocationAsync(db, clientId, row.WorkLocationId.Value, transaction));
+                var clientName = await db.ExecuteScalarAsync<string>("SELECT Name FROM clients WHERE Id=@Id", new { Id = clientId }, transaction) ?? "";
+                var organizationName = await db.ExecuteScalarAsync<string>("SELECT Name FROM organizations ORDER BY Id LIMIT 1", transaction: transaction) ?? "";
+                PrepareReleaseValues(row, currentValues, clientName, organizationName, row.OfferNumber);
+                if (Hash(SerializeValues(currentValues)) != release.InputsHash) throw new InvalidOperationException("Release the corrected current details before recording acceptance. Earlier acceptance history is retained.");
                 var payloads = await db.QueryAsync<string>("SELECT CAST(NewValuesJson AS CHAR) FROM recruitment_document_roster_audit WHERE RosterId=@Id AND ClientId=@ClientId AND Action=@Action", new { Id = id, ClientId = clientId, Action = RosterAcceptanceAction }, transaction);
                 if (payloads.Any(payload => IsRosterAcceptanceForRelease(payload, release.Id, release.PdfHash, release.RevisionKey)))
                 {
@@ -102,6 +111,7 @@ public sealed partial class RecruitmentDocumentRepository
                 var client = await db.QuerySingleOrDefaultAsync<Client>("SELECT * FROM clients WHERE Id=@ClientId AND IsActive=TRUE FOR UPDATE", new { ClientId = clientId }, transaction)
                     ?? throw new InvalidOperationException("Select an active client before importing employees.");
                 var row = await db.QuerySingleOrDefaultAsync<RecruitmentDocumentRosterRow>(RosterJoiningRowsSql + " WHERE r.Id=@Id AND r.ClientId=@ClientId FOR UPDATE", new { Id = id, ClientId = clientId }, transaction);
+                if (row is not null) await RecruitmentEmployeeMasterSync.ApplyAsync(db, [row], transaction);
                 if (row is null || !CanSeeLocation(user, row.WorkLocationId, locations)) throw new InvalidOperationException("The selected candidate is unavailable in your client or work locations.");
                 item.CandidateName = row.CandidateName; item.EmployeeId = row.EmployeeId; item.EmployeeCode = row.EmployeeCode;
                 if (row.EmployeeId is > 0 && !string.IsNullOrWhiteSpace(row.EmployeeCode))
@@ -176,7 +186,7 @@ public sealed partial class RecruitmentDocumentRepository
         decimal.TryParse(values.GetValueOrDefault("annualCtc", "").Replace(",", ""), NumberStyles.Number, CultureInfo.InvariantCulture, out var ctc);
         var linked = row.EmployeeId is > 0 && !string.IsNullOrWhiteSpace(row.EmployeeCode);
         return new() { SourceType = "Roster", SourceId = row.Id, RowKey = "roster:" + row.Id, RosterRowId = row.Id, ReleaseId = releaseId,
-            AcceptanceRecorded = accepted, OfferId = 0, CandidateId = row.CandidateId, CandidateCode = row.CandidateCode, CandidateName = row.CandidateName,
+            AcceptanceRecorded = accepted, OfferId = 0, OfferNumber = row.OfferNumber, CandidateId = row.CandidateId, CandidateCode = row.CandidateCode, CandidateName = row.CandidateName,
             ClientId = row.ClientId, ClientName = clientName, PositionTitle = values.GetValueOrDefault("positionTitle", ""),
             JobLocation = row.WorkLocation, ProposedJoiningDate = joining, OfferedCtc = ctc, Currency = "INR", OfferStatus = accepted ? "Accepted" : "Released",
             EmployeeId = row.EmployeeId, EmployeeCode = row.EmployeeCode, ImportStatus = linked ? "Imported" : accepted || importReleasedForEss ? "Ready" : "Review",

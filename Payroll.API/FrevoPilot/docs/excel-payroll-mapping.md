@@ -1,4 +1,11 @@
-# Excel payroll mapping knowledge v78
+# Excel payroll mapping knowledge v79
+
+## Date Of Joining Date Of Birth: employee bulk calendar formats
+Recognition: an Employee Master bulk workbook mixes native Excel date cells with text dates in Date Of Joining / DOJ and Date Of Birth / DOB. Slash, dash and dot separators, one-digit day/month, English month names and two-digit years are formatting variants. Browser Date.parse and server locale can disagree, rejecting valid day-first dates or silently swapping day and month. This is a deterministic employee-import parsing issue, not a salary classification or formula error.
+
+Normalize recognized dates to yyyy-MM-dd in the preview and the save parser using the same calendar rules. Ambiguous numeric dates use Indian day/month/year; unambiguous month/day dates may also resolve. Two-digit text years follow Excel's 1930–2029 window; the normalized preview exposes the resolved year. Native Excel serial dates remain dates, not earnings, attendance or identifiers. Preserve every employee code, account string, source salary and formula. Blank dates retain the existing sparse-update behavior.
+
+Near misses: do not roll an impossible date such as 31 February into March, accept Excel's fictitious 1900-02-29, infer missing birthdays/joining dates, or apply numeric date conversion to amount/account columns. A date-like heading alone cannot certify a workbook's 1904 calendar, an individual's identity, employment status or payroll eligibility. Suggestions do not bypass normal identity review or authorize an import. Retain parser regression evidence separately from source employee rows.
 
 ## Original Basic Increment Revised Basic Earned Basic PF ESIC: dependency-preserved source setup
 Recognition: two Information columns share a Basic heading. One is the original monthly basis; another is a revised basis computed from that original and a separate increment, or entered directly for some source employees. Earned Basic uses the revised basis with the salary divisor and payable units. PF/ESIC conditionals can test that revised monthly basis while calculating contributions from earned pay. Follow the actual column dependencies; repeated headings and equal caches do not establish interchangeable inputs.

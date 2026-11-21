@@ -197,6 +197,7 @@ builder.Services.AddHostedService<NotificationWorker>();
 builder.Services.AddHostedService<CommunicationWorker>();
 builder.Services.AddHostedService<RecruitmentPipelineAutomationWorker>();
 builder.Services.AddHostedService<RecruitmentAtsScoringWorker>();
+builder.Services.AddHostedService<RecruitmentEmployeeSalarySyncWorker>();
 builder.Services.AddHostedService<AttendanceBatchJobWorker>();
 }
 
@@ -1517,6 +1518,13 @@ app.MapPost("/api/recruitment/requisitions", async (RecruitmentRepository reposi
 {
     if (!RecruitmentPermissions.CanCreateRequisitions(CurrentUser(context))) return Results.StatusCode(403);
     var user = CurrentUser(context);
+    if (request.Id > 0)
+    {
+        var existing = await repository.GetAsync(request.Id, user);
+        if (existing is null) return Results.NotFound(new { error = "The hiring request is outside your permitted scope or no longer exists." });
+        if (!RecruitmentPermissions.CanEditRequisition(user, existing))
+            return Results.Json(new { error = "You do not have permission to edit this hiring request in its current status. Approved requests require Manage settings access." }, statusCode: StatusCodes.Status403Forbidden);
+    }
     var (row, error) = await repository.SaveDraftAsync(request, user);
     if (row is null) return Results.BadRequest(new { error });
     await hiringCases.EnsureHiringCaseForRequisitionAsync(row.Id, user);

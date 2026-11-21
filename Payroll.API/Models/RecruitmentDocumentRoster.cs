@@ -60,6 +60,10 @@ public sealed class RecruitmentDocumentRosterRow
     public string WorkLocation { get; set; } = "";
     public int? WorkLocationId { get; set; }
     public string OfferNumber { get; set; } = "";
+    public bool HasUnreleasedChanges { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore] public string ReleasedInputsHash { get; set; } = "";
+    [System.Text.Json.Serialization.JsonIgnore] public string ReleasedTemplateHash { get; set; } = "";
+    [System.Text.Json.Serialization.JsonIgnore] public string ReleasedLocationHash { get; set; } = "";
     public DateTime? ReleasedAt { get; set; }
     public string SourceFileName { get; set; } = "";
     public string SourceSheetName { get; set; } = "";
@@ -68,8 +72,11 @@ public sealed class RecruitmentDocumentRosterRow
     public Dictionary<string, string> Values { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<string> DocumentIssues { get; set; } = [];
     public string Revision { get; set; } = "";
+    public string SourceRevision { get; set; } = "";
     public int? EmployeeId { get; set; }
     public string EmployeeCode { get; set; } = "";
+    public int? SyncedEmployeeId { get; set; }
+    public List<string> EmployeeManagedFields { get; set; } = [];
 }
 public sealed class RecruitmentRosterImportResult
 {

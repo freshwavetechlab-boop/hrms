@@ -7,6 +7,41 @@ namespace Payroll.API.Tests.Services;
 
 public sealed class RecruitmentPermissionTests
 {
+    [Fact]
+    public void SettingsOnlyCopiedAdministratorCanReadBackAndEditAnotherOwnersApprovedRequest()
+    {
+        var user = new AuthUser { Id = 81, IsActive = true, Roles = ["employee", "super_admin_copy"], Permissions = ["settings.manage"] };
+        var request = new RecruitmentRequisition { ClientId = 55, RequestedByUserId = 3, Status = "Approved" };
+        Assert.True(RecruitmentRepository.CanView(request, user));
+        Assert.True(RecruitmentPermissions.CanEditRequisition(user, request));
+        Assert.True(RecruitmentRepository.HasRecruitmentAccess(user));
+        Assert.True(RecruitmentRepository.HasRecruitmentCreateAccess(user));
+        user.ClientId = 9;
+        Assert.False(RecruitmentRepository.CanView(request, user));
+        Assert.False(RecruitmentPermissions.CanEditRequisition(user, request));
+        user.ClientId = null; user.ClientAccessMode = "Selected"; user.AssignedClientIds = [9];
+        Assert.False(RecruitmentRepository.CanView(request, user));
+        Assert.False(RecruitmentPermissions.CanEditRequisition(user, request));
+    }
+
+    [Fact]
+    public void ACopyRoleNameAloneDoesNotGrantAdministrationAndViewersCannotEdit()
+    {
+        var request = new RecruitmentRequisition { ClientId = 55, RequestedByUserId = 3, Status = "Draft" };
+        var user = new AuthUser { Id = 81, ClientId = 55, Roles = ["super_admin_copy"] };
+        Assert.False(RecruitmentRepository.CanView(request, user));
+        Assert.False(RecruitmentPermissions.CanEditRequisition(user, request));
+        user.Permissions = ["recruitment.rfr.view"];
+        Assert.True(RecruitmentRepository.CanView(request, user));
+        Assert.False(RecruitmentPermissions.CanEditRequisition(user, request));
+        user.Permissions = ["recruitment.rfr.create"]; request.RequesterUserId = user.Id;
+        Assert.True(RecruitmentPermissions.CanEditRequisition(user, request));
+        request.Status = "Approved";
+        Assert.False(RecruitmentPermissions.CanEditRequisition(user, request));
+        request.Status = "Pending Approval";
+        Assert.False(RecruitmentPermissions.CanEditRequisition(user, request));
+    }
+
     [Theory]
     [InlineData("recruitment.rfr.view", true, false)]
     [InlineData("recruitment.rfr.create", true, true)]

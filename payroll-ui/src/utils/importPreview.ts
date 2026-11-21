@@ -8,6 +8,7 @@ export type ImportPreviewRules = {
   booleans?: string[]
   numbers?: string[]
   dates?: string[]
+  normalizeDate?: (value: string) => string | null
   enums?: Record<string, string[]>
   custom?: (row: ImportPreviewRow, rowNumber: number) => ImportPreviewIssue[]
 }
@@ -54,7 +55,7 @@ export function validateImportPreview(data: ImportPreviewData, rules: ImportPrev
     }
     for (const field of rules.dates ?? []) {
       const text = value(row, field)
-      if (text && Number.isNaN(Date.parse(text)) && Number.isNaN(Number(text))) issues.push({ rowNumber, column: field, message: `${field} must be a valid date.` })
+      if (text && (rules.normalizeDate ? rules.normalizeDate(text) === null : Number.isNaN(Date.parse(text)) && Number.isNaN(Number(text)))) issues.push({ rowNumber, column: field, message: `${field} must be a valid date.` })
     }
     for (const [field, options] of Object.entries(rules.enums ?? {})) {
       const text = value(row, field)

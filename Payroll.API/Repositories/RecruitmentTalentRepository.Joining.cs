@@ -59,7 +59,7 @@ public sealed partial class RecruitmentTalentRepository
         var permitted = (await OfferRowsAsync(db, scoped, null, null)).GroupBy(row => row.ApplicationId)
             .Select(group => group.MaxBy(row => row.Id)!).Where(row => row.Status is "Accepted" or "Pending Candidate" or "Released").ToDictionary(row => row.Id);
         if (permitted.Count == 0) return [];
-        var rows = (await db.QueryAsync<RecruitmentJoiningCandidate>(@"SELECT o.Id OfferId,o.ApplicationId,a.CandidateId,c.CandidateCode,
+        var rows = (await db.QueryAsync<RecruitmentJoiningCandidate>(@"SELECT o.Id OfferId,o.OfferNumber,o.ApplicationId,a.CandidateId,c.CandidateCode,
 TRIM(CONCAT_WS(' ',c.FirstName,NULLIF(c.LastName,''))) CandidateName,a.ClientId,client.Name ClientName,
 p.PositionTitle,p.JobLocation,p.BranchId WorkLocationId,o.ProposedJoiningDate,o.OfferedCtc,o.Currency,o.Status OfferStatus,
 COALESCE(a.JoinedEmployeeId,c.EmployeeId) EmployeeId,COALESCE(employee.EmployeeCode,'') EmployeeCode,

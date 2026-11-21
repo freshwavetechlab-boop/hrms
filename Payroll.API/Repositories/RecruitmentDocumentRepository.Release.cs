@@ -102,11 +102,13 @@ CREATE TABLE IF NOT EXISTS recruitment_document_roster_releases (
         if (!allowed.Any(location => location.Id == request.WorkLocationId)) throw new UnauthorizedAccessException("The selected work location is outside your permitted client or locations.");
         await using var tx = await db.BeginTransactionAsync();
         await ActiveLocationAsync(db, clientId, request.WorkLocationId, tx);
-        var rows = (await db.QueryAsync<RecruitmentDocumentRosterRow>("SELECT Id,WorkLocationId,CAST(ValuesJson AS CHAR) ValuesJson FROM recruitment_document_roster WHERE ClientId=@ClientId AND Id IN @Ids ORDER BY Id FOR UPDATE", new { ClientId = clientId, request.Ids }, tx)).ToList();
+        var rows = (await db.QueryAsync<RecruitmentDocumentRosterRow>(RosterJoiningRowsSql + " WHERE r.ClientId=@ClientId AND r.Id IN @Ids ORDER BY r.Id FOR UPDATE", new { ClientId = clientId, request.Ids }, tx)).ToList();
         if (rows.Count != request.Ids.Count || rows.Any(row => !CanSeeLocation(user, row.WorkLocationId, allowed))) throw new UnauthorizedAccessException();
         foreach (var row in rows)
         {
             if (RowRevision(row.ValuesJson, row.WorkLocationId) != request.Revisions[row.Id.ToString(CultureInfo.InvariantCulture)]) throw new InvalidOperationException("A selected row changed after it was loaded. Refresh before assigning work locations.");
+            await RecruitmentEmployeeMasterSync.ApplyAsync(db, [row], tx);
+            if (row.SyncedEmployeeId.HasValue && row.WorkLocationId != request.WorkLocationId) throw new InvalidOperationException("Change the linked employee's work location in Employee Master; the employee list follows it automatically.");
             if (row.WorkLocationId == request.WorkLocationId) continue;
             await db.ExecuteAsync("UPDATE recruitment_document_roster SET WorkLocationId=@WorkLocationId,UpdatedByUserId=@UserId,UpdatedAt=CURRENT_TIMESTAMP(6) WHERE Id=@Id AND ClientId=@ClientId", new { request.WorkLocationId, UserId = user.Id, row.Id, ClientId = clientId }, tx);
             await db.ExecuteAsync("INSERT INTO recruitment_document_roster_audit(RosterId,ClientId,Action,OldValuesJson,NewValuesJson,ActorUserId) VALUES(@Id,@ClientId,'Assign work location',@Old,@New,@UserId)", new { row.Id, ClientId = clientId, Old = JsonSerializer.Serialize(new { row.WorkLocationId }), New = JsonSerializer.Serialize(new { request.WorkLocationId }), UserId = user.Id }, tx);
@@ -175,10 +177,11 @@ ON DUPLICATE KEY UPDATE FileName=VALUES(FileName),ContentType=VALUES(ContentType
         await using var tx = await db.BeginTransactionAsync();
         await db.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@ClientId AND IsActive=TRUE FOR UPDATE",new {ClientId=clientId},tx);
         var rows = (await db.QueryAsync<RecruitmentDocumentRosterRow>("""
-SELECT r.*,CAST(r.ValuesJson AS CHAR) ValuesJson,c.CandidateCode,TRIM(CONCAT(c.FirstName,' ',c.LastName)) CandidateName,c.Email,c.Phone
+SELECT r.*,CAST(r.ValuesJson AS CHAR) ValuesJson,c.CandidateCode,TRIM(CONCAT(c.FirstName,' ',c.LastName)) CandidateName,c.Email,c.Phone,COALESCE(r.EmployeeId,c.EmployeeId) EmployeeId
 FROM recruitment_document_roster r JOIN recruitment_candidates c ON c.Id=r.CandidateId AND c.ClientId=r.ClientId AND c.ProfileStatus<>'Archived'
 WHERE r.ClientId=@ClientId AND r.Id IN @Ids ORDER BY r.Id FOR UPDATE
 """, new { ClientId = clientId, request.Ids }, tx)).ToList();
+        await RecruitmentEmployeeMasterSync.ApplyAsync(db, rows, tx);
         if (rows.Count != request.Ids.Count || rows.Any(row => !CanSeeLocation(user, row.WorkLocationId, allowed))) throw new UnauthorizedAccessException("One or more selected employee rows are unavailable in your permitted locations.");
         if (rows.Any(row => row.WorkLocationId is null or <= 0)) throw new InvalidOperationException("Link an existing work location for every selected employee before releasing offer letters. Unlinked rows may still be downloaded as unsigned drafts.");
         var client = await db.QuerySingleAsync<Client>("SELECT * FROM clients WHERE Id=@ClientId AND IsActive=TRUE", new { ClientId = clientId }, tx);

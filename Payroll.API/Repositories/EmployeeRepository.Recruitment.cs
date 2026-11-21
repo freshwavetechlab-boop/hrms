@@ -1,6 +1,7 @@
 using Dapper;
 using MySqlConnector;
 using Payroll.API.Models;
+using Payroll.API.Services;
 
 namespace Payroll.API.Repositories;
 
@@ -45,6 +46,22 @@ public partial class EmployeeRepository
     }
 
     internal static Task<Employee?> LoadRecruitmentEmployeeAsync(MySqlConnection db, int id, MySqlTransaction? tx = null) => LoadEmployeeAsync(db, id, tx);
+    internal static async Task<bool> InitializeRecruitmentSalaryAsync(MySqlConnection db, MySqlTransaction tx, Employee employee, Dictionary<string, decimal> inputs)
+    {
+        if (inputs.Count == 0 || !employee.IsActive || employee.AnnualCtc != 0 || !string.IsNullOrWhiteSpace(employee.SalaryStructureId) || employee.SalaryComponents.Values.Any(v => v != 0)) return false;
+        if (await db.ExecuteScalarAsync<bool>("SELECT COALESCE(" + EmployeeEmploymentRules.LatestAction("e", "@Today") + ",'Rehire') IN ('Resign','Retire','Terminate') FROM employees e WHERE e.Id=@Id AND e.ClientId=@ClientId", new { employee.Id, employee.ClientId, Today = EmployeeEmploymentRules.Today }, tx)) return false;
+        if (await db.ExecuteScalarAsync<bool>("""
+SELECT EXISTS(SELECT 1 FROM employee_it0008_basic_pay WHERE EmployeeId=@Id AND ClientId=@ClientId
+ AND (AnnualCtc<>0 OR COALESCE(TRIM(SalaryStructureId),'')<>'' OR JSON_LENGTH(COALESCE(SalaryJson,JSON_OBJECT()))>0))
+ OR EXISTS(SELECT 1 FROM payrunemployees WHERE EmployeeId=@Id)
+""", employee, tx)) return false;
+        employee.SalaryComponents = inputs;
+        employee.SalaryJson = System.Text.Json.JsonSerializer.Serialize(inputs);
+        await SaveWithOpenConnectionAsync(db, employee, "Automatic recruitment salary sync", "0008",
+            "Initialized empty monthly basic/HRA from released employee-list offer; annual CTC not inferred", tx,
+            effectiveDate: EmployeeEmploymentRules.Today, synchronizeAttendancePolicies: false, salaryOnly: true);
+        return true;
+    }
     internal static Task<int> SaveRecruitmentEmployeeAsync(MySqlConnection db, MySqlTransaction tx, Employee employee, AuthUser user, string reference) =>
         SaveWithOpenConnectionAsync(db, employee, user.DisplayName, null, $"Joined from recruitment application {reference}", tx);
 }

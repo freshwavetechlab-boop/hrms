@@ -29,7 +29,9 @@ public sealed class RecruitmentRosterJoiningTests
     public void Existing_employee_link_does_not_invent_candidate_acceptance_or_another_offer_id()
     {
         var row = new RecruitmentDocumentRosterRow { Id = 9, ClientId = 4, CandidateId = 14, CandidateCode = "SYN-1", CandidateName = "Synthetic person", EmployeeId = 27, EmployeeCode = "SYN-EMP", ValuesJson = "{\"joiningDate\":\"2026-11-02\",\"annualCtc\":\"120000\",\"monthlyGross\":\"50000\"}" };
+        row.OfferNumber = "OFFER-SYNTHETIC-9";
         var projected = RecruitmentDocumentRepository.RosterJoiningProjection(row, "Synthetic client", 81, false);
+        Assert.Equal(row.OfferNumber, projected.OfferNumber);
         Assert.Equal("Roster", projected.SourceType); Assert.Equal("roster:9", projected.RowKey); Assert.Equal(0, projected.OfferId);
         Assert.Equal(9, projected.SourceId); Assert.Equal(81, projected.ReleaseId); Assert.False(projected.AcceptanceRecorded);
         Assert.Equal("Released", projected.OfferStatus); Assert.Equal("Imported", projected.ImportStatus); Assert.Equal("SYN-EMP", projected.EmployeeCode);

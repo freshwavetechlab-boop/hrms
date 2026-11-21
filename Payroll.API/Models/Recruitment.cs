@@ -2,6 +2,8 @@ namespace Payroll.API.Models;
 
 public class RecruitmentRequisition
 {
+    public bool HasLinkedOpenPosition { get; set; }
+    public bool HasLinkedJobDescription { get; set; }
     public int? BudgetApproverUserId { get; set; }
     public long? BudgetApprovalWorkflowInstanceId { get; set; }
     public string BudgetApprovalStatus { get; set; } = "";

@@ -6,7 +6,7 @@ import DataTable, { type Column } from './DataTable'
 import FileDropZone from './FileDropZone'
 import { PageHeaderPortal } from './layout/AppPageHeader'
 import { createRosterJobDescription, createRosterJobDescriptions, downloadRosterDrafts, editDocumentRoster, getDocumentRoster, getDocumentTemplates, getRosterJobDescription, getRosterJobDescriptions, getRosterSigningAsset, getRosterWorkLocations, linkRosterWorkLocation, prepareDocumentTemplates, releaseRosterLetters, removeRosterSigningAsset, uploadDocumentRoster, uploadRosterSigningAsset, type DocumentRosterRow, type DocumentTemplate, type RosterImportResult, type RosterImportSettings, type RosterJobDescription, type RosterJobDescriptionLink, type RosterPreview, type RosterSheet, type RosterSigningAsset } from '../services/recruitmentDocumentService'
-import { filterRosterRows, rosterLocationName, rosterMasterLocationField, rosterPermissions, rosterReleaseReady, selectedRosterRows, signingAssetFileError } from '../utils/recruitmentRosterOperations'
+import { filterRosterRows, rosterLocationName, rosterMasterLocationField, rosterEmployeeManagedField, rosterPermissions, rosterReleaseReady, selectedRosterRows, signingAssetFileError } from '../utils/recruitmentRosterOperations'
 import { useAuthSession } from './AuthGate'
 import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
 import type { WorkLocation } from '../types/payroll'
@@ -15,7 +15,7 @@ import RecruitmentOfferMail, { OfferMailProgress } from './RecruitmentOfferMail'
 import { useRecruitmentOfferMail } from '../hooks/useRecruitmentOfferMail'
 import { downloadRosterImportTemplate, isRosterImportTemplate, templateRosterMapping } from '../utils/recruitmentRosterTemplate'
 
-export default function RecruitmentDocumentRosterLauncher({ clientId, onChanged }: { clientId: number; onChanged: () => Promise<void> }) {
+export default function RecruitmentDocumentRosterLauncher({ clientId, onChanged, openRequest = 0 }: { clientId: number; onChanged: () => Promise<void>; openRequest?: number }) {
   const location = useLocation()
   const session = useAuthSession()
   const permissions = rosterPermissions(session?.user.permissions || [])
@@ -45,6 +45,9 @@ export default function RecruitmentDocumentRosterLauncher({ clientId, onChanged 
   useEffect(() => {
     if (clientId > 0 && canOpen && new URLSearchParams(location.search).has('mailJobId')) { setOpen(true); void loadTemplates(true) }
   }, [clientId, canOpen, location.search, loadTemplates])
+  useEffect(() => {
+    if (openRequest > 0 && clientId > 0 && canOpen) { setOpen(true); void loadTemplates(true) }
+  }, [openRequest, clientId, canOpen, loadTemplates])
   if (!clientId || !canOpen) return null
   const ready = state.clientId === clientId && !state.loading && state.templates.length > 0
   return <><PageHeaderPortal slot="recruitment-page-controls"><Button icon={<UploadOutlined />} onClick={() => { setOpen(true); void loadTemplates(true) }}>Employee lists &amp; offer letters</Button></PageHeaderPortal>
@@ -90,6 +93,12 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
     finally { if (alive.current) setLoading(false) }
   }
   useEffect(() => { void load() }, [clientId]) // scope is remounted when the selected client changes
+  useEffect(() => {
+    const refresh = () => { if (!edit && !busy) void load() }
+    window.addEventListener('focus', refresh)
+    window.addEventListener('employees:changed', refresh)
+    return () => { window.removeEventListener('focus', refresh); window.removeEventListener('employees:changed', refresh) }
+  }, [clientId, edit, busy])
   const baseVisible = useMemo(() => filterRosterRows(rows, group, workLocationFilter).filter(row => !search.trim() || [row.sourceGroup, row.candidateCode, row.candidateName, rosterLocationName(row, locations), ...Object.values(row.values)].join(' ').toLowerCase().includes(search.trim().toLowerCase())), [rows, group, workLocationFilter, search, locations])
   const [tableView, setTableView] = useState<{ source: DocumentRosterRow[]; ids: number[] } | null>(null)
   const onVisibleRowsChange = useCallback((filtered: DocumentRosterRow[]) => {
@@ -149,7 +158,7 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
     } },
     { key: 'joiningDate', label: 'Date of joining', value: row => row.values.joiningDate || 'Not supplied' }, { key: 'tenure', label: 'Contract end', value: row => row.values.contractEndDate || 'Not supplied' },
     { key: 'basic', label: 'Monthly basic', value: row => row.values.monthlyBasic || '' }, { key: 'gross', label: 'Monthly gross', value: row => row.values.monthlyGross || '' }, { key: 'readiness', label: 'Draft readiness', value: row => row.documentIssues.length ? row.documentIssues.join('; ') : 'Ready for draft', width: 250 },
-    { key: 'released', label: 'Released offer', width: 180, value: row => row.releasedAt ? row.offerNumber || 'Released' : 'Not released' },
+    { key: 'released', label: 'Released offer', width: 180, value: row => row.releasedAt ? `${row.offerNumber || 'Released'}${row.hasUnreleasedChanges ? ' · Release again' : ''}` : 'Not released', render: row => <div>{row.releasedAt ? row.offerNumber || 'Released' : 'Not released'}{row.hasUnreleasedChanges && <div><Tag color="orange">Release again</Tag></div>}</div> },
     { key: 'employeeMaster', label: 'Employee Master', width: 180, value: row => row.employeeId ? row.employeeCode || `Employee ${row.employeeId}` : row.releasedAt ? 'Pending acceptance / import' : 'Awaiting release' },
   ], [locations, jdLinks, canCreateJd, positionNames, busy, jdLoadingId])
   const linkLocation = async () => {
@@ -177,7 +186,7 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
       if (!template) throw new Error('Document template is unavailable. Refresh the employee list before editing.')
       const r = await editDocumentRoster(clientId, edit, editValues, template.fields)
       if (!r.ok) throw new Error(r.error)
-      setEdit(null); await load(); setNotice('Document inputs saved. Candidate identity and Employee Master are unchanged.')
+      setEdit(null); await load(); setNotice('Offer details saved. Employee Master details sync automatically; release the updated letter before emailing it.')
     }
     catch (e) { setError(e instanceof Error ? e.message : 'Unable to save document details.') }
     finally { if (alive.current) setBusy(false) }
@@ -215,7 +224,7 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
     {canRelease && <OfferMailProgress jobs={mail.jobs} loading={mail.loading} error={mail.error} onRefresh={mail.refresh} onRetry={ids => setMailRequest({ ids, retryFailed: true })} />}
     {canRelease && selectedRows.some(row => !row.workLocationId) && <Alert type="warning" showIcon message="Link a work location before releasing the selected unlinked profiles." />}
     {error && <Alert closable type="error" showIcon message={error} onClose={() => setError('')} />}{notice && <Alert closable type="success" showIcon message={notice} onClose={() => setNotice('')} />}
-    <div className="document-roster-table"><DataTable fillHeight hideSearch rows={baseVisible} columns={rosterColumns} onVisibleRowsChange={onVisibleRowsChange} loading={loading} getRowId={row => row.id} title="Employee list" exportFileName="employee-list-offer-letters" emptyText="No employee lists match these filters." rowSelection={{ selectedRowKeys: selectedRows.map(row => row.id), onChange: keys => setSelected(keys.map(Number)), getCheckboxProps: () => ({ disabled: busy }) }} actionsWidth={canRelease ? 265 : 190} actions={row => <Space><Button size="small" disabled={busy} onClick={() => { setEdit(row); setEditValues({ ...row.values }) }}>Details / Edit</Button><Button size="small" disabled={busy || !!row.documentIssues.length} onClick={() => void generate([row.id])}>Draft PDF</Button>{canRelease && <Button size="small" disabled={busy || !rosterReleaseReady(row)} title={!row.workLocationId ? 'Link a work location before release' : row.documentIssues.length ? 'Complete document details before release' : undefined} onClick={() => setReleaseIds([row.id])}>Release</Button>}</Space>} /></div>
+    <div className="document-roster-table"><DataTable fillHeight hideSearch rows={baseVisible} columns={rosterColumns} onVisibleRowsChange={onVisibleRowsChange} loading={loading} getRowId={row => row.id} title="Employee list" exportFileName="employee-list-offer-letters" emptyText="No employee lists match these filters." rowSelection={{ selectedRowKeys: selectedRows.map(row => row.id), onChange: keys => setSelected(keys.map(Number)), getCheckboxProps: () => ({ disabled: busy }) }} actionsWidth={canRelease ? 290 : 190} actions={row => <Space><Button size="small" disabled={busy} onClick={() => { setEdit(row); setEditValues({ ...row.values }) }}>Details / Edit</Button><Button size="small" disabled={busy || !!row.documentIssues.length} onClick={() => void generate([row.id])}>Draft PDF</Button>{canRelease && <Button size="small" disabled={busy || !rosterReleaseReady(row)} title={!row.workLocationId ? 'Link a work location before release' : row.documentIssues.length ? 'Complete document details before release' : undefined} onClick={() => setReleaseIds([row.id])}>{row.hasUnreleasedChanges ? 'Release again' : 'Release'}</Button>}</Space>} /></div>
   </Drawer>
   <Drawer open={!!jdDetails} title={jdDetails ? jdDetails.title : 'Job description'} className="document-roster-jd-details" width="min(760px, 96vw)" onClose={() => setJdDetails(null)} footer={<Button onClick={() => setJdDetails(null)}>Close</Button>}>
     {jdDetails && <><Tag color={jdDetails.source === 'Simple' ? 'green' : 'blue'}>{jdDetails.source === 'Simple' ? 'Simple JD' : 'Existing JD'}</Tag><p>{jdDetails.summary}</p>{jdDetails.rolePurpose && <><h3>Role purpose</h3><p>{jdDetails.rolePurpose}</p></>}{[{ title: 'Responsibilities', items: jdDetails.responsibilities }, { title: 'Skills', items: jdDetails.skills }, { title: 'Qualifications', items: jdDetails.qualifications }, { title: 'Certifications', items: jdDetails.certifications }, { title: 'Languages', items: jdDetails.languages }, { title: 'Benefits', items: jdDetails.benefits }].filter(section => section.items?.length).map(section => <section key={section.title}><h3>{section.title}</h3><ul>{section.items!.map((text, index) => <li key={index}>{text}</li>)}</ul></section>)}</>}
@@ -229,7 +238,7 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
   {releaseIds && <RosterReleaseDrawer clientId={clientId} ids={releaseIds} canManageAsset={canManageOffers} canRelease={canRelease} onClose={() => setReleaseIds(null)} onReleased={async count => { setReleaseIds(null); await load(); await onChanged(); setNotice(`${count} offer letter${count > 1 ? 's' : ''} released and downloaded.`) }} />}
   <Drawer open={!!edit} title={edit ? `Document details · ${edit.candidateName}` : 'Document details'} width="min(850px, 96vw)" onClose={() => { if (!busy) setEdit(null) }} closable={!busy} maskClosable={!busy} footer={<Space><Button disabled={busy} onClick={() => setEdit(null)}>Cancel</Button><Button type="primary" loading={busy} disabled={!canImport && !canManageOffers} onClick={() => void saveEdit()}>Save details</Button></Space>}>
     {error && <Alert type="error" showIcon message={error} />}
-    {edit && <><Alert type={edit.documentIssues.length ? 'warning' : 'success'} showIcon message={edit.documentIssues.length ? edit.documentIssues.join('; ') : 'Ready for unsigned draft'} description={`Source: ${edit.sourceFileName} · ${edit.sourceSheetName} · Row ${edit.sourceRow}`} /><Form layout="vertical" className="document-roster-fields">{templates.find(t => t.id === edit.templateId)?.fields.map(f => <Form.Item key={f.key} label={f.label} required={f.required} extra={edit.workLocationId && rosterMasterLocationField(f.key) ? 'Managed by Work Location' : f.type === 'percent' ? 'Enter 30% or 0.30 for thirty percent.' : undefined}><Input aria-label={`Document ${f.key}`} type={f.type === 'date' ? 'date' : 'text'} inputMode={['money', 'number', 'percent'].includes(f.type) ? 'decimal' : undefined} maxLength={4000} disabled={['candidateName', 'candidateEmail', 'candidatePhone', 'candidateCode'].includes(f.key) || !!edit.workLocationId && rosterMasterLocationField(f.key) || !canImport && !canManageOffers} value={editValues[f.key] || ''} onChange={e => setEditValues(v => ({ ...v, [f.key]: e.target.value }))} /></Form.Item>)}</Form></>}
+    {edit && <><Alert type={edit.documentIssues.length ? 'warning' : 'success'} showIcon message={edit.documentIssues.length ? edit.documentIssues.join('; ') : 'Ready for unsigned draft'} description={`Source: ${edit.sourceFileName} · ${edit.sourceSheetName} · Row ${edit.sourceRow}`} /><Alert type="info" showIcon message={edit.syncedEmployeeId ? 'Employee Master details sync automatically' : 'Complete the offer details'} description={edit.syncedEmployeeId ? 'Edit synced fields in Employee Master. Release the corrected letter, then use Email selected to send the new version. Earlier letters and delivery history remain available.' : 'Complete missing offer fields, then release and email the letter.'} /><Form layout="vertical" className="document-roster-fields">{templates.find(t => t.id === edit.templateId)?.fields.map(f => <Form.Item key={f.key} label={f.label} required={f.required} extra={rosterEmployeeManagedField(edit, f.key) ? 'Synced from Employee Master' : edit.workLocationId && rosterMasterLocationField(f.key) ? 'Managed by Work Location' : f.type === 'percent' ? 'Enter 30% or 0.30 for thirty percent.' : undefined}><Input aria-label={`Document ${f.key}`} type={f.type === 'date' ? 'date' : 'text'} inputMode={['money', 'number', 'percent'].includes(f.type) ? 'decimal' : undefined} maxLength={4000} disabled={rosterEmployeeManagedField(edit, f.key) || ['candidateName', 'candidateEmail', 'candidatePhone', 'candidateCode'].includes(f.key) || !!edit.workLocationId && rosterMasterLocationField(f.key) || !canImport && !canManageOffers} value={editValues[f.key] || ''} onChange={e => setEditValues(v => ({ ...v, [f.key]: e.target.value }))} /></Form.Item>)}</Form></>}
   </Drawer></>
 }
 

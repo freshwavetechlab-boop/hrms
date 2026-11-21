@@ -25,11 +25,13 @@ const masterLocationFields = new Set(['jobLocation', 'workLocation', 'workLocati
 export const rosterMasterLocationField = (key: string) => masterLocationFields.has(key.toLowerCase())
 
 const profileIdentityFields = new Set(['candidatename', 'candidateemail', 'candidatephone', 'candidatecode'])
-export function rosterEditValues(fields: ReadonlyArray<Pick<DocumentInput, 'key'>>, row: Pick<DocumentRosterRow, 'values' | 'workLocationId'>, draft: Record<string, string>) {
+export const rosterEmployeeManagedField = (row: Pick<DocumentRosterRow, 'employeeManagedFields'>, key: string) => row.employeeManagedFields?.some(field => field.toLowerCase() === key.toLowerCase()) || false
+export function rosterEditValues(fields: ReadonlyArray<Pick<DocumentInput, 'key'>>, row: Pick<DocumentRosterRow, 'values' | 'workLocationId' | 'employeeManagedFields'>, draft: Record<string, string>) {
   // The read model also contains master-resolved aliases that are not template
   // inputs. Submit only edited document inputs, never those display projections.
   return Object.fromEntries(fields.filter(({ key }) =>
     Object.hasOwn(draft, key) && !profileIdentityFields.has(key.toLowerCase()) &&
+    !rosterEmployeeManagedField(row, key) &&
     !(row.workLocationId && rosterMasterLocationField(key)) && draft[key] !== (row.values[key] ?? '')
   ).map(({ key }) => [key, draft[key]]))
 }

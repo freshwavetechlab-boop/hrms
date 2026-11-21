@@ -28,6 +28,7 @@ import type { Client, Component, Drop, Employee, EmployeeActionRequest, Employee
 import { calculateSalaryDetails, calculateSalaryJson, calculateSalaryTotals, canOverrideSalaryComponent, hasDailyRateComponents, money } from '../utils/salary'
 import SalaryFieldHelp from '../components/SalaryFieldHelp'
 import { parseImportPreviewSheets, validateImportPreview, type ImportPreviewData, type ImportPreviewIssue, type ImportPreviewRules, type ImportPreviewSheet } from '../utils/importPreview'
+import { normalizeEmployeeImportDate } from '../utils/employeeImportDate'
 import { buildXlsxBlob } from '../utils/xlsx'
 import { safeJsonRecord } from '../shared/json'
 import EmployeeAttachmentPanel from '../components/EmployeeAttachmentPanel'
@@ -125,7 +126,7 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const structureLineIds = chosenStructure?.lines.map(line => line.componentId) ?? []
   const dailyRateSalary = hasDailyRateComponents(setup.salaryComponents, chosenStructure)
   const employeeSalary = chosenStructure && (employee.annualCtc || dailyRateSalary) ? safeJsonRecord(calculateSalaryJson(employee.annualCtc, setup.salaryComponents, chosenStructure, salaryOverrides)) : rawEmployeeSalary
-  const structureComponents = setup.salaryComponents.filter(component => component.active && structureLineIds.includes(String(component.id))).sort((a, b) => structureLineIds.indexOf(String(a.id)) - structureLineIds.indexOf(String(b.id)) || Number(a.priority) - Number(b.priority))
+  const structureComponents = setup.salaryComponents.filter(component => component.active && (chosenStructure ? structureLineIds.includes(String(component.id)) : Object.hasOwn(rawEmployeeSalary, String(component.id)))).sort((a, b) => structureLineIds.indexOf(String(a.id)) - structureLineIds.indexOf(String(b.id)) || Number(a.priority) - Number(b.priority))
   const masterValues = (type: string) => [...new Set(drops.filter(item => item.type === type && item.isActive && (!item.clientId || item.clientId === employee.clientId)).map(item => item.value))]
   const deps = masterValues('Department'), desigs = masterValues('Designation')
   const employmentTypes = [...new Set([...masterValues('Employment Type'), ...(employee.personalDetails.employmentType ? [employee.personalDetails.employmentType] : [])])]
@@ -643,6 +644,7 @@ function employeeSheetPreviewRules(headers: string[]): ImportPreviewRules {
     booleans: ['Portal Access', 'Active'].filter(has),
     numbers: ['Work Location Id', 'Annual CTC'].filter(has),
     dates: ['Date Of Joining', 'Date Of Birth'].filter(has),
+    normalizeDate: normalizeEmployeeImportDate,
     enums: {
       ...(has('Gender') ? { Gender: ['Male', 'Female', 'Other'] } : {}),
       ...(has('Payment Mode') ? { 'Payment Mode': ['Bank Transfer', 'Cheque', 'Cash'] } : {})
@@ -722,13 +724,7 @@ function saveBlob(blob: Blob, fileName: string) {
 }
 
 function previewDate(value: string) {
-  const text = value.trim()
-  const serial = Number(text)
-  if (Number.isFinite(serial) && serial >= 20000 && serial <= 80000) {
-    const date = new Date(Date.UTC(1899, 11, 30) + serial * 86400000)
-    return date.toISOString().slice(0, 10)
-  }
-  return value
+  return normalizeEmployeeImportDate(value) ?? value
 }
 
 function EmployeeDirectory(p: { onEmployeesChanged: () => Promise<void>; fieldExchange: EmployeeFieldExchange; configureFields: (clientId: number) => void; onExcelExport: (rows: Employee[]) => void; documentRevision: number; clientScoped: boolean; clients: Client[]; clientScopeOptions: PayrollScopeOption[]; locations: WorkLocation[]; employees: Employee[]; clientFilter: number; setClientFilter: (id: number) => void; dashboardKey: string; dashboardFilters: string; clearDashboard: () => void; onNew: () => void; onEdit: (employee: Employee, infotype?: EmployeeInfotypeCode) => void; onDelete: (employee: Employee) => void; onDownloadTemplate: () => void; onBulkUpload: () => void }) {

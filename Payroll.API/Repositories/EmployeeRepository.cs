@@ -112,6 +112,7 @@ DateOfJoining=@DateOfJoining WHERE Id=@Id AND ClientId=@ClientId", employee, tx)
         else
             await WriteCurrentInfotypesAsync(db, after, actionType, effectiveDate ?? EffectiveDate(after), reason, changedBy, before, wasNew ? null : NormalizeInfotypeCodes(infotypeCode), tx);
         if (synchronizeAttendancePolicies) await SyncAttendancePolicyMappingsAsync(db, after, before, tx);
+        await RecruitmentEmployeeMasterSync.EmployeeSavedAsync(db, tx, before, after, changedBy ?? "System");
         return employee.Id;
     }
 
@@ -1972,23 +1973,7 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@table AND COLUMN_NAME=@column", ne
         var total = known.Sum(name => GetSheet(workbook, name).Skip(1).Count(row => !Blank(row)));
         return total > 0 ? total : GetEmployeeDataSheet(workbook).Skip(1).Count(row => !Blank(row));
     }
-    static bool TryDate(string value, out string date)
-    {
-        date = "";
-        if (string.IsNullOrWhiteSpace(value)) return true;
-        value = value.Trim();
-        if (double.TryParse(value, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var serial) && serial >= 20000 && serial <= 80000)
-        {
-            date = DateTime.FromOADate(serial).ToString("yyyy-MM-dd");
-            return true;
-        }
-        if (DateTime.TryParseExact(value, "yyyy-MM-dd", null, System.Globalization.DateTimeStyles.None, out var exact) || DateTime.TryParse(value, out exact))
-        {
-            date = exact.ToString("yyyy-MM-dd");
-            return true;
-        }
-        return false;
-    }
+    internal static bool TryDate(string value, out string date) => EmployeeImportDate.TryNormalize(value, out date);
     static bool TryBool(string value, bool fallback, out bool result)
     {
         result = fallback;

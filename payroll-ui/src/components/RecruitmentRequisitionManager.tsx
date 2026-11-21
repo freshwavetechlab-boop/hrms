@@ -36,6 +36,7 @@ import RecruitmentJobDescriptionManager, { type RecruitmentJobDescriptionManager
 import EntityAttachmentPanel from './EntityAttachmentPanel'
 import { downloadHiringSeedTemplate } from '../services/recruitmentSeedPackService'
 import { PageHeaderPortal } from './layout/AppPageHeader'
+import { canCreateHiringRequests, canEditHiringRequest, canMaintainApprovedRequisitions, hiringRequestDeleteBlock } from '../utils/requisitionAccess'
 import './RecruitmentRequisitionManager.css'
 
 type Props = {
@@ -81,7 +82,7 @@ const emptyMasters: MasterOptions = {
 export default function RecruitmentRequisitionManager({ initialClientId = 0, clientScopeManaged = false, initialOpen = false, initialRequisitionId = 0, initialJdHistory = false, initialWorkOrderId = 0, initialWorkOrderLineId = 0, statusScope = [], showStatusFilter = true, embedded = false, pipelinePositions = [], onOpenPipeline, onOpenRequestPipeline, onChanged, onPrepareJobDescription }: Props) {
   const session = useAuthSession()
   const canReviewWorkOrder = Boolean(session?.user.permissions.some(permission => ['recruitment.manage', 'settings.manage'].includes(permission)))
-  const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
+  const canDelete = canMaintainApprovedRequisitions(session?.user)
   const canManageMasters = Boolean(session?.user.permissions.includes('settings.manage'))
   const [form] = Form.useForm<SaveRecruitmentRequisition>()
   const [clients, setClients] = useState<Client[]>([])
@@ -98,6 +99,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const [rows, setRows] = useState<RecruitmentRequisition[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [submitDraft, setSubmitDraft] = useState<RecruitmentRequisition | null>(null)
   const [submissionNotice, setSubmissionNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
@@ -142,10 +144,10 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const sourceParseRef = useRef<RecruitmentRequestDocumentParseResult | null>(null)
   const selectedClientId = watchedForm.clientId
   const sourceDocumentName = Form.useWatch('sourceDocumentName', form) || ''
-  const canSeedHiring = statusScope.length === 0 || statusScope.some(status => editableStatuses.has(status))
+  const canSeedHiring = canReviewWorkOrder && canCreateHiringRequests(session?.user) && (statusScope.length === 0 || statusScope.some(status => editableStatuses.has(status)))
   const replacementHiring = watchedForm.isReplacement
   const budgetAvailable = watchedForm.budgetAvailable
-  const approvedEdit = activeRequest?.status === 'Approved' && watchedForm.id > 0 && canDelete && !readOnly
+  const approvedEdit = activeRequest?.status === 'Approved' && watchedForm.id > 0 && canEditHiringRequest(session?.user, activeRequest) && !readOnly
   const clientOptions = useMemo(() => clients.map(row => ({ value: Number(row.id), label: row.name })), [clients])
 
   function newBrowserDraftKey() {
@@ -462,12 +464,12 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     {
       title: 'Actions', key: 'actions', fixed: 'right', width: 180,
       render: (_, row) => <Space className="rfr-row-actions" size={4} wrap={false}>
-        {editableStatuses.has(row.status) || (canDelete && row.status === 'Approved')
+        {canEditHiringRequest(session?.user, row)
           ? <Tooltip title={row.status === 'Approved' ? 'Edit approved request' : 'Edit draft'}><Button aria-label={row.status === 'Approved' ? 'Edit approved request' : 'Edit draft'} size="small" icon={<EditOutlined />} onClick={() => openRequest(row)} /></Tooltip>
           : <Tooltip title="View request"><Button aria-label="View request" size="small" icon={<EyeOutlined />} onClick={() => openRequest(row, true)} /></Tooltip>}
-        {editableStatuses.has(row.status) && <Tooltip title="Submit hiring request"><Button aria-label="Submit" size="small" icon={<SendOutlined />} loading={submitting && submitDraft?.id === row.id} onClick={() => { setSubmissionNotice(null); setSubmitDraft(row) }} data-mail-event="RFR.SUBMIT" data-mail-resource-type="RecruitmentRequisition" data-mail-resource-id={row.id} data-mail-client-id={row.clientId} data-mail-action-label="Submit hiring request" /></Tooltip>}
+        {canEditHiringRequest(session?.user, row) && editableStatuses.has(row.status) && <Tooltip title="Submit hiring request"><Button aria-label="Submit" size="small" icon={<SendOutlined />} loading={submitting && submitDraft?.id === row.id} onClick={() => { setSubmissionNotice(null); setSubmitDraft(row) }} data-mail-event="RFR.SUBMIT" data-mail-resource-type="RecruitmentRequisition" data-mail-resource-id={row.id} data-mail-client-id={row.clientId} data-mail-action-label="Submit hiring request" /></Tooltip>}
         {(editableStatuses.has(row.status) || row.status === 'Approved') && onPrepareJobDescription && <Tooltip title={jobDescriptionActionLabel(row.jobDescriptionStatus)}><Button aria-label={jobDescriptionActionLabel(row.jobDescriptionStatus)} data-testid={`prepare-jd-${row.id}`} size="small" icon={<FilePdfOutlined />} onClick={() => onPrepareJobDescription(row)} /></Tooltip>}
-        {canDelete && <Popconfirm placement="left" title="Delete this requisition?" description={<span>Delete its open position and job-description versions first. This cannot be undone.<br /><Button size="small" type="link" onClick={() => setJdHistoryRequest(row)}>Manage linked JD versions</Button></span>} okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteRecruitmentRequisition(row.id); if (response.ok) await refreshRows(); else if (/linked job[- ]description version/i.test(response.error)) setJdHistoryRequest(row) }}><Button title="Delete requisition" danger aria-label="Delete requisition" size="small" icon={<DeleteOutlined />} /></Popconfirm>}
+        {canDelete && <Popconfirm disabled={!!hiringRequestDeleteBlock(row)} placement="left" title="Delete this requisition?" description={<span>Delete its open position and job-description versions first. This cannot be undone.<br /><Button size="small" type="link" onClick={() => setJdHistoryRequest(row)}>Manage linked JD versions</Button></span>} okText="Delete" okButtonProps={{ danger: true }} onConfirm={async () => { const response = await deleteRecruitmentRequisition(row.id); if (response.ok) await refreshRows(); else if (/linked job[- ]description version/i.test(response.error)) setJdHistoryRequest(row) }}><Button disabled={!!hiringRequestDeleteBlock(row)} title={hiringRequestDeleteBlock(row) || "Delete requisition"} danger aria-label="Delete requisition" size="small" icon={<DeleteOutlined />} /></Popconfirm>}
       </Space>,
     },
   ]
@@ -487,7 +489,8 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   }
 
   async function openNew(discardDraft = false) {
-    if (saving || sourceParsing) return
+    if (saving || sourceParsing || !canCreateHiringRequests(session?.user)) return
+    setSaveError('')
     const key = newBrowserDraftKey()
     const keepSourceFile = !discardDraft && activeBrowserDraftKey.current === key
     if (discardDraft) {
@@ -513,7 +516,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       setActiveRequest(restoredRequest)
       draft.requesterUserId = restoredRequest.requesterUserId
       draft.requestedByEmployeeId = restoredRequest.requestedByEmployeeId
-      setReadOnly(!editableStatuses.has(restoredRequest.status) && !(canDelete && restoredRequest.status === 'Approved'))
+      setReadOnly(!canEditHiringRequest(session?.user, restoredRequest))
     }
     targetJoiningManual.current = Boolean(draft.targetJoiningDate)
     form.resetFields()
@@ -524,11 +527,12 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   }
 
   function openRequest(row: RecruitmentRequisition, forceReadOnly = false) {
+    setSaveError('')
     activeBrowserDraftKey.current = `frevo:hiring-request:request:${session?.user.id || 'anonymous'}:${row.id}`
     setAutoSaveState('idle')
     setAutoSavedAt(row.updatedAt ? new Date(row.updatedAt) : null)
     setAtsSkillWeight(0)
-    setReadOnly(forceReadOnly || (!editableStatuses.has(row.status) && !(canDelete && row.status === 'Approved')))
+    setReadOnly(forceReadOnly || !canEditHiringRequest(session?.user, row))
     setActiveRequest(row)
     targetJoiningManual.current = true
     setTargetSlaDays(null)
@@ -692,6 +696,11 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
 
   async function saveRequest(submitAfterSave: boolean, reviewedValues?: SaveRecruitmentRequisition) {
     if (saving || sourceParsing || sourcePrefillLoading) return
+    setSaveError('')
+    if (!canCreateHiringRequests(session?.user) || activeRequest && !canEditHiringRequest(session?.user, activeRequest)) {
+      setSaveError('You do not have permission to edit this hiring request in its current status.')
+      return
+    }
     if (requesterUnresolved) return void message.warning('Wait for the requester list or retry loading it before saving this request.')
     if (reviewedValues) form.setFieldsValue(reviewedValues)
     persistBrowserDraft()
@@ -717,11 +726,15 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       if (values.workOrderId && !review.workOrderNumber.trim()) return void message.error('Work order number is required.')
       if (review.workOrderNumber.trim().length > 120) return void message.error('Work order number must be at most 120 characters.')
     }
-    if (watchedForm.id > 0 && embeddedJdRef.current && !await embeddedJdRef.current.saveDraftIfNeeded()) return
+    if (watchedForm.id > 0 && embeddedJdRef.current && !await embeddedJdRef.current.saveDraftIfNeeded()) {
+      setSaveError('The linked job description could not be saved. Review the JD message before retrying the hiring request.')
+      return
+    }
     setSaving(true)
     try {
       const saved = await saveRecruitmentRequisition(normalize(values))
       if (!saved.ok || !saved.data) {
+        setSaveError(saved.error || 'The hiring request could not be saved. Refresh the request before retrying.')
         if (saved.status === 0) setSourcePrefillWarning('The API did not confirm the hiring-request save. Your browser draft is retained. Check the connection and the request list before retrying; the server may still have processed the request.')
         return void message.error(saved.error || 'Hiring request could not be saved.')
       }
@@ -837,9 +850,9 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     {!embedded && <header className="rfr-header">
       <div><span>Recruitment</span><h2>Hiring Requests</h2><p>Raise, review and submit workforce demand without leaving the request register.</p></div>
       <Space wrap>
-        <Button icon={<DownloadOutlined />} onClick={downloadHiringSeedTemplate}>Seed template</Button>
-        <Button icon={<UploadOutlined />} onClick={() => setSeedPackOpen(true)}>Import seed pack</Button>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => void openNew()} data-testid="new-hiring-request">New hiring request</Button>
+        {canSeedHiring && <><Button icon={<DownloadOutlined />} onClick={downloadHiringSeedTemplate}>Seed template</Button>
+        <Button icon={<UploadOutlined />} onClick={() => setSeedPackOpen(true)}>Import seed pack</Button></>}
+        {canCreateHiringRequests(session?.user) && <Button type="primary" icon={<PlusOutlined />} onClick={() => void openNew()} data-testid="new-hiring-request">New hiring request</Button>}
       </Space>
     </header>}
 
@@ -889,6 +902,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       />}
       {sourcePrefillWarning && <Alert className="rfr-source-warning" type="warning" showIcon message="Source record needs attention" description={sourcePrefillWarning} />}
       <Spin spinning={sourcePrefillLoading} tip="Loading the linked work order...">
+      {saveError && <Alert type="error" showIcon message="Hiring request was not saved" description={saveError} data-testid="hiring-request-save-error" style={{ marginBottom: 12 }} />}
       {!readOnly && <section className="rfr-source-parser" data-testid="hiring-request-source-parser">
         <div className="rfr-source-parser-copy"><FilePdfOutlined /><div><b>Prefill from hiring request / JD</b><span>{sourceDocumentName ? `${sourceDocumentName} is linked to this draft. Choose another file only to replace it.` : 'Choose one PDF, DOCX or TXT. Suggestions stay editable and nothing is submitted automatically.'}</span></div></div>
         <label className={`rfr-source-picker${sourceParsing ? ' is-busy' : ''}`}>

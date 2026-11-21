@@ -2,6 +2,7 @@ import { getJsonResult, postJson } from './apiClient'
 
 export type RecruitmentJoiningSelection = { clientId: number; offerIds: number[]; rosterRowIds?: number[]; importReleasedForEss?: boolean }
 export type RecruitmentJoiningCandidate = {
+  offerNumber?: string
   sourceType: 'Offer' | 'Roster'; sourceId: number; rowKey: string; rosterRowId?: number | null; releaseId?: number | null; acceptanceRecorded: boolean
   offerId: number; applicationId: number; candidateId: number; candidateCode: string; candidateName: string
   clientId: number; clientName: string; positionTitle: string; jobLocation: string; proposedJoiningDate: string

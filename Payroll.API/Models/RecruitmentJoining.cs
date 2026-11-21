@@ -19,6 +19,7 @@ public sealed class RecruitmentJoiningCandidate
     public long? ReleaseId { get; set; }
     public bool AcceptanceRecorded { get; set; }
     public long OfferId { get; set; }
+    public string OfferNumber { get; set; } = "";
     public long ApplicationId { get; set; }
     public long CandidateId { get; set; }
     public string CandidateCode { get; set; } = "";

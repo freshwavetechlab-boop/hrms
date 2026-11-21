@@ -100,10 +100,11 @@ VALUES(NULL,@EventCode,'RecruitmentRosterOffer',@ResourceId,@ClientId,@ToJson,'[
     private static async Task<List<RecruitmentOfferMailItem>> ReviewOfferMailAsync(MySqlConnection db,MySqlTransaction tx,int clientId,RecruitmentOfferMailRequest request,AuthUser user)
     {
         var rows=(await db.QueryAsync<RecruitmentDocumentRosterRow>("""
-SELECT r.*,CAST(r.ValuesJson AS CHAR) ValuesJson,c.CandidateCode,TRIM(CONCAT(c.FirstName,' ',c.LastName)) CandidateName,c.Email,c.Phone,c.ProfileStatus
+SELECT r.*,CAST(r.ValuesJson AS CHAR) ValuesJson,c.CandidateCode,TRIM(CONCAT(c.FirstName,' ',c.LastName)) CandidateName,c.Email,c.Phone,c.ProfileStatus,COALESCE(r.EmployeeId,c.EmployeeId) EmployeeId
 FROM recruitment_document_roster r JOIN recruitment_candidates c ON c.Id=r.CandidateId AND c.ClientId=r.ClientId
 WHERE r.ClientId=@ClientId AND r.Id IN @Ids ORDER BY r.Id
 """,new{ClientId=clientId,request.Ids},tx)).ToList();
+        await RecruitmentEmployeeMasterSync.ApplyAsync(db, rows, tx);
         var locations=await RecruitmentAccessScope.WorkLocationsAsync(db,user,clientId,tx);
         if(rows.Count!=request.Ids.Count || rows.Any(row=>!CanSeeLocation(user,row.WorkLocationId,locations))) throw new UnauthorizedAccessException();
         var clientName=await db.ExecuteScalarAsync<string>("SELECT Name FROM clients WHERE Id=@Id",new{Id=clientId},tx) ?? "";

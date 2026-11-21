@@ -140,7 +140,9 @@ ORDER BY r.UpdatedAt DESC LIMIT 500";
         if (request.Id > 0)
         {
             existing = await db.QueryFirstOrDefaultAsync<RecruitmentRequisition>("SELECT * FROM recruitment_requisitions WHERE Id=@Id", new { request.Id });
-            if (existing is null || !CanModify(existing, user, canManage)) return (null, "Draft not found.");
+            if (existing is null || !RecruitmentPermissions.CanEditRequisition(user, existing)
+                || !await RecruitmentAccessScope.CanAccessLocationAsync(db, user, existing.ClientId, existing.JobLocation))
+                return (null, "The hiring request is outside your edit permissions or client/location scope.");
             var canEditApproved = existing.Status == "Approved" && user.Permissions.Contains("settings.manage", StringComparer.OrdinalIgnoreCase);
             if (existing.Status is not ("Draft" or "Sent Back") && !canEditApproved) return (null, "Only draft or sent back requisitions can be edited. Administrators can also edit approved requests.");
             if (request.ClientId is > 0 && request.ClientId.Value != existing.ClientId)
@@ -483,7 +485,7 @@ PositionName=@PositionName,NumberOfPositions=@NumberOfPositions,Location=@Locati
         var row = await db.QueryFirstOrDefaultAsync<RecruitmentRequisition>(
             "SELECT * FROM recruitment_requisitions WHERE Id=@Id AND (@ClientId IS NULL OR ClientId=@ClientId)",
             new { Id = id, user.ClientId });
-        if (row is null) return (false, "Requisition was not found in your permitted client scope.");
+        if (row is null || !SelectedClientAccess.Allows(user, row.ClientId)) return (false, "Requisition was not found in your permitted client scope.");
         if (!await RecruitmentAccessScope.CanAccessLocationAsync(db, user, row.ClientId, row.JobLocation)) return (false, "Requisition was not found in your permitted location scope.");
 
         var openPositions = await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_open_positions WHERE RequisitionId=@Id", new { Id = id });
@@ -961,12 +963,13 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
             }, transaction);
     }
 
-    private static bool CanView(RecruitmentRequisition row, AuthUser user)
+    internal static bool CanView(RecruitmentRequisition row, AuthUser user)
     {
-        if (user.ClientId is not null && user.ClientId != row.ClientId) return false;
+        if (!SelectedClientAccess.Allows(user, row.ClientId)) return false;
         if (IsOwnRequisition(row, user)) return true;
-        return user.Permissions.Contains("recruitment.manage", StringComparer.OrdinalIgnoreCase) ||
-               user.Permissions.Contains("recruitment.rfr.view", StringComparer.OrdinalIgnoreCase);
+        // Use the same administrator rule as the endpoint and approved editor.
+        // Otherwise settings-only administrators cannot read back a saved row.
+        return RecruitmentPermissions.CanViewRequisitions(user);
     }
 
     private static bool CanModify(RecruitmentRequisition row, AuthUser user, bool canManage)
@@ -978,14 +981,9 @@ WHERE PositionId=@PositionId AND PipelineVersionId=@PipelineVersionId AND IsActi
         || row.RequesterUserId == user.Id || (user.EmployeeId is > 0 && row.RequestedByEmployeeId == user.EmployeeId.Value);
     private static Task<bool> IsRequesterAllowedAsync(AuthUser user) => Task.FromResult(HasRecruitmentCreateAccess(user));
 
-    public static bool HasRecruitmentAccess(AuthUser user) =>
-        user.Permissions.Contains("recruitment.manage", StringComparer.OrdinalIgnoreCase) ||
-        user.Permissions.Contains("recruitment.rfr.view", StringComparer.OrdinalIgnoreCase) ||
-        user.Permissions.Contains("recruitment.rfr.create", StringComparer.OrdinalIgnoreCase);
+    public static bool HasRecruitmentAccess(AuthUser user) => RecruitmentPermissions.CanViewRequisitions(user);
 
-    public static bool HasRecruitmentCreateAccess(AuthUser user) =>
-        user.Permissions.Contains("recruitment.manage", StringComparer.OrdinalIgnoreCase) ||
-        user.Permissions.Contains("recruitment.rfr.create", StringComparer.OrdinalIgnoreCase);
+    public static bool HasRecruitmentCreateAccess(AuthUser user) => RecruitmentPermissions.CanCreateRequisitions(user);
 
     private static Task<RecruitmentSettingRow?> GetSettingAsync(MySqlConnection db, int clientId) =>
         db.QueryFirstOrDefaultAsync<RecruitmentSettingRow>("SELECT * FROM recruitment_settings WHERE ClientId=@ClientId AND IsActive=TRUE ORDER BY Id DESC LIMIT 1", new { ClientId = clientId });
@@ -1285,6 +1283,8 @@ VALUES (@RfrNumber,@RequestDate,@RequestedByEmployeeId,@RequestedByUserId,@Reque
         catch { return "{}"; }
     }
     private static string ListSql(string where) => $@"SELECT r.*,c.Name ClientName,COALESCE(w.Name,'') BranchName,COALESCE(NULLIF(requesterUser.DisplayName,''),NULLIF(requesterUser.Email,''),CONCAT(requester.FirstName,' ',COALESCE(requester.LastName,'')),'') RequestedByName,CONCAT(repl.FirstName,' ',COALESCE(repl.LastName,'')) ReplacementEmployeeName,
+EXISTS(SELECT 1 FROM recruitment_open_positions linkedPosition WHERE linkedPosition.RequisitionId=r.Id) HasLinkedOpenPosition,
+EXISTS(SELECT 1 FROM recruitment_job_description_versions linkedJd WHERE linkedJd.RequisitionId=r.Id) HasLinkedJobDescription,
 (SELECT jd.Id FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=r.Id ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1) LatestJobDescriptionVersionId,
 (SELECT jd.VersionNumber FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=r.Id ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1) LatestJobDescriptionVersionNumber,
 COALESCE((SELECT jd.Status FROM recruitment_job_description_versions jd WHERE jd.RequisitionId=r.Id ORDER BY jd.VersionNumber DESC,jd.Id DESC LIMIT 1),'Not Started') JobDescriptionStatus,

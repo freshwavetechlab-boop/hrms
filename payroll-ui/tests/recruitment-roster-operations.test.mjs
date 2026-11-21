@@ -13,6 +13,12 @@ const rows = [
   { id: 3, sourceGroup: 'Original Mumbai list', workLocationId: null, workLocation: 'NIRWoH – Mumbai', documentIssues: ['Designation required'] },
 ]
 
+test('Employee Master fields stay automatic while offer-specific corrections remain editable', () => {
+  const fields = ['monthlyGross', 'positionTitle', 'contractEndDate'].map(key => ({ key }))
+  const row = { workLocationId: 11, employeeManagedFields: ['monthlyGross', 'positionTitle'], values: { monthlyGross: '72800', positionTitle: 'Research role', contractEndDate: '2026-12-31' } }
+  assert.deepEqual(rosterEditValues(fields, row, { monthlyGross: '99999', positionTitle: 'Wrong override', contractEndDate: '2027-01-31' }), { contractEndDate: '2027-01-31' })
+})
+
 test('roster edits retain pending blanks and protect identity and linked master fields', () => {
   const fields = ['joiningDate', 'contractEndDate', 'projectName', 'candidateEmail', 'institutionName', 'monthlyGross'].map(key => ({ key }))
   const row = { workLocationId: 11, values: { joiningDate: '2026-11-03', contractEndDate: '', projectName: 'Old project', candidateEmail: 'old@example.test', institutionName: 'Master Institute', monthlyGross: '26000.00' } }

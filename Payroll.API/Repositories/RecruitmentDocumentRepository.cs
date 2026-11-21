@@ -59,6 +59,9 @@ CREATE TABLE IF NOT EXISTS recruitment_document_roster_audit (
         var rows = (await db.QueryAsync<RecruitmentDocumentRosterRow>("""
 SELECT r.Id,r.ClientId,r.CandidateId,r.TemplateId,r.WorkLocationId,r.OfferNumber,r.SourceGroup,r.SourceFileName,r.SourceSheetName,r.SourceRow,CAST(r.ValuesJson AS CHAR) ValuesJson,
  (SELECT MAX(ReleasedAt) FROM recruitment_document_roster_releases rr WHERE rr.RosterId=r.Id AND rr.ClientId=r.ClientId) ReleasedAt,
+ COALESCE((SELECT InputsHash FROM recruitment_document_roster_releases rr WHERE rr.RosterId=r.Id AND rr.ClientId=r.ClientId ORDER BY ReleasedAt DESC,Id DESC LIMIT 1),'') ReleasedInputsHash,
+ COALESCE((SELECT TemplateHash FROM recruitment_document_roster_releases rr WHERE rr.RosterId=r.Id AND rr.ClientId=r.ClientId ORDER BY ReleasedAt DESC,Id DESC LIMIT 1),'') ReleasedTemplateHash,
+ COALESCE((SELECT LocationHash FROM recruitment_document_roster_releases rr WHERE rr.RosterId=r.Id AND rr.ClientId=r.ClientId ORDER BY ReleasedAt DESC,Id DESC LIMIT 1),'') ReleasedLocationHash,
  t.TemplateName,c.CandidateCode,TRIM(CONCAT(c.FirstName,' ',c.LastName)) CandidateName,c.Email,c.Phone,c.ProfileStatus,COALESCE(r.EmployeeId,c.EmployeeId) EmployeeId,
  COALESCE((SELECT EmployeeCode FROM employees e WHERE e.Id=COALESCE(r.EmployeeId,c.EmployeeId) AND e.ClientId=r.ClientId),'') EmployeeCode
 FROM recruitment_document_roster r JOIN recruitment_candidates c ON c.Id=r.CandidateId AND c.ClientId=r.ClientId
@@ -66,7 +69,11 @@ LEFT JOIN recruitment_templates t ON t.Id=r.TemplateId WHERE r.ClientId=@ClientI
 """, new { ClientId = clientId })).ToList();
         var templates = (await db.QueryAsync<RecruitmentTemplate>("SELECT * FROM recruitment_templates WHERE ClientId IN (0,@ClientId)", new { ClientId = clientId })).ToDictionary(t => t.Id);
         var locations = await RecruitmentAccessScope.WorkLocationsAsync(db, user, clientId);
+        foreach (var row in rows) row.SourceRevision = RowRevision(row.ValuesJson, row.WorkLocationId);
+        await RecruitmentEmployeeMasterSync.ApplyAsync(db, rows);
         rows = rows.Where(row => CanSeeLocation(user, row.WorkLocationId, locations)).ToList();
+        var clientName = await db.ExecuteScalarAsync<string>("SELECT Name FROM clients WHERE Id=@ClientId", new { ClientId = clientId }) ?? "";
+        var organizationName = await db.ExecuteScalarAsync<string>("SELECT Name FROM organizations ORDER BY Id LIMIT 1") ?? "";
         foreach (var row in rows)
         {
             if (row.ReleasedAt.HasValue) row.ReleasedAt = DateTime.SpecifyKind(row.ReleasedAt.Value, DateTimeKind.Utc);
@@ -79,6 +86,13 @@ LEFT JOIN recruitment_templates t ON t.Id=r.TemplateId WHERE r.ClientId=@ClientI
             {
                 var values = new Dictionary<string, string>(row.Values, StringComparer.OrdinalIgnoreCase) { ["candidateName"] = row.CandidateName, ["candidateEmail"] = row.Email, ["candidatePhone"] = row.Phone };
                 LayoutDocumentPdfService.PrepareValues(LayoutDocumentPdfService.Parse(template.BodyTemplate), values, false, out var missing); row.DocumentIssues = missing;
+                if (row.ReleasedAt.HasValue)
+                {
+                    var releasedValues = new Dictionary<string, string>(row.Values, StringComparer.OrdinalIgnoreCase);
+                    PrepareReleaseValues(row, releasedValues, clientName, organizationName, row.OfferNumber);
+                    row.HasUnreleasedChanges = Hash(SerializeValues(releasedValues)) != row.ReleasedInputsHash
+                        || Hash(template.BodyTemplate) != row.ReleasedTemplateHash || Hash(JsonSerializer.Serialize(location, Json)) != row.ReleasedLocationHash;
+                }
             }
             if (row.ProfileStatus == "Archived") row.DocumentIssues.Add("The linked profile is archived");
             if (row.WorkLocationId.HasValue && location is null) row.DocumentIssues.Add("The linked work location is unavailable or inactive");
@@ -169,24 +183,27 @@ SELECT LAST_INSERT_ID();
         Access(user, clientId);
         if (!RecruitmentPermissions.Has(user, "recruitment.candidate.manage", "recruitment.offer.manage")) throw new UnauthorizedAccessException();
         await using var db = Db(); await db.OpenAsync(); await EnsureAsync(db);
-        var row = await db.QuerySingleOrDefaultAsync<RecruitmentDocumentRosterRow>("SELECT Id,ClientId,TemplateId,WorkLocationId,CAST(ValuesJson AS CHAR) ValuesJson FROM recruitment_document_roster WHERE Id=@Id AND ClientId=@ClientId", new { Id = id, ClientId = clientId }) ?? throw new InvalidOperationException("Employee list row was not found.");
-        await RequireLocationAsync(db, user, clientId, row.WorkLocationId);
-        var template = await TemplateAsync(db, clientId, row.TemplateId); var layout = LayoutDocumentPdfService.Parse(template.BodyTemplate);
+        var allowedLocations = await RecruitmentAccessScope.WorkLocationsAsync(db, user, clientId);
+        await using var tx = await db.BeginTransactionAsync();
+        var row = await db.QuerySingleOrDefaultAsync<RecruitmentDocumentRosterRow>(RosterJoiningRowsSql + " WHERE r.Id=@Id AND r.ClientId=@ClientId FOR UPDATE", new { Id = id, ClientId = clientId }, tx) ?? throw new InvalidOperationException("Employee list row was not found.");
+        var storedValues = row.ValuesJson;
+        await RecruitmentEmployeeMasterSync.ApplyAsync(db, [row], tx);
+        if (!CanSeeLocation(user, row.WorkLocationId, allowedLocations)) throw new UnauthorizedAccessException();
+        if (RowRevision(row.ValuesJson, row.WorkLocationId) != request.Revision) throw new InvalidOperationException("This row or Employee Master changed after it was opened. Refresh and review the current details.");
+        var template = await TemplateAsync(db, clientId, row.TemplateId, tx); var layout = LayoutDocumentPdfService.Parse(template.BodyTemplate);
         if (request.Values is null || request.Values.Count > 80 || request.Values.Any(p => !layout.Inputs.Any(f => f.Key.Equals(p.Key, StringComparison.OrdinalIgnoreCase)) || p.Value is null || p.Value.Length > 4000))
             throw new InvalidOperationException("Only the configured document fields can be edited.");
         var before = ReadValues(row.ValuesJson);
         foreach (var key in new[] { "candidateName", "candidateEmail", "candidatePhone", "candidateCode" })
             if (request.Values.TryGetValue(key, out var changed) && before.GetValueOrDefault(key, "") != changed) throw new InvalidOperationException("Use Edit candidate to change identity/contact details. Document editing cannot change the linked profile identity.");
+        if (row.EmployeeManagedFields.Any(key => request.Values.TryGetValue(key, out var value) && value.Trim() != before.GetValueOrDefault(key, "")))
+            throw new InvalidOperationException("Update synced details in Employee Master. Refresh here to use those details in the corrected letter.");
         var values = new Dictionary<string, string>(before, StringComparer.OrdinalIgnoreCase);
         foreach (var (key, value) in request.Values)
             if (!row.WorkLocationId.HasValue || !LocationInputKeys.Contains(key)) values[key] = value.Trim();
         var next = SerializeValues(values);
-        await using var tx = await db.BeginTransactionAsync();
-        var locked = await db.QuerySingleOrDefaultAsync<RosterStored>("SELECT WorkLocationId,CAST(ValuesJson AS CHAR) ValuesJson FROM recruitment_document_roster WHERE Id=@Id AND ClientId=@ClientId FOR UPDATE", new { Id = id, ClientId = clientId }, tx);
-        var current = locked?.ValuesJson;
-        if (current is null || RowRevision(current, locked!.WorkLocationId) != request.Revision) throw new InvalidOperationException("This row changed after it was opened. Refresh and review the current details.");
         await db.ExecuteAsync("UPDATE recruitment_document_roster SET ValuesJson=@Values,UpdatedByUserId=@UserId,UpdatedAt=CURRENT_TIMESTAMP(6) WHERE Id=@Id AND ClientId=@ClientId", new { Id = id, ClientId = clientId, Values = next, UserId = user.Id }, tx);
-        await db.ExecuteAsync("INSERT INTO recruitment_document_roster_audit(RosterId,ClientId,Action,OldValuesJson,NewValuesJson,ActorUserId) VALUES(@Id,@ClientId,'Edit inputs',@Old,@New,@UserId)", new { Id = id, ClientId = clientId, Old = current, New = next, UserId = user.Id }, tx);
+        await db.ExecuteAsync("INSERT INTO recruitment_document_roster_audit(RosterId,ClientId,Action,OldValuesJson,NewValuesJson,ActorUserId) VALUES(@Id,@ClientId,'Edit inputs',@Old,@New,@UserId)", new { Id = id, ClientId = clientId, Old = storedValues, New = next, UserId = user.Id }, tx);
         await tx.CommitAsync();
     }
 
@@ -194,11 +211,12 @@ SELECT LAST_INSERT_ID();
     {
         Access(user, clientId); await using var db = Db(); await db.OpenAsync(); await EnsureAsync(db);
         var row = await db.QuerySingleOrDefaultAsync<RecruitmentDocumentRosterRow>("""
-SELECT r.*,CAST(r.ValuesJson AS CHAR) ValuesJson,c.CandidateCode,TRIM(CONCAT(c.FirstName,' ',c.LastName)) CandidateName,c.Email,c.Phone
+SELECT r.*,CAST(r.ValuesJson AS CHAR) ValuesJson,c.CandidateCode,TRIM(CONCAT(c.FirstName,' ',c.LastName)) CandidateName,c.Email,c.Phone,COALESCE(r.EmployeeId,c.EmployeeId) EmployeeId
 FROM recruitment_document_roster r JOIN recruitment_candidates c ON c.Id=r.CandidateId AND c.ClientId=r.ClientId AND c.ProfileStatus<>'Archived'
 WHERE r.Id=@Id AND r.ClientId=@ClientId
 """, new { Id = id, ClientId = clientId }) ?? throw new InvalidOperationException("Employee list row was not found or the linked profile is archived.");
         var template = await TemplateAsync(db, clientId, row.TemplateId);
+        await RecruitmentEmployeeMasterSync.ApplyAsync(db, [row]);
         await RequireLocationAsync(db, user, clientId, row.WorkLocationId);
         var clientName = await db.ExecuteScalarAsync<string>("SELECT Name FROM clients WHERE Id=@ClientId", new { ClientId = clientId }) ?? "Client";
         var organization = await db.QueryFirstOrDefaultAsync<Organization>("SELECT * FROM organizations ORDER BY Id LIMIT 1");

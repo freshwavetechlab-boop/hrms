@@ -7,6 +7,8 @@ import ts from 'typescript'
 const source = readFileSync(new URL('../src/components/RecruitmentRequisitionManager.tsx', import.meta.url), 'utf8')
 const requesters = {}
 new Function('exports', ts.transpileModule(readFileSync(new URL('../src/utils/recruitmentRequesters.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText)(requesters)
+const access = {}
+new Function('exports', ts.transpileModule(readFileSync(new URL('../src/utils/requisitionAccess.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText)(access)
 const functions = source.slice(source.indexOf('  function newBrowserDraftKey()'), source.indexOf('  function textRules('))
   + source.slice(source.indexOf('  async function openNew('), source.indexOf('  function openRequest('))
 
@@ -19,7 +21,8 @@ function harness() {
       getItem: key => storage.get(key) ?? null,
       setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key),
     } }, URLSearchParams,
-    session: { user: { id: 7, employeeId: 8 } }, initialClientId: 42, clientFilter: 42,
+    ...access,
+    session: { user: { id: 7, employeeId: 8, clientId: 42, roles: ['hiring_manager'], permissions: ['recruitment.rfr.create'] } }, initialClientId: 42, clientFilter: 42,
     requesterSnapshot: { clientId: 42, rows: [{ userId: 7, displayName: 'Requester', email: 'requester@example.invalid', clientId: 42 }], status: 'ready', error: '' },
     recruitmentRequesterSelection: requesters.recruitmentRequesterSelection,
     initialWorkOrderId: 0, initialWorkOrderLineId: 0,
@@ -30,7 +33,7 @@ function harness() {
     form: { getFieldsValue: () => values, resetFields: () => { values = {} } },
     blankRequest: clientId => ({ id: 0, clientId, positionTitle: '', requestDate: '2026-09-22' }),
     applyDraft: draft => { values = draft }, applyPipelineTarget: async () => {},
-    ...Object.fromEntries(['SourceParse', 'SourceFile', 'AutoSavedAt', 'AutoSaveState', 'SourcePrefillWarning', 'AdvancedOpen', 'JdOpen', 'ReadOnly', 'ActiveRequest', 'AtsSkillWeight', 'SourceUploadProgress', 'DialogOpen'].map(key => [`set${key}`, value => { state[key] = value }])),
+    ...Object.fromEntries(['SourceParse', 'SourceFile', 'AutoSavedAt', 'AutoSaveState', 'SourcePrefillWarning', 'AdvancedOpen', 'JdOpen', 'ReadOnly', 'ActiveRequest', 'AtsSkillWeight', 'SourceUploadProgress', 'DialogOpen', 'SaveError'].map(key => [`set${key}`, value => { state[key] = value }])),
   })
   vm.runInContext(ts.transpileModule(functions, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context)
   return { context, state, storage, values: () => values }

@@ -26,9 +26,9 @@ const columns: Column<JoiningRecord>[] = [
   { key: 'issue', label: 'Details', wrap: true },
 ]
 
-export default function RecruitmentOfferJoiningWorkspace({ clientId, offers, onChanged, canAccept }: { clientId: number; offers: ReactNode; onChanged: () => Promise<void>; canAccept: boolean }) {
+export default function RecruitmentOfferJoiningWorkspace({ clientId, offers, offerCount = 0, onChanged, canAccept }: { clientId: number; offers: ReactNode | ((records: JoiningRecord[], loading: boolean) => ReactNode); offerCount?: number; onChanged: () => Promise<void>; canAccept: boolean }) {
   const session = useAuthSession(), navigate = useNavigate()
-  const canImport = session?.user.permissions.includes('employees.manage') || false
+  const canImport = session?.user.permissions.some(permission => ['employees.manage', 'settings.manage'].includes(permission)) || false
   const [pane, setPane] = useRecruitmentPreference('offerJoiningPane', 'offers')
   const [selected, setSelected] = useRecruitmentPreference<string[]>(`offerAcceptanceSelection:${clientId}`, [])
   const [rows, setRows] = useState<RecruitmentJoiningCandidate[]>([]), [visible, setVisible] = useState<string[]>([])
@@ -47,6 +47,13 @@ export default function RecruitmentOfferJoiningWorkspace({ clientId, offers, onC
     finally { if (token === generation.current) setLoading(false) }
   }, [clientId])
   useEffect(() => { void refresh(); return () => { generation.current++ } }, [refresh])
+  useEffect(() => {
+    const changed = () => { void refresh() }
+    window.addEventListener('recruitment:roster-changed', changed)
+    window.addEventListener('employees:changed', changed)
+    window.addEventListener('focus', changed)
+    return () => { window.removeEventListener('recruitment:roster-changed', changed); window.removeEventListener('employees:changed', changed); window.removeEventListener('focus', changed) }
+  }, [refresh])
   const records = useMemo(() => joiningRecords(rows, clientId), [rows, clientId])
   const released = useMemo(() => releasedJoiningRecords(records), [records])
   const joining = useMemo(() => records.filter(row => row.acceptanceRecorded || row.importStatus === 'Imported'), [records])
@@ -86,15 +93,16 @@ export default function RecruitmentOfferJoiningWorkspace({ clientId, offers, onC
     <PageHeaderPortal slot="recruitment-page-controls"><Space wrap>
       {currentPane !== 'offers' && canImport && <Button type="primary" icon={<ImportOutlined />} disabled={!importSelection.length || loading || busy} onClick={importIntoMaster}>Import selected into Employee Master ({importSelection.length})</Button>}
       {currentPane === 'released' && canAccept && <Button icon={<CheckOutlined />} disabled={!selectedCount || loading} loading={busy} onClick={() => void accept()}>Mark selected accepted ({selectedCount})</Button>}
-      {currentPane !== 'offers' && <Button icon={<ReloadOutlined />} disabled={busy} loading={loading} onClick={() => void refresh()}>Refresh</Button>}
+      <Button icon={<ReloadOutlined />} disabled={busy} loading={loading} onClick={() => void Promise.all([refresh(), onChanged()])}>Refresh</Button>
     </Space></PageHeaderPortal>
     <Segmented className="recruitment-offer-joining-tabs" aria-label="Offer and joining lists" value={currentPane} disabled={busy} options={[
-      { value: 'offers', label: 'All offers' }, { value: 'released', label: `Released letters (${released.length})` }, { value: 'joining', label: `Selected for joining (${joining.length})` },
+      { value: 'offers', label: `All offers (${offerCount + new Set(records.filter(row => row.sourceType === 'Roster').map(row => row.id)).size})` }, { value: 'released', label: `Released letters (${released.length})` }, { value: 'joining', label: `Selected for joining (${joining.length})` },
     ]} onChange={value => { setPane(String(value)); setVisible([]) }} />
     {error && <Alert type="error" showIcon message={error} />}
     {!clientId && currentPane !== 'offers' && <Alert type="info" showIcon message="Select a client to review released letters and joining candidates." />}
+    {!clientId && currentPane === 'offers' && <Alert type="info" showIcon message="Select a client to include Employee List offer letters alongside pipeline offers." />}
     {result && <Alert type={result.review ? 'warning' : 'success'} showIcon closable onClose={() => setResult(null)} message={`${result.accepted} accepted · ${result.alreadyAccepted} already recorded · ${result.review} need review`} description={result.review ? result.items.filter(item => item.status === 'Review').map((item, index) => <div key={index}>{item.candidateName || 'Candidate'}: {item.message}</div>) : undefined} />}
-    {currentPane === 'offers' ? offers : <>
+    {currentPane === 'offers' ? typeof offers === 'function' ? offers(records, loading) : offers : <>
       {currentPane === 'released' ? <>
         <div className="recruitment-offer-joining-toolbar"><span>Import released letters into Employee Master for ESS. Record candidate acceptance separately when needed.</span><Button size="small" disabled={busy || loading || !visible.length || !(canAccept || canImport)} onClick={() => setSelected(current => [...new Set([...current, ...visible])])}>Select all shown</Button><Button size="small" disabled={busy || !selected.length} onClick={() => setSelected([])}>Clear selection</Button></div>
         <DataTable key={`released:${clientId}`} rows={released} columns={columns} title="Released offer letters" rowLabel="offers" fillHeight loading={loading} onVisibleRowsChange={visibleChanged} exportFileName="released-offer-letters" rowSelection={{ selectedRowKeys: selected, onChange: keys => setSelected(keys.map(String)), getCheckboxProps: () => ({ disabled: busy || !(canAccept || canImport) }) }} emptyText="No released offers are waiting for acceptance." />
