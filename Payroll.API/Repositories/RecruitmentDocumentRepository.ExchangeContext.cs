@@ -22,8 +22,10 @@ public sealed partial class RecruitmentDocumentRepository
         public RosterExchangeTemplate Template { get; set; } = new();
         public List<RecruitmentDocumentRosterRow> Rows { get; set; } = [];
         public Dictionary<int, Employee> Employees { get; set; } = [];
+        public List<WorkflowApprover> Managers { get; set; } = [];
         public List<StandardComponent> Components { get; set; } = [];
         public Dictionary<string, string> ComponentIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, string> BaselineComponentIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public EmployeeFieldExchange Custom { get; set; } = new([], [], []);
         public List<WorkLocation> Locations { get; set; } = [];
         public HashSet<int> AllowedLocations { get; set; } = [];
@@ -46,9 +48,9 @@ public sealed partial class RecruitmentDocumentRepository
     private async Task<StandardContext> StandardContextAsync(MySqlConnection db, RosterExchangeSettings settings, AuthUser user)
     {
         StandardAccess(settings, user);
-        if (!await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM clients WHERE Id=@ClientId AND IsActive=TRUE)", settings)) throw new InvalidOperationException("Select an active client.");
-        var template = await TemplateAsync(db, settings.ClientId, settings.TemplateId);
-        var layout = LayoutDocumentPdfService.Parse(template.BodyTemplate);
+        var clientName = await db.QuerySingleOrDefaultAsync<string>("SELECT Name FROM clients WHERE Id=@ClientId AND IsActive=TRUE", settings)
+            ?? throw new InvalidOperationException("Select an active client.");
+        _ = await TemplateAsync(db, settings.ClientId, settings.TemplateId);
         var context = new StandardContext();
         context.AllowedLocations = (await RecruitmentAccessScope.WorkLocationsAsync(db, user, settings.ClientId)).Select(l => l.Id).ToHashSet();
         context.Locations = (await db.QueryAsync<WorkLocation>("SELECT * FROM worklocations WHERE ClientId=@ClientId", settings)).ToList();
@@ -58,42 +60,40 @@ public sealed partial class RecruitmentDocumentRepository
         var groups = allRows.Select(row => row.SourceGroup).Distinct().OrderBy(g => g, StringComparer.OrdinalIgnoreCase).ToList();
         context.Rows = allRows.Where(row => settings.SourceGroup.Length == 0 || row.SourceGroup == settings.SourceGroup).ToList();
         context.Employees = (await EmployeeRepository.ReadExcelPayrollIdentitySnapshotAsync(db, null, settings.ClientId)).ToDictionary(e => e.Id);
+        context.Managers = (await db.QueryAsync<WorkflowApprover>("SELECT Id,Email,ClientId FROM authusers WHERE IsActive=TRUE AND (ClientId IS NULL OR ClientId=@ClientId)", settings)).ToList();
         allRows = allRows.Where(row => row.EmployeeId is null || context.Employees.TryGetValue(row.EmployeeId.Value, out var master)
             && StandardCanSeeLocation(user, master.WorkLocationId, context.AllowedLocations)).ToList();
         groups = allRows.Select(row => row.SourceGroup).Distinct().OrderBy(g => g, StringComparer.OrdinalIgnoreCase).ToList();
         context.Rows = context.Rows.Where(row => row.EmployeeId is null || context.Employees.TryGetValue(row.EmployeeId.Value, out var employee)
             && StandardCanSeeLocation(user, employee.WorkLocationId, context.AllowedLocations)).ToList();
         context.Components = (await db.QueryAsync<StandardComponent>("SELECT CAST(Id AS CHAR) Id,Code,Name,Category,CalculationType,Active FROM salarycomponents ORDER BY Priority,Id")).ToList();
+        context.BaselineComponentIds = context.Components.ToDictionary(c => "SALARY:" + c.Code.ToUpperInvariant(), c => c.Id, StringComparer.OrdinalIgnoreCase);
         var forms = await EmployeeAttributeRepository.ExchangeFormsAsync(db, settings.ClientId);
         var customColumns = EmployeeAttributeRepository.Columns(forms);
         context.Custom = settings.Mode == "Update" && customColumns.Count > 0
             ? await new EmployeeAttributeRepository(configuration).ExchangeAsync(settings.ClientId, user)
             : new(forms, customColumns, []);
         var columns = StandardRosterColumns();
-        var used = context.Employees.Values.SelectMany(e => e.SalaryComponents.Where(p => p.Value != 0).Select(p => p.Key)).ToHashSet();
-        foreach (var component in context.Components.Where(c => c.Active || used.Contains(c.Id)))
-        {
-            var key = "SALARY:" + component.Code.ToUpperInvariant();
-            var readOnly = !component.Active || component.Category.Equals("Summary", StringComparison.OrdinalIgnoreCase);
-            var unit = component.CalculationType == "Daily Rate" ? "INR/day" : "INR/month";
-            columns.Add(new(key, $"{component.Name} {unit} [{key}]", "0008", "amount", readOnly, Description: component.CalculationType == "Daily Rate" ? "Employee rate in INR/day; blank keeps the existing rate." : $"{component.Category}; employee amount in INR/month. Blank keeps the existing amount; 0 sets zero."));
-            if (!readOnly) context.ComponentIds[key] = component.Id;
-        }
+        var revision = columns.Single(c => c.Key == "revision"); columns.Remove(revision);
         columns.AddRange(customColumns.Select(c => new RosterExchangeColumn(c.Code, c.Header, c.InfotypeCode,
             c.Field.FieldTypeCode == "DATE" ? "date" : "text", RequiredOnInsert: c.Field.IsRequired,
             Description: c.Field.FieldTypeCode == "MULTI_SELECT" ? "Separate option codes with a semicolon." : string.Join(", ", c.Field.Options.Where(o => o.IsActive).Select(o => o.OptionCode)))));
-        var represented = columns.Select(c => c.Key).Concat(new[] { "candidateName", "monthlyBasic", "monthlyHra", "hraRate", "salaryInWords", "jobLocation", "workLocationName", "accountNo", "ifsc", "pan", "aadhaar", "uan" }).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var input in layout.Inputs.Where(i => !represented.Contains(i.Key)))
-            columns.Add(new("OFFER:" + input.Key, $"{input.Label} [OFFER:{input.Key}]", "Offer", input.Type == "money" ? "money" : input.Type == "date" ? "date" : "text", Description: "Optional offer-letter input; blank keeps the existing value."));
-        context.Template = new() { ClientId = settings.ClientId, TemplateId = settings.TemplateId, SourceGroup = settings.SourceGroup, Columns = columns, ImportBatches = groups };
+        foreach (var component in context.Components.Where(c => StandardRosterSalaryInput(c.Code, c.Active)))
+        {
+            const string key = "SALARY:BASIC";
+            columns.Add(new(key, "Basic Salary INR/month [SALARY:BASIC]", "0008", "money", Description: "Employee's monthly Basic input. Salary templates calculate allowances, increments and other pay components."));
+            context.ComponentIds[key] = component.Id;
+        }
+        columns.Add(revision);
+        context.Template = new() { ClientId = settings.ClientId, ClientName = clientName, TemplateId = settings.TemplateId, SourceGroup = settings.SourceGroup, Columns = columns, ImportBatches = groups };
         foreach (var row in context.Rows)
         {
             var employee = row.EmployeeId.HasValue ? context.Employees.GetValueOrDefault(row.EmployeeId.Value) : null;
             var custom = employee is null ? null : context.Custom.Values.GetValueOrDefault(employee.Id);
             var values = StandardCurrentValues(row, employee, custom, context);
-            var revision = StandardRosterRevision(row, employee, custom);
-            values["revision"] = revision; context.Revisions[row.Id] = revision; context.Current[row.Id] = values;
-            if (settings.Mode == "Update") context.Template.Rows.Add(values);
+            var rowRevision = StandardRosterRevision(row, employee, custom);
+            values["revision"] = rowRevision; context.Revisions[row.Id] = rowRevision; context.Current[row.Id] = values;
+            if (settings.Mode == "Update") context.Template.Rows.Add(columns.ToDictionary(c => c.Key, c => values.GetValueOrDefault(c.Key, ""), StringComparer.OrdinalIgnoreCase));
         }
         return context;
     }
@@ -129,6 +129,8 @@ public sealed partial class RecruitmentDocumentRepository
             if (projected.TryGetValue("monthlyGross", out var gross)) values["monthlyGross"] = gross;
         }
         if (custom is not null) foreach (var pair in custom) values[pair.Key] = pair.Value;
+        var managerId = employee?.ReportingManagerUserId ?? (int.TryParse(values.GetValueOrDefault("reportingManagerUserId", ""), out var pendingManager) ? pendingManager : 0);
+        values["reportingManagerEmail"] = managerId > 0 ? context.Managers.SingleOrDefault(m => m.Id == managerId)?.Email ?? "" : values.GetValueOrDefault("reportingManagerEmail", "");
         var location = context.Locations.SingleOrDefault(l => l.Id == (employee?.WorkLocationId is > 0 ? employee.WorkLocationId : row.WorkLocationId));
         if (location is not null)
         {
@@ -137,7 +139,7 @@ public sealed partial class RecruitmentDocumentRepository
         }
         foreach (var column in context.Template.Columns.Where(c => c.Key.StartsWith("OFFER:", StringComparison.OrdinalIgnoreCase))) values[column.Key] = values.GetValueOrDefault(column.Key[6..], "");
         values["profileCode"] = row.CandidateCode; values["rowAction"] = "Apply"; values["changeReason"] = "";
-        return context.Template.Columns.ToDictionary(c => c.Key, c => values.GetValueOrDefault(c.Key, ""), StringComparer.OrdinalIgnoreCase);
+        return values; // Full private baseline retains omitted pay; exports use only the explicit columns above.
     }
 
     public async Task<RosterExchangeTemplate> StandardTemplateAsync(RosterExchangeSettings settings, AuthUser user)

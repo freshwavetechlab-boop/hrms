@@ -88,13 +88,14 @@ public sealed partial class RecruitmentDocumentRepository
                     if (!row.Values.ContainsKey("candidateEmail") && !row.Values.ContainsKey("candidatePhone")) throw new InvalidOperationException("Work Email or Mobile is required for insertion.");
                     if (row.Values.GetValueOrDefault("revision", "").Length > 0) throw new InvalidOperationException("Use the blank insertion template for a new profile.");
                 }
-                var employee = StandardRosterCorrectionEmployee(existing?.EmployeeId is { } employeeId ? context.Employees.GetValueOrDefault(employeeId) : null, settings.ClientId, current, row.Values, context.ComponentIds);
+                var employee = StandardRosterCorrectionEmployee(existing?.EmployeeId is { } employeeId ? context.Employees.GetValueOrDefault(employeeId) : null, settings.ClientId, current, row.Values, context.ComponentIds, context.BaselineComponentIds);
+                if (row.Values.TryGetValue("reportingManagerEmail", out var managerEmail))
+                {
+                    employee.ReportingManagerUserId = StandardReportingManagerId(managerEmail, settings.ClientId, context.Managers);
+                    row.Values["reportingManagerUserId"] = employee.ReportingManagerUserId.Value.ToString(CultureInfo.InvariantCulture);
+                }
                 if (employee.FirstName.Length == 0) throw new InvalidOperationException("First Name is required.");
                 row.EmployeeName = (employee.FirstName + " " + employee.LastName).Trim(); row.EmployeeCode = employee.EmployeeCode;
-                if (row.Values.TryGetValue("salaryStructureId", out var structure) && !await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM salarystructures WHERE CAST(Id AS CHAR)=@Id AND ClientId IN(0,@ClientId) AND Active=TRUE)", new { Id = structure, settings.ClientId }))
-                    throw new InvalidOperationException("Salary Template ID is not active for this client.");
-                if (employee.ReportingManagerUserId is { } manager && !await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM authusers WHERE Id=@Id AND IsActive=TRUE AND (ClientId IS NULL OR ClientId=@ClientId))", new { Id = manager, settings.ClientId }))
-                    throw new InvalidOperationException("Reporting manager is not active for this client.");
                 foreach (var column in context.Custom.Fields)
                     if (row.Values.TryGetValue(column.Code, out var value)) EmployeeAttributeRepository.ParseCell(column.Field, value);
                 var location = StandardLocationPlan(row, existing, employee, context, settings.ClientId, user);

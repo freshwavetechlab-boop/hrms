@@ -43,6 +43,7 @@ function apiHarness(serviceName = 'excelPayrollSetupService.ts') {
     localStorage: { getItem: () => null, removeItem() {} },
     legacyTokenKey: 'synthetic-only', jsonContent: 'application/json',
     apiUrl: path => path, startLoading: () => () => {}, notifyMutation() {},
+    activeClientHeader: () => undefined, beginClientScopedWrite: () => () => {}, configureClientRequestScope() {},
     fetch: (path, options) => {
       calls.push({ path, options })
       return new Promise((resolve, reject) => {
@@ -52,6 +53,10 @@ function apiHarness(serviceName = 'excelPayrollSetupService.ts') {
     },
   }
   vm.createContext(context)
+  for (const utility of ['apiTransportFeedback', 'httpErrorMessage']) {
+    const text = readFileSync(new URL(`../src/utils/${utility}.ts`, import.meta.url), 'utf8').replace(/^export\s+/gm, '')
+    vm.runInContext(ts.transpile(text, { target: ts.ScriptTarget.ES2022 }), context)
+  }
   const apiFile = ts.createSourceFile('apiClient.ts', apiText, ts.ScriptTarget.Latest, true)
   const names = new Set(['apiRequest', 'getJsonResult', 'postJson', 'mutateJson', 'readError', 'readJson'])
   const selected = apiFile.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text))

@@ -112,6 +112,7 @@ builder.Services.AddCors(options =>
             .SetIsOriginAllowed(_ => true)
             .AllowAnyHeader()
             .AllowAnyMethod()
+            .WithExposedHeaders("X-Request-ID")
             .AllowCredentials();
     });
 });
@@ -179,6 +180,7 @@ builder.Services.AddSingleton<RecruitmentSeedPackService>();
 builder.Services.AddSingleton<GoogleDriveOAuthService>();
 builder.Services.AddSingleton<AttachmentStorageService>();
 builder.Services.AddSingleton<AttachmentRepository>();
+builder.Services.AddSingleton<RecruitmentDocumentCollectionRepository>();
 builder.Services.AddSingleton<FrevoPilotChatStorageService>();
 builder.Services.AddSingleton<FrevoPilotAnalyticsService>();
 builder.Services.AddSingleton<EngineRuntimeMonitor>();
@@ -259,6 +261,32 @@ if (args.Contains("--migrate-notification-imap"))
     app.Logger.LogInformation("Incoming mail schema upgrade completed. SMTP credentials and outgoing queues unchanged.");
     return;
 }
+
+if (args.Any(arg => arg.Equals("--migrate-recruitment-document-layouts", StringComparison.OrdinalIgnoreCase)))
+{
+    await using var db = new MySqlConnector.MySqlConnection(app.Configuration.GetConnectionString("Default"));
+    await db.OpenAsync();
+    await RecruitmentRepository.EnsureRequisitionQualificationCapacityAsync(db);
+    await RecruitmentPipelineRepository.EnsureJobDescriptionQualificationCapacityAsync(db);
+    var result = await app.Services.GetRequiredService<RecruitmentDocumentRepository>().MigrateDocumentLayoutsAsync();
+    app.Logger.LogInformation("Document capacity/layout migration: {Result}. No letters released or emails sent.", JsonSerializer.Serialize(result));
+    return;
+}
+
+if (args.Any(arg => arg.Equals("--migrate-recruitment-text-capacity", StringComparison.OrdinalIgnoreCase)))
+{
+    await using var db = new MySqlConnector.MySqlConnection(app.Configuration.GetConnectionString("Default"));
+    await db.OpenAsync();
+    await RecruitmentRepository.EnsureRequisitionQualificationCapacityAsync(db);
+    await RecruitmentPipelineRepository.EnsureJobDescriptionQualificationCapacityAsync(db);
+    app.Logger.LogInformation("Hiring-request and JD qualification text capacity is ready. Existing text was preserved; no requests submitted, letters released or emails sent.");
+    return;
+}
+
+if (args.Any(arg => arg.StartsWith("--migrate", StringComparison.OrdinalIgnoreCase)
+    && !arg.Equals("--migrate", StringComparison.OrdinalIgnoreCase)
+    && !arg.Equals("--migrate-database", StringComparison.OrdinalIgnoreCase)))
+    throw new InvalidOperationException("Unknown migration option. Use --migrate-recruitment-document-layouts for document layout/capacity upgrades, --migrate-recruitment-text-capacity for qualification capacity, or a documented project migration command. The web host was not started.");
 
 var migrateDatabaseOnly = args.Any(arg =>
     arg.Equals("--migrate", StringComparison.OrdinalIgnoreCase) ||
@@ -560,6 +588,16 @@ app.MapGet("/api/attachment-configurations/effective", async (AttachmentReposito
 })
 .WithName("GetEffectiveAttachmentConfigurations")
 .WithOpenApi();
+
+app.MapGet("/api/attachments/joining-document-configurations", async (AttachmentRepository repository, int clientId, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (user.Id <= 0 || !user.IsActive || user.MustChangePassword || !SelectedClientAccess.Allows(user, clientId)
+        || user.ClientId.HasValue && user.ClientId != clientId
+        || !RecruitmentPermissions.Has(user, "attachment.recruitment.view", "recruitment.manage", "recruitment.candidate.manage", "recruitment.offer.manage", "recruitment.offer.issue"))
+        return Results.StatusCode(403);
+    return Results.Ok(await repository.GetJoiningDocumentConfigurationsAsync(clientId));
+});
 
 app.MapPost("/api/attachment-configurations", async (AttachmentRepository repository, AttachmentFieldConfiguration request, HttpContext context) =>
 {
@@ -1889,6 +1927,7 @@ app.MapDelete("/api/recruitment/open-positions/{id:long}", async (RecruitmentRep
     return ok ? Results.NoContent() : Results.BadRequest(new { error });
 });
 RecruitmentDocumentEndpoints.Map(app, CurrentUser);
+RecruitmentDocumentCollectionEndpoints.Map(app);
 app.MapPost("/api/recruitment/candidates", async (RecruitmentTalentRepository repository, SaveRecruitmentCandidate request, HttpContext context) =>
 {
     if (!HasPermission(context, "recruitment.manage") && !HasPermission(context, "settings.manage")) return Results.StatusCode(403);
@@ -2302,14 +2341,36 @@ app.MapPost("/api/recruitment/offers/{id:long}/final-letter", async (Recruitment
     var (row,error) = await repository.RequestFinalOfferAsync(id,CurrentUser(context),context.RequestAborted);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
-app.MapPost("/api/recruitment/offers/{id:long}/status", async (RecruitmentTalentRepository repository, RecruitmentPipelineRepository pipelines, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService pipelineActions, RecruitmentCaseRepository hiringCases, RecruitmentLifecycleNotificationService lifecycleNotifications, long id, JsonElement request, HttpContext context) =>
+app.MapPost("/api/recruitment/offers/{id:long}/status", async (RecruitmentTalentRepository repository, RecruitmentPipelineRepository pipelines, RecruitmentCandidateActionRepository candidateActions, RecruitmentPipelineActionService pipelineActions, RecruitmentCaseRepository hiringCases, RecruitmentLifecycleNotificationService lifecycleNotifications, RecruitmentDocumentCollectionRepository documentCollections, long id, JsonElement request, HttpContext context) =>
 {
     if (!RecruitmentPermissions.Has(CurrentUser(context), "recruitment.offer.manage", "recruitment.offer.issue", "recruitment.proposal.manage")) return Results.StatusCode(403);
     var user = CurrentUser(context);
-    var status = request.TryGetProperty("status", out var value) ? value.GetString() ?? "" : "";
+    var requestedStatus = request.TryGetProperty("status", out var value) ? value.GetString()?.Trim() ?? "" : "";
+    var status = new[] { "Draft", "Pending Approval", "Approved", "Pending Candidate", "Released", "Negotiation", "Accepted", "Rejected", "Expired", "Withdrawn" }
+        .FirstOrDefault(item => item.Equals(requestedStatus, StringComparison.OrdinalIgnoreCase)) ?? requestedStatus;
     var requiredOfferPermissions = status is "Pending Candidate" or "Released" or "Accepted" ? new[] { "recruitment.offer.issue" } : status is "Negotiation" or "Pending Approval" ? new[] { "recruitment.offer.manage", "recruitment.proposal.manage" } : new[] { "recruitment.offer.manage" };
     if (!RecruitmentPermissions.Has(user, requiredOfferPermissions)) return Results.StatusCode(403);
     var remarks = request.TryGetProperty("remarks", out var note) ? note.GetString() ?? "" : "";
+    IReadOnlyList<RecruitmentRequestedDocument>? documentRequests = null;
+    if (status == "Pending Candidate")
+    {
+        var currentOffer = (await repository.GetOffersAsync(user)).FirstOrDefault(offer => offer.Id == id);
+        if (currentOffer is null) return Results.BadRequest(new { error = "Offer was not found." });
+        try
+        {
+            if (!request.TryGetProperty("documentRequests", out var selection) || selection.ValueKind != JsonValueKind.Array)
+                return Results.BadRequest(new { error = "Select the documents to request before releasing this offer." });
+            documentRequests = JsonSerializer.Deserialize<List<RecruitmentRequestedDocument>>(selection.GetRawText(), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            if (documentRequests is null || documentRequests.Any(item => item is null))
+                return Results.BadRequest(new { error = "The requested document list is invalid." });
+            await documentCollections.ValidateSelectionsAsync(currentOffer.ClientId, documentRequests, user);
+            _ = RecruitmentDocumentCollectionMail.BuildUploadUrl(app.Configuration, "configuration-check");
+        }
+        catch (UnauthorizedAccessException) { return Results.StatusCode(403); }
+        catch (JsonException) { return Results.BadRequest(new { error = "The requested document list is invalid." }); }
+        catch (RecruitmentDocumentCollectionValidationException exception) { return Results.BadRequest(new { error = exception.Message }); }
+        catch (InvalidOperationException exception) { return Results.BadRequest(new { error = exception.Message }); }
+    }
     var (row, error) = await repository.UpdateOfferStatusAsync(id, status, remarks, user);
     if (row is not null)
         await hiringCases.AdvanceHiringCaseForOfferMilestoneAsync(row.Id, user);
@@ -2322,7 +2383,7 @@ app.MapPost("/api/recruitment/offers/{id:long}/status", async (RecruitmentTalent
     if (row?.Status is "Accepted" or "Rejected" or "Withdrawn")
         row.PipelineTransitionMessage = await ApplyRecruitmentDecisionAsync(row.ApplicationId, row.Status, user, pipelines, pipelineActions, candidateActions, hiringCases);
     if (row?.Status is "Pending Candidate" or "Negotiation" or "Accepted" or "Rejected")
-        await lifecycleNotifications.QueueOfferMilestoneAsync(row.Id, row.Status, user, candidateAction?.ActionToken ?? "");
+        await lifecycleNotifications.QueueOfferMilestoneAsync(row.Id, row.Status, user, candidateAction?.ActionToken ?? "", documentRequests);
     if (row?.Status == "Accepted") await repository.TryRequestAcceptedFinalOfferAsync(row.Id,user);
     return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
 });
@@ -2426,8 +2487,27 @@ recruitmentOrchestration.MapGet("/job-descriptions/{id:long}", async (Recruitmen
 recruitmentOrchestration.MapPost("/job-descriptions", async (RecruitmentPipelineRepository repository, SaveRecruitmentJobDescriptionVersion request, HttpContext context) =>
 {
     if (!RecruitmentPermissions.CanCreateRequisitions(CurrentUser(context))) return Results.StatusCode(403);
-    var (row, error) = await repository.SaveJobDescriptionVersionAsync(request, CurrentUser(context));
-    return row is null ? Results.BadRequest(new { error }) : Results.Ok(row);
+    var requestId = context.TraceIdentifier;
+    context.Response.Headers["X-Request-ID"] = requestId;
+    try
+    {
+        var (row, error) = await repository.SaveJobDescriptionVersionAsync(request, CurrentUser(context));
+        return row is null ? Results.BadRequest(new { error, requestId }) : Results.Ok(row);
+    }
+    catch (MySqlConnector.MySqlException exception) when (exception.Number == 1406)
+    {
+        app.Logger.LogError(exception, "JD field capacity rejected save for requisition {RequisitionId}. Reference {RequestId}", request.RequisitionId, requestId);
+        var column = System.Text.RegularExpressions.Regex.Match(exception.Message, "for column '([^']+)'", System.Text.RegularExpressions.RegexOptions.IgnoreCase).Groups[1].Value;
+        var label = column switch { "QualificationName" => "Qualification", "Specialization" => "Qualification specialization", "SkillName" => "Skill name", "CertificationName" => "Certification name", "LanguageName" => "Language name", "Title" => "Job title", _ => "One of the JD fields" };
+        return Results.BadRequest(new { error = $"{label} contains more text than can be stored in one entry. Split it into shorter entries while keeping all requirements.", requestId });
+    }
+    catch (Exception exception)
+    {
+        app.Logger.LogError(exception, "JD save could not be confirmed for requisition {RequisitionId}. Reference {RequestId}", request.RequisitionId, requestId);
+        return Results.Problem(statusCode: StatusCodes.Status500InternalServerError, title: "JD save could not be confirmed",
+            detail: "The server could not complete the JD save response. Check the existing JD version before retrying and quote the reference shown if you contact support.",
+            extensions: new Dictionary<string, object?> { ["requestId"] = requestId });
+    }
 });
 recruitmentOrchestration.MapDelete("/job-descriptions/{id:long}", async (RecruitmentPipelineRepository repository, long id, HttpContext context) =>
 {
@@ -5391,6 +5471,7 @@ static async Task RunDatabaseSetupAsync(IServiceProvider services, IConfiguratio
     await scopedServices.GetRequiredService<WorkflowRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<TaxEngineRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<AttachmentRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<RecruitmentDocumentCollectionRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<NotificationRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<CommunicationRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<ScheduledJobRepository>().InitializeAsync();

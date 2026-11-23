@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using Dapper;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using MimeKit;
@@ -26,13 +27,15 @@ public sealed class RecruitmentRosterMailDatabaseTests
         var connection=Environment.GetEnvironmentVariable("FREVO_ROSTER_TEST_DB")!;
         var parsed=new MySqlConnectionStringBuilder(connection);
         Assert.Equal("127.0.0.1",parsed.Server);Assert.Equal((uint)33319,parsed.Port);Assert.Equal("roster_mail_test",parsed.Database);
-        var config=new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>{{"ConnectionStrings:Default",connection},{"OutboundDelivery:Suppressed","false"}}).Build();
+        var config=new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>{{"ConnectionStrings:Default",connection},{"OutboundDelivery:Suppressed","false"},{"PublicPortal:BaseUrl","https://careers.example.invalid"}}).Build();
         await using var db=new MySqlConnection(connection);await db.OpenAsync();
         var token=Guid.NewGuid().ToString("N")[..10];
         var client=await db.ExecuteScalarAsync<int>("INSERT INTO clients(Name,Code,IsActive) VALUES(@Name,@Code,TRUE);SELECT LAST_INSERT_ID();",new{Name="Offer test "+token,Code="TEST"+token});
         var location=await db.ExecuteScalarAsync<int>("INSERT INTO worklocations(Name,ClientId,City,State,IsActive) VALUES('Synthetic institute',@Client,'Test city','Test state',TRUE);SELECT LAST_INSERT_ID();",new{Client=client});
         var user=new AuthUser{Id=1,IsActive=true,DisplayName="Synthetic sender",ClientAccessMode="Selected",AssignedClientIds=[client],RecruitmentScopeMode="Client",Permissions=["recruitment.offer.issue","recruitment.offer.manage","employees.manage"]};
-        var repository=new RecruitmentDocumentRepository(config,null!,new());await repository.RowsAsync(client,user);
+        var collections=new RecruitmentDocumentCollectionRepository(config,null!,new EphemeralDataProtectionProvider());await collections.InitializeAsync();
+        var documentRequests=(await collections.GetCatalogAsync(client,user)).Select(field=>new RecruitmentRequestedDocument{FieldConfigurationId=field.FieldConfigurationId,Required=true}).ToList();
+        var repository=new RecruitmentDocumentRepository(config,null!,new(),collections);await repository.RowsAsync(client,user);
         var layout=new RecruitmentDocumentLayout { Inputs=[new(){Key="joiningDate",Label="Date of joining",Type="date",Required=true}],Sections=Enumerable.Range(0,8).Select(_=>new DocumentSection{Elements=[new(){X=65,Y=150,Width=460,Height=30,Text="{{candidateName}} {{joiningDate.date}} {{offerNumber}}"}]}).ToList() };
         layout.Sections[4].Elements.Add(new(){Kind="signature",X=65,Y=230,Width=220,Height=40,Text="[Signature & Stamp of Signatory]"});
         var body=LayoutDocumentPdfService.Marker+JsonSerializer.Serialize(layout,new JsonSerializerOptions(JsonSerializerDefaults.Web));
@@ -62,7 +65,7 @@ public sealed class RecruitmentRosterMailDatabaseTests
         Assert.Equal(1,await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employees WHERE ClientId=@Client",new{Client=client}));
         var missing=await AddRow("Missing Email","",3);await repository.ReleaseAsync(client,missing,true,user);
         var unreleased=await AddRow("Unreleased Person","unreleased@example.invalid",4);
-        var selection=new RecruitmentOfferMailRequest{Ids=[rowId,missing,unreleased]};
+        var selection=new RecruitmentOfferMailRequest{Ids=[rowId,missing,unreleased],DocumentRequests=documentRequests};
         var preview=await repository.PreviewOfferMailAsync(client,selection,user);
         Assert.Equal("Ready",preview.Single(item=>item.RosterId==rowId).Status);Assert.Equal("Missing email",preview.Single(item=>item.RosterId==missing).Status);Assert.Equal("Not released",preview.Single(item=>item.RosterId==unreleased).Status);
         await using var smtp=new SyntheticSmtp();
@@ -75,6 +78,7 @@ public sealed class RecruitmentRosterMailDatabaseTests
         var worker=new NotificationRepository(config,null!,null!,NullLogger<NotificationRepository>.Instance);
         Assert.Equal(1,await worker.ProcessPendingAsync(CancellationToken.None,job.Items.Single(item=>item.QueueId.HasValue).QueueId));
         using var message=await smtp.Message;
+        Assert.Contains("https://careers.example.invalid/candidate-documents/",message.HtmlBody);
         var attachment=Assert.IsType<MimePart>(Assert.Single(message.Attachments));using var decoded=new MemoryStream();attachment.Content.DecodeTo(decoded);Assert.Equal(release.Bytes,decoded.ToArray());Assert.Equal("one@example.invalid",Assert.Single(message.To.Mailboxes).Address);
         var completed=Assert.Single(await repository.OwnOfferMailJobsAsync(user,client));Assert.Equal(1,completed.Sent);Assert.Equal(1,completed.AcceptedEmails);Assert.True(completed.IsComplete);Assert.Equal(1,completed.SentCopyUnverifiedEmails);
         Assert.Equal("Skipped",(await repository.PreviewOfferMailAsync(client,new(){Ids=[rowId],RetryFailed=true},user)).Single().Status);
@@ -82,7 +86,7 @@ public sealed class RecruitmentRosterMailDatabaseTests
         await repository.DismissOfferMailJobAsync(client,job.Id,user);Assert.NotNull(Assert.Single(await repository.OwnOfferMailJobsAsync(user,client)).DismissedAtUtc);
         var retryRow=await AddRow("Retry Person","retry@example.invalid",7);await repository.ReleaseAsync(client,retryRow,true,user);
         var retryPreview=await repository.PreviewOfferMailAsync(client,new(){Ids=[retryRow]},user);
-        var retryRequest=new RecruitmentOfferMailRequest{Ids=[retryRow],RequestId=Guid.NewGuid().ToString(),ReleaseIds=retryPreview.ToDictionary(item=>item.RosterId.ToString(),item=>item.ReleaseId??0)};
+        var retryRequest=new RecruitmentOfferMailRequest{Ids=[retryRow],RequestId=Guid.NewGuid().ToString(),DocumentRequests=documentRequests,ReleaseIds=retryPreview.ToDictionary(item=>item.RosterId.ToString(),item=>item.ReleaseId??0)};
         var failedJob=await repository.SubmitOfferMailAsync(client,retryRequest,user);
         await db.ExecuteAsync("UPDATE notification_queue SET Status='Failed',RetryCount=5,ErrorMessage='Synthetic provider failure' WHERE Id=@Id",new{Id=failedJob.Items[0].QueueId});
         Assert.Equal("Failed",(await repository.PreviewOfferMailAsync(client,new(){Ids=[retryRow]},user)).Single().Status);
@@ -97,6 +101,56 @@ public sealed class RecruitmentRosterMailDatabaseTests
         var employeesBefore=await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employees WHERE ClientId=@Client",new{Client=client});
         await Assert.ThrowsAsync<InvalidOperationException>(()=>repository.ReleaseZipAsync(client,new(){Ids=[good,invalid]},user));
         Assert.Equal(employeesBefore,await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employees WHERE ClientId=@Client",new{Client=client}));Assert.Equal(0,await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_document_roster_releases WHERE RosterId IN @Ids",new{Ids=new[]{good,invalid}}));
+
+        // Preflight must render the final letter without creating receipts,
+        // allocating offer numbers, changing employees or queuing mail.
+        var secondGood=await AddRow("Second Atomic Good","good2@example.invalid",8);
+        var overflow=await AddRow("Atomic Overflow Private Name","overflow@example.invalid",9);
+        var overflowLayout=new RecruitmentDocumentLayout{Sections=[new(){Elements=[new(){X=65,Y=150,Width=35,Height=6,FontSize=10,LineHeight=14,Text="{{candidateName}}"}]}]};
+        var overflowBody=LayoutDocumentPdfService.Marker+JsonSerializer.Serialize(overflowLayout,new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var overflowTemplate=await db.ExecuteScalarAsync<int>("INSERT INTO recruitment_templates(ClientId,TemplateCode,TemplateName,TemplateType,BodyTemplate,IsActive) VALUES(@ClientId,@Code,'Synthetic overflow offer','Offer Letter',@Body,TRUE);SELECT LAST_INSERT_ID();",new{ClientId=client,Code=token+"-overflow",Body=overflowBody});
+        await db.ExecuteAsync("UPDATE recruitment_document_roster SET TemplateId=@Template WHERE Id=@Id",new{Template=overflowTemplate,Id=overflow});
+        async Task<string> State()
+        {
+            var state=await db.QuerySingleAsync(@"
+SELECT (SELECT COUNT(*) FROM recruitment_document_roster_releases WHERE ClientId=@Client) Releases,
+(SELECT COUNT(*) FROM recruitment_document_roster_audit WHERE ClientId=@Client) Audits,
+(SELECT COUNT(*) FROM employees WHERE ClientId=@Client) Employees,
+(SELECT COUNT(*) FROM recruitment_document_mail_jobs WHERE ClientId=@Client) MailJobs,
+(SELECT COUNT(*) FROM recruitment_document_mail_deliveries WHERE ClientId=@Client) MailDeliveries,
+(SELECT GROUP_CONCAT(CONCAT(Id,':',OfferNumber,':',SHA2(ValuesJson,256)) ORDER BY Id SEPARATOR '|') FROM recruitment_document_roster WHERE ClientId=@Client) RosterState",new{Client=client});
+            return JsonSerializer.Serialize(state);
+        }
+        var beforePreflight=await State();
+        var checkedGood=await repository.PreflightReleaseAsync(client,new(){Ids=[good],ApplySignature=false},user);
+        Assert.True(checkedGood.CanRelease);var currentRevision=Assert.Single(checkedGood.Items).Revision;Assert.False(string.IsNullOrWhiteSpace(currentRevision));
+        var checkedSigned=await repository.PreflightReleaseAsync(client,new(){Ids=[good],ApplySignature=true},user);
+        Assert.True(checkedSigned.CanRelease);
+        var preflight=await repository.PreflightReleaseAsync(client,new(){Ids=[good,secondGood,overflow],ApplySignature=false},user);
+        Assert.False(preflight.CanRelease);Assert.Equal(2,preflight.Items.Count(item=>item.Ready));
+        var badCheck=Assert.Single(preflight.Items.Where(item=>!item.Ready));Assert.Equal(overflow,badCheck.RosterId);Assert.Equal("SYNTH-"+token+"-9",badCheck.ProfileCode);Assert.Equal("Synthetic overflow offer",badCheck.TemplateName);Assert.NotEmpty(badCheck.Issues);
+        Assert.DoesNotContain("Atomic Overflow Private Name",string.Join(" ",badCheck.Issues));
+        var stale=await repository.PreflightReleaseAsync(client,new(){Ids=[good],ApplySignature=false,Revisions=new(){[good.ToString()]="stale"}},user);
+        Assert.False(stale.CanRelease);Assert.Contains("changed",Assert.Single(Assert.Single(stale.Items).Issues));
+        var reviewed=await repository.PreflightReleaseAsync(client,new(){Ids=[good],ApplySignature=false,Revisions=new(){[good.ToString()]=currentRevision}},user);Assert.True(reviewed.CanRelease);
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(()=>repository.PreflightReleaseAsync(client+10000,new(){Ids=[good],ApplySignature=false},user));
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(()=>repository.PreflightReleaseAsync(client,new(){Ids=[good],ApplySignature=false},locationRestricted));
+        var managerOnly=new AuthUser{Id=1,IsActive=true,ClientAccessMode="Selected",AssignedClientIds=[client],Permissions=["recruitment.offer.manage"]};
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(()=>repository.PreflightReleaseAsync(client,new(){Ids=[good],ApplySignature=false},managerOnly));
+        Assert.Equal(beforePreflight,await State());
+        await Assert.ThrowsAsync<InvalidOperationException>(()=>repository.ReleaseAsync(client,good,false,user,"stale"));
+        Assert.Equal(beforePreflight,await State());
+
+        // The third invalid PDF rolls back new receipts for the preceding two.
+        var overflowError=await Assert.ThrowsAsync<InvalidOperationException>(()=>repository.ReleaseZipAsync(client,new(){Ids=[good,secondGood,overflow],ApplySignature=false},user));
+        Assert.Contains(badCheck.ProfileCode,overflowError.Message);Assert.Contains("Synthetic overflow offer",overflowError.Message);Assert.DoesNotContain("Atomic Overflow Private Name",overflowError.Message);
+        Assert.Equal(beforePreflight,await State());
+        Assert.Equal(0,await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM recruitment_document_roster_releases WHERE RosterId IN @Ids",new{Ids=new[]{good,secondGood,overflow}}));
+
+        await db.ExecuteAsync("DELETE FROM recruitment_document_signing_assets WHERE ClientId=@Client",new{Client=client});
+        var beforeMissingSignature=await State();
+        var missingSignature=await repository.PreflightReleaseAsync(client,new(){Ids=[good],ApplySignature=true},user);
+        Assert.False(missingSignature.CanRelease);Assert.Contains("signature",Assert.Single(missingSignature.Issues));Assert.Equal(beforeMissingSignature,await State());
     }
 
     private sealed class SyntheticSmtp : IAsyncDisposable

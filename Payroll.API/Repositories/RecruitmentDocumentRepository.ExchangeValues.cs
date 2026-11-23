@@ -37,6 +37,8 @@ public sealed partial class RecruitmentDocumentRepository
             throw new InvalidOperationException("Row Action must be Apply or Skip.");
         if (result.TryGetValue("candidateEmail", out var email) && (email.Length > 190 || !Regex.IsMatch(email, @"^[^\s@<>;,]+@[^\s@<>;,]+\.[^\s@<>;,]+$")))
             throw new InvalidOperationException("Enter a valid Work Email.");
+        if (result.TryGetValue("reportingManagerEmail", out var managerEmail) && (managerEmail.Length > 190 || !Regex.IsMatch(managerEmail, @"^[^\s@<>;,]+@[^\s@<>;,]+\.[^\s@<>;,]+$")))
+            throw new InvalidOperationException("Enter a valid Reporting Manager Email.");
         if (result.TryGetValue("gender", out var gender) && !new[] { "Male", "Female", "Other" }.Contains(gender, StringComparer.OrdinalIgnoreCase))
             throw new InvalidOperationException("Gender must be Male, Female or Other.");
         foreach (var key in new[] { "firstName", "lastName" })
@@ -45,10 +47,19 @@ public sealed partial class RecruitmentDocumentRepository
         return result;
     }
 
+    internal static int StandardReportingManagerId(string email, int clientId, IReadOnlyList<WorkflowApprover> managers)
+    {
+        var matches = managers.Where(m => m.Id > 0 && (m.ClientId is null || m.ClientId == clientId) && m.Email.Trim().Equals(email.Trim(), StringComparison.OrdinalIgnoreCase)).Take(2).ToList();
+        if (matches.Count != 1) throw new InvalidOperationException("Reporting Manager Email must match one active manager user for this client.");
+        return matches[0].Id;
+    }
+
     internal static Employee StandardRosterEmployee(Employee? current, int clientId, IReadOnlyDictionary<string, string> values, IReadOnlyDictionary<string, string> componentIds)
     {
         var employee = current is null ? new Employee { ClientId = clientId } : JsonSerializer.Deserialize<Employee>(JsonSerializer.Serialize(current, Json), Json)!;
         if (employee.ClientId != clientId) throw new UnauthorizedAccessException("The employee is outside this client.");
+        if (current is null && values.TryGetValue("salaryComponentsJson", out var storedSalary))
+            employee.SalaryComponents = JsonSerializer.Deserialize<Dictionary<string, decimal>>(storedSalary, Json) ?? [];
         void Text(string key, Action<string> set) { if (values.TryGetValue(key, out var value) && value.Length > 0) set(value); }
         Text("employeeCode", v => employee.EmployeeCode = v); Text("firstName", v => employee.FirstName = v); Text("lastName", v => employee.LastName = v);
         Text("gender", v => employee.Gender = v); Text("candidateEmail", v => employee.WorkEmail = v); Text("joiningDate", v => employee.DateOfJoining = v);
@@ -73,8 +84,8 @@ public sealed partial class RecruitmentDocumentRepository
     // Pending recruitment profiles have no master yet. Build their baseline from
     // the current exported values so a blank correction retains every other field.
     internal static Employee StandardRosterCorrectionEmployee(Employee? current, int clientId, IReadOnlyDictionary<string, string> baseline,
-        IReadOnlyDictionary<string, string> supplied, IReadOnlyDictionary<string, string> componentIds)
-        => StandardRosterEmployee(current ?? StandardRosterEmployee(null, clientId, baseline, componentIds), clientId, supplied, componentIds);
+        IReadOnlyDictionary<string, string> supplied, IReadOnlyDictionary<string, string> componentIds, IReadOnlyDictionary<string, string>? baselineComponentIds = null)
+        => StandardRosterEmployee(current ?? StandardRosterEmployee(null, clientId, baseline, baselineComponentIds ?? componentIds), clientId, supplied, componentIds);
 
     internal static string StandardRosterMatchIssue(string mode, RosterExchangePreviewRow row, IReadOnlyList<RecruitmentDocumentRosterRow> current, IReadOnlySet<string> duplicateCodes)
     {

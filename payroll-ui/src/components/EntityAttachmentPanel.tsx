@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Input, Progress, Space, Tag } from 'antd'
 import { useToast } from './ToastProvider'
-import { deleteEntityAttachment, getEffectiveAttachmentConfigurations, getEntityAttachments, openAttachmentWithTicket, rejectEntityAttachment, uploadEntityAttachment, verifyEntityAttachment } from '../services/attachmentService'
+import { deleteEntityAttachment, getEffectiveAttachmentConfigurations, getEntityAttachments, getJoiningDocumentConfigurations, openAttachmentWithTicket, rejectEntityAttachment, uploadEntityAttachment, verifyEntityAttachment } from '../services/attachmentService'
 import type { AttachmentFieldConfiguration, EntityAttachment } from '../types/payroll'
+import { candidateAttachmentConfigurations } from '../utils/candidateAttachmentConfigurations'
+import { attachmentUploadSizeError } from '../utils/attachmentUploadSize'
 import './EmployeeAttachmentPanel.css'
 
 export type EntityAttachmentDraft = { file: File | null; documentNumber: string; issueDate: string; expiryDate: string }
@@ -24,20 +26,33 @@ export default function EntityAttachmentPanel({ entityType, entityId, clientId, 
   const notify = useToast()
   const [configurations, setConfigurations] = useState<AttachmentFieldConfiguration[]>([])
   const [attachments, setAttachments] = useState<EntityAttachment[]>([])
+  const [supplementalConfigurationIds, setSupplementalConfigurationIds] = useState<Set<number>>(new Set())
   const [drafts, setDrafts] = useState<Record<number, EntityAttachmentDraft>>({})
   const [progress, setProgress] = useState<Record<number, number>>({})
   const [busy, setBusy] = useState<Record<number, boolean>>({})
   const formKey = formCodes.join('|')
+  const loadGeneration = useRef(0)
+  const loadedScope = useRef('')
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current
+    const scope = `${entityType}:${entityId}:${clientId}:${moduleCode}:${formKey}`
+    if (scope !== loadedScope.current) { loadedScope.current = scope; setConfigurations([]); setAttachments([]); setSupplementalConfigurationIds(new Set()) }
     if (!entityId || !clientId) return
-    const configurationSets = await Promise.all(formKey.split('|').filter(Boolean).map(formCode => getEffectiveAttachmentConfigurations(clientId, moduleCode, formCode)))
-    const attachmentRows = await getEntityAttachments(entityType, entityId)
-    const rows = Array.from(new Map(configurationSets.flat().map(row => [row.id, row])).values()).filter(row => !selfService || row.ownerCanView || row.ownerCanUpload)
+    const [configurationSets, attachmentRows, joining] = await Promise.all([
+      Promise.all(formKey.split('|').filter(Boolean).map(formCode => getEffectiveAttachmentConfigurations(clientId, moduleCode, formCode))),
+      getEntityAttachments(entityType, entityId),
+      entityType === 'CANDIDATE' ? getJoiningDocumentConfigurations(clientId) : Promise.resolve([]),
+    ])
+    if (generation !== loadGeneration.current) return
+    const base = Array.from(new Map(configurationSets.flat().map(row => [row.id, row])).values())
+    const combined = entityType === 'CANDIDATE' ? candidateAttachmentConfigurations(base, joining, attachmentRows, clientId) : { configurations: base, supplementalIds: new Set<number>() }
+    const rows = combined.configurations.filter(row => !selfService || row.ownerCanView || row.ownerCanUpload)
     setConfigurations(rows); setAttachments(attachmentRows)
+    setSupplementalConfigurationIds(combined.supplementalIds)
     setDrafts(current => Object.fromEntries(rows.map(row => [row.id, current[row.id] ?? blankDraft()])))
   }, [clientId, entityId, entityType, formKey, moduleCode, selfService])
-  useEffect(() => { void load() }, [load])
+  useEffect(() => { void load(); return () => { loadGeneration.current++ } }, [load])
 
   const displayConfigurations = useMemo(() => configurations.filter((row, index, rows) => rows.findIndex(candidate => candidate.attachmentAttributeId === row.attachmentAttributeId) === index).map(defaultRow => {
     const latestFile = attachments.filter(item => item.attachmentAttributeId === defaultRow.attachmentAttributeId).sort((a, b) => String(b.uploadedAtUtc).localeCompare(String(a.uploadedAtUtc)))[0]
@@ -53,6 +68,8 @@ export default function EntityAttachmentPanel({ entityType, entityId, clientId, 
   const upload = async (configuration: AttachmentFieldConfiguration) => {
     const draft = drafts[configuration.id] ?? blankDraft()
     if (!draft.file) { notify('Select a file first.', 'warning'); return }
+    const sizeError = attachmentUploadSizeError(configuration, draft.file, attachments)
+    if (sizeError) { notify(sizeError, 'warning'); return }
     setBusy(current => ({ ...current, [configuration.id]: true })); setProgress(current => ({ ...current, [configuration.id]: 1 }))
     const report = (percent: number) => setProgress(current => ({ ...current, [configuration.id]: percent }))
     const response = uploadOverride ? await uploadOverride(configuration, draft, report) : await uploadEntityAttachment(configuration.id, entityType, entityId, draft.file, draft, report)
@@ -83,7 +100,8 @@ export default function EntityAttachmentPanel({ entityType, entityId, clientId, 
     <div className="employee-document-summary"><div><h4>{title}</h4><p>{description}</p></div><Tag color={requiredMissing.length ? 'orange' : hasRequiredFields ? 'green' : 'default'}>{requiredMissing.length ? `${requiredMissing.length} required pending` : hasRequiredFields ? 'Required documents complete' : visibleFileCount ? `${visibleFileCount} file${visibleFileCount === 1 ? '' : 's'} uploaded` : 'No files uploaded'}</Tag></div>
     <div className="employee-document-grid">{displayConfigurations.map(configuration => {
       const files = grouped.get(configuration.id) ?? []; const draft = drafts[configuration.id] ?? blankDraft(); const allowed = extensions(configuration)
-      const canAdd = !readOnly && (!selfService || configuration.ownerCanUpload) && (configuration.allowMultiple ? files.length < configuration.maximumFileCount : files.length === 0 || ((!selfService || configuration.ownerCanReplace) && configuration.versioningEnabled))
+      const fieldReadOnly = readOnly || supplementalConfigurationIds.has(configuration.id)
+      const canAdd = !fieldReadOnly && (!selfService || configuration.ownerCanUpload) && (configuration.allowMultiple ? files.length < configuration.maximumFileCount : files.length === 0 || ((!selfService || configuration.ownerCanReplace) && configuration.versioningEnabled))
       return <article className={`employee-document-card${configuration.isRequired && !files.length ? ' required-missing' : ''}`} key={configuration.id}>
         <header><div><strong>{displayConfigurations.length === 1 && singleFieldLabel ? singleFieldLabel : configuration.fieldLabel}{configuration.isRequired ? ' *' : ''}</strong><span>{configuration.attributeName} · {configuration.dataClassification}</span></div><Tag>{configuration.allowMultiple ? `${files.length}/${configuration.maximumFileCount} files` : files.length ? 'Uploaded' : 'Single file'}</Tag></header>
         <p>{displayConfigurations.length === 1 && singleFieldHelp ? singleFieldHelp : configuration.helpText || `${allowed.map(value => value.toUpperCase()).join(', ')} · Maximum ${formatBytes(configuration.maximumFileSizeBytes)}`}</p>
@@ -91,7 +109,7 @@ export default function EntityAttachmentPanel({ entityType, entityId, clientId, 
           <div><b title={file.originalFileName}>{file.originalFileName}</b><span>{formatBytes(file.fileSizeBytes)} · v{file.versionNumber} · {new Date(file.uploadedAtUtc).toLocaleString('en-IN')}</span></div><Tag color={statusColor(file.verificationStatus)}>{file.verificationStatus}</Tag>
           <Space size={4} wrap><Button size="small" onClick={() => void open(file, 'Preview')}>Preview</Button><Button size="small" onClick={() => void open(file, 'Download')}>Download</Button>
             {!readOnly && !selfService && file.verificationStatus === 'Pending' && <><Button size="small" type="primary" onClick={() => void review(file, true)}>Verify</Button><Button size="small" danger onClick={() => void review(file, false)}>Reject</Button></>}
-            {!readOnly && (!selfService || configuration.ownerCanDelete) && <Button size="small" danger onClick={() => void remove(file)}>Delete</Button>}</Space>
+            {!fieldReadOnly && (!selfService || configuration.ownerCanDelete) && <Button size="small" danger onClick={() => void remove(file)}>Delete</Button>}</Space>
         </div>)}</div>}
         {canAdd && <div className="employee-document-upload">
           {(configuration.requiresDocumentNumber || configuration.requiresIssueDate || configuration.requiresExpiryDate) && <div className="employee-document-metadata">

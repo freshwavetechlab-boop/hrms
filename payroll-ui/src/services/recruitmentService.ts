@@ -17,8 +17,14 @@ export const getRecruitmentRequisitions = (filters: { clientId?: number; status?
   return getJson<RecruitmentRequisition[]>(`/api/recruitment/requisitions?${params.toString()}`, [])
 }
 
+export const getRecruitmentRequisitionsResult = (filters: Parameters<typeof getRecruitmentRequisitions>[0]) => {
+  const params = new URLSearchParams()
+  Object.entries(filters).forEach(([key, value]) => { if (value !== undefined && value !== null && String(value)) params.set(key, String(value)) })
+  return getJsonResult<RecruitmentRequisition[]>(`/api/recruitment/requisitions?${params.toString()}`, [], { toast: false, loader: false })
+}
+
 export const saveRecruitmentRequisition = (request: SaveRecruitmentRequisition) =>
-  postJson<SaveRecruitmentRequisition, RecruitmentRequisition | null>('/api/recruitment/requisitions', request, null)
+  postJson<SaveRecruitmentRequisition, RecruitmentRequisition | null>('/api/recruitment/requisitions', request, null, { toast: false })
 
 export const parseRecruitmentRequestDocument = (file: File, clientId = 0) => {
   const body = new FormData()
@@ -32,7 +38,7 @@ export const parseRecruitmentRequestDocument = (file: File, clientId = 0) => {
 }
 
 export const submitRecruitmentRequisition = (id: number) =>
-  postEmpty<RecruitmentRequisition | null>(`/api/recruitment/requisitions/${id}/submit`, null)
+  postEmpty<RecruitmentRequisition | null>(`/api/recruitment/requisitions/${id}/submit`, null, { toast: false })
 
 export const deleteRecruitmentRequisition = (id: number) =>
   deleteJson(`/api/recruitment/requisitions/${id}`, null, { successMessage: 'Requisition deleted.' })

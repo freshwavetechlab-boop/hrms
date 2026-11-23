@@ -15,6 +15,7 @@ public sealed class RosterExchangeTemplate
 {
     public string Version { get; set; } = "FREVO-EMPLOYEE-1";
     public int ClientId { get; set; }
+    public string ClientName { get; set; } = "";
     public int TemplateId { get; set; }
     public string SourceGroup { get; set; } = "";
     public List<RosterExchangeColumn> Columns { get; set; } = [];

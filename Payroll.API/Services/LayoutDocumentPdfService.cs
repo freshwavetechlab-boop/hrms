@@ -192,11 +192,13 @@ public sealed class LayoutDocumentPdfService
             using var signingStream = signingData is null ? null : new MemoryStream(signingData.Bytes, false);
             using var signing = signingStream is null ? null : XImage.FromStream(signingStream);
             XGraphics? gfx = null;
+            var pageNumber = 0;
             void Page()
             {
                 gfx?.Dispose(); var page = document.AddPage(); page.Width = XUnit.FromPoint(layout.PageWidth); page.Height = XUnit.FromPoint(layout.PageHeight);
+                pageNumber++;
                 gfx = XGraphics.FromPdfPage(page);
-                foreach (var e in layout.Header.Concat(layout.Footer)) Element(gfx, e, values, logo, signing);
+                foreach (var e in layout.Header.Concat(layout.Footer)) Element(gfx, e, values, logo, signing, layout, pageNumber);
                 if (draft) gfx.DrawString("UNSIGNED DRAFT", Font("sans", 7, false, false), XBrushes.Gray, new XRect(layout.PageWidth - 182, 103, 120, 10), XStringFormats.TopRight);
             }
             try
@@ -219,7 +221,7 @@ public sealed class LayoutDocumentPdfService
                                 var height = Math.Max(e.Height, Math.Min(60, nextY - e.Y - 4));
                                 Signature(gfx!, signing, e, values, e.X, e.Y, width, Math.Min(height, layout.PageHeight - e.Y));
                             }
-                            else Element(gfx!, e, values, logo, signing);
+                            else Element(gfx!, e, values, logo, signing, layout, pageNumber);
                         }
                         continue;
                     }
@@ -342,7 +344,19 @@ public sealed class LayoutDocumentPdfService
         var left = fallback.Align == "right" ? x + width - imageWidth : fallback.Align == "center" ? x + (width - imageWidth) / 2 : x;
         gfx.DrawImage(signing, left, y + (height - imageHeight) / 2, imageWidth, imageHeight);
     }
-    private static void Element(XGraphics gfx, DocumentElement e, IReadOnlyDictionary<string, string> values, XImage? logo, XImage? signing)
+    private static string OverflowField(DocumentElement element, RecruitmentDocumentLayout layout)
+    {
+        // Report the configured field, never the expanded employee, pay or address value.
+        var keys = new[] { element.Text }.Concat(element.Runs.Select(run => run.Text))
+            .SelectMany(text => Token.Matches(text).Cast<Match>())
+            .Select(match => match.Groups[1].Value.Split('.')[0]).Distinct(StringComparer.OrdinalIgnoreCase).Take(3);
+        var labels = keys.Select(key => layout.Inputs.FirstOrDefault(input => input.Key.Equals(key, StringComparison.OrdinalIgnoreCase))?.Label is { Length: > 0 } label
+            ? label : Regex.Replace(key, "([a-z0-9])([A-Z])", "$1 $2", RegexOptions.CultureInvariant));
+        var description = string.Join(", ", labels);
+        return description.Length > 0 ? $"Document field '{description}'" : "Template text";
+    }
+
+    private static void Element(XGraphics gfx, DocumentElement e, IReadOnlyDictionary<string, string> values, XImage? logo, XImage? signing, RecruitmentDocumentLayout layout, int pageNumber)
     {
         if (signing is not null && e.Kind == "text" && IsSignaturePlaceholder(e))
         { Signature(gfx, signing, e, values, e.X, e.Y, e.Width, e.Height); return; }
@@ -358,7 +372,9 @@ public sealed class LayoutDocumentPdfService
                 if (e.MinFontSize > 0)
                     for (var size = e.FontSize - .1; Lines(gfx, fitted, values, e.Width).Count * fitted.LineHeight > e.Height + .1 && size >= e.MinFontSize - .001; size -= .1)
                         fitted = new DocumentText { Text=e.Text,Runs=e.Runs,FontSize=size,LineHeight=e.LineHeight*size/e.FontSize,FontFamily=e.FontFamily,Bold=e.Bold,Italic=e.Italic,Align=e.Align };
-                if (Lines(gfx, fitted, values, e.Width).Count * fitted.LineHeight > e.Height + .1) throw new InvalidOperationException($"A document text field at ({e.X:0.##}, {e.Y:0.##}) exceeds its box. Review long fields or the template; no text was omitted.");
+                var neededLines = Lines(gfx, fitted, values, e.Width).Count;
+                if (neededLines * fitted.LineHeight > e.Height + .1)
+                    throw new InvalidOperationException(FormattableString.Invariant($"{OverflowField(e, layout)} on page {pageNumber} needs {neededLines} lines but its template box is only {e.Width:0.##} × {e.Height:0.##} points at ({e.X:0.##}, {e.Y:0.##}). Increase this field's box in the Offer Letter template or configure an appropriate minimum font size; no text was omitted."));
                 Draw(gfx, fitted, values, e.X, e.Y + e.FontSize - fitted.FontSize, e.Width); break;
         }
     }

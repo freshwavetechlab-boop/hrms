@@ -1,0 +1,21 @@
+.offer-document-requests { flex: 0 0 auto; min-width: 0; border: 1px solid #e0e6ee; border-radius: 8px; background: #fff; overflow: hidden; }
+.offer-document-requests-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px 14px; padding: 11px 13px; border-bottom: 1px solid #e8edf2; }
+.offer-document-requests-heading strong { font-size: 13px; color: #22394f; }
+.offer-document-requests-heading > span { color: #6d7b8b; font-size: 12px; }
+.offer-document-requests > .ant-alert { margin: 10px; }
+.offer-document-requests > .ant-skeleton { padding: 12px; }
+.offer-document-request-list { max-height: min(280px, 32dvh); overflow: auto; min-width: 0; }
+.offer-document-request-head, .offer-document-request-row { display: grid; grid-template-columns: minmax(0, 1fr) 90px 95px; align-items: center; gap: 10px; padding: 9px 13px; border-bottom: 1px solid #edf0f4; }
+.offer-document-request-head { position: sticky; top: 0; background: #f7f9fc; z-index: 1; color: #607083; font-size: 11px; font-weight: 600; }
+.offer-document-request-row:last-child { border-bottom: 0; }
+.offer-document-request-row > :first-child { font-size: 12px; min-width: 0; overflow-wrap: anywhere; }
+.offer-document-request-head > :not(:first-child), .offer-document-request-row > :not(:first-child) { text-align: center; }
+.offer-document-request-required { color: #9b5c12; font-size: 12px; margin: 10px 13px; }
+.document-roster-mail-drawer .offer-mail-recipient-region { min-height: 140px; display: flex; flex: 1; flex-direction: column; min-width: 0; }
+.document-roster-mail-drawer .ant-drawer-footer .offer-mail-footer-feedback { margin-bottom: 10px; }
+@media (max-width: 600px) {
+  .offer-document-request-head, .offer-document-request-row { grid-template-columns: minmax(0, 1fr) 67px 77px; gap: 6px; padding-inline: 10px; }
+  .offer-document-request-list { max-height: 26dvh; }
+  .document-roster-mail-drawer .ant-drawer-body { overflow: auto; }
+  .document-roster-mail-drawer .offer-mail-recipient-region { flex: 0 0 250px; }
+}

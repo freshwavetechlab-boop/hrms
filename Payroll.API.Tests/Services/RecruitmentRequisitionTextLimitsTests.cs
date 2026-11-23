@@ -79,11 +79,11 @@ public sealed class RecruitmentRequisitionTextLimitsTests
     public void AllParserResultsBecomeReviewableWithoutLosingEvidence(string parser)
     {
         var result = new RecruitmentRequestDocumentParseResult { Status = "Parsed", ParserName = parser,
-            Draft = new SaveRecruitmentRequisition { Qualification = new string('x', 251), Languages = new string('y', 251), SourceParsedJson = "{\"kept\":true}" } };
+            Draft = new SaveRecruitmentRequisition { Qualification = new string('x', 65536), Languages = new string('y', 251), SourceParsedJson = "{\"kept\":true}" } };
         var reviewed = RecruitmentRequisitionTextLimits.Review(result);
         Assert.Same(result, reviewed);
         Assert.Equal("NeedsReview", result.Status);
-        Assert.Equal(251, result.Draft.Qualification.Length);
+        Assert.Equal(65536, result.Draft.Qualification.Length);
         Assert.Equal("{\"kept\":true}", result.Draft.SourceParsedJson);
         Assert.Contains("Qualification", result.ReviewFields);
         Assert.Contains("Languages", result.ReviewFields);
@@ -93,7 +93,7 @@ public sealed class RecruitmentRequisitionTextLimitsTests
     }
 
     [Fact]
-    public void DeterministicMultipleQualificationsAreKeptButFlaggedBeforeSave()
+    public void DeterministicMultipleQualificationsAreKeptAndAcceptedWithinTextCapacity()
     {
         var source = "Qualifications\n" + string.Join("\n", Enumerable.Range(1, 8)
             .Select(n => $"Bachelor of Engineering in Computer Science specialization {n} from a recognized university."));
@@ -103,7 +103,8 @@ public sealed class RecruitmentRequisitionTextLimitsTests
         var result = RecruitmentRequisitionTextLimits.Review(new RecruitmentRequestDocumentParseResult
         { Status = "Parsed", Draft = new SaveRecruitmentRequisition { Qualification = qualification } });
         Assert.Equal(qualification, result.Draft.Qualification);
-        Assert.Equal("NeedsReview", result.Status);
+        Assert.Equal("Parsed", result.Status);
+        Assert.Empty(result.Warnings);
     }
 
     [Fact]

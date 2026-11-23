@@ -2,7 +2,7 @@ import { apiRequest, getJsonResult, readError } from './apiClient'
 
 export type RosterExchangeMode = 'Insert' | 'Update'
 export type RosterExchangeColumn = { key: string; header: string; infotype: string; type: string; readOnly: boolean; requiredOnInsert: boolean; description: string }
-export type RosterExchangeTemplate = { version: string; clientId: number; templateId: number; sourceGroup: string; columns: RosterExchangeColumn[]; rows: Record<string, string>[]; importBatches: string[] }
+export type RosterExchangeTemplate = { version: string; clientId: number; clientName?: string; templateId: number; sourceGroup: string; columns: RosterExchangeColumn[]; rows: Record<string, string>[]; importBatches: string[] }
 export type RosterExchangeSettings = { clientId: number; templateId: number; sourceGroup: string; mode: RosterExchangeMode; sourceRows: number[]; previewToken: string }
 export type RosterExchangeRow = { sourceRow: number; profileCode: string; employeeCode: string; employeeName: string; action: 'Insert' | 'Update' | 'Unchanged' | 'Skip' | 'Inserted' | 'Updated'; reason: string; changedFields: string[]; values: Record<string, string> }
 export type RosterExchangePreview = { fileName: string; previewToken: string; rows: RosterExchangeRow[] }

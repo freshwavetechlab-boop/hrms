@@ -6,6 +6,7 @@ public sealed class RecruitmentOfferMailRequest
     public List<long> Ids { get; set; } = [];
     public bool RetryFailed { get; set; }
     public Dictionary<string,long> ReleaseIds { get; set; } = [];
+    public List<RecruitmentRequestedDocument>? DocumentRequests { get; set; }
 }
 
 public sealed class RecruitmentOfferMailItem

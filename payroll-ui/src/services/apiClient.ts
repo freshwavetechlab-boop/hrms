@@ -2,6 +2,8 @@ import { toast } from '../components/ToastProvider'
 import { resolveRuntimeApiBase } from './apiBaseUrl'
 import { recruitmentDeleteActions } from './recruitmentDeleteFeedback'
 import { activeClientHeader, beginClientScopedWrite, configureClientRequestScope } from './clientRequestScope'
+import { readHttpErrorText } from '../utils/httpErrorMessage'
+import { apiTransportError, isApiWrite, isFetchNetworkFailure, noReadableApiResponse, serverRequestId, unreadableApiResponse } from '../utils/apiTransportFeedback'
 
 export const api = resolveRuntimeApiBase(
   import.meta.env.VITE_API_URL,
@@ -11,7 +13,7 @@ export const api = resolveRuntimeApiBase(
 
 type ToastMode = boolean | 'error-only'
 export type ApiOptions = RequestInit & { timeoutMs?: number; timeoutMessage?: string; toast?: ToastMode; successMessage?: string; loader?: boolean }
-export type ApiResult<TResult> = { ok: boolean; data: TResult; error: string; status: number }
+export type ApiResult<TResult> = { ok: boolean; data: TResult; error: string; status: number; requestId?: string }
 type LoadingListener = (activeRequests: number) => void
 
 const legacyTokenKey = 'payroll.auth.token'
@@ -68,6 +70,9 @@ export async function apiRequest(path: string, options: ApiOptions = {}) {
       window.dispatchEvent(new CustomEvent('payroll:unauthorized'))
     }
     return response
+  } catch (error) {
+    if (isFetchNetworkFailure(error)) throw new TypeError(noReadableApiResponse(isApiWrite(options.method)))
+    throw error
   } finally {
     window.clearTimeout(timeout)
     stopLoading()
@@ -85,15 +90,18 @@ export async function getJson<T>(path: string, fallback: T, options: ApiOptions 
 }
 
 export async function getJsonResult<T>(path: string, fallback: T, options: ApiOptions = {}): Promise<ApiResult<T>> {
+  let response: Response | undefined
+  let requestId: string | undefined
   try {
-    const response = await apiRequest(path, options)
-    if (!response.ok) return { ok: false, data: fallback, error: await readError(response), status: response.status }
-    return { ok: true, data: await readJson<T>(response, fallback), error: '', status: response.status }
+    response = await apiRequest(path, options)
+    requestId = serverRequestId(name => response?.headers?.get(name))
+    const diagnostic = requestId ? { requestId } : {}
+    if (!response.ok) return { ok: false, data: fallback, error: await readError(response), status: response.status, ...diagnostic }
+    return { ok: true, data: await readJson<T>(response, fallback), error: '', status: response.status, ...diagnostic }
   } catch (error) {
-    const message = error instanceof DOMException && error.name === 'AbortError'
-      ? options.timeoutMessage || 'Request timed out.'
-      : error instanceof Error ? error.message : 'Request failed.'
-    return { ok: false, data: fallback, error: message, status: 0 }
+    const message = response ? unreadableApiResponse(response.status, false)
+      : apiTransportError(error, false, options.timeoutMessage, options.signal?.aborted)
+    return { ok: false, data: fallback, error: message, status: response?.status ?? 0, ...(requestId ? { requestId } : {}) }
   }
 }
 
@@ -121,17 +129,21 @@ export function postFormWithProgress<TResult>(path: string, body: FormData, fall
   return new Promise(resolve => {
     const request = new XMLHttpRequest()
     const stopScopedWrite = beginClientScopedWrite(path, 'POST')
+    let scopedWriteFinished = false
+    const finishScopedWrite = () => { if (!scopedWriteFinished) { scopedWriteFinished = true; stopScopedWrite() } }
     const legacyToken = sessionStorage.getItem(legacyTokenKey) || localStorage.getItem(legacyTokenKey)
     request.open('POST', apiUrl(path))
     request.withCredentials = true
     if (legacyToken) request.setRequestHeader('Authorization', `Bearer ${legacyToken}`)
     const activeClient = activeClientHeader(path, 'POST')
     if (activeClient) request.setRequestHeader('X-Client-Id', activeClient)
-    request.onloadend = stopScopedWrite
+    request.onloadend = finishScopedWrite
     request.upload.onprogress = event => {
       if (event.lengthComputable) onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)))
     }
     request.onload = () => {
+      const requestId = serverRequestId(name => request.getResponseHeader?.(name))
+      const diagnostic = requestId ? { requestId } : {}
       if (request.status === 403 && activeClient) window.dispatchEvent(new Event('payroll:client-access-refresh'))
       if (request.status === 401) {
         configureClientRequestScope(null)
@@ -141,65 +153,73 @@ export function postFormWithProgress<TResult>(path: string, body: FormData, fall
       }
       if (request.status >= 200 && request.status < 300) {
         try {
+          const data = request.responseText ? JSON.parse(request.responseText) as TResult : fallback
           notifyMutation(path, 'POST', true, '')
-          resolve({ ok: true, data: request.responseText ? JSON.parse(request.responseText) as TResult : fallback, error: '', status: request.status })
+          resolve({ ok: true, data, error: '', status: request.status, ...diagnostic })
         } catch (error) {
-          const message = error instanceof Error ? error.message : 'Invalid server response.'
+          const message = unreadableApiResponse(request.status, true)
           notifyMutation(path, 'POST', false, message)
-          resolve({ ok: false, data: fallback, error: message, status: request.status })
+          resolve({ ok: false, data: fallback, error: message, status: request.status, ...diagnostic })
         }
         return
       }
-      const message = readErrorText(request.responseText, request.status)
+      const message = request.status === 0 ? noReadableApiResponse(true) : readErrorText(request.responseText, request.status)
       notifyMutation(path, 'POST', false, message)
-      resolve({ ok: false, data: fallback, error: message, status: request.status })
+      resolve({ ok: false, data: fallback, error: message, status: request.status, ...diagnostic })
     }
-    request.onerror = () => { const message = 'Network error: unable to reach the API.'; notifyMutation(path, 'POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
+    request.onerror = () => { const message = noReadableApiResponse(true); notifyMutation(path, 'POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
     request.onabort = () => { const message = 'Upload was cancelled.'; notifyMutation(path, 'POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
     request.ontimeout = () => { const message = timeoutMessage; notifyMutation(path, 'POST', false, message); resolve({ ok: false, data: fallback, error: message, status: 0 }) }
     request.timeout = timeoutMs
-    request.send(body)
+    try { request.send(body) }
+    catch (error) {
+      finishScopedWrite()
+      const message = apiTransportError(error, true)
+      notifyMutation(path, 'POST', false, message)
+      resolve({ ok: false, data: fallback, error: message, status: 0 })
+    }
   })
 }
 
 export async function getBlob(path: string): Promise<ApiResult<Blob | null>> {
+  let response: Response | undefined
+  let requestId: string | undefined
   try {
-    const response = await apiRequest(path)
-    return { ok: response.ok, data: response.ok ? await response.blob() : null, error: response.ok ? '' : await readError(response), status: response.status }
+    response = await apiRequest(path)
+    requestId = serverRequestId(name => response?.headers?.get(name))
+    return { ok: response.ok, data: response.ok ? await response.blob() : null, error: response.ok ? '' : await readError(response), status: response.status, ...(requestId ? { requestId } : {}) }
   } catch (error) {
-    return { ok: false, data: null, error: error instanceof Error ? error.message : 'Request failed.', status: 0 }
+    return { ok: false, data: null, error: response ? unreadableApiResponse(response.status, false) : apiTransportError(error, false), status: response?.status ?? 0, ...(requestId ? { requestId } : {}) }
   }
 }
 
 export async function readError(response: Response) {
   try {
-    const data = await response.json()
-    return data.error || data.detail || data.message || (data.errors ? JSON.stringify(data.errors) : '') || `Request failed with status ${response.status}.`
+    return readHttpErrorText(await response.text(), response.status, false)
   } catch {
-    return `Request failed with status ${response.status}.`
+    return readHttpErrorText('', response.status, false)
   }
 }
 
 function readErrorText(text: string, status: number) {
-  if (!text) return `Request failed with status ${status}.`
-  try {
-    const data = JSON.parse(text)
-    return data.error || data.detail || data.message || (data.errors ? JSON.stringify(data.errors) : '') || text
-  } catch {
-    return text
-  }
+  return readHttpErrorText(text, status)
 }
 
 async function mutateJson<TResult>(path: string, options: ApiOptions, fallback: TResult): Promise<ApiResult<TResult>> {
+  let response: Response | undefined
+  let requestId: string | undefined
   try {
-    const response = await apiRequest(path, options)
+    response = await apiRequest(path, options)
+    requestId = serverRequestId(name => response?.headers?.get(name))
     const error = response.ok ? '' : await readError(response)
+    const data = response.ok ? await readJson<TResult>(response, fallback) : fallback
     notifyMutation(path, options.method, response.ok, error, options)
-    return { ok: response.ok, data: response.ok ? await readJson<TResult>(response, fallback) : fallback, error, status: response.status }
+    return { ok: response.ok, data, error, status: response.status, ...(requestId ? { requestId } : {}) }
   } catch (error) {
-    const message = error instanceof DOMException && error.name === 'AbortError' ? options.timeoutMessage || 'Request timed out. Processing may still be in progress; refresh and check the current status before retrying.' : error instanceof Error ? error.message : 'Request failed.'
+    const message = response ? unreadableApiResponse(response.status, true)
+      : apiTransportError(error, true, options.timeoutMessage, options.signal?.aborted)
     notifyMutation(path, options.method, false, message, options)
-    return { ok: false, data: fallback, error: message, status: 0 }
+    return { ok: false, data: fallback, error: message, status: response?.status ?? 0, ...(requestId ? { requestId } : {}) }
   }
 }
 

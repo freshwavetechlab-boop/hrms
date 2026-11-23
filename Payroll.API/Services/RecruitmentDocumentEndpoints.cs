@@ -20,7 +20,7 @@ public static class RecruitmentDocumentEndpoints
                 && !(isClientSummary && RecruitmentDocumentRepository.CanReadNativeOffersForSummary(user))) return Results.StatusCode(403);
             try { return await next(context); }
             catch (UnauthorizedAccessException) { return Results.StatusCode(403); }
-            catch (Exception e) when (e is InvalidOperationException or JsonException or InvalidDataException or ArgumentException or System.Xml.XmlException)
+            catch (Exception e) when (e is InvalidOperationException or RecruitmentDocumentCollectionValidationException or JsonException or InvalidDataException or ArgumentException or System.Xml.XmlException)
             { return Results.BadRequest(new { error = e is JsonException ? "The import settings are invalid." : e.Message }); }
         });
         routes.MapGet("/templates", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
@@ -56,6 +56,8 @@ public static class RecruitmentDocumentEndpoints
             Results.Ok(await repository.CreateSimpleJdAsync(clientId, id, request, currentUser(context))));
         routes.MapPost("/simple-jds", async (RecruitmentDocumentRepository repository, int clientId, CreateRecruitmentRosterSimpleJds request, HttpContext context) =>
             Results.Ok(await repository.CreateSimpleJdsAsync(clientId, request, currentUser(context))));
+        routes.MapGet("/document-request-fields",async(RecruitmentDocumentCollectionRepository repository,int clientId,HttpContext context)=>
+            Results.Ok(new {Items=await repository.GetCatalogAsync(clientId,currentUser(context))}));
         routes.MapPost("/mail-preview",async(RecruitmentDocumentRepository repository,int clientId,RecruitmentOfferMailRequest request,HttpContext context)=>
             Results.Ok(new {Items=await repository.PreviewOfferMailAsync(clientId,request,currentUser(context))}));
         routes.MapPost("/mail-jobs",async(RecruitmentDocumentRepository repository,int clientId,RecruitmentOfferMailRequest request,HttpContext context)=>
@@ -84,12 +86,14 @@ public static class RecruitmentDocumentEndpoints
         }).WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(3 * 1024 * 1024));
         routes.MapDelete("/signing-asset", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
         { await repository.DeleteSigningAssetAsync(clientId, currentUser(context)); return Results.NoContent(); });
-        routes.MapPost("/rows/{id:long}/release", async (RecruitmentDocumentRepository repository, int clientId, long id, bool? applySignature, HttpContext context) =>
+        routes.MapPost("/rows/{id:long}/release", async (RecruitmentDocumentRepository repository, int clientId, long id, bool? applySignature, string? revision, HttpContext context) =>
         {
-            var result = await repository.ReleaseAsync(clientId, id, applySignature ?? true, currentUser(context));
+            var result = await repository.ReleaseAsync(clientId, id, applySignature ?? true, currentUser(context), revision);
             context.Response.Headers.Append("Access-Control-Expose-Headers", "Content-Disposition");
             return Results.File(result.Bytes, "application/pdf", result.FileName);
         });
+        routes.MapPost("/releases/preflight", async (RecruitmentDocumentRepository repository, int clientId, RecruitmentRosterReleaseSelection request, HttpContext context) =>
+            Results.Ok(await repository.PreflightReleaseAsync(clientId, request, currentUser(context))));
         routes.MapPost("/releases", async (RecruitmentDocumentRepository repository, int clientId, RecruitmentRosterReleaseSelection request, HttpContext context) =>
         {
             var result = await repository.ReleaseZipAsync(clientId, request, currentUser(context));

@@ -3,7 +3,9 @@ import { useLocation } from 'react-router-dom'
 import { Alert, Button, Drawer, Select, Space, Tag } from 'antd'
 import DataTable from './DataTable'
 import BulkMailProgress from './BulkMailProgress'
-import { previewOfferMail, sendOfferMail, type OfferMailItem, type OfferMailJob } from '../services/recruitmentOfferMailService'
+import { previewOfferMail, sendOfferMail, type OfferDocumentRequestSelection, type OfferMailItem, type OfferMailJob } from '../services/recruitmentOfferMailService'
+import { useOfferDocumentRequests } from '../hooks/useOfferDocumentRequests'
+import OfferDocumentRequestFields from './OfferDocumentRequestFields'
 
 export function OfferMailProgress({ jobs, loading, error, onRefresh, onRetry }: { jobs: OfferMailJob[]; loading: boolean; error: string; onRefresh: () => void; onRetry: (ids: number[]) => void }) {
   const location = useLocation()
@@ -24,28 +26,36 @@ export function OfferMailProgress({ jobs, loading, error, onRefresh, onRetry }: 
 
 export default function RecruitmentOfferMail({ clientId, ids, retryFailed, onClose, onQueued }: { clientId: number; ids: number[]; retryFailed: boolean; onClose: () => void; onQueued: (job: OfferMailJob) => void }) {
   const [items, setItems] = useState<OfferMailItem[]>([]), [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [error, setError] = useState('')
+  const documents = useOfferDocumentRequests(clientId)
+  const [locked, setLocked] = useState(false)
+  const documentSnapshot = useRef<OfferDocumentRequestSelection[] | null>(null)
   // Reuse this id after an uncertain response: retrying cannot create two sends.
   const requestId = useRef(crypto.randomUUID())
+  const sending = useRef(false)
   useEffect(() => {
     let active = true
     void previewOfferMail(clientId, ids, retryFailed).then(result => { if (!active) return; if (result.ok) setItems(result.data.items); else setError(result.error || 'Unable to preview offer email recipients.') }).finally(() => { if (active) setLoading(false) })
     return () => { active = false }
   }, [clientId, ids, retryFailed])
   const send = async () => {
-    if (busy || loading || items.length !== ids.length) return
+    if (sending.current || busy || loading || items.length !== ids.length) return
+    if (items.some(item => item.status === 'Ready') && !documents.ready && !documentSnapshot.current) { setError(documents.error || 'Select at least one document before emailing the offer letters.'); return }
+    documentSnapshot.current ??= documents.documentRequests.map(item => ({ ...item }))
+    sending.current = true
+    setLocked(true)
     setBusy(true); setError('')
     try {
-      const result = await sendOfferMail(clientId, ids, requestId.current, items, retryFailed)
+      const result = await sendOfferMail(clientId, ids, requestId.current, items, retryFailed, documentSnapshot.current)
       if (!result.ok || !result.data) { setError(result.error || 'Unable to queue offer emails. Retry this same action to check its result.'); return }
       onQueued(result.data)
       window.dispatchEvent(new Event('hrms:actions-changed'))
-    } finally { setBusy(false) }
+    } finally { sending.current = false; setBusy(false) }
   }
-  return <Drawer open title={`Email selected offer letters (${ids.length})`} className="document-roster-mail-drawer" width="min(1150px, 98vw)" onClose={() => { if (!busy) onClose() }} closable={!busy} maskClosable={!busy} footer={<Space><Button disabled={busy} onClick={onClose}>Cancel</Button><Button type="primary" loading={busy} disabled={loading || !!error && !items.length || items.length !== ids.length} onClick={() => void send()}>Queue emails ({items.filter(item => item.status === 'Ready').length})</Button></Space>}>
-    <Alert type="info" showIcon message="Email the released PDF to each candidate" description="The saved final PDF, including its released signature and stamp, is attached. Drafts and outdated letters are not emailed. Sent or queued copies are skipped; missing emails and failed deliveries are listed separately." />
-    {error && <Alert type="error" showIcon message={error} />}
+  return <Drawer open title={`Email selected offer letters (${ids.length})`} className="document-roster-mail-drawer" width="min(1150px, 98vw)" onClose={() => { if (!busy) onClose() }} closable={!busy} maskClosable={!busy} footer={<>{error && <Alert className="offer-mail-footer-feedback" type="error" showIcon message={error} />}<Space wrap><Button disabled={busy} onClick={onClose}>Cancel</Button><Button type="primary" loading={busy} disabled={loading || !!error && !items.length || items.length !== ids.length || items.some(item => item.status === 'Ready') && !documents.ready && !documentSnapshot.current} onClick={() => void send()}>Queue emails ({items.filter(item => item.status === 'Ready').length})</Button></Space></>}>
+    <Alert type="info" showIcon message="Email the released PDF and document-upload link" description="Choose the documents to request below. Candidates can upload without a login and submit once. The released PDF is attached; drafts and outdated letters are not emailed." />
     <Space wrap><Tag color="blue">Ready: {items.filter(item => item.status === 'Ready').length}</Tag><Tag color="orange">Need attention: {items.filter(item => !['Ready', 'Skipped'].includes(item.status)).length}</Tag><Tag>Previously handled: {items.filter(item => item.status === 'Skipped').length}</Tag></Space>
-    <OfferMailTable rows={items} loading={loading} />
+    <OfferDocumentRequestFields fields={documents.fields} value={documents.documentRequests} onChange={documents.setDocumentRequests} loading={documents.loading} error={documents.error} disabled={busy || locked} onRetry={documents.refresh} />
+    <div className="offer-mail-recipient-region"><OfferMailTable rows={items} loading={loading} /></div>
   </Drawer>
 }
 

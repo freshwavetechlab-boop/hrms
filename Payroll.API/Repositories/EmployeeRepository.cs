@@ -78,6 +78,7 @@ ORDER BY u.DisplayName,u.Email", new { ClientId = clientId });
             || NormalizeInfotypeCodes(infotypeCode)?.SetEquals(["0009"]) != true))
             throw new InvalidOperationException("A bank-data save requires one existing employee and only infotype0009.");
         var before = employee.Id > 0 ? await LoadEmployeeAsync(db, employee.Id, tx) : null;
+        await ValidateSalaryTemplateAssignmentAsync(db, employee, before, tx);
         if (!wasNew && employee.IsActive && await db.ExecuteScalarAsync<bool>("SELECT COALESCE(" + EmployeeEmploymentRules.LatestAction("e", "@Today") + ", 'Rehire') IN ('Resign','Retire','Terminate') FROM employees e WHERE e.Id=@Id AND e.ClientId=@ClientId", new { employee.Id, employee.ClientId, Today = EmployeeEmploymentRules.Today }, tx))
             throw new InvalidOperationException("This employee has left. Use the Rehire action with an effective date instead of enabling Active in a master update.");
         var actionType = wasNew ? "Hire" : "Master Update";
@@ -231,6 +232,8 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         if (request.ActionType is "Retire" or "Terminate" or "Resign") next.IsActive = false;
         if (request.ActionType == "Rehire") next.IsActive = true;
 
+        try { await ValidateSalaryTemplateAssignmentAsync(db, next, before); }
+        catch (InvalidOperationException issue) { return (null, issue.Message); }
         await db.ExecuteAsync(@"UPDATE employees SET Department=@Department,Designation=@Designation,Grade=@Grade,WorkLocationId=@WorkLocationId,SalaryStructureId=@SalaryStructureId,AnnualCtc=@AnnualCtc,SalaryJson=@SalaryJson,IsActive=@IsActive WHERE Id=@Id", next);
         await PayrollDataTableStore.SyncEmployeeTablesAsync(db, next);
         var after = await LoadEmployeeAsync(db, request.EmployeeId) ?? next;

@@ -17,10 +17,10 @@ import { getClients, getEmployees } from '../services/payrollService'
 import { getJson } from '../services/apiClient'
 import { requisitionTextError, requisitionTextErrors, type RequisitionTextLimit } from '../services/requisitionTextLimits'
 import {
-  deleteRecruitmentRequisition, getRecruitmentMasterOptions, getRecruitmentRequisitions, saveRecruitmentRequisition,
+  deleteRecruitmentRequisition, getRecruitmentMasterOptions, getRecruitmentRequisitions, getRecruitmentRequisitionsResult, saveRecruitmentRequisition,
   parseRecruitmentRequestDocument, submitRecruitmentRequisition, getRecruitmentRequesters,
 } from '../services/recruitmentService'
-import { getEffectiveAttachmentConfigurations, uploadEntityAttachment } from '../services/attachmentService'
+import { getEffectiveAttachmentConfigurationsResult, uploadEntityAttachment } from '../services/attachmentService'
 import { getDropdowns, getWorkLocations } from '../services/settingsService'
 import { getRecruitmentWorkOrder, getRecruitmentWorkOrders } from '../services/recruitmentCaseService'
 import { getRecruitmentPipelineVersions, getRecruitmentPipelines } from '../services/recruitmentOrchestrationService'
@@ -37,6 +37,7 @@ import EntityAttachmentPanel from './EntityAttachmentPanel'
 import { downloadHiringSeedTemplate } from '../services/recruitmentSeedPackService'
 import { PageHeaderPortal } from './layout/AppPageHeader'
 import { canCreateHiringRequests, canEditHiringRequest, canMaintainApprovedRequisitions, hiringRequestDeleteBlock } from '../utils/requisitionAccess'
+import { requisitionOperationError, type RequisitionOperationError, type RequisitionOperationStage, type RequisitionRequestFailure } from '../utils/requisitionOperationError'
 import './RecruitmentRequisitionManager.css'
 
 type Props = {
@@ -100,6 +101,9 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
+  const [saveFailure, setSaveFailure] = useState<RequisitionOperationError | null>(null)
+  const saveFeedbackRef = useRef<HTMLDivElement | null>(null)
+  const saveInFlight = useRef(false)
   const [submitting, setSubmitting] = useState(false)
   const [submitDraft, setSubmitDraft] = useState<RecruitmentRequisition | null>(null)
   const [submissionNotice, setSubmissionNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
@@ -147,6 +151,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const canSeedHiring = canReviewWorkOrder && canCreateHiringRequests(session?.user) && (statusScope.length === 0 || statusScope.some(status => editableStatuses.has(status)))
   const replacementHiring = watchedForm.isReplacement
   const budgetAvailable = watchedForm.budgetAvailable
+  useEffect(() => { if (saveError) saveFeedbackRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }) }, [saveError])
   const approvedEdit = activeRequest?.status === 'Approved' && watchedForm.id > 0 && canEditHiringRequest(session?.user, activeRequest) && !readOnly
   const clientOptions = useMemo(() => clients.map(row => ({ value: Number(row.id), label: row.name })), [clients])
 
@@ -322,10 +327,14 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     }
   }, [dialogOpen, initialRequisitionId, initialJdHistory, loading, rows])
 
-  async function refreshRows() {
+  async function refreshRows(showError = true) {
     setLoading(true)
-    setRows(await getRecruitmentRequisitions({}))
-    setLoading(false)
+    try {
+      const result = await getRecruitmentRequisitionsResult({})
+      if (result.ok) setRows(result.data)
+      else if (showError) message.warning('The request list could not refresh. Existing records remain visible; check the connection and retry Refresh.')
+      return result
+    } finally { setLoading(false) }
   }
 
   const filteredRows = useMemo(() => {
@@ -618,18 +627,33 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     }
   }
 
-  async function storeSourceDocument(row: RecruitmentRequisition) {
+  function reportSaveFailure(stage: RequisitionOperationStage, failure: RequisitionRequestFailure, row?: RecruitmentRequisition) {
+    const detail = requisitionOperationError(stage, failure, row)
+    setSaveFailure(detail)
+    setSaveError(detail.message)
+    persistBrowserDraft()
+    message.error(detail.title)
+  }
+
+  async function storeSourceDocument(row: RecruitmentRequisition, onStep?: (step: RequisitionOperationStage) => void) {
     const pendingFile = sourceFileRef.current
     if (!pendingFile) return true
-    const configurations = await getEffectiveAttachmentConfigurations(row.clientId, 'RECRUITMENT', 'HIRING_REQUEST')
-    const configuration = configurations.find(item => item.attributeCode === 'RECRUITMENT_REQUEST_SOURCE')
-    if (!configuration) {
-      message.error('Hiring-request source attachment configuration is unavailable. The draft was saved, but the source file was not attached.')
+    onStep?.('source-configuration')
+    const configurationResult = await getEffectiveAttachmentConfigurationsResult(row.clientId, 'RECRUITMENT', 'HIRING_REQUEST')
+    if (!configurationResult.ok) {
+      reportSaveFailure('source-configuration', configurationResult, row)
       return false
     }
+    const configuration = configurationResult.data.find(item => item.attributeCode === 'RECRUITMENT_REQUEST_SOURCE')
+    if (!configuration) {
+      reportSaveFailure('source-configuration', { error: 'The source attachment field is not configured for this client.', status: 200 }, row)
+      return false
+    }
+    onStep?.('source-upload')
     const response = await uploadEntityAttachment(configuration.id, 'RECRUITMENT_REQUISITION', row.id, pendingFile, {}, setSourceUploadProgress)
     if (!response.ok) {
-      message.error(response.error || 'The hiring request was saved, but its source document could not be attached.')
+      setSourceUploadProgress(0)
+      reportSaveFailure('source-upload', response, row)
       return false
     }
     if (sourceFileRef.current === pendingFile) {
@@ -695,8 +719,9 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   }
 
   async function saveRequest(submitAfterSave: boolean, reviewedValues?: SaveRecruitmentRequisition) {
-    if (saving || sourceParsing || sourcePrefillLoading) return
+    if (saveInFlight.current || saving || sourceParsing || sourcePrefillLoading) return
     setSaveError('')
+    setSaveFailure(null)
     if (!canCreateHiringRequests(session?.user) || activeRequest && !canEditHiringRequest(session?.user, activeRequest)) {
       setSaveError('You do not have permission to edit this hiring request in its current status.')
       return
@@ -726,18 +751,24 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       if (values.workOrderId && !review.workOrderNumber.trim()) return void message.error('Work order number is required.')
       if (review.workOrderNumber.trim().length > 120) return void message.error('Work order number must be at most 120 characters.')
     }
-    if (watchedForm.id > 0 && embeddedJdRef.current && !await embeddedJdRef.current.saveDraftIfNeeded()) {
-      setSaveError('The linked job description could not be saved. Review the JD message before retrying the hiring request.')
-      return
-    }
+    // Validation can await; serialize the entire JD/save/attach/submit sequence.
+    if (saveInFlight.current) return
+    saveInFlight.current = true
     setSaving(true)
+    let operationStage: RequisitionOperationStage = 'linked-jd'
+    let savedRequest: RecruitmentRequisition | undefined
     try {
+      if (watchedForm.id > 0 && embeddedJdRef.current && !await embeddedJdRef.current.saveDraftIfNeeded()) {
+        reportSaveFailure('linked-jd', embeddedJdRef.current.getLastSaveFailure?.() || { error: 'The linked job description could not be saved. Review the JD message before retrying.' })
+        return
+      }
+      operationStage = 'save'
       const saved = await saveRecruitmentRequisition(normalize(values))
       if (!saved.ok || !saved.data) {
-        setSaveError(saved.error || 'The hiring request could not be saved. Refresh the request before retrying.')
-        if (saved.status === 0) setSourcePrefillWarning('The API did not confirm the hiring-request save. Your browser draft is retained. Check the connection and the request list before retrying; the server may still have processed the request.')
-        return void message.error(saved.error || 'Hiring request could not be saved.')
+        reportSaveFailure('save', saved)
+        return
       }
+      savedRequest = saved.data
       let completed = saved.data
       // Retain the saved identity if attachment upload or submission needs a retry.
       const savedValues = { ...values, ...fromRow(saved.data), workOrderReview: values.workOrderReview ? {
@@ -755,17 +786,23 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
         try { window.localStorage.removeItem(previousDraftKey) } catch { /* Keep the original draft if storage is unavailable. */ }
       }
       setJdOpen(['job-description'])
-      if (!await storeSourceDocument(saved.data)) {
+      if (!await storeSourceDocument(saved.data, step => { operationStage = step })) {
         setActiveRequest(saved.data)
-        applyDraft(fromRow(saved.data))
+        // Keep the saved identity, reviewed fields and selected source file for retry.
+        form.setFieldsValue(savedValues)
+        persistBrowserDraft(savedValues)
         setEmbeddedJdRefreshKey(value => value + 1)
-        await refreshRows()
         return
       }
       if (submitAfterSave) {
+        operationStage = 'submit'
         const submitted = await submitRecruitmentRequisition(saved.data.id)
-        if (!submitted.ok || !submitted.data) return void message.error(submitted.error || 'Hiring request could not be submitted.')
+        if (!submitted.ok || !submitted.data) {
+          reportSaveFailure('submit', submitted, saved.data)
+          return
+        }
         completed = submitted.data
+        savedRequest = submitted.data
         clearBrowserDraft(saved.data.id)
         message.success(submissionSuccess(completed))
       } else message.success(activeRequest?.status === 'Approved' ? 'Approved hiring request, linked vacancy and JD updated.' : 'Hiring request and JD draft saved.')
@@ -776,12 +813,15 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
         applyDraft(fromRow(completed))
         setEmbeddedJdRefreshKey(value => value + 1)
       }
+      operationStage = 'refresh'
       onChanged?.(completed)
-      await refreshRows()
+      const refreshed = await refreshRows(false)
+      if (!refreshed.ok) reportSaveFailure('refresh', refreshed, completed)
     } catch (cause) {
       persistBrowserDraft()
-      setSourcePrefillWarning(`The hiring-request operation could not finish: ${cause instanceof Error ? cause.message : 'Unexpected error'}. Your browser draft is retained; check the request list before retrying.`)
+      reportSaveFailure(savedRequest && operationStage === 'save' ? 'refresh' : operationStage, { error: cause instanceof Error ? cause.message : 'The operation could not finish.' }, savedRequest)
     } finally {
+      saveInFlight.current = false
       setSaving(false)
     }
   }
@@ -792,7 +832,8 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
     try {
       const response = await submitRecruitmentRequisition(submitDraft.id)
       if (!response.ok || !response.data) {
-        const text = response.error || 'Hiring request could not be submitted.'
+        const failure = requisitionOperationError('submit', response, submitDraft)
+        const text = `${failure.title}. ${failure.message} ${failure.diagnostics}`
         setSubmissionNotice({ type: 'error', text })
         message.error(text)
         return
@@ -902,13 +943,13 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       />}
       {sourcePrefillWarning && <Alert className="rfr-source-warning" type="warning" showIcon message="Source record needs attention" description={sourcePrefillWarning} />}
       <Spin spinning={sourcePrefillLoading} tip="Loading the linked work order...">
-      {saveError && <Alert type="error" showIcon message="Hiring request was not saved" description={saveError} data-testid="hiring-request-save-error" style={{ marginBottom: 12 }} />}
+      <div ref={saveFeedbackRef}>{saveError && <Alert type="error" showIcon message={saveFailure?.title || 'Hiring request needs attention'} description={<><p>{saveError}</p>{saveFailure?.diagnostics && <small style={{ overflowWrap: 'anywhere' }}>{saveFailure.diagnostics}</small>}</>} data-testid="hiring-request-save-error" style={{ marginBottom: 12 }} />}</div>
       {!readOnly && <section className="rfr-source-parser" data-testid="hiring-request-source-parser">
-        <div className="rfr-source-parser-copy"><FilePdfOutlined /><div><b>Prefill from hiring request / JD</b><span>{sourceDocumentName ? `${sourceDocumentName} is linked to this draft. Choose another file only to replace it.` : 'Choose one PDF, DOCX or TXT. Suggestions stay editable and nothing is submitted automatically.'}</span></div></div>
+        <div className="rfr-source-parser-copy"><FilePdfOutlined /><div><b>Prefill from hiring request / JD</b><span>{sourceDocumentName ? `Source filename: ${sourceDocumentName}. Check Source documents below for the uploaded file; choose a file to attach or replace it.` : 'Choose one PDF, DOCX or TXT. Suggestions stay editable and nothing is submitted automatically.'}</span></div></div>
         <label className={`rfr-source-picker${sourceParsing ? ' is-busy' : ''}`}>
           <input data-testid="hiring-request-source-file" type="file" accept=".pdf,.docx,.txt" disabled={sourceParsing || saving} onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) void parseSourceFile(file) }} />
           {sourceParsing ? <Spin size="small" /> : <UploadOutlined />}
-          <span>{sourceParsing ? 'Reading document...' : sourceFile?.name || (sourceDocumentName ? 'Replace source document' : 'Choose source document')}</span>
+          <span>{sourceParsing ? 'Reading document...' : sourceFile?.name || (sourceDocumentName ? 'Attach / replace source document' : 'Choose source document')}</span>
         </label>
         {sourceParse && <div className="rfr-source-result" data-testid="hiring-request-source-result">
           <Tag color={sourceParse.status === 'Parsed' ? 'green' : 'orange'} icon={sourceParse.status === 'Parsed' ? <CheckCircleOutlined /> : undefined}>{sourceParse.status}</Tag>
@@ -1058,7 +1099,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       {submissionNotice?.type === 'error' && <Alert type="error" showIcon message={submissionNotice.text} />}
     </Modal>
 
-    <RecruitmentSeedPackModal open={seedPackOpen} mode="hiring" onClose={() => setSeedPackOpen(false)} onImported={refreshRows} />
+    <RecruitmentSeedPackModal open={seedPackOpen} mode="hiring" onClose={() => setSeedPackOpen(false)} onImported={() => { void refreshRows() }} />
   </section>
 }
 

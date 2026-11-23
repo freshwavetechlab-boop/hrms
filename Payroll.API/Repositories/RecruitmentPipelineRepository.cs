@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS recruitment_jd_skill_requirements (
 CREATE TABLE IF NOT EXISTS recruitment_jd_qualification_requirements (
     Id BIGINT PRIMARY KEY AUTO_INCREMENT,
     JobDescriptionVersionId BIGINT NOT NULL,
-    QualificationName VARCHAR(180) NOT NULL,
+    QualificationName TEXT NOT NULL,
     Specialization VARCHAR(180) NOT NULL DEFAULT '',
     IsMandatory BOOLEAN NOT NULL DEFAULT TRUE,
     DisplayOrder INT NOT NULL DEFAULT 100,
@@ -460,6 +460,7 @@ CREATE TABLE IF NOT EXISTS recruitment_pipeline_transition_requests (
     CONSTRAINT FK_recruitment_transition_request_transition FOREIGN KEY (TransitionId) REFERENCES recruitment_pipeline_transitions(Id)
 );");
 
+        await EnsureJobDescriptionQualificationCapacityAsync(db);
         await EnsureColumnAsync(db, "recruitment_pipeline_versions", "ScopeType", "VARCHAR(40) NOT NULL DEFAULT 'Application'");
         await EnsureColumnAsync(db, "recruitment_pipeline_versions", "SlaMode", "VARCHAR(40) NOT NULL DEFAULT 'StageEntry'");
         await EnsureColumnAsync(db, "recruitment_pipeline_versions", "OverallSlaMinutes", "INT NOT NULL DEFAULT 0");
@@ -565,6 +566,10 @@ WHERE RequisitionId=@Id ORDER BY VersionNumber DESC,Id DESC LIMIT 1", new { Id =
         if (request.RequisitionId <= 0) return (null, "Recruitment requisition is required.");
         if (string.IsNullOrWhiteSpace(request.Title)) return (null, "Job-description title is required.");
         if (string.IsNullOrWhiteSpace(request.Summary)) return (null, "Job-description summary is required.");
+        var qualificationError = ValidateJobDescriptionQualifications(request);
+        if (qualificationError.Length > 0) return (null, qualificationError);
+        var fieldLengthError = ValidateJobDescriptionFieldLengths(request);
+        if (fieldLengthError.Length > 0) return (null, fieldLengthError);
         if (request.Responsibilities.Count == 0 || request.Responsibilities.All(x => string.IsNullOrWhiteSpace(x.ResponsibilityText))) return (null, "Add at least one responsibility.");
         if (request.Skills.Count == 0 || request.Skills.Any(skill => string.IsNullOrWhiteSpace(skill.SkillName)))
             return (null, "Add at least one skill and complete every skill name.");
@@ -587,6 +592,8 @@ WHERE RequisitionId=@Id ORDER BY VersionNumber DESC,Id DESC LIMIT 1", new { Id =
         if (!await RecruitmentAccessScope.CanAccessLocationAsync(db, user, clientId.Value, source!.JobLocation)) return (null, "Recruitment requisition was not found.");
         var proofConfigurationError = await ValidateJobDescriptionCandidateProofConfigurationsAsync(db, request, clientId.Value);
         if (proofConfigurationError.Length > 0) return (null, proofConfigurationError);
+
+        await EnsureJobDescriptionQualificationCapacityAsync(db);
 
         await using var tx = await db.BeginTransactionAsync();
         long id = request.Id;
@@ -3198,7 +3205,7 @@ WHERE cfg.id IN @Ids", new { Ids = ids })).ToDictionary(row => row.Id);
             await db.ExecuteAsync(@"INSERT INTO recruitment_jd_skill_requirements (JobDescriptionVersionId,SkillId,SkillName,IsRequired,MinimumYears,MinimumProficiency,WeightPercent,DisplayOrder)
 VALUES (@Id,@SkillId,@Name,@Required,@Years,@Proficiency,@Weight,@Order)", new { Id = id, row.SkillId, Name = row.SkillName.Trim(), Required = row.IsRequired, Years = Math.Max(0, row.MinimumYears), Proficiency = row.MinimumProficiency.Trim(), Weight = Math.Clamp(row.WeightPercent, 0, 100), Order = row.DisplayOrder }, tx);
         foreach (var row in request.Qualifications.Where(x => !string.IsNullOrWhiteSpace(x.QualificationName)).OrderBy(x => x.DisplayOrder))
-            await db.ExecuteAsync("INSERT INTO recruitment_jd_qualification_requirements (JobDescriptionVersionId,QualificationName,Specialization,IsMandatory,DisplayOrder) VALUES (@Id,@Name,@Specialization,@Mandatory,@Order)", new { Id = id, Name = row.QualificationName.Trim(), Specialization = row.Specialization.Trim(), Mandatory = row.IsMandatory, Order = row.DisplayOrder }, tx);
+            await db.ExecuteAsync("INSERT INTO recruitment_jd_qualification_requirements (JobDescriptionVersionId,QualificationName,Specialization,IsMandatory,DisplayOrder) VALUES (@Id,@Name,@Specialization,@Mandatory,@Order)", new { Id = id, Name = row.QualificationName.Trim(), Specialization = (row.Specialization ?? "").Trim(), Mandatory = row.IsMandatory, Order = row.DisplayOrder }, tx);
         foreach (var row in request.Certifications.Where(x => !string.IsNullOrWhiteSpace(x.CertificationName)).OrderBy(x => x.DisplayOrder))
             await db.ExecuteAsync(@"INSERT INTO recruitment_jd_certification_requirements
 (JobDescriptionVersionId,CertificationName,IsMandatory,CandidateProofAttachmentFieldConfigurationId,DisplayOrder)

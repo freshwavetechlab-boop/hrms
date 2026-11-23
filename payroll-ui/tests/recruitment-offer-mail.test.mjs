@@ -14,12 +14,18 @@ test('offer email review and send bind the explicit client, selection, immutable
   assert.deepEqual(calls.pop().slice(0, 2), ['/api/recruitment/document-roster/mail-preview?clientId=7', { ids: [11, 13], retryFailed: true }])
   const requestId = 'fa76b47c-8965-45c3-8a6d-d518c81f46be'
   const recipients = [{ rosterId: 11, releaseId: 123 }, { rosterId: 13, releaseId: null }]
-  service.sendOfferMail(7, [11, 13], requestId, recipients, true)
+  const documentRequests = [{ fieldConfigurationId: 81, required: true }, { fieldConfigurationId: 82, required: false }]
+  service.sendOfferMail(7, [11, 13], requestId, recipients, true, documentRequests)
   const first = calls.pop()
   assert.equal(first[0], '/api/recruitment/document-roster/mail-jobs?clientId=7')
-  assert.deepEqual(first[1], { ids: [11, 13], requestId, retryFailed: true, releaseIds: { 11: 123, 13: 0 } })
-  service.sendOfferMail(7, [11, 13], requestId, recipients, true)
+  assert.deepEqual(first[1], { ids: [11, 13], requestId, retryFailed: true, documentRequests, releaseIds: { 11: 123, 13: 0 } })
+  service.sendOfferMail(7, [11, 13], requestId, recipients, true, documentRequests)
   assert.deepEqual(calls.pop()[1], first[1], 'an uncertain response can replay the same id without another send')
+})
+
+test('document choices use the selected client catalog without configuring new document masters', () => {
+  service.getOfferDocumentRequestFields(7)
+  assert.deepEqual(calls.pop().slice(0, 2), ['/api/recruitment/document-roster/document-request-fields?clientId=7', { items: [] }])
 })
 
 test('job feed and dismissal do not switch client scope or use payslip endpoints', () => {

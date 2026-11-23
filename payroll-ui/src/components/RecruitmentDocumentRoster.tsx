@@ -5,7 +5,7 @@ import { DownloadOutlined, FileTextOutlined, ReloadOutlined, UploadOutlined } fr
 import DataTable, { type Column } from './DataTable'
 import FileDropZone from './FileDropZone'
 import { PageHeaderPortal } from './layout/AppPageHeader'
-import { createRosterJobDescription, createRosterJobDescriptions, downloadRosterDrafts, editDocumentRoster, getDocumentRoster, getDocumentTemplates, getRosterJobDescription, getRosterJobDescriptions, getRosterSigningAsset, getRosterWorkLocations, linkRosterWorkLocation, prepareDocumentTemplates, releaseRosterLetters, removeRosterSigningAsset, uploadDocumentRoster, uploadRosterSigningAsset, type DocumentRosterRow, type DocumentTemplate, type RosterImportResult, type RosterImportSettings, type RosterJobDescription, type RosterJobDescriptionLink, type RosterPreview, type RosterSheet, type RosterSigningAsset } from '../services/recruitmentDocumentService'
+import { createRosterJobDescription, createRosterJobDescriptions, downloadRosterDrafts, editDocumentRoster, getDocumentRoster, getDocumentTemplates, getRosterJobDescription, getRosterJobDescriptions, getRosterSigningAsset, getRosterWorkLocations, linkRosterWorkLocation, prepareDocumentTemplates, preflightRosterLetters, releaseRosterLetters, removeRosterSigningAsset, uploadDocumentRoster, uploadRosterSigningAsset, type DocumentRosterRow, type DocumentTemplate, type RosterImportResult, type RosterImportSettings, type RosterJobDescription, type RosterJobDescriptionLink, type RosterPreview, type RosterSheet, type RosterSigningAsset, type RosterReleasePreflight } from '../services/recruitmentDocumentService'
 import { filterRosterRows, rosterLocationName, rosterMasterLocationField, rosterEmployeeManagedField, rosterPermissions, rosterReleaseReady, selectedRosterRows, signingAssetFileError } from '../utils/recruitmentRosterOperations'
 import { useAuthSession } from './AuthGate'
 import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
@@ -239,17 +239,38 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
     {error && <Alert type="error" showIcon message={error} />}
     <p>Choose an existing work location for the selected profiles.</p><Form layout="vertical"><Form.Item label="Work location / institute" required><Select aria-label="Link roster work location" value={linkLocationId} showSearch optionFilterProp="label" placeholder="Choose a work location" disabled={busy} options={locations.map(location => ({ value: location.id, label: location.name }))} onChange={setLinkLocationId} /></Form.Item></Form><p className="document-roster-selected-summary">{selectedRows.map(row => row.candidateName).join(', ')}</p>
   </Drawer>
-  {releaseIds && <RosterReleaseDrawer clientId={clientId} ids={releaseIds} canManageAsset={canManageOffers} canRelease={canRelease} onClose={() => setReleaseIds(null)} onReleased={async count => { setReleaseIds(null); await load(); await onChanged(); setNotice(`${count} offer letter${count > 1 ? 's' : ''} released and downloaded.`) }} />}
+  {releaseIds && <RosterReleaseDrawer clientId={clientId} ids={releaseIds} revisions={Object.fromEntries(rows.filter(row => releaseIds.includes(row.id)).map(row => [String(row.id), row.revision]))} canManageAsset={canManageOffers} canRelease={canRelease} onClose={() => setReleaseIds(null)} onReleased={async count => { setReleaseIds(null); await load(); await onChanged(); setNotice(`${count} offer letter${count > 1 ? 's' : ''} released and downloaded.`) }} />}
   <Drawer open={!!edit} title={edit ? `Document details · ${edit.candidateName}` : 'Document details'} width="min(850px, 96vw)" onClose={() => { if (!busy) setEdit(null) }} closable={!busy} maskClosable={!busy} footer={<Space><Button disabled={busy} onClick={() => setEdit(null)}>Cancel</Button><Button type="primary" loading={busy} disabled={!canImport && !canManageOffers} onClick={() => void saveEdit()}>Save details</Button></Space>}>
     {error && <Alert type="error" showIcon message={error} />}
     {edit && <><Alert type={edit.documentIssues.length ? 'warning' : 'success'} showIcon message={edit.documentIssues.length ? edit.documentIssues.join('; ') : 'Ready for unsigned draft'} description={`Source: ${edit.sourceFileName} · ${edit.sourceSheetName} · Row ${edit.sourceRow}`} /><Alert type="info" showIcon message={edit.syncedEmployeeId ? 'Employee Master details sync automatically' : 'Complete the offer details'} description={edit.syncedEmployeeId ? 'Edit synced fields in Employee Master. Release the corrected letter, then use Email selected to send the new version. Earlier letters and delivery history remain available.' : 'Complete missing offer fields, then release and email the letter.'} /><Form layout="vertical" className="document-roster-fields">{templates.find(t => t.id === edit.templateId)?.fields.map(f => <Form.Item key={f.key} label={f.label} required={f.required} extra={rosterEmployeeManagedField(edit, f.key) ? 'Synced from Employee Master' : edit.workLocationId && rosterMasterLocationField(f.key) ? 'Managed by Work Location' : f.type === 'percent' ? 'Enter 30% or 0.30 for thirty percent.' : undefined}><Input aria-label={`Document ${f.key}`} type={f.type === 'date' ? 'date' : 'text'} inputMode={['money', 'number', 'percent'].includes(f.type) ? 'decimal' : undefined} maxLength={4000} disabled={rosterEmployeeManagedField(edit, f.key) || ['candidateName', 'candidateEmail', 'candidatePhone', 'candidateCode'].includes(f.key) || !!edit.workLocationId && rosterMasterLocationField(f.key) || !canImport && !canManageOffers} value={editValues[f.key] || ''} onChange={e => setEditValues(v => ({ ...v, [f.key]: e.target.value }))} /></Form.Item>)}</Form></>}
   </Drawer></>
 }
 
-function RosterReleaseDrawer({ clientId, ids, canManageAsset, canRelease, onClose, onReleased }: { clientId: number; ids: number[]; canManageAsset: boolean; canRelease: boolean; onClose: () => void; onReleased: (count: number) => Promise<void> }) {
+function RosterReleaseDrawer({ clientId, ids, revisions, canManageAsset, canRelease, onClose, onReleased }: { clientId: number; ids: number[]; revisions: Record<string, string>; canManageAsset: boolean; canRelease: boolean; onClose: () => void; onReleased: (count: number) => Promise<void> }) {
   const [asset, setAsset] = useState<RosterSigningAsset | null>(null), [applySignature, setApplySignature] = useState(false)
   const [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [error, setError] = useState('')
   const alive = useRef(true)
+  const releaseInFlight = useRef(false)
+  const [check, setCheck] = useState<{ key: string; loading: boolean; result: RosterReleasePreflight | null; error: string }>({ key: '', loading: false, result: null, error: '' })
+  const [checkAttempt, setCheckAttempt] = useState(0)
+  const checkKey = JSON.stringify([clientId, ids, revisions, applySignature, asset?.sha256 || '', checkAttempt])
+  useEffect(() => {
+    if (loading || busy || !canRelease || !ids.length || !asset || applySignature && !asset.available) return
+    const controller = new AbortController()
+    let current = true
+    setCheck({ key: checkKey, loading: true, result: null, error: '' })
+    void preflightRosterLetters(clientId, ids, applySignature, revisions, controller.signal).then(result => {
+      if (!current) return
+      setCheck({ key: checkKey, loading: false, result: result.ok ? result.data : null, error: result.ok && result.data ? '' : result.error || 'Unable to check the selected letters. Check again before release.' })
+    }).catch(cause => {
+      if (current) setCheck({ key: checkKey, loading: false, result: null, error: cause instanceof Error ? cause.message : 'Unable to check the selected letters. Check again before release.' })
+    })
+    return () => { current = false; controller.abort() }
+    // checkKey represents the exact selected rows, revisions and signing choice.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkKey, loading, busy, canRelease, asset?.available])
+  const checkCurrent = check.key === checkKey
+  const releaseReady = !loading && !busy && !!asset && (!applySignature || asset.available) && checkCurrent && !check.loading && !check.error && check.result?.canRelease === true && check.result.items.length === ids.length && ids.every(id => check.result!.items.some(item => item.rosterId === id && item.ready && item.revision === revisions[String(id)]))
   useEffect(() => {
     alive.current = true
     void getRosterSigningAsset(clientId).then(result => {
@@ -279,15 +300,20 @@ function RosterReleaseDrawer({ clientId, ids, canManageAsset, canRelease, onClos
     finally { if (alive.current) setBusy(false) }
   }
   const release = async () => {
-    if (busy || loading || !canRelease || !ids.length || !asset || (applySignature && !asset.available)) return
-    setBusy(true); setError('')
-    try { await releaseRosterLetters(clientId, ids, applySignature); await onReleased(ids.length) }
+    if (releaseInFlight.current || !releaseReady || !canRelease || !ids.length) return
+    releaseInFlight.current = true
+    setBusy(true); setError(''); setCheck({ key: '', loading: false, result: null, error: '' })
+    try { await releaseRosterLetters(clientId, ids, applySignature, revisions); await onReleased(ids.length) }
     catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to release offer letters.') }
-    finally { if (alive.current) setBusy(false) }
+    finally { releaseInFlight.current = false; if (alive.current) setBusy(false) }
   }
-  return <Drawer open title={ids.length ? `Release ${ids.length} offer letter${ids.length > 1 ? 's' : ''}` : 'Signature and stamp'} className="document-roster-release" width="min(640px, 96vw)" onClose={() => { if (!busy) onClose() }} closable={!busy} maskClosable={!busy} footer={<Space><Button disabled={busy} onClick={onClose}>{ids.length ? 'Cancel' : 'Close'}</Button>{canRelease && !!ids.length && <Button type="primary" icon={<DownloadOutlined />} loading={busy} disabled={loading || !asset || (applySignature && !asset.available)} onClick={() => void release()}>Release &amp; download ({ids.length})</Button>}</Space>}>
+  return <Drawer open title={ids.length ? `Release ${ids.length} offer letter${ids.length > 1 ? 's' : ''}` : 'Signature and stamp'} className="document-roster-release" width="min(640px, 96vw)" onClose={() => { if (!busy) onClose() }} closable={!busy} maskClosable={!busy} footer={<Space><Button disabled={busy} onClick={onClose}>{ids.length ? 'Cancel' : 'Close'}</Button>{canRelease && !!ids.length && <Button type="primary" icon={<DownloadOutlined />} loading={busy} disabled={!releaseReady} onClick={() => void release()}>Release &amp; download ({ids.length})</Button>}</Space>}>
     <Alert type="info" showIcon message={ids.length ? 'Release all selected letters together' : 'Save a signature and stamp for this client'} description={ids.length ? 'Release and download the selected letters. After acceptance, use Employees → Import selected from Talent Acquisition to create or link Employee Master. Use the saved signature and stamp, or switch it off for plain letters. Email selected letters separately after release.' : 'Upload one combined image to use when releasing offer letters.'} />
     {error && <Alert type="error" showIcon message={error} />}
+    {canRelease && !!ids.length && !loading && !!asset && (!applySignature || asset.available) && <section aria-label="Offer letter validation" aria-live="polite">
+      {!checkCurrent || check.loading ? <Alert type="info" showIcon icon={<Spin size="small" />} message="Checking selected letters…" description="Checking current details, template layout and signature before release." /> : check.error ? <Alert type="error" showIcon message="Letter check could not finish" description={check.error} /> : check.result && <Alert type={check.result.canRelease ? 'success' : 'error'} showIcon message={check.result.canRelease ? `${check.result.items.length} letters checked — ready to release` : 'Correct these issues before release'} description={<>{check.result.issues.map((issue, index) => <p key={`group-${index}`}>{issue}</p>)}{check.result.items.filter(item => !item.ready).map(item => <div key={item.rosterId}><strong>{item.profileCode} · {item.templateName}</strong><ul>{item.issues.map((issue, index) => <li key={index}>{issue}</li>)}</ul></div>)}</>} />}
+      {checkCurrent && !check.loading && <Button size="small" disabled={busy} icon={<ReloadOutlined />} onClick={() => setCheckAttempt(value => value + 1)}>Check again</Button>}
+    </section>}
     <section className="document-roster-signature-section" aria-busy={loading || busy}>
       <h3>Signature and stamp</h3>
       <p>{canManageAsset ? 'Upload one combined PNG or JPEG image, up to 2 MB. It will be saved for this client.' : 'The saved signature and stamp belongs to this client.'}</p>

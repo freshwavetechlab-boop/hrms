@@ -31,8 +31,8 @@ function loadUtility(name) {
 }
 const { buildXlsxBlob } = loadUtility('xlsx')
 const { standardRosterSheets } = loadUtility('recruitmentRosterExchangeTemplate')
-const standardColumns = ['profileCode','rowAction','employeeCode','firstName','lastName','candidateEmail','candidatePhone','positionTitle','joiningDate','monthlyGross','workLocation','bankAccountNo','SALARY:BASIC','SALARY:HRA','revision'].map(key => ({ key, header: key + ' [' + key + ']', infotype: key.startsWith('SALARY:') ? '0008' : '0001', type: key === 'monthlyGross' || key.startsWith('SALARY:') ? 'money' : 'text', readOnly: ['profileCode','revision'].includes(key), description: '' }))
-const standardSchema = (clientId, sourceGroup, mode) => ({ version:'FREVO-EMPLOYEE-1', clientId, templateId:7, sourceGroup, columns:standardColumns, importBatches:['November joiners'], rows:mode === 'Update' ? rosterRows.map(row=>({profileCode:row.candidateCode,rowAction:'Apply',employeeCode:row.employeeCode||'',firstName:row.candidateName,lastName:'',candidateEmail:row.email,positionTitle:row.values.positionTitle,monthlyGross:row.values.monthlyGross,workLocation:row.workLocation,revision:'a'.repeat(64)})) : [] })
+const standardColumns = ['profileCode','employeeCode','firstName','lastName','candidateEmail','candidatePhone','positionTitle','joiningDate','workLocation','bankAccountNo','SALARY:BASIC','revision'].map(key => ({ key, header: key + ' [' + key + ']', infotype: key.startsWith('SALARY:') ? '0008' : '0001', type: key.startsWith('SALARY:') ? 'money' : 'text', readOnly: ['profileCode','revision'].includes(key), description: '' }))
+const standardSchema = (clientId, sourceGroup, mode) => ({ version:'FREVO-EMPLOYEE-1', clientId, templateId:7, sourceGroup, columns:standardColumns, importBatches:['November joiners'], rows:mode === 'Update' ? rosterRows.map(row=>({profileCode:row.candidateCode,employeeCode:row.employeeCode||'',firstName:row.candidateName,lastName:'',candidateEmail:row.email,positionTitle:row.values.positionTitle,'SALARY:BASIC':row.values.monthlyBasic||'',workLocation:row.workLocation,revision:'a'.repeat(64)})) : [] })
 const field = (key, label, sourceHeaders, type = 'text', required = false) => ({ key, label, sourceHeaders, type, required, defaultValue: '', blankText: '' })
 const template = { id: 7, clientId: 30, templateName: 'Synthetic employee offer', importPresets: [{ name: 'Synthetic legacy list', headerRow: 4, defaults: {} }], fields: [
   field('candidateName', 'Employee name', ['Employee Name'], 'text', true), field('candidateEmail', 'Email', ['Email']),
@@ -102,7 +102,7 @@ const plugin = {
             const values=Object.fromEntries(standardColumns.map(c=>[c.key,row.values[header.findIndex(h=>h.endsWith('['+c.key+']'))]||'']))
             const existing=rosterRows.find(r=>r.candidateCode===values.profileCode)
             const action=settings.mode==='Update' ? existing?'Update':'Skip' : 'Insert'
-            return {sourceRow:row.number,profileCode:values.profileCode,employeeCode:values.employeeCode,employeeName:(values.firstName+' '+values.lastName).trim(),action,reason:action==='Skip'?'Unknown Profile Code in this client/batch. Skip this row; other updates can continue.':'',changedFields:['monthlyGross'],values}
+            return {sourceRow:row.number,profileCode:values.profileCode,employeeCode:values.employeeCode,employeeName:(values.firstName+' '+values.lastName).trim(),action,reason:action==='Skip'?'Unknown Profile Code in this client/batch. Skip this row; other updates can continue.':'',changedFields:['SALARY:BASIC'],values}
           }).filter(row=>row.employeeName||row.profileCode)
           if (p.endsWith('/preview')) return reply({fileName:file.name,previewToken:'synthetic-standard',rows})
           assert.equal(settings.previewToken,'synthetic-standard')
@@ -303,8 +303,8 @@ try {
   assert.ok(workbook[0].rows[0].values.some(value=>value.startsWith('__FREVO_TEMPLATE__:')))
   const insertionSchema=standardSchema(30,'Employee list','Insert')
   assert.deepEqual(workbook[0].rows[0].values.slice(0,standardColumns.length),standardColumns.map(c=>c.header))
-  const data=[{firstName:'Synthetic upload employee',candidateEmail:'synthetic.upload@example.invalid',candidatePhone:'9000012345',positionTitle:'Synthetic coordinator',joiningDate:'2026-12-01',monthlyGross:'25000',workLocation:'Synthetic institute'},
-    {firstName:'Synthetic new location employee',candidateEmail:'synthetic.newlocation@example.invalid',candidatePhone:'9000012346',positionTitle:'Synthetic coordinator',joiningDate:'2026-12-01',monthlyGross:'25000',workLocation:'Synthetic new institute'}]
+  const data=[{firstName:'Synthetic upload employee',candidateEmail:'synthetic.upload@example.invalid',candidatePhone:'9000012345',positionTitle:'Synthetic coordinator',joiningDate:'2026-12-01','SALARY:BASIC':'25000',workLocation:'Synthetic institute'},
+    {firstName:'Synthetic new location employee',candidateEmail:'synthetic.newlocation@example.invalid',candidatePhone:'9000012346',positionTitle:'Synthetic coordinator',joiningDate:'2026-12-01','SALARY:BASIC':'25000',workLocation:'Synthetic new institute'}]
   const filledSheets=standardRosterSheets(insertionSchema,'Insert')
   filledSheets[0].rows=[filledSheets[0].rows[0],...data.map(row=>[...standardColumns.map(c=>row[c.key]||''),''])]
   const filledFile=path.join(output,'synthetic-standard-insertion.xlsx')
@@ -326,7 +326,7 @@ try {
   await page.locator('.ant-select-dropdown:visible .ant-select-item-option').filter({hasText:/^November joiners$/}).click()
   await expect(drawer.getByRole('button',{name:/Download current version$/})).toBeEnabled()
   const correctionSchema=standardSchema(30,'November joiners','Update')
-  correctionSchema.rows=[{...correctionSchema.rows.find(row=>row.profileCode==='SYNTH-001'),monthlyGross:'27000'},
+  correctionSchema.rows=[{...correctionSchema.rows.find(row=>row.profileCode==='SYNTH-001'),'SALARY:BASIC':'27000'},
     {profileCode:'UNKNOWN-SYNTH',firstName:'Synthetic unmatched row',revision:'a'.repeat(64)}]
   const correctedFile=path.join(output,'synthetic-standard-correction.xlsx')
   fs.writeFileSync(correctedFile,Buffer.from(await buildXlsxBlob(standardRosterSheets(correctionSchema,'Update')).arrayBuffer()))

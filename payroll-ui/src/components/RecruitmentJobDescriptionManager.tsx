@@ -20,6 +20,9 @@ import {
   saveRecruitmentJobDescription, submitRecruitmentJobDescription,
 } from '../services/recruitmentOrchestrationService'
 import type { Client, RecruitmentRequisition, RecruitmentRequestDocumentParseResult, WorkflowRequestProgress } from '../types/payroll'
+import { requisitionOperationError, type RequisitionRequestFailure } from '../utils/requisitionOperationError'
+import { embeddedJdAutosaveKey } from '../utils/embeddedJdAutosave'
+import { jdFieldLengthIssues, jdTextLength, type JdTextField } from '../utils/jdFieldLength'
 import type {
   RecruitmentJdBenefit, RecruitmentJdCertificationRequirement, RecruitmentJdLanguageRequirement,
   RecruitmentJdQualificationRequirement, RecruitmentJdResponsibility, RecruitmentJdSkillRequirement,
@@ -42,6 +45,7 @@ type Props = {
 
 export type RecruitmentJobDescriptionManagerHandle = {
   saveDraftIfNeeded: () => Promise<boolean>
+  getLastSaveFailure: () => RequisitionRequestFailure | null
 }
 
 const emptyLookups: RecruitmentOrchestrationLookups = {
@@ -77,6 +81,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
   const [approvalProgressRefreshKey, setApprovalProgressRefreshKey] = useState(0)
   const [editorStep, setEditorStep] = useState<EditorStep>('role')
   const [editorSection, setEditorSection] = useState<EditorSection>('role')
+  const [additionalTab, setAdditionalTab] = useState('certifications')
   const [historyOpen, setHistoryOpen] = useState(false)
   const [sourceFile, setSourceFile] = useState<File | null>(null)
   const [sourceParsing, setSourceParsing] = useState(false)
@@ -86,11 +91,13 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
   const [sourceDocumentsOpen, setSourceDocumentsOpen] = useState(false)
   const [attachmentRefresh, setAttachmentRefresh] = useState(0)
   const draftBaseline = useRef('')
+  const lastSaveFailure = useRef<RequisitionRequestFailure | null>(null)
   const requisitionsRef = useRef<RecruitmentRequisition[]>([])
   const scopeLoad = useRef(0)
   const versionLoad = useRef(0)
   const sourceLoad = useRef(0)
   const embeddedAutoSaveTimer = useRef<number | null>(null)
+  const embeddedAutoSaveAttempt = useRef('')
 
   useEffect(() => {
     if (clientScopeManaged) return
@@ -164,32 +171,42 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
   const readOnly = requestReadOnly || (!!draft?.id && !editableStatuses.has(draft.status))
   const editingDisabled = readOnly || saving || sourceParsing || Boolean(deletingId)
   const hasUnsavedChanges = Boolean(sourceFile || (draft && !readOnly && (!draft.id || descriptionSnapshot(draft) !== draftBaseline.current)))
+  const hasUserEdits = Boolean(sourceFile || (draft && !readOnly && descriptionSnapshot(draft) !== draftBaseline.current))
+  const lastSaveNotice = lastSaveFailure.current ? requisitionOperationError('linked-jd', lastSaveFailure.current) : null
+  const lengthIssues = draft ? jdFieldLengthIssues(draft) : []
 
   useImperativeHandle(ref, () => ({
-    saveDraftIfNeeded: async () => hasUnsavedChanges ? await saveDraft() : true,
+    saveDraftIfNeeded: async () => {
+      lastSaveFailure.current = null
+      return hasUnsavedChanges ? await saveDraft() : true
+    },
+    getLastSaveFailure: () => lastSaveFailure.current,
   }))
   useEffect(() => {
-    onNavigationStateChange?.({ dirty: hasUnsavedChanges, busy: saving || sourceParsing })
-  }, [hasUnsavedChanges, saving, sourceParsing, onNavigationStateChange])
+    onNavigationStateChange?.({ dirty: hasUserEdits, busy: saving || sourceParsing })
+  }, [hasUserEdits, saving, sourceParsing, onNavigationStateChange])
   useEffect(() => () => onNavigationStateChange?.({ dirty: false, busy: false }), [onNavigationStateChange])
   useEffect(() => { onWeightChange?.(draft ? skillWeightTotal(draft.skills) : 0) }, [draft?.skills, onWeightChange])
   useEffect(() => {
-    if (!hasUnsavedChanges && !saving && !sourceParsing) return
+    if (!hasUserEdits && !saving && !sourceParsing) return
     const confirmLeave = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
     window.addEventListener('beforeunload', confirmLeave)
     return () => window.removeEventListener('beforeunload', confirmLeave)
-  }, [hasUnsavedChanges, saving, sourceParsing])
+  }, [hasUserEdits, saving, sourceParsing])
   useEffect(() => {
     if (embeddedAutoSaveTimer.current) window.clearTimeout(embeddedAutoSaveTimer.current)
-    if (historyOnly || deletingId || !embedded || !draft || readOnly || saving || sourceParsing || !hasUnsavedChanges || validateDescription(draft)) return
+    if (historyOnly || deletingId || !embedded || !draft || readOnly || saving || sourceParsing || sourceUploadError || !hasUnsavedChanges || validateDescription(draft)) return
+    const attemptKey = embeddedJdAutosaveKey(descriptionSnapshot(draft), draftBaseline.current, sourceFile, embeddedAutoSaveAttempt.current)
+    if (!attemptKey) return
     embeddedAutoSaveTimer.current = window.setTimeout(() => {
       embeddedAutoSaveTimer.current = null
+      embeddedAutoSaveAttempt.current = attemptKey
       void saveDraft(true)
     }, 1200)
     return () => {
       if (embeddedAutoSaveTimer.current) window.clearTimeout(embeddedAutoSaveTimer.current)
     }
-  }, [embedded, historyOnly, deletingId, draft, readOnly, saving, sourceParsing, hasUnsavedChanges])
+  }, [embedded, historyOnly, deletingId, draft, readOnly, saving, sourceParsing, sourceFile, sourceUploadError, hasUnsavedChanges])
   const approvalWorkflows = useMemo(() => {
     const active = lookups.workflows.filter(row => row.isActive && (!row.clientId || row.clientId === clientId))
     return active.filter(row => row.resourceType === 'RecruitmentJobDescription')
@@ -219,6 +236,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
   function setDraftSnapshot(value: RecruitmentJobDescriptionVersion | null) {
     const prepared = value && editableStatuses.has(value.status) ? applyEditableJdDefaults(value) : value
     draftBaseline.current = prepared ? descriptionSnapshot(prepared) : ''
+    lastSaveFailure.current = null
     setDraft(prepared)
   }
 
@@ -234,7 +252,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
   function withDraftGuard(action: () => void) {
     if (saving || sourceParsing || deletingId) return
     const proceed = () => { clearSourceDraft(); action() }
-    if (hasUnsavedChanges) {
+    if (hasUserEdits) {
       Modal.confirm({ title: 'Leave these JD edits?', content: 'Unsaved edits and the selected source document will be discarded. Your saved versions are unchanged.', okText: 'Discard edits', cancelText: 'Keep editing', onOk: proceed })
     } else proceed()
   }
@@ -426,11 +444,18 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
   }
 
   async function saveDraft(silent = false): Promise<boolean> {
-    if (!draft || editingDisabled) return false
+    lastSaveFailure.current = null
+    if (!draft || editingDisabled) {
+      lastSaveFailure.current = { error: 'The linked JD is unavailable, read-only or still processing.', requestSent: false }
+      return false
+    }
     const error = validateDescription(draft)
     if (error) {
+      lastSaveFailure.current = { error, requestSent: false }
       if (silent) return false
-      selectSection(!draft.title.trim() || !draft.summary.trim() ? 'role'
+      const lengthIssue = jdFieldLengthIssues(draft)[0]
+      if (lengthIssue && draft.title.trim() && draft.summary.trim()) reviewLengthIssue(lengthIssue)
+      else selectSection(!draft.title.trim() || !draft.summary.trim() ? 'role'
         : !draft.responsibilities.some(row => row.responsibilityText.trim()) ? 'responsibilities' : 'skills')
       message.warning(error)
       return false
@@ -439,13 +464,25 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
     try {
       const payload = normalizeDescription(draft)
       const response = await saveRecruitmentJobDescription(payload)
-      if (!response.ok || !response.data) return false
+      if (!response.ok || !response.data) {
+        const failure = response as { error: string; status: number; requestId?: string }
+        lastSaveFailure.current = { error: failure.error || 'The linked JD could not be saved.', status: failure.status, requestId: failure.requestId }
+        return false
+      }
       setDraftSnapshot(response.data)
       onSaved?.(response.data)
       await storeSourceDocument()
       if (!silent) await loadVersions(response.data.requisitionId, response.data.id)
       return true
+    } catch (cause) {
+      lastSaveFailure.current = { error: cause instanceof Error ? cause.message : 'The linked JD operation could not finish.' }
+      return false
     } finally { setSaving(false) }
+  }
+
+  function reviewLengthIssue(issue: ReturnType<typeof jdFieldLengthIssues>[number]) {
+    if (issue.section === 'additional') setAdditionalTab(issue.field === 'certificationName' ? 'certifications' : ['languageName', 'proficiency'].includes(issue.field) ? 'languages' : 'benefits')
+    selectSection(issue.section)
   }
 
   function openApprovalDialog() {
@@ -542,15 +579,17 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
               { key: 'additional', label: 'Additional requirements', description: 'Certifications, languages, benefits', icon: <GiftOutlined />, badge: draft.certifications.length + draft.languages.length + draft.benefits.length },
             ]}
             footer={<div className="jd-editor-footer">
-              <Typography.Text type="secondary">{readOnly ? `${draft.status} · v${draft.versionNumber}` : embedded ? saving ? 'Saving JD draft…' : hasUnsavedChanges ? 'JD changes will save automatically' : 'JD draft saved automatically' : draft.id ? 'Editing saved draft' : 'New draft · review prefilled details'}</Typography.Text>
+              <Typography.Text type="secondary">{readOnly ? `${draft.status} · v${draft.versionNumber}` : embedded ? saving ? 'Saving JD draft…' : lastSaveNotice ? 'JD save needs attention · review the message above' : hasUserEdits ? 'JD changes will save automatically' : !draft.id ? 'New JD draft · use Save draft to store it' : 'JD draft saved' : draft.id ? 'Editing saved draft' : 'New draft · review prefilled details'}</Typography.Text>
               <Space wrap>
                 {editorStep === 'role' && <Button icon={<ArrowRightOutlined />} onClick={() => selectStep('screening')}>Skills & screening</Button>}
-                {!readOnly && !embedded && <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={sourceParsing} onClick={() => void saveDraft()}>{draft.id ? 'Update draft' : 'Save draft'}</Button>}
+                {!readOnly && !embedded && <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={sourceParsing || lengthIssues.length > 0} onClick={() => void saveDraft()}>{draft.id ? 'Update draft' : 'Save draft'}</Button>}
                 {!readOnly && <Tooltip title={hasUnsavedChanges ? 'Save your current JD edits before approval' : !draft.id ? 'Save this JD first' : selectedRequisition.status !== 'Approved' ? 'Approve the hiring request before JD approval' : undefined}><Button icon={<SendOutlined />} disabled={!draft.id || hasUnsavedChanges || editingDisabled || selectedRequisition.status !== 'Approved'} onClick={openApprovalDialog}>{canDirectApprove ? 'Review approval route' : 'Submit for approval'}</Button></Tooltip>}
                 {draft.status === 'Approved' && <Tooltip title={!selectedRequisition.openPositionId ? 'A linked vacancy is required for resume screening' : "Screening uses the vacancy's current approved JD and configured ATS rules"}><Button data-testid="jd-screen-resumes" type="primary" icon={<RobotOutlined />} disabled={!selectedRequisition.openPositionId || selectedRequisition.status !== 'Approved'} onClick={screenResumes}>Screen resumes</Button></Tooltip>}
               </Space>
             </div>}>
           <div className="jd-status-notices">
+            {lengthIssues.length > 0 && <Alert data-testid="jd-field-length-error" type="error" showIcon message={`${lengthIssues.length} JD field${lengthIssues.length > 1 ? 's exceed' : ' exceeds'} the allowed length`} description={lengthIssues[0].message} action={<Button size="small" onClick={() => reviewLengthIssue(lengthIssues[0])}>Review field</Button>} />}
+            {embedded && lastSaveNotice && <Alert data-testid="linked-jd-save-error" type="error" showIcon message={lastSaveNotice.title} description={<><p>{lastSaveNotice.message}</p><small style={{ overflowWrap: 'anywhere' }}>{lastSaveNotice.diagnostics}</small></>} />}
             {sourceUploadError && <Alert className="jd-source-review" data-testid="jd-source-upload-error" type="warning" showIcon message={sourceUploadError} action={<Button size="small" loading={saving} onClick={() => void retrySourceUpload()}>Retry attachment</Button>} />}
             {approvalProgress && <Alert className="jd-approval-progress" data-testid="jd-approval-progress" type="info" showIcon
               message={`Pending with ${approvalProgress.pendingApproverName || 'assigned approver'}`}
@@ -572,24 +611,24 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
             {selectedRequisition.sourceDocumentName && <Alert className="jd-prefill-notice" type="info" showIcon message={`Source: ${selectedRequisition.sourceDocumentName}`} description="Details from the hiring request are prefilled in a new JD. Review and edit them before saving." />}
             <Form layout="vertical" disabled={editingDisabled}>
               <Row gutter={14}>
-                <Col xs={24} lg={14}><Form.Item label="Public role title" required><Input value={draft.title} maxLength={240} onChange={event => patch({ title: event.target.value })} /></Form.Item></Col>
+                <Col xs={24} lg={14}><Form.Item label="Public role title" required {...lengthFeedback('title', draft.title)}><Input aria-label="Public role title" aria-invalid={Boolean(jdTextLength('title', draft.title).error)} value={draft.title} onChange={event => patch({ title: event.target.value })} /></Form.Item></Col>
                 <Col xs={24} lg={10}><Form.Item label="Internal position"><Input value={`${selectedRequisition.positionTitle} (${selectedRequisition.rfrNumber})`} disabled /></Form.Item></Col>
               </Row>
-              <Form.Item label="Role summary" required extra="A concise overview shown to candidates and approvers."><Input.TextArea rows={3} value={draft.summary} maxLength={4000} showCount onChange={event => patch({ summary: event.target.value })} /></Form.Item>
-              <Form.Item label="Role purpose"><Input.TextArea rows={3} value={draft.rolePurpose} maxLength={4000} showCount onChange={event => patch({ rolePurpose: event.target.value })} /></Form.Item>
+              <Form.Item label="Role summary" required {...lengthFeedback('summary', draft.summary)}><Input.TextArea rows={3} value={draft.summary} onChange={event => patch({ summary: event.target.value })} /></Form.Item>
+              <Form.Item label="Role purpose" {...lengthFeedback('rolePurpose', draft.rolePurpose)}><Input.TextArea rows={3} value={draft.rolePurpose} onChange={event => patch({ rolePurpose: event.target.value })} /></Form.Item>
             </Form>
           </Card>}
 
           {editorSection === 'responsibilities' && <RepeaterSection title="Responsibilities" description="Define measurable outcomes and ownership for this role." rows={draft.responsibilities} readOnly={editingDisabled}
             addLabel="Add responsibility" onAdd={() => patch({ responsibilities: [...draft.responsibilities, responsibility()] })}
             onChange={responsibilities => patch({ responsibilities })}
-            render={(row, index, update) => <Input.TextArea rows={2} value={row.responsibilityText} placeholder={`Responsibility ${index + 1}`} maxLength={1000} onChange={event => update({ responsibilityText: event.target.value })} />} />}
+            render={(row, index, update) => <Form.Item {...lengthFeedback('responsibilityText', row.responsibilityText)}><Input.TextArea rows={2} value={row.responsibilityText} placeholder={`Responsibility ${index + 1}`} onChange={event => update({ responsibilityText: event.target.value })} /></Form.Item>} />}
 
           {editorSection === 'skills' && <div className="jd-skill-workspace">
             <Card size="small" title="Job skills" className="jd-skill-entry">
               <Form layout="vertical" disabled={editingDisabled}>
-                <Form.Item label="Required skills" extra="Type a skill and press Enter."><Select mode="tags" open={false} tokenSeparators={[',']} value={draft.skills.filter(row => row.isRequired).map(row => row.skillName)} placeholder="Add must-have skills" onChange={values => updateSkillNames(values, true)} /></Form.Item>
-                <Form.Item label="Preferred skills" extra="Type a skill and press Enter. These improve ranking without becoming mandatory."><Select mode="tags" open={false} tokenSeparators={[',']} value={draft.skills.filter(row => !row.isRequired).map(row => row.skillName)} placeholder="Add preferred skills" onChange={values => updateSkillNames(values, false)} /></Form.Item>
+                <Form.Item label="Required skills" extra="Each skill: up to 180 characters. Type a skill and press Enter." validateStatus={draft.skills.some(row => row.isRequired && jdTextLength('skillName', row.skillName).error) ? 'error' : undefined} help={draft.skills.filter(row => row.isRequired).map(row => jdTextLength('skillName', row.skillName).error).find(Boolean) || undefined}><Select mode="tags" open={false} tokenSeparators={[',']} value={draft.skills.filter(row => row.isRequired).map(row => row.skillName)} placeholder="Add must-have skills" onChange={values => updateSkillNames(values, true)} /></Form.Item>
+                <Form.Item label="Preferred skills" extra="Each skill: up to 180 characters. Type a skill and press Enter. These improve ranking without becoming mandatory." validateStatus={draft.skills.some(row => !row.isRequired && jdTextLength('skillName', row.skillName).error) ? 'error' : undefined} help={draft.skills.filter(row => !row.isRequired).map(row => jdTextLength('skillName', row.skillName).error).find(Boolean) || undefined}><Select mode="tags" open={false} tokenSeparators={[',']} value={draft.skills.filter(row => !row.isRequired).map(row => row.skillName)} placeholder="Add preferred skills" onChange={values => updateSkillNames(values, false)} /></Form.Item>
               </Form>
             </Card>
             <Collapse className="jd-skill-details" ghost><Collapse.Panel key="details" header={`Advanced ATS settings (${draft.skills.length})`}>
@@ -601,7 +640,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
           <RepeaterSection className="jd-skills-repeater" title="ATS skill details" description="Set the expected reviewer level and each skill's relative ATS weight." rows={draft.skills} readOnly={editingDisabled}
             addLabel="Add skill" onAdd={() => patch({ skills: distributeSkillWeights([...draft.skills, skill()]) })} onChange={skills => patch({ skills: normalizeSkillWeights(skills) })}
             render={(row, skillIndex, update) => <Row gutter={10}>
-              <Col xs={24} md={16}><Form.Item label="Skill" required validateStatus={!row.skillName.trim() ? 'error' : undefined} help={!row.skillName.trim() ? 'Enter a skill or remove this row.' : undefined}><Input value={row.skillName} placeholder="e.g. SAP MM" onChange={event => update({ skillName: event.target.value })} /></Form.Item></Col>
+              <Col xs={24} md={16}><Form.Item label="Skill" required {...lengthFeedback('skillName', row.skillName)} validateStatus={!row.skillName.trim() || jdTextLength('skillName', row.skillName).error ? 'error' : undefined} help={!row.skillName.trim() ? 'Enter a skill or remove this row.' : jdTextLength('skillName', row.skillName).error || undefined}><Input value={row.skillName} placeholder="e.g. SAP MM" onChange={event => update({ skillName: event.target.value })} /></Form.Item></Col>
               <Col xs={24} md={8}><Form.Item label="Category" required><Select value={row.isRequired ? 'MustHave' : 'Preferred'} options={[{ value: 'MustHave', label: 'Must-have' }, { value: 'Preferred', label: 'Preferred' }]} onChange={value => update({ isRequired: value === 'MustHave' })} /></Form.Item></Col>
               <Col xs={24} md={12}><Form.Item label="Require skill-specific experience" extra="Off by default. Missing skill-years will not block ATS; the skill itself and total career experience are still checked."><Switch checked={row.minimumYears > 0} disabled={editingDisabled} onChange={required => update({ minimumYears: required ? 1 : 0 })} /></Form.Item></Col>
               {row.minimumYears > 0 && <Col xs={24} md={12}><Form.Item label="Minimum years for this skill" extra={row.isRequired ? 'Must-have: unverified duration needs review; insufficient duration fails this requirement.' : 'Preferred skill: affects scoring, not the must-have gate.'}><InputNumber min={0.1} max={80} step={0.5} value={row.minimumYears} disabled={editingDisabled} onChange={value => update({ minimumYears: Number(value || 0) })} /></Form.Item></Col>}
@@ -610,7 +649,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
                   `Weight ${formatPercent(row.weightPercent)}`,
                 ].filter(Boolean).join(' · ')}</Typography.Text></span>}>
                 <Row gutter={12}>
-                  <Col xs={24} md={10}><Form.Item label={<Tooltip title="JD-based review depth used in ATS evidence. Intermediate is the safe average when the source does not specify a level.">Reviewer level</Tooltip>}><Select value={row.minimumProficiency || 'Intermediate'} options={['Beginner', 'Intermediate', 'Advanced', 'Expert'].map(value => ({ value, label: value }))} onChange={value => update({ minimumProficiency: value })} /></Form.Item></Col>
+                  <Col xs={24} md={10}><Form.Item label={<Tooltip title="JD-based review depth used in ATS evidence. Intermediate is the safe average when the source does not specify a level.">Reviewer level</Tooltip>} {...lengthFeedback('minimumProficiency', row.minimumProficiency)}><Select value={row.minimumProficiency || 'Intermediate'} options={['Beginner', 'Intermediate', 'Advanced', 'Expert'].map(value => ({ value, label: value }))} onChange={value => update({ minimumProficiency: value })} /></Form.Item></Col>
                   <Col xs={24} md={14}><Form.Item label={<Tooltip title="Relative importance across all must-have and preferred skills. Moving this slider automatically redistributes the remaining weight.">Relative weight</Tooltip>}><div className="jd-weight-slider"><Slider min={0} max={100} step={0.01} value={Number(row.weightPercent || 0)} tooltip={{ formatter: value => formatPercent(Number(value || 0)) }} onChange={value => patch({ skills: adjustSkillWeight(draft.skills, skillIndex, Number(value ?? 0)) })} /><output>{formatPercent(Number(row.weightPercent || 0))}</output></div></Form.Item></Col>
                 </Row>
               </Collapse.Panel></Collapse></Col>
@@ -620,16 +659,17 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
 
           {editorSection === 'qualifications' && <RepeaterSection title="Qualifications" description="Keep mandatory and preferred education requirements explicit." rows={draft.qualifications} readOnly={editingDisabled}
             addLabel="Add qualification" onAdd={() => patch({ qualifications: [...draft.qualifications, qualification()] })} onChange={qualifications => patch({ qualifications })}
-            render={(row, _index, update) => <Row gutter={10}>
-              <Col xs={24} md={10}><Form.Item label="Qualification" required><Input value={row.qualificationName} placeholder="e.g. B.Tech / MCA" onChange={event => update({ qualificationName: event.target.value })} /></Form.Item></Col>
-              <Col xs={24} md={10}><Form.Item label="Specialization"><Input value={row.specialization} placeholder="Computer Science" onChange={event => update({ specialization: event.target.value })} /></Form.Item></Col>
+            render={(row, index, update) => <Row gutter={10}>
+              <Col xs={24} md={10}><Form.Item label="Qualification" required {...lengthFeedback('qualificationName', row.qualificationName)}><Input.TextArea autoSize={{ minRows: 2, maxRows: 6 }} aria-label={`Qualification ${index + 1}`} aria-invalid={Boolean(jdTextLength('qualificationName', row.qualificationName).error)} value={row.qualificationName} placeholder="e.g. B.Tech / MCA" onChange={event => update({ qualificationName: event.target.value })} /></Form.Item></Col>
+              <Col xs={24} md={10}><Form.Item label="Specialization" {...lengthFeedback('specialization', row.specialization)}><Input aria-label={`Specialization ${index + 1}`} aria-invalid={Boolean(jdTextLength('specialization', row.specialization).error)} value={row.specialization} placeholder="Computer Science" onChange={event => update({ specialization: event.target.value })} /></Form.Item></Col>
               <Col xs={24} md={4}><Form.Item label="Mandatory"><Switch checked={row.isMandatory} onChange={isMandatory => update({ isMandatory })} /></Form.Item></Col>
             </Row>} />}
 
           {editorSection === 'additional' && <Card size="small" className="jd-additional-requirements" title={<div><Typography.Text strong>Additional role requirements</Typography.Text><Typography.Text type="secondary">Keep certifications, language expectations and candidate benefits organised in focused tabs.</Typography.Text></div>}>
             <Tabs
               className="jd-additional-tabs"
-              defaultActiveKey="certifications"
+              activeKey={additionalTab}
+              onChange={setAdditionalTab}
               items={[
                 {
                   key: 'certifications',
@@ -638,20 +678,20 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
                     <div className="jd-proof-guidance" data-testid="jd-certification-proof-guidance"><SafetyCertificateOutlined /><div><Typography.Text strong>Candidate proof is optional</Typography.Text><Typography.Text type="secondary">Select a secure upload field only when this certificate must be collected from the candidate.</Typography.Text></div></div>
                     {!candidateProofOptions.length && <Alert data-testid="jd-certification-proof-setup-required" type="warning" showIcon message="No candidate proof upload is configured" description="In Settings > Attachments, add an active RECRUITMENT candidate-facing field configuration. Then add it as a Secure upload field in Form Builder and publish the form." />}
                     <RepeaterSection compact title="Certification requirements" description="List role-specific credentials, eligibility and whether evidence must be collected from the candidate." rows={draft.certifications} readOnly={editingDisabled} addLabel="Add certification" onAdd={() => patch({ certifications: [...draft.certifications, certification()] })} onChange={certifications => patch({ certifications })}
-                      render={(row, index, update) => <Row className="jd-additional-row" gutter={[12, 8]}><Col xs={24} lg={12}><Form.Item label="Certification"><Input value={row.certificationName} onChange={event => update({ certificationName: event.target.value })} /></Form.Item></Col><Col xs={24} sm={18} lg={8}><Form.Item label={<Tooltip title="Optional secure upload field for candidate evidence.">Candidate proof</Tooltip>}><Select data-testid={`jd-certification-proof-${index}`} disabled={!candidateProofOptions.length} allowClear showSearch optionFilterProp="label" placeholder={candidateProofOptions.length ? 'No proof required' : 'No upload field configured'} value={row.candidateProofAttachmentFieldConfigurationId || undefined} onChange={candidateProofAttachmentFieldConfigurationId => update({ candidateProofAttachmentFieldConfigurationId: candidateProofAttachmentFieldConfigurationId ?? null })} options={candidateProofOptions.map(option => ({ ...option, disabled: draft.certifications.some((item, itemIndex) => itemIndex !== index && item.candidateProofAttachmentFieldConfigurationId === option.value) }))} /></Form.Item></Col><Col xs={24} sm={6} lg={4}><Form.Item label="Mandatory"><Switch checked={row.isMandatory} onChange={isMandatory => update({ isMandatory })} /></Form.Item></Col></Row>} />
+                      render={(row, index, update) => <Row className="jd-additional-row" gutter={[12, 8]}><Col xs={24} lg={12}><Form.Item label="Certification" {...lengthFeedback('certificationName', row.certificationName)}><Input value={row.certificationName} onChange={event => update({ certificationName: event.target.value })} /></Form.Item></Col><Col xs={24} sm={18} lg={8}><Form.Item label={<Tooltip title="Optional secure upload field for candidate evidence.">Candidate proof</Tooltip>}><Select data-testid={`jd-certification-proof-${index}`} disabled={!candidateProofOptions.length} allowClear showSearch optionFilterProp="label" placeholder={candidateProofOptions.length ? 'No proof required' : 'No upload field configured'} value={row.candidateProofAttachmentFieldConfigurationId || undefined} onChange={candidateProofAttachmentFieldConfigurationId => update({ candidateProofAttachmentFieldConfigurationId: candidateProofAttachmentFieldConfigurationId ?? null })} options={candidateProofOptions.map(option => ({ ...option, disabled: draft.certifications.some((item, itemIndex) => itemIndex !== index && item.candidateProofAttachmentFieldConfigurationId === option.value) }))} /></Form.Item></Col><Col xs={24} sm={6} lg={4}><Form.Item label="Mandatory"><Switch checked={row.isMandatory} onChange={isMandatory => update({ isMandatory })} /></Form.Item></Col></Row>} />
                   </Space>,
                 },
                 {
                   key: 'languages',
                   label: <span data-testid="jd-additional-tab-languages"><GlobalOutlined /> Languages <Tag>{draft.languages.length}</Tag></span>,
                   children: <RepeaterSection compact title="Language requirements" description="Capture the expected proficiency and whether each language is mandatory." rows={draft.languages} readOnly={editingDisabled} addLabel="Add language" onAdd={() => patch({ languages: [...draft.languages, language()] })} onChange={languages => patch({ languages })}
-                    render={(row, _index, update) => <Row className="jd-additional-row" gutter={[12, 8]}><Col xs={24} md={10}><Form.Item label="Language"><Input value={row.languageName} onChange={event => update({ languageName: event.target.value })} /></Form.Item></Col><Col xs={24} sm={18} md={10}><Form.Item label="Proficiency"><Select value={row.proficiency || 'Professional'} options={['Basic', 'Conversational', 'Professional', 'Native'].map(value => ({ value, label: value }))} onChange={value => update({ proficiency: value })} /></Form.Item></Col><Col xs={24} sm={6} md={4}><Form.Item label="Mandatory"><Switch checked={row.isMandatory} onChange={isMandatory => update({ isMandatory })} /></Form.Item></Col></Row>} />,
+                    render={(row, _index, update) => <Row className="jd-additional-row" gutter={[12, 8]}><Col xs={24} md={10}><Form.Item label="Language" {...lengthFeedback('languageName', row.languageName)}><Input value={row.languageName} onChange={event => update({ languageName: event.target.value })} /></Form.Item></Col><Col xs={24} sm={18} md={10}><Form.Item label="Proficiency" {...lengthFeedback('proficiency', row.proficiency)}><Select value={row.proficiency || 'Professional'} options={['Basic', 'Conversational', 'Professional', 'Native'].map(value => ({ value, label: value }))} onChange={value => update({ proficiency: value })} /></Form.Item></Col><Col xs={24} sm={6} md={4}><Form.Item label="Mandatory"><Switch checked={row.isMandatory} onChange={isMandatory => update({ isMandatory })} /></Form.Item></Col></Row>} />,
                 },
                 {
                   key: 'benefits',
                   label: <span data-testid="jd-additional-tab-benefits"><GiftOutlined /> Benefits <Tag>{draft.benefits.length}</Tag></span>,
                   children: <RepeaterSection compact title="Candidate benefits" description="Describe the benefits candidates should see with this role." rows={draft.benefits} readOnly={editingDisabled} addLabel="Add benefit" onAdd={() => patch({ benefits: [...draft.benefits, benefit()] })} onChange={benefits => patch({ benefits })}
-                    render={(row, _index, update) => <Row className="jd-additional-row" gutter={[12, 8]}><Col xs={24} md={10}><Form.Item label="Benefit"><Input value={row.benefitName} onChange={event => update({ benefitName: event.target.value })} /></Form.Item></Col><Col xs={24} md={14}><Form.Item label="Description"><Input value={row.description} placeholder="Optional candidate-facing detail" onChange={event => update({ description: event.target.value })} /></Form.Item></Col></Row>} />,
+                    render={(row, _index, update) => <Row className="jd-additional-row" gutter={[12, 8]}><Col xs={24} md={10}><Form.Item label="Benefit" {...lengthFeedback('benefitName', row.benefitName)}><Input value={row.benefitName} onChange={event => update({ benefitName: event.target.value })} /></Form.Item></Col><Col xs={24} md={14}><Form.Item label="Description" {...lengthFeedback('description', row.description)}><Input value={row.description} placeholder="Optional candidate-facing detail" onChange={event => update({ description: event.target.value })} /></Form.Item></Col></Row>} />,
                 },
               ]}
             />
@@ -976,10 +1016,17 @@ function allocateSkillWeights(rows: RecruitmentJdSkillRequirement[], factors: nu
   return rows.map((row, index) => ({ ...row, weightPercent: units[index] / 100 }))
 }
 
+function lengthFeedback(field: JdTextField, value: string) {
+  const state = jdTextLength(field, value)
+  return { validateStatus: state.error ? 'error' as const : undefined, help: state.error || undefined, extra: state.counter }
+}
+
 function validateDescription(row: RecruitmentJobDescriptionVersion) {
   if (!row.title.trim()) return 'Enter the job title.'
   if (!row.summary.trim()) return 'Enter a candidate-facing role summary.'
   if (!row.responsibilities.some(item => item.responsibilityText.trim())) return 'Add at least one responsibility.'
+  const lengthIssue = jdFieldLengthIssues(row)[0]
+  if (lengthIssue) return lengthIssue.message
   if (!row.skills.length) return 'Add at least one must-have or preferred skill.'
   if (row.skills.some(item => !item.skillName.trim())) return 'Enter a name for every skill row, or remove the blank row.'
   if (!row.skills.some(item => item.isRequired)) return 'Add at least one must-have skill.'

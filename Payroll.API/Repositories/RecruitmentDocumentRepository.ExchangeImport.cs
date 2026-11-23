@@ -10,6 +10,9 @@ namespace Payroll.API.Repositories;
 public sealed partial class RecruitmentDocumentRepository
 {
     private static Dictionary<string, string> StandardStoredValues(Dictionary<string, string> old, RosterExchangePreviewRow row, Employee employee, StandardContext context)
+        => StandardStoredMasterInputs(old, row, employee, context.Components.SingleOrDefault(c => c.Code.Equals("BASIC", StringComparison.OrdinalIgnoreCase))?.Id);
+
+    internal static Dictionary<string, string> StandardStoredMasterInputs(Dictionary<string, string> old, RosterExchangePreviewRow row, Employee employee, string? basicComponentId)
     {
         var values = new Dictionary<string, string>(old, StringComparer.OrdinalIgnoreCase);
         foreach (var pair in row.Values.Where(p => p.Key is not ("revision" or "profileCode" or "rowAction" or "changeReason"))) values[pair.Key.StartsWith("OFFER:", StringComparison.OrdinalIgnoreCase) ? pair.Key[6..] : pair.Key] = pair.Value;
@@ -18,18 +21,9 @@ public sealed partial class RecruitmentDocumentRepository
         values["salaryComponentsJson"] = JsonSerializer.Serialize(employee.SalaryComponents, Json);
         values["employeeCity"] = employee.PersonalDetails.City; values["employeeState"] = employee.PersonalDetails.State;
         values["standardTemplateVersion"] = "FREVO-EMPLOYEE-1";
-        var byCode = context.Components.ToDictionary(c => c.Code, StringComparer.OrdinalIgnoreCase);
-        if (byCode.TryGetValue("BASIC", out var basic) && employee.SalaryComponents.TryGetValue(basic.Id, out var monthlyBasic)) values["monthlyBasic"] = monthlyBasic.ToString(CultureInfo.InvariantCulture);
-        if (byCode.TryGetValue("HRA", out var hra) && employee.SalaryComponents.TryGetValue(hra.Id, out var monthlyHra))
-        {
-            values["monthlyHra"] = monthlyHra.ToString(CultureInfo.InvariantCulture);
-            if (decimal.TryParse(values.GetValueOrDefault("monthlyBasic", ""), NumberStyles.Number, CultureInfo.InvariantCulture, out var basis) && basis > 0) values["hraRate"] = (monthlyHra / basis).ToString(CultureInfo.InvariantCulture);
-        }
-        var earnings = context.Components.Where(c => c.Category.Equals("Earning", StringComparison.OrdinalIgnoreCase) && employee.SalaryComponents.ContainsKey(c.Id)).ToList();
-        var monthlyEarnings = earnings.Count > 0 && earnings.All(c => c.CalculationType != "Daily Rate") ? earnings.Sum(c => employee.SalaryComponents[c.Id]) : 0;
-        if (row.Values.TryGetValue("monthlyGross", out var declared) && monthlyEarnings > 0 && decimal.Parse(declared, CultureInfo.InvariantCulture) != decimal.Round(monthlyEarnings, 2))
-            throw new InvalidOperationException("Monthly Gross differs from the saved earning components. Correct the component amounts or Gross in this row; no amount was guessed.");
-        if (!row.Values.ContainsKey("monthlyGross") && monthlyEarnings > 0) values["monthlyGross"] = decimal.Round(monthlyEarnings, 2).ToString(CultureInfo.InvariantCulture);
+        if (basicComponentId is not null && employee.SalaryComponents.TryGetValue(basicComponentId, out var monthlyBasic)) values["monthlyBasic"] = monthlyBasic.ToString(CultureInfo.InvariantCulture);
+        // Basic is a source input, not a complete pay breakup. Do not derive or
+        // validate gross/CTC from it here; the selected salary template owns pay.
         if (decimal.TryParse(values.GetValueOrDefault("monthlyGross", ""), NumberStyles.Number, CultureInfo.InvariantCulture, out var gross) && gross >= 0 && gross <= 999999999999m)
             values["salaryInWords"] = "Rupees " + BrandedOfferPdfService.AmountInWords(gross);
         return values;
@@ -73,7 +67,12 @@ public sealed partial class RecruitmentDocumentRepository
                         var custom = original is not null && context.Custom.Fields.Count > 0 ? (await new EmployeeAttributeRepository(configuration).ExchangeAsync(settings.ClientId, user)).Values.GetValueOrDefault(original.Id) : null;
                         if (StandardRosterRevision(existing, original, custom) != row.Revision) throw new InvalidOperationException("Record changed during upload; download its current version and retry this row.");
                     }
-                    var proposed = StandardRosterCorrectionEmployee(original, settings.ClientId, existing is null ? new Dictionary<string, string>() : context.Current[existing.Id], row.Values, context.ComponentIds);
+                    var proposed = StandardRosterCorrectionEmployee(original, settings.ClientId, existing is null ? new Dictionary<string, string>() : context.Current[existing.Id], row.Values, context.ComponentIds, context.BaselineComponentIds);
+                    if (row.Values.TryGetValue("reportingManagerEmail", out var managerEmail))
+                    {
+                        var managers = (await db.QueryAsync<WorkflowApprover>("SELECT Id,Email,ClientId FROM authusers WHERE IsActive=TRUE AND (ClientId IS NULL OR ClientId=@ClientId)", settings, tx)).ToList();
+                        proposed.ReportingManagerUserId = StandardReportingManagerId(managerEmail, settings.ClientId, managers);
+                    }
                     var location = StandardLocationPlan(row, existing, proposed, context, settings.ClientId, user);
                     if (location.ImportIssues.Count > 0) throw new InvalidOperationException(string.Join(" ", location.ImportIssues));
                     await SaveImportLocationAsync(db, tx, settings.ClientId, user, location);

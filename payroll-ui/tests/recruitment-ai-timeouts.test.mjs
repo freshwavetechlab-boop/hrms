@@ -23,6 +23,7 @@ test('progress upload preserves its original default and supports a scoped timeo
     Promise, apiUrl: (path) => path, legacyTokenKey: 'synthetic-test-key',
     sessionStorage: { getItem: () => null }, localStorage: { getItem: () => null },
     notifyMutation: () => {},
+    activeClientHeader: () => undefined, beginClientScopedWrite: () => () => {},
     XMLHttpRequest: class {
       upload = {}
       open() {}

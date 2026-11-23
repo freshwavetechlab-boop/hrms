@@ -11,6 +11,7 @@ export type RosterPreviewRow = { sourceRow: number; candidateName: string; email
 export type RosterPreview = { fileName: string; fileHash: string; previewToken: string; sheets: string[]; sheetName: string; headers: string[]; mapping: Record<string, number>; fields: DocumentInput[]; rows: RosterPreviewRow[] }
 export type DocumentRosterRow = { id: number; clientId: number; candidateId: number; candidateCode: string; candidateName: string; email: string; phone: string; sourceGroup: string; workLocationId?: number | null; workLocation: string; offerNumber?: string; releasedAt?: string | null; hasUnreleasedChanges?: boolean; templateId: number; templateName: string; sourceFileName: string; sourceSheetName: string; sourceRow: number; values: Record<string, string>; documentIssues: string[]; revision: string; sourceRevision?: string; employeeId?: number | null; employeeCode?: string; syncedEmployeeId?: number | null; employeeManagedFields?: string[] }
 export type RosterSigningAsset = { available: boolean; fileName: string; contentType: string; width: number; height: number; sha256: string; updatedAt: string | null }
+export type RosterReleasePreflight = { canRelease: boolean; checkedAtUtc: string; issues: string[]; items: { rosterId: number; profileCode: string; templateId: number; templateName: string; revision: string; ready: boolean; issues: string[] }[] }
 export type RosterImportResult = { createdProfiles: number; reusedProfiles: number; savedRows: number; createdWorkLocations?: number; errors: string[] }
 export type RosterClientSummary = { clientId: number; rosterCount: number; offerCount: number }
 export type RosterJobDescriptionLink = { rosterId: number; jobDescriptionId: number; source: 'Simple' | 'Existing'; title: string }
@@ -65,9 +66,12 @@ export async function downloadRosterDrafts(clientId: number, ids: number[]) {
   await saveRosterDownload(response, single ? 'draft-offer.pdf' : 'draft-offers.zip')
 }
 
-export async function releaseRosterLetters(clientId: number, ids: number[], applySignature: boolean) {
+export const preflightRosterLetters = (clientId: number, ids: number[], applySignature: boolean, revisions: Record<string, string>, signal?: AbortSignal) => postJson(`${root}/releases/preflight?clientId=${clientId}`, { ids, applySignature, revisions }, null as RosterReleasePreflight | null, { timeoutMs: 180000, loader: false, toast: false, signal })
+
+export async function releaseRosterLetters(clientId: number, ids: number[], applySignature: boolean, revisions?: Record<string, string>) {
   const single = ids.length === 1
-  const response = await apiRequest(single ? `${root}/rows/${ids[0]}/release?clientId=${clientId}&applySignature=${applySignature}` : `${root}/releases?clientId=${clientId}`, { method: 'POST', ...(single ? {} : { body: JSON.stringify({ ids, applySignature }) }), timeoutMs: 180000, loader: false, toast: false })
+  const revision = revisions?.[String(ids[0])]
+  const response = await apiRequest(single ? `${root}/rows/${ids[0]}/release?clientId=${clientId}&applySignature=${applySignature}${revision ? `&revision=${encodeURIComponent(revision)}` : ''}` : `${root}/releases?clientId=${clientId}`, { method: 'POST', ...(single ? {} : { body: JSON.stringify({ ids, applySignature, ...(revisions ? { revisions } : {}) }) }), timeoutMs: 180000, loader: false, toast: false })
   if (!response.ok) throw new Error(await readError(response))
   await saveRosterDownload(response, single ? 'offer-letter.pdf' : 'offer-letters.zip')
 }

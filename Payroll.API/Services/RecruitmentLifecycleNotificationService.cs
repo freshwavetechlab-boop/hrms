@@ -10,7 +10,8 @@ public sealed partial class RecruitmentLifecycleNotificationService(
     IConfiguration configuration,
     NotificationRepository notifications,
     PublicPortalUrlResolver publicPortalUrls,
-    ILogger<RecruitmentLifecycleNotificationService> logger)
+    ILogger<RecruitmentLifecycleNotificationService> logger,
+    RecruitmentDocumentCollectionRepository? documentCollections = null)
 {
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
 
@@ -174,13 +175,14 @@ WHERE documentRow.Id=@Id AND documentRow.Status='Signed' AND documentRow.Documen
             "RECRUITMENT_MOM_SIGNED", "RecruitmentProcessDocument", context.Id.ToString(), context.ClientId, actor);
     }
 
-    public async Task QueueOfferMilestoneAsync(long offerId, string status, AuthUser actor, string candidateActionToken = "")
+    public async Task QueueOfferMilestoneAsync(long offerId, string status, AuthUser actor, string candidateActionToken = "",
+        IReadOnlyList<RecruitmentRequestedDocument>? documentRequests = null)
     {
         await using var db = Db();
         await db.OpenAsync();
         var context = await db.QueryFirstOrDefaultAsync<OfferContext>(@"SELECT offerRow.Id,offerRow.OfferNumber,offerRow.Status,
 offerRow.OfferedCtc,offerRow.Currency,offerRow.ProposedJoiningDate,applicationRow.Id ApplicationId,
-applicationRow.ClientId,applicationRow.PositionId,candidate.Email CandidateEmail,
+applicationRow.ClientId,applicationRow.PositionId,candidate.Id CandidateId,candidate.Email CandidateEmail,
 CONCAT(candidate.FirstName,' ',candidate.LastName) CandidateName,positionRow.PositionTitle
 FROM recruitment_offers offerRow
 JOIN recruitment_candidate_applications applicationRow ON applicationRow.Id=offerRow.ApplicationId
@@ -216,9 +218,27 @@ WHERE offerRow.Id=@Id", new { Id = offerId });
             ["candidateActionUrl"] = portalUrl,
             ["status"] = status
         };
+        var candidateBody = Render(rule.CandidateBodyTemplate, tokens);
+        var candidateAlreadyReserved = triggerCode == "OFFER_RELEASED" && candidateRecipient.Length > 0
+            && await db.ExecuteScalarAsync<int>(@"SELECT COUNT(*) FROM recruitment_lifecycle_notification_deliveries
+WHERE EventKey=@EventKey AND RecipientEmail=@Email", new { EventKey = eventKey + ":CANDIDATE", Email = candidateRecipient[0] }) > 0;
+        if (triggerCode == "OFFER_RELEASED" && candidateRecipient.Length > 0 && !candidateAlreadyReserved)
+        {
+            if (documentCollections is null) throw new InvalidOperationException("The candidate document collection service is unavailable.");
+            await RecruitmentDocumentCollectionRepository.EnsureSchemaAsync(db);
+            await RecruitmentDocumentCollectionRepository.EnsureCatalogAsync(db);
+            await using var tx = await db.BeginTransactionAsync();
+            var token = await documentCollections.EnsureLinkAsync(db, tx, context.ClientId, context.CandidateId,
+                context.CandidateEmail, actor.Id, offerId: context.Id, applicationId: context.ApplicationId,
+                documentRequests: documentRequests);
+            var uploadUrl = RecruitmentDocumentCollectionMail.BuildUploadUrl(configuration, token);
+            await tx.CommitAsync();
+            candidateBody = RecruitmentDocumentCollectionMail.AppendUploadLink(candidateBody, uploadUrl);
+        }
         var subject = Render(rule.SubjectTemplate, tokens);
-        await QueueAsync(db, eventKey + ":CANDIDATE", candidateRecipient, subject, Render(rule.CandidateBodyTemplate, tokens),
-            "RECRUITMENT_OFFER_MILESTONE", "RecruitmentOffer", context.Id.ToString(), context.ClientId, actor);
+        if (!candidateAlreadyReserved)
+            await QueueAsync(db, eventKey + ":CANDIDATE", candidateRecipient, subject, candidateBody,
+                "RECRUITMENT_OFFER_MILESTONE", "RecruitmentOffer", context.Id.ToString(), context.ClientId, actor);
         await QueueAsync(db, eventKey + ":INTERNAL", internalRecipients, subject, Render(rule.InternalBodyTemplate, tokens),
             "RECRUITMENT_OFFER_MILESTONE", "RecruitmentOffer", context.Id.ToString(), context.ClientId, actor);
     }
@@ -334,6 +354,7 @@ WHERE ClientId=@ClientId AND RecruitmentEnabled=TRUE AND EnableCandidatePortal=T
         public string Currency { get; set; } = "INR";
         public DateTime ProposedJoiningDate { get; set; }
         public long ApplicationId { get; set; }
+        public long CandidateId { get; set; }
         public int ClientId { get; set; }
         public long PositionId { get; set; }
         public string CandidateEmail { get; set; } = "";

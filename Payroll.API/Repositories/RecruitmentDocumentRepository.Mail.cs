@@ -45,9 +45,14 @@ VALUES('RECRUITMENT_OFFER_SEND_DEFAULT','Released offer letter','Offer letter - 
         if(!Guid.TryParse(request.RequestId,out var requestId)) throw new InvalidOperationException("Supply a unique request ID for this send action.");
         if(request.ReleaseIds is null || request.ReleaseIds.Count!=request.Ids.Count || request.Ids.Any(id=>!request.ReleaseIds.ContainsKey(id.ToString())))
             throw new InvalidOperationException("Review the selected released letters before sending.");
+        if(request.DocumentRequests is null || request.DocumentRequests.Any(document=>document is null))
+            throw new InvalidOperationException("Select the documents to request before sending offer letters.");
+        if(documentCollections is not null)
+            await documentCollections.ValidateSelectionsAsync(clientId,request.DocumentRequests,user);
         var id=requestId.ToString("N");
-        var fingerprint=Hash(JsonSerializer.Serialize(new{ClientId=clientId,Ids=request.Ids.Order().ToArray(),request.RetryFailed,ReleaseIds=request.ReleaseIds.OrderBy(pair=>pair.Key).ToArray()},Json));
+        var fingerprint=Hash(JsonSerializer.Serialize(new{ClientId=clientId,Ids=request.Ids.Order().ToArray(),request.RetryFailed,ReleaseIds=request.ReleaseIds.OrderBy(pair=>pair.Key).ToArray(),DocumentRequests=request.DocumentRequests?.OrderBy(document=>document.FieldConfigurationId).ToArray()},Json));
         await using var db=Db();await db.OpenAsync();await EnsureAsync(db);
+        if(documentCollections is not null) await RecruitmentDocumentCollectionRepository.EnsureSchemaAsync(db);
         await using var tx=await db.BeginTransactionAsync();
         var clientName=await db.ExecuteScalarAsync<string>("SELECT Name FROM clients WHERE Id=@Id AND IsActive=TRUE FOR UPDATE",new{Id=clientId},tx)
             ?? throw new InvalidOperationException("Select an active client.");
@@ -65,6 +70,9 @@ VALUES('RECRUITMENT_OFFER_SEND_DEFAULT','Released offer letter','Offer letter - 
         NotificationTemplate? template=null;
         if(items.Any(item=>item.Status=="Ready"))
         {
+            if(documentCollections is null) throw new InvalidOperationException("Document collection is unavailable. Please retry after the service is configured.");
+            if(request.DocumentRequests is not {Count:>0}) throw new InvalidOperationException("Select the documents to request before sending offer letters.");
+            _=RecruitmentDocumentCollectionMail.BuildUploadUrl(configuration,"configuration-check");
             if(configuration.GetValue<bool>("OutboundDelivery:Suppressed")) throw new InvalidOperationException("Outbound delivery is suppressed for this application instance.");
             if(await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM notification_smtp_settings WHERE Id=1 AND IsEnabled=TRUE AND DeliveryPaused=FALSE AND Host<>'' AND FromEmail<>''",transaction:tx)!=1)
                 throw new InvalidOperationException("Email delivery is not configured or is paused. Review Settings > Notifications.");
@@ -75,10 +83,12 @@ VALUES('RECRUITMENT_OFFER_SEND_DEFAULT','Released offer letter','Offer letter - 
         foreach(var item in items.Where(item=>item.Status=="Ready"))
         {
             var release=await db.QuerySingleAsync<RosterMailRelease>("SELECT Id ReleaseId,RosterId,PdfHash,FileName,OfferNumber,InputsHash,TemplateHash,LocationHash FROM recruitment_document_roster_releases WHERE Id=@Id AND ClientId=@ClientId",new{Id=item.ReleaseId,ClientId=clientId},tx);
-            var row=await db.QuerySingleAsync<RecruitmentDocumentRosterRow>("SELECT CAST(ValuesJson AS CHAR) ValuesJson FROM recruitment_document_roster WHERE Id=@Id AND ClientId=@ClientId",new{Id=item.RosterId,ClientId=clientId},tx);
+            var row=await db.QuerySingleAsync<RecruitmentDocumentRosterRow>("SELECT CandidateId,CAST(ValuesJson AS CHAR) ValuesJson FROM recruitment_document_roster WHERE Id=@Id AND ClientId=@ClientId",new{Id=item.RosterId,ClientId=clientId},tx);
             var values=ReadValues(row.ValuesJson);
             var location=await ActiveLocationAsync(db,clientId,item.WorkLocationId!.Value,tx);
             var content=NotificationRepository.PrepareReleasedOfferEmail(template!,item,clientName,location.Name,organizationName,release.OfferNumber,values.GetValueOrDefault("joiningDate",""));
+            var documentToken=await documentCollections!.EnsureLinkAsync(db,tx,clientId,row.CandidateId,item.Email,user.Id,rosterId:item.RosterId,documentRequests:request.DocumentRequests);
+            content=(content.Subject,RecruitmentDocumentCollectionMail.AppendUploadLink(content.BodyHtml,RecruitmentDocumentCollectionMail.BuildUploadUrl(configuration,documentToken)));
             var delivery=await db.ExecuteScalarAsync<long>("""
 INSERT INTO recruitment_document_mail_deliveries(ClientId,RosterId,ReleaseId,Recipient,DeliveryKey,PdfHash,FileName)
 VALUES(@ClientId,@RosterId,@ReleaseId,@Email,@Key,@PdfHash,@FileName);SELECT LAST_INSERT_ID();

@@ -27,7 +27,7 @@ public static class RecruitmentRequisitionTextLimits
         new("businessJustification", "Business justification", 65535, "UTF-8 bytes"),
         new("reasonForHiring", "Hiring notes", 500),
         new("experienceRange", "Experience", 80),
-        new("qualification", "Qualification", 250),
+        new("qualification", "Qualification", 65535, "UTF-8 bytes"),
         new("requiredSkills", "Required skills", 65535, "UTF-8 bytes"),
         new("preferredSkills", "Preferred skills", 65535, "UTF-8 bytes"),
         new("certifications", "Certifications", 500),

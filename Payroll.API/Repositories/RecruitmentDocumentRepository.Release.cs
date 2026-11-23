@@ -154,9 +154,10 @@ ON DUPLICATE KEY UPDATE FileName=VALUES(FileName),ContentType=VALUES(ContentType
         if (safeCode.Length == 0) throw new InvalidOperationException("Set the client code before releasing offer letters.");
         return $"GAD/HR/{safeCode}/{year}/{rowId:D6}";
     }
-    public async Task<(byte[] Bytes, string FileName)> ReleaseAsync(int clientId, long id, bool applySignature, AuthUser user)
+    public async Task<(byte[] Bytes, string FileName)> ReleaseAsync(int clientId, long id, bool applySignature, AuthUser user, string? revision = null)
     {
-        var results = await ReleaseDocumentsAsync(clientId, new() { Ids = [id], ApplySignature = applySignature }, user);
+        var results = await ReleaseDocumentsAsync(clientId, new() { Ids = [id], ApplySignature = applySignature,
+            Revisions = revision is null ? null : new() { [id.ToString(CultureInfo.InvariantCulture)] = revision } }, user);
         return (results[0].Bytes, results[0].FileName);
     }
     public async Task<(byte[] Bytes, string FileName)> ReleaseZipAsync(int clientId, RecruitmentRosterReleaseSelection request, AuthUser user)
@@ -209,7 +210,8 @@ WHERE r.ClientId=@ClientId AND r.Id IN @Ids ORDER BY r.Id FOR UPDATE
             {
                 values["offerDate"] = india.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture);
                 var rendered = pdf.Create(template.BodyTemplate, values, logo, draft: false, signatureAndStamp: asset?.Bytes);
-                if (rendered.Bytes is null) throw new InvalidOperationException(rendered.Error);
+                if (rendered.Bytes is null)
+                    throw new InvalidOperationException($"Offer letter for profile {row.CandidateCode} could not be generated with template '{template.TemplateName}'. {rendered.Error} No new letters from this attempt were released. Correct the reported field or template, then retry the same selection.");
                 if (rendered.Bytes.Length > 10 * 1024 * 1024) throw new InvalidOperationException("The released PDF exceeds 10 MB. Reduce the signature image size.");
                 receipt = new() { Bytes = rendered.Bytes, FileName = SafeFileName(client.Name + "-" + row.CandidateCode + "-" + row.CandidateName + "-offer.pdf") };
                 await db.ExecuteAsync("""

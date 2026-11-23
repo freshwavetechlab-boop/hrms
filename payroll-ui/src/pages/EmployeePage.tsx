@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useEmployeeProfileCompletion } from '../components/EmployeeProfileCompletionControls'
 import EmployeeMissingInformation, { createEmployeeDocumentCheck } from '../components/EmployeeMissingInformation'
 import { useLocation, useSearchParams } from 'react-router-dom'
-import { Alert, Button, Checkbox, Drawer, Segmented, Space, Tabs, Tag } from 'antd'
+import { Alert, Button, Checkbox, Drawer, Segmented, Select, Space, Tabs, Tag } from 'antd'
 import RecruitmentRecordList from '../components/RecruitmentRecordList'
 import { PageHeaderPortal } from '../components/layout/AppPageHeader'
 import { RecruitmentViewContext, useSessionPreference, type RecruitmentView } from '../hooks/useRecruitmentPreferences'
@@ -46,6 +46,7 @@ import '../TemplateDesigner.css'
 import './EmployeeWorkspace.css'
 import { useAuthSession } from '../components/AuthGate'
 import { createEmployeePageLoader } from '../utils/employeePageLoading'
+import { assignedEmployeeSalaryTemplate, employeeSalaryTemplates } from '../utils/employeeSalaryTemplate'
 
 const employeeInfotypes = [
   { code: '0000', name: 'Actions' },
@@ -120,8 +121,7 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const [employeePreviewSource, setEmployeePreviewSource] = useState<{ sheets: ImportPreviewSheet[]; clientId: number; fileName: string; operation: BulkImportOperation } | null>(null)
   const [importReview, setImportReview] = useState<{ file: File; clientId: number; operation: BulkImportOperation; review: EmployeeImportPreflight } | null>(null)
   const [importReviewBusy, setImportReviewBusy] = useState(false)
-  const clientStructure = templatesForClient(setup.salaryStructures, employee.clientId)[0]
-  const chosenStructure = setup.salaryStructures.find(item => String(item.id) === employee.salaryStructureId) ?? clientStructure
+  const chosenStructure = assignedEmployeeSalaryTemplate(setup.salaryStructures, employee.clientId, employee.salaryStructureId)
   const rawEmployeeSalary = salaryRecord(employee)
   const structureLineIds = chosenStructure?.lines.map(line => line.componentId) ?? []
   const dailyRateSalary = hasDailyRateComponents(setup.salaryComponents, chosenStructure)
@@ -182,28 +182,44 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   }
   const normalizeEmployeeSalary = (row: Employee, overrides?: Record<string, string | number>, sourceSetup = setup) => {
     row = normalizeEmployeeDetails(row)
-    const salaryStructure = sourceSetup.salaryStructures.find(item => String(item.id) === row.salaryStructureId) ?? templatesForClient(sourceSetup.salaryStructures, row.clientId)[0]
+    const salaryStructure = assignedEmployeeSalaryTemplate(sourceSetup.salaryStructures, row.clientId, row.salaryStructureId)
     if (!salaryStructure || (!row.annualCtc && !hasDailyRateComponents(sourceSetup.salaryComponents, salaryStructure))) return row
-    const normalized = String(row.salaryStructureId) === String(salaryStructure.id) ? row : { ...row, salaryStructureId: String(salaryStructure.id) }
-    return withSalary(normalized, calcSalary(row.annualCtc, salaryStructure, overrides ?? inferSalaryOverrides(row, salaryStructure, sourceSetup), sourceSetup))
+    return withSalary(row, calcSalary(row.annualCtc, salaryStructure, overrides ?? inferSalaryOverrides(row, salaryStructure, sourceSetup), sourceSetup))
   }
   const empLine = (componentId: string, value: string) => {
+    if (!chosenStructure) {
+      const values = { ...salaryRecord(employee), [componentId]: value }
+      setEmployee(withSalary(employee, JSON.stringify(values)))
+      return
+    }
     const nextOverrides = { ...salaryOverrides, [componentId]: value }
     setSalaryOverrides(nextOverrides)
     setEmployee(withSalary(employee, calcSalary(employee.annualCtc, chosenStructure, nextOverrides)))
   }
   const empMonthly = (component: Component) => Number(employeeSalary[String(component.id)] || 0) * (component.calculationType === 'Daily Rate' ? 30 : 1)
-  const applyStructure = (id: string) => { const selectedId = id.split(':')[0]; const selectedStructure = setup.salaryStructures.find(item => String(item.id) === selectedId); const ctc = Number(selectedStructure?.annualCtc || employee.annualCtc || 0); setSalaryOverrides({}); setEmployee(withSalary({ ...employee, salaryStructureId: selectedId, annualCtc: ctc }, calcSalary(ctc, selectedStructure))) }
-  const applyCtc = (ctc: number) => setEmployee(withSalary({ ...employee, salaryStructureId: chosenStructure ? String(chosenStructure.id) : employee.salaryStructureId, annualCtc: ctc }, calcSalary(ctc, chosenStructure, salaryOverrides)))
-  const applyClient = (value: string) => { const clientId = Number(value.split(':')[0] || 0); const selectedStructure = templatesForClient(setup.salaryStructures, clientId)[0]; const ctc = Number(selectedStructure?.annualCtc || employee.annualCtc || 0); setSalaryOverrides({}); setEmployee(withSalary({ ...employee, clientId, salaryStructureId: selectedStructure ? String(selectedStructure.id) : '', annualCtc: ctc }, selectedStructure ? calcSalary(ctc, selectedStructure) : '{}')) }
+  const applyStructure = (id: string) => {
+    const selectedId = id.split(':')[0]
+    if (!selectedId || selectedId === '0') { setSalaryOverrides({}); setEmployee({ ...employee, salaryStructureId: '' }); return }
+    const selectedStructure = assignedEmployeeSalaryTemplate(setup.salaryStructures, employee.clientId, selectedId)
+    if (!selectedStructure) { notify('Choose an active salary template available for this client.', 'warning'); return }
+    const templateCtc = Number(selectedStructure.annualCtc)
+    const ctc = Number.isFinite(templateCtc) && templateCtc > 0 ? templateCtc : Number(employee.annualCtc || 0)
+    setSalaryOverrides({}); setEmployee(withSalary({ ...employee, salaryStructureId: String(selectedStructure.id), annualCtc: ctc }, calcSalary(ctc, selectedStructure)))
+  }
+  const applyCtc = (ctc: number) => setEmployee(chosenStructure
+    ? withSalary({ ...employee, annualCtc: ctc }, calcSalary(ctc, chosenStructure, salaryOverrides))
+    : { ...employee, annualCtc: ctc })
+  const applyClient = (value: string) => {
+    const clientId = Number(value.split(':')[0] || 0)
+    if (clientId === Number(employee.clientId)) return
+    setSalaryOverrides({}); setEmployee({ ...employee, clientId, salaryStructureId: '' })
+  }
   const newEmployee = async () => {
     const token = ++editorGeneration.current
     const refs = await editorReferences()
     if (!refs || token !== editorGeneration.current || currentClientFilter.current !== clientFilter) return
-    const selectedStructure = templatesForClient(refs.setup.salaryStructures, clientFilter)[0]
-    const ctc = Number(selectedStructure?.annualCtc || 0)
     setSalaryOverrides({})
-    setEmployee(clientFilter ? withSalary({ ...employee0, clientId: clientFilter, salaryStructureId: selectedStructure ? String(selectedStructure.id) : '', annualCtc: ctc }, selectedStructure ? calcSalary(ctc, selectedStructure, {}, refs.setup) : '{}') : employee0)
+    setEmployee({ ...employee0, clientId: clientFilter || 0, salaryStructureId: '' })
     setEmployeeInfotype('0001'); setChangeReason(''); setModalOpen(true)
   }
   const loadEmployeeHistory = async (id: number) => {
@@ -216,7 +232,7 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     const refs = await editorReferences()
     if (!refs || token !== editorGeneration.current || currentClientFilter.current !== clientFilter) return
     const normalized = normalizeEmployeeDetails(row)
-    const salaryStructure = refs.setup.salaryStructures.find(item => String(item.id) === normalized.salaryStructureId) ?? templatesForClient(refs.setup.salaryStructures, normalized.clientId)[0]
+    const salaryStructure = assignedEmployeeSalaryTemplate(refs.setup.salaryStructures, normalized.clientId, normalized.salaryStructureId)
     const overrides = inferSalaryOverrides(normalized, salaryStructure, refs.setup)
     setSalaryOverrides(overrides); setEmployee(normalizeEmployeeSalary(normalized, overrides, refs.setup)); setEmployeeInfotype(infotype); setChangeReason(''); setModalOpen(true); void loadEmployeeHistory(row.id)
   }
@@ -244,7 +260,7 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     const response = await processEmployeeAction(request)
     if (!response.ok || !response.data) { notify(response.error || 'Employee action could not be processed.', 'error'); return }
     const normalizedDetails = normalizeEmployeeDetails(response.data)
-    const salaryStructure = setup.salaryStructures.find(item => String(item.id) === normalizedDetails.salaryStructureId) ?? templatesForClient(setup.salaryStructures, normalizedDetails.clientId)[0]
+    const salaryStructure = assignedEmployeeSalaryTemplate(setup.salaryStructures, normalizedDetails.clientId, normalizedDetails.salaryStructureId)
     const overrides = inferSalaryOverrides(normalizedDetails, salaryStructure)
     const normalized = normalizeEmployeeSalary(normalizedDetails, overrides)
     setSalaryOverrides(overrides); setEmployee(normalized); await loadEmployeeHistory(normalized.id); await load(); notify(`${request.actionType} saved with history.`, 'success')
@@ -789,6 +805,10 @@ function AnnualCtcInput(p: { value: number; onChange: (value: number) => void })
 }
 
 function EmployeePanel(p: { clientScoped: boolean; employee: Employee; setEmployee: (employee: Employee) => void; employeeInfotype: EmployeeInfotypeCode; setEmployeeInfotype: (code: string) => void; changeReason: string; setChangeReason: (value: string) => void; clients: Client[]; locations: WorkLocation[]; managerUsers: WorkflowApprover[]; templates: Structure[]; salaryComponents: Component[]; deps: string[]; desigs: string[]; grades: string[]; skillCategories: string[]; employmentTypes: string[]; applyClient: (value: string) => void; applyStructure: (value: string) => void; applyCtc: (value: number) => void; structureComponents: Component[]; employeeSalary: Record<string, string>; salaryOverrides: Record<string, string>; empLine: (id: string, value: string) => void; empMonthly: (component: Component) => number; saveEmployee: () => void; closeModal: () => void; infotypes: EmployeeInfotypeRecord[]; runEmployeeAction: (request: EmployeeActionRequest) => Promise<void> }) {
+  const salaryTemplates = templatesForClient(p.templates, p.employee.clientId)
+  const salaryAssignment = refId(p.employee.salaryStructureId).trim()
+  const assignedTemplate = assignedEmployeeSalaryTemplate(p.templates, p.employee.clientId, salaryAssignment)
+  const unavailableAssignment = !!salaryAssignment && salaryAssignment !== '0' && !assignedTemplate
   const hasDailyRates = p.structureComponents.some(component => component.calculationType === 'Daily Rate')
   const personal = p.employee.personalDetails, payment = p.employee.paymentDetails
   const salaryRows = p.structureComponents.map(component => ({ component, monthly: p.empMonthly(component), annual: p.empMonthly(component) * 12 }))
@@ -808,7 +828,8 @@ function EmployeePanel(p: { clientScoped: boolean; employee: Employee; setEmploy
     {p.employeeInfotype === '0002' && <div className="grid"><F l="First name"><input value={p.employee.firstName} onChange={event => p.setEmployee({ ...p.employee, firstName: event.target.value })} /></F><F l="Last name"><input value={p.employee.lastName} onChange={event => p.setEmployee({ ...p.employee, lastName: event.target.value })} /></F><F l="Gender"><Sel v={p.employee.gender} set={value => p.setEmployee({ ...p.employee, gender: value })} a={['Male', 'Female', 'Other']} /></F><F l="Date of joining"><input type="date" value={p.employee.dateOfJoining} onChange={event => p.setEmployee({ ...p.employee, dateOfJoining: event.target.value })} /></F><F l="Date of birth"><input type="date" value={personal.dateOfBirth || ''} onChange={event => setPersonal('dateOfBirth', event.target.value)} /></F><F l="PAN"><input value={personal.panNumber || ''} onChange={event => setPersonal('panNumber', event.target.value)} /></F><F l="Aadhaar"><input value={personal.aadhaarNumber || ''} onChange={event => setPersonal('aadhaarNumber', event.target.value)} /></F><F l="UAN Number"><input value={personal.uanNumber || ''} onChange={event => setPersonal('uanNumber', event.target.value)} /></F><F l="Mobile"><input value={personal.mobile || ''} onChange={event => setPersonal('mobile', event.target.value)} /></F></div>}
     {p.employeeInfotype === '0006' && <div className="grid"><F l="Address" w><input value={personal.address || ''} onChange={event => setPersonal('address', event.target.value)} /></F><F l="Correspondence Address" w><input value={personal.correspondenceAddress || ''} onChange={event => setPersonal('correspondenceAddress', event.target.value)} /></F><label className="employee-same-address"><input type="checkbox" checked={!!personal.correspondenceAddress && personal.permanentAddress === personal.correspondenceAddress} onChange={event => copyCorrespondence(event.target.checked)} />Same as correspondence address</label><F l="Permanent Address" w><input value={personal.permanentAddress || ''} onChange={event => setPersonal('permanentAddress', event.target.value)} /></F></div>}
     {p.employeeInfotype === '0008' && <div className="employee-salary-panel">
-      <div className="employee-salary-controls"><F l="Salary template"><Sel v={p.employee.salaryStructureId} set={p.applyStructure} a={templatesForClient(p.templates, p.employee.clientId).map(item => `${item.id}:${item.name}`)} /></F><F l="Annual CTC"><AnnualCtcInput value={p.employee.annualCtc} onChange={p.applyCtc} /></F></div>
+      {!assignedTemplate && <Alert showIcon type="warning" message={unavailableAssignment ? `Assigned salary template #${salaryAssignment} is unavailable for this client` : 'Salary template not assigned'} description={unavailableAssignment ? 'Existing salary data is retained. Choose a template available for this client, or select No template assigned to clear the link.' : salaryTemplates.length ? 'Existing Basic Pay and Annual CTC are retained. Select a salary template when you are ready to bind it.' : 'Existing Basic Pay and Annual CTC are retained. Create a salary template for this client, then select it here.'} />}
+      <div className="employee-salary-controls"><F l="Salary template"><Select className="app-search-select" aria-label="Salary template" aria-invalid={unavailableAssignment} showSearch optionFilterProp="label" value={salaryAssignment && salaryAssignment !== '0' ? salaryAssignment : ''} onChange={p.applyStructure} options={[{ value: '', label: 'No template assigned' }, ...(unavailableAssignment ? [{ value: salaryAssignment, label: `Unavailable assigned template (#${salaryAssignment})`, disabled: true }] : []), ...salaryTemplates.map(item => ({ value: String(item.id), label: item.name }))]} /></F><F l="Annual CTC"><AnnualCtcInput value={p.employee.annualCtc} onChange={p.applyCtc} /></F></div>
       <div className="employee-salary-summary"><article><span>{hasDailyRates ? '30-day gross equivalent' : 'Monthly gross'}</span><b>{money(totals.gross)}</b></article><article><span>{hasDailyRates ? '30-day deduction equivalent' : 'Deductions'}</span><b>{money(totals.deductions)}</b></article><article><span>{hasDailyRates ? '30-day net equivalent' : 'Monthly net'}</span><b>{money(totals.net)}</b></article><article><span>Annual CTC</span><b>{money(p.employee.annualCtc)}</b></article></div>
       <div className="employee-salary-table">
         <div className="employee-salary-row employee-salary-head"><span>Component</span><span>Name</span><span>{hasDailyRates ? '30-day equivalent' : 'Monthly'}</span><span>{hasDailyRates ? 'Annual equivalent' : 'Annual'}</span><span>Employee amount / rate<SalaryFieldHelp label="Employee amount / rate" text="Monthly components store a monthly amount. Daily Rate components store the amount per day, not a monthly salary. Equivalents shown assume 30 days; actual pay uses attendance payable days. Annual CTC is optional for daily rates." example="For daily wages enter 700. Payroll with 22 payable days pays Rs 15,400; do not enter 21,000 as the daily rate." /></span></div>
@@ -1035,9 +1056,5 @@ function refId(value: string | number | null | undefined) {
 }
 
 function templatesForClient(templates: Structure[], clientId: number | string) {
-  const active = templates.filter(template => template.active !== false)
-  const client = refId(clientId)
-  if (!client) return active
-  const scoped = active.filter(template => refId(template.clientId) === client)
-  return scoped.length ? scoped : active
+  return employeeSalaryTemplates(templates, clientId)
 }

@@ -13,7 +13,8 @@ namespace Payroll.API.Repositories;
 // Existing-manpower profiles, document inputs and explicitly authorized roster
 // releases. Explicit accepted-candidate import links Employee Master using the
 // existing identity/infotype services; letter release itself does not hire.
-public sealed partial class RecruitmentDocumentRepository(IConfiguration configuration, RecruitmentTalentRepository talent, LayoutDocumentPdfService pdf)
+public sealed partial class RecruitmentDocumentRepository(IConfiguration configuration, RecruitmentTalentRepository talent, LayoutDocumentPdfService pdf,
+    RecruitmentDocumentCollectionRepository? documentCollections = null)
 {
     private MySqlConnection Db() => new(configuration.GetConnectionString("Default"));
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);

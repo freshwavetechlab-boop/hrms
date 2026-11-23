@@ -375,8 +375,18 @@ ORDER BY CASE WHEN a.client_id=0 THEN 0 ELSE 1 END,c.Name,a.attribute_name;", ne
 
         await using var db = Connection();
         await db.OpenAsync();
+        if (await db.ExecuteScalarAsync<int>("SELECT GET_LOCK('attachment_joining_document_catalog_v1',10)") != 1)
+            return (null, "Document configuration is being updated. Please retry.");
         try
         {
+            var kind = JoiningDocumentKind(new() { AttributeCode = item.AttributeCode, AttributeName = item.AttributeName });
+            if (item.IsActive && kind is not null)
+            {
+                var masters = await db.QueryAsync<AttachmentAttribute>("SELECT id Id,client_id ClientId,attribute_code AttributeCode,attribute_name AttributeName FROM attachment_attributes WHERE is_active=TRUE ORDER BY (client_id=0) DESC,id");
+                var canonical = masters.FirstOrDefault(master => JoiningDocumentKind(new() { AttributeCode = master.AttributeCode, AttributeName = master.AttributeName }) == kind);
+                if (canonical is not null && canonical.Id != item.Id)
+                    return (null, $"Use the existing {canonical.AttributeName} document type. Configure its form rules instead of creating another document master.");
+            }
             if (item.Id == 0)
                 item.Id = await db.ExecuteScalarAsync<long>(@"INSERT INTO attachment_attributes
 (client_id,attribute_code,attribute_name,description,data_classification,requires_document_number,requires_issue_date,requires_expiry_date,is_active,created_by_user_id,updated_by_user_id)
@@ -392,6 +402,7 @@ requires_expiry_date=@RequiresExpiryDate,is_active=@IsActive,updated_by_user_id=
         {
             return (null, "Attribute code already exists for the selected client.");
         }
+        finally { await db.ExecuteScalarAsync<int>("SELECT RELEASE_LOCK('attachment_joining_document_catalog_v1')"); }
         return ((await GetAttributesAsync(item.ClientId)).FirstOrDefault(row => row.Id == item.Id), null);
     }
 
@@ -440,7 +451,10 @@ ORDER BY f.module_code,f.form_code,f.display_order,f.field_label;", new { Client
 
         await using var db = Connection();
         await db.OpenAsync();
-        var attributeClient = await db.ExecuteScalarAsync<int?>("SELECT client_id FROM attachment_attributes WHERE id=@Id AND is_active=TRUE", new { Id = item.AttachmentAttributeId });
+        await using var transaction = await db.BeginTransactionAsync();
+        // Hold the referenced master while saving, so consolidation cannot leave
+        // a concurrently saved configuration pointing at a retired attribute.
+        var attributeClient = await db.ExecuteScalarAsync<int?>("SELECT client_id FROM attachment_attributes WHERE id=@Id AND is_active=TRUE LOCK IN SHARE MODE", new { Id = item.AttachmentAttributeId }, transaction);
         if (attributeClient is null || (attributeClient.Value != 0 && attributeClient.Value != item.ClientId))
             return (null, "Selected attachment attribute is not available for this client.");
         try
@@ -453,7 +467,7 @@ requires_verification,versioning_enabled,requirement_scope,display_order,effecti
 VALUES (@ClientId,@AttachmentAttributeId,@ModuleCode,@FormCode,@SectionCode,@FieldKey,@FieldLabel,@HelpText,@IsRequired,@AllowMultiple,@MinimumFileCount,@MaximumFileCount,
 @AllowedExtensionsJson,@AllowedMimeTypesJson,@MaximumFileSizeBytes,@MaximumTotalSizeBytes,@OwnerCanView,@OwnerCanUpload,@OwnerCanReplace,@OwnerCanDelete,
 @RequiresVerification,@VersioningEnabled,@RequirementScope,@DisplayOrder,@EffectiveFromUtc,@EffectiveUntilUtc,@IsActive,@UserId,@UserId);
-SELECT LAST_INSERT_ID();", ConfigParameters(item, user.Id));
+SELECT LAST_INSERT_ID();", ConfigParameters(item, user.Id), transaction);
             else
                 await db.ExecuteAsync(@"UPDATE attachment_field_configurations SET client_id=@ClientId,attachment_attribute_id=@AttachmentAttributeId,module_code=@ModuleCode,
 form_code=@FormCode,section_code=@SectionCode,field_key=@FieldKey,field_label=@FieldLabel,help_text=@HelpText,is_required=@IsRequired,
@@ -462,7 +476,8 @@ allowed_mime_types_json=@AllowedMimeTypesJson,maximum_file_size_bytes=@MaximumFi
 owner_can_view=@OwnerCanView,owner_can_upload=@OwnerCanUpload,owner_can_replace=@OwnerCanReplace,owner_can_delete=@OwnerCanDelete,
 requires_verification=@RequiresVerification,versioning_enabled=@VersioningEnabled,requirement_scope=@RequirementScope,display_order=@DisplayOrder,
 effective_from_utc=@EffectiveFromUtc,effective_until_utc=@EffectiveUntilUtc,is_active=@IsActive,updated_by_user_id=@UserId WHERE id=@Id",
-                    ConfigParameters(item, user.Id));
+                    ConfigParameters(item, user.Id), transaction);
+            await transaction.CommitAsync();
         }
         catch (MySqlException exception) when (exception.Number == 1062)
         {
@@ -1060,15 +1075,20 @@ last_health_check_message=@StatusMessage,updated_by_user_id=@UserId WHERE id=@Id
     public async Task<IEnumerable<EntityAttachment>> GetAttachmentsAsync(string entityType, long entityId, AuthUser user)
     {
         entityType = NormalizeCode(entityType);
+        var collectedDocuments = entityType == "CANDIDATE" ? await CandidateDocumentCollectionAttachmentsAsync(entityId, user) : [];
         var clientId = await GetEntityClientIdAsync(entityType, entityId);
-        if (clientId is null || !await CanReadEntityAsync(user, entityType, entityId, clientId.Value)) return [];
+        if (clientId is null || !await CanReadEntityAsync(user, entityType, entityId, clientId.Value)) return collectedDocuments;
         var ownerOnly = await IsEntityOwnerAsync(user, entityType, entityId);
         await using var db = Connection();
         await db.OpenAsync();
-        return await db.QueryAsync<EntityAttachment>($@"{AttachmentSelect}
+        var legacy = await db.QueryAsync<EntityAttachment>($@"{AttachmentSelect}
 WHERE a.client_id=@ClientId AND a.entity_type=@EntityType AND a.entity_id=@EntityId AND a.is_current=TRUE AND a.is_deleted=FALSE
 AND (@OwnerOnly=FALSE OR f.owner_can_view=TRUE)
 ORDER BY f.display_order,a.uploaded_at_utc DESC;", new { ClientId = clientId.Value, EntityType = entityType, EntityId = entityId, OwnerOnly = ownerOnly });
+        var visibleLegacy = new List<EntityAttachment>();
+        foreach (var attachment in legacy)
+            if (await DocumentCollectionAccessAsync(attachment, user) is null) visibleLegacy.Add(attachment);
+        return visibleLegacy.Concat(collectedDocuments);
     }
 
     public async Task<(EntityAttachment? Attachment, string? Error)> UploadAsync(AttachmentUploadMetadata metadata, IFormFile file, AuthUser user, string ipAddress, string userAgent, CancellationToken cancellationToken, bool restoreMissingContent = false)
@@ -1150,6 +1170,32 @@ ORDER BY id DESC LIMIT 1", new
             await using var db = Connection();
             await db.OpenAsync();
             await using var transaction = await db.BeginTransactionAsync();
+            var currentMasterId = await db.ExecuteScalarAsync<long?>("SELECT attachment_attribute_id FROM attachment_field_configurations WHERE id=@Id", new { Id = configurationRow.Id }, transaction);
+            if (currentMasterId.HasValue)
+                await db.ExecuteScalarAsync<long?>("SELECT id FROM attachment_attributes WHERE id=@Id LOCK IN SHARE MODE", new { Id = currentMasterId.Value }, transaction);
+            // Configuration may have been consolidated while the file was being
+            // inspected/stored. Lock and use the current master before writing
+            // its reference; the saved storage key remains valid as written.
+            var currentConfiguration = await db.QuerySingleOrDefaultAsync<AttachmentFieldConfiguration>(ConfigurationSelect + @"
+WHERE f.id=@Id AND f.client_id IN(0,@ClientId) AND a.client_id IN(0,@ClientId)
+AND f.is_active=TRUE AND a.is_active=TRUE
+AND (f.effective_from_utc IS NULL OR f.effective_from_utc<=UTC_TIMESTAMP(6))
+AND (f.effective_until_utc IS NULL OR f.effective_until_utc>=UTC_TIMESTAMP(6)) LOCK IN SHARE MODE",
+                new { Id = configurationRow.Id, ClientId = clientId.Value }, transaction);
+            var currentError = currentConfiguration is null ? "Document configuration changed. Please refresh and upload again."
+                : ValidateMetadata(currentConfiguration, metadata, file);
+            if (currentConfiguration is not null && (currentError is not null
+                || !ReadJsonList(currentConfiguration.AllowedExtensionsJson).Contains(extension, StringComparer.OrdinalIgnoreCase)
+                || ReadJsonList(currentConfiguration.AllowedMimeTypesJson) is var currentMimeTypes && currentMimeTypes.Count > 0 && !currentMimeTypes.Contains(inspection.DetectedMimeType, StringComparer.OrdinalIgnoreCase)
+                || !await CanUploadEntityAsync(user, metadata.EntityType, metadata.EntityId, clientId.Value, currentConfiguration)))
+                currentError ??= "This file is no longer permitted by the current document configuration.";
+            if (currentConfiguration is null || currentError is not null)
+            {
+                await transaction.RollbackAsync();
+                await storageService.DeleteAsync(server, storageKey, cancellationToken);
+                return (null, currentError);
+            }
+            configurationRow = currentConfiguration;
             if (IsSelfProfileWrite(user, metadata.EntityType, metadata.EntityId))
             {
                 await db.ExecuteScalarAsync<int>("SELECT Id FROM employees WHERE Id=@Id FOR UPDATE", new { Id = metadata.EntityId }, transaction);
@@ -1186,7 +1232,7 @@ ORDER BY id DESC LIMIT 1", new
             {
                 await transaction.RollbackAsync();
                 await storageService.DeleteAsync(server, storageKey, cancellationToken);
-                return (null, "Combined attachment size exceeds the configured limit.");
+                return (null, $"Combined file size must not exceed {FormatBytes(configurationRow.MaximumTotalSizeBytes.Value)}.");
             }
             var version = current.Count == 0 ? 1 : current.Max(row => row.VersionNumber) + 1;
             if (!configurationRow.AllowMultiple && current.Count > 0)
@@ -1238,7 +1284,8 @@ SELECT LAST_INSERT_ID();", new
         var row = await GetAccessRowAsync(publicId);
         if (row is null || !row.IsCurrent || row.IsDeleted) return (null, null, "Attachment was not found.");
         var isOwner = await IsEntityOwnerAsync(user, row.EntityType, row.EntityId);
-        if (!await CanReadEntityAsync(user, row.EntityType, row.EntityId, row.ClientId) || (isOwner && !row.OwnerCanView))
+        var collectionAccess = await DocumentCollectionAccessAsync(row, user);
+        if (!(collectionAccess ?? await CanReadEntityAsync(user, row.EntityType, row.EntityId, row.ClientId)) || (isOwner && !row.OwnerCanView))
         {
             await LogFailedAccessAsync(row, action, user.Id, "Access denied.", ipAddress, userAgent);
             return (null, null, "Attachment was not found.");
@@ -1341,6 +1388,7 @@ WHERE token_hash=@TokenHash AND revoked_at_utc IS NULL AND expires_at_utc>UTC_TI
     {
         var row = await GetAccessRowAsync(publicId);
         if (row is null || row.IsDeleted) return (false, "Attachment was not found.");
+        if (await DocumentCollectionAccessAsync(row, user, "Manage") == false) return (false, "You are not allowed to delete this attachment.");
         if (row.EntityType == ExcelOriginalEntity) return (false, "Original payroll workbooks are retained for provenance. Batch deletion removes references only.");
         if (expectedStorageServerId.HasValue && row.StorageServerId != expectedStorageServerId.Value)
             return (false, "Attachment was not found on this storage server.");
@@ -1381,6 +1429,7 @@ WHERE id=@Id AND is_deleted=FALSE", new { row.Id, UserId = user.Id }, transactio
     {
         var row = await GetAccessRowAsync(publicId);
         if (row is null || row.IsDeleted) return (null, "Attachment was not found.");
+        if (await DocumentCollectionAccessAsync(row, user, "Verify") == false) return (null, "You are not allowed to verify this attachment.");
         if (!await CanVerifyEntityAsync(user, row.EntityType, row.EntityId, row.ClientId)) return (null, "You are not allowed to verify this attachment.");
         await using var db = Connection();
         await db.OpenAsync();
@@ -1394,12 +1443,13 @@ rejection_reason=@Reason WHERE id=@Id", new { row.Id, Status = approve ? "Verifi
 
     private async Task<AttachmentFieldConfiguration?> GetEffectiveConfigurationByIdAsync(long id, int clientId)
     {
-        foreach (var target in Targets)
-        {
-            var row = (await GetEffectiveConfigurationsAsync(clientId, target.ModuleCode, target.FormCode)).FirstOrDefault(item => item.Id == id);
-            if (row is not null) return row;
-        }
-        return null;
+        // Form Canvas and pipelines bind exact core configuration IDs, including
+        // custom form contexts that are not entries in the settings target menu.
+        // Retain the same client override and effective-date rules as normal fields.
+        var configured = (await GetConfigurationsAsync(clientId)).FirstOrDefault(row => row.Id == id);
+        if (configured is null) return null;
+        return (await GetEffectiveConfigurationsAsync(clientId, configured.ModuleCode, configured.FormCode))
+            .FirstOrDefault(row => row.Id == id);
     }
 
     // Use the configured global list and its default. Disabling automatic local
@@ -1706,7 +1756,7 @@ WHERE Id=@EntityId AND CreatedByUserId=@UserId AND Status='Draft'", new { Entity
     private static bool HasAnyPermission(AuthUser user, params string[] permissions) =>
         permissions.Any(permission => user.Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase));
 
-    private string? ValidateMetadata(AttachmentFieldConfiguration config, AttachmentUploadMetadata metadata, IFormFile file)
+    internal string? ValidateMetadata(AttachmentFieldConfiguration config, AttachmentUploadMetadata metadata, IFormFile file)
     {
         if (file.Length <= 0) return "Select a non-empty file.";
         if (file.Length > config.MaximumFileSizeBytes) return $"File exceeds the configured {FormatBytes(config.MaximumFileSizeBytes)} limit.";

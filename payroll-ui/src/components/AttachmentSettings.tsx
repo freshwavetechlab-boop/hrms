@@ -7,6 +7,7 @@ import { getClients } from '../services/payrollService'
 import { configureGoogleDrive, connectGoogleDrive, deleteAttachmentStorageServerFile, fetchAttachmentStorageServerFile, getAttachmentAttributes, getAttachmentConfigurations, getAttachmentStorageServerFiles, getAttachmentStorageServers, getAttachmentTargets, getGoogleDriveSetup, saveAttachmentAttribute, saveAttachmentConfiguration, saveAttachmentStorageServer, testAttachmentStorageServer } from '../services/attachmentService'
 import { apiUrl } from '../services/apiClient'
 import type { AttachmentAttribute, AttachmentFieldConfiguration, AttachmentStorageServer, AttachmentStorageType, AttachmentTargetOption, Client, EntityAttachment, GoogleDriveSetup } from '../types/payroll'
+import { attachmentTargetLabel } from '../utils/attachmentConfigurationLabel'
 import './AttachmentSettings.css'
 
 type DrawerMode = 'attribute' | 'configuration' | 'storage' | null
@@ -162,7 +163,10 @@ export default function AttachmentSettings({ mode = 'attachments' }: { mode?: 'a
   }, [load, notify, stopGooglePopupTracking])
 
   const clientOptions = [{ value: 0, label: 'Global / all clients' }, ...clients.map(item => ({ value: item.id, label: item.name }))]
-  const targetOptions = targets.map(item => ({ value: `${item.moduleCode}|${item.formCode}`, label: `${item.moduleName} / ${item.formName}` }))
+  const targetOptions = Array.from(new Map([...targets, ...configurations].map(item => [
+    `${item.moduleCode}|${item.formCode}`,
+    { value: `${item.moduleCode}|${item.formCode}`, label: attachmentTargetLabel(item.moduleCode, item.formCode) }
+  ])).values())
   const availableAttributes = attributes.filter(item => item.isActive && (item.clientId === 0 || item.clientId === configuration.clientId))
   const selectedTarget = `${configuration.moduleCode}|${configuration.formCode}`
   const selectedExtensions = jsonList(configuration.allowedExtensionsJson)
@@ -404,7 +408,7 @@ export default function AttachmentSettings({ mode = 'attachments' }: { mode?: 'a
       <Tabs items={[
         {
           key: 'attributes', label: 'Attachment Attributes', children: <>
-            <Header title="Attachment attribute master" text="Define reusable document types. Client-specific attributes can coexist with global attributes." action="Add attribute" onClick={() => openAttribute()} />
+            <Header title="Attachment attribute master" text="Define shared document types used across forms and clients." action="Add attribute" onClick={() => openAttribute()} />
             <DataTable rows={attributes} exportFileName="attachment-attributes" actions={row => <Button size="small" type="primary" onClick={() => openAttribute(row)}>Edit</Button>} columns={[
               { key: 'clientName', label: 'Scope' },
               { key: 'attributeCode', label: 'Code' },
@@ -420,7 +424,7 @@ export default function AttachmentSettings({ mode = 'attachments' }: { mode?: 'a
             <Header title="Module and form attachment fields" text="Control where a document appears, allowed formats, size, multiplicity and employee permissions." action="Add form field" onClick={() => openConfiguration()} />
             <DataTable rows={configurations} exportFileName="attachment-form-configurations" actions={row => <Button size="small" type="primary" onClick={() => openConfiguration(row)}>Edit</Button>} columns={[
               { key: 'clientName', label: 'Scope' },
-              { key: 'target', label: 'Module / form', value: row => `${row.moduleCode} / ${row.formCode}` },
+              { key: 'target', label: 'Module / form', value: row => attachmentTargetLabel(row.moduleCode, row.formCode) },
               { key: 'fieldLabel', label: 'Field' },
               { key: 'attributeName', label: 'Attribute' },
               { key: 'isRequired', label: 'Required', value: row => row.isRequired ? 'Yes' : 'No' },
@@ -567,7 +571,7 @@ export default function AttachmentSettings({ mode = 'attachments' }: { mode?: 'a
         <Col xs={24} md={14}><Form.Item label="Module / form" required><SearchSelect value={selectedTarget} onChange={value => changeTarget(String(value))} options={targetOptions} /></Form.Item></Col>
         <Col xs={24} md={12}><Form.Item label="Attachment attribute" required><SearchSelect value={configuration.attachmentAttributeId} onChange={value => setConfiguration({ ...configuration, attachmentAttributeId: Number(value) })} options={selectOptions(availableAttributes.map(item => ({ value: item.id, label: `${item.attributeName} (${item.attributeCode})${item.clientId ? '' : ' / Global'}` })), 'Select attribute', 0)} /></Form.Item></Col>
         <Col xs={24} md={12}><Form.Item label="Section code"><Input value={configuration.sectionCode} onChange={event => setConfiguration({ ...configuration, sectionCode: event.target.value.toUpperCase() })} /></Form.Item></Col>
-        <Col xs={24} md={10}><Form.Item label="Field key" required><Input value={configuration.fieldKey} onChange={event => setConfiguration({ ...configuration, fieldKey: event.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '_') })} placeholder="AADHAAR_DOCUMENT" /></Form.Item></Col>
+        <Col xs={24} md={10}><Form.Item label="Field key (internal reference)" required extra={configuration.id ? 'Existing forms use this reference. Keep it unchanged.' : undefined}><Input value={configuration.fieldKey} onChange={event => setConfiguration({ ...configuration, fieldKey: event.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '_') })} placeholder="AADHAAR_DOCUMENT" /></Form.Item></Col>
         <Col xs={24} md={14}><Form.Item label="Field label" required><Input value={configuration.fieldLabel} onChange={event => setConfiguration({ ...configuration, fieldLabel: event.target.value })} /></Form.Item></Col>
         <Col span={24}><Form.Item label="Help text"><Input value={configuration.helpText} onChange={event => setConfiguration({ ...configuration, helpText: event.target.value })} /></Form.Item></Col>
         <Col span={24}><Form.Item label="Allowed formats"><Checkbox.Group options={extensionOptions.map(value => ({ label: value.toUpperCase(), value }))} value={selectedExtensions} onChange={values => setExtensions(values as string[])} /></Form.Item></Col>
