@@ -49,6 +49,7 @@ export function activeClientHeader(path: string, method = 'GET') {
   // validates that client and every referenced record before projecting identity.
   if (verb === 'POST' && (route === '/api/recruitment-admin/templates' || route === '/api/recruitment-orchestration/forms')) return undefined
   const explicitClient = /^[1-9]\d*$/.test(new URLSearchParams(query).get('clientId') ?? '')
+  if (verb === 'POST' && explicitClient && /^\/api\/recruitment\/document-roster\/standard\/(?:preview|import)$/.test(route)) return undefined
   if (verb === 'POST' && explicitClient && /^\/api\/recruitment-orchestration\/(?:forms\/[1-9]\d*\/versions|form-versions\/[1-9]\d*\/publish)$/.test(route)) return undefined
   // Competency creation supplies the editor's client in its body. The normal
   // scoped middleware validates and projects that single client plus any row ID.

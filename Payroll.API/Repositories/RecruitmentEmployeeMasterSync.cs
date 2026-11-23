@@ -85,6 +85,20 @@ internal static class RecruitmentEmployeeMasterSync
             if (key is "monthlyBasic" or "monthlyGross" or "hraRate" && Number(old) is { } prior && Number(value) == prior) continue;
             values[key] = value.Trim();
         }
+        // Legacy layouts can bind words to a separate imported text field.
+        // Keep that text with the current Master amount when the amount changes.
+        if (master.Any(p => p.Key == "monthlyGross") && available.Contains("salaryInWords"))
+        {
+            var originalGross = Values(row.ValuesJson).GetValueOrDefault("monthlyGross", "");
+            if (decimal.TryParse(values.GetValueOrDefault("monthlyGross"), NumberStyles.Number, CultureInfo.InvariantCulture, out var gross)
+                && gross >= 0 && gross <= 999999999999m
+                && (!decimal.TryParse(originalGross, NumberStyles.Number, CultureInfo.InvariantCulture, out var priorGross) || gross != priorGross))
+            {
+                var prefix = values.GetValueOrDefault("salaryInWords", "").TrimStart().StartsWith("Rupees ", StringComparison.OrdinalIgnoreCase) ? "Rupees " : "";
+                values["salaryInWords"] = prefix + BrandedOfferPdfService.AmountInWords(gross);
+            }
+            master.Add(new("salaryInWords", values.GetValueOrDefault("salaryInWords", "")));
+        }
         row.CandidateName = values.GetValueOrDefault("candidateName", row.CandidateName);
         row.Email = values.GetValueOrDefault("candidateEmail", row.Email);
         row.Phone = values.GetValueOrDefault("candidatePhone", row.Phone);

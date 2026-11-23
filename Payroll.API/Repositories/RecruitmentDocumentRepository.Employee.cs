@@ -46,7 +46,17 @@ public sealed partial class RecruitmentDocumentRepository
             incoming = FillRosterEmployeeBlanks(existing, incoming);
         }
         if (enableNewEssAccess && incoming.Id == 0) incoming.PortalAccess = true;
+        var isNewMaster = incoming.Id == 0;
         incoming.Id = await EmployeeRepository.SaveRecruitmentEmployeeAsync(db, tx, incoming, user, reference);
+        if (isNewMaster && values.GetValueOrDefault("standardTemplateVersion") == "FREVO-EMPLOYEE-1")
+        {
+            var forms = await EmployeeAttributeRepository.ExchangeFormsAsync(db, row.ClientId, tx);
+            var custom = EmployeeAttributeRepository.Columns(forms).Where(c => values.TryGetValue(c.Code, out var value) && value.Length > 0)
+                .Select(c => new EmployeeFieldInput(c.Code, values[c.Code])).ToList();
+            var issue = await EmployeeAttributeRepository.SaveExchangeAsync(db, tx, incoming.Id, row.ClientId, forms, custom,
+                "ROSTER_JOINING", row.CandidateCode, user.Id, allowIncomplete: true);
+            if (issue.Length > 0) throw new InvalidOperationException(issue);
+        }
         await RecordRosterEmployeeLinkAsync(db,tx,row,incoming,user,reference);
         current.RemoveAll(employee => employee.Id == incoming.Id); current.Add(incoming);
     }
@@ -88,6 +98,14 @@ public sealed partial class RecruitmentDocumentRepository
             Designation=Value("positionTitle"),Department=Value("department"),WorkLocationId=location.Id,AnnualCtc=ctc,
             PersonalDetails=new(){Mobile=row.Phone,DateOfBirth=Value("dateOfBirth"),PanNumber=Value("pan","panNumber"),AadhaarNumber=Value("aadhaar","aadhaarNumber"),UanNumber=Value("uan","uanNumber"),EsicNumber=Value("esicNumber"),Source="Recruitment offer",SourceLocation=location.Name,City=location.City,State=location.State},
             PaymentDetails=new(){BankName=Value("bankName"),BankAccountNo=Value("accountNo","bankAccountNo"),IfscCode=Value("ifsc","ifscCode")}};
+        if (Value("standardTemplateVersion") == "FREVO-EMPLOYEE-1")
+        {
+            var standard = new Dictionary<string, string>(values, StringComparer.OrdinalIgnoreCase);
+            standard["city"] = Value("employeeCity"); standard["state"] = Value("employeeState");
+            employee = StandardRosterEmployee(employee, row.ClientId, standard, new Dictionary<string, string>());
+            if (standard.TryGetValue("salaryComponentsJson", out var salary)) employee.SalaryComponents = JsonSerializer.Deserialize<Dictionary<string, decimal>>(salary) ?? [];
+            employee.SalaryJson = JsonSerializer.Serialize(employee.SalaryComponents);
+        }
         employee.PersonalJson=JsonSerializer.Serialize(employee.PersonalDetails);employee.PaymentJson=JsonSerializer.Serialize(employee.PaymentDetails);
         return employee;
     }

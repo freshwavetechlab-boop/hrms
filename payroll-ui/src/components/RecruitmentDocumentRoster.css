@@ -25,6 +25,7 @@
 .document-roster-asset-status { margin-top: 12px; }
 .document-roster-upload-disabled { opacity: .65; }
 .document-roster-mobile-actions { display: none; }
+.document-roster-import-feedback { margin-bottom: 8px; }
 .document-roster-mail-drawer .ant-drawer-body, .document-roster-mail-history .ant-drawer-body { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: hidden; }
 @media (max-width: 600px) { .document-roster-fields { grid-template-columns: minmax(0, 1fr); } .document-roster-toolbar > .ant-space { max-width: 100%; } }
 @media (max-width: 600px) { .document-roster-location-select { min-width: 0; width: min(100%, 360px); } .recruitment-document-roster .document-roster-toolbar .ant-select { max-width: 100%; } }

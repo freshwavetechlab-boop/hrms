@@ -29,6 +29,20 @@ public static class RecruitmentDocumentEndpoints
             Results.Ok(await repository.EnsureDefaultTemplateAsync(clientId, currentUser(context))));
         routes.MapGet("/rows", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
             Results.Ok(await repository.RowsAsync(clientId, currentUser(context))));
+        routes.MapGet("/standard/template", async (RecruitmentDocumentRepository repository, int clientId, int templateId, string? sourceGroup, string? mode, HttpContext context) =>
+            Results.Ok(await repository.StandardTemplateAsync(new RosterExchangeSettings { ClientId = clientId, TemplateId = templateId, SourceGroup = sourceGroup ?? "", Mode = mode ?? "Insert" }, currentUser(context))));
+        routes.MapPost("/standard/preview", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
+        {
+            var (file, name, settings) = await ReadStandardUpload(context);
+            if (settings.ClientId != clientId) return Results.StatusCode(403);
+            return Results.Ok(await repository.PreviewStandardTemplateAsync(file, name, settings, currentUser(context)));
+        }).WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(11 * 1024 * 1024));
+        routes.MapPost("/standard/import", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
+        {
+            var (file, name, settings) = await ReadStandardUpload(context);
+            if (settings.ClientId != clientId) return Results.StatusCode(403);
+            return Results.Ok(await repository.ImportStandardTemplateAsync(file, name, settings, currentUser(context)));
+        }).WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(11 * 1024 * 1024));
         routes.MapGet("/client-summary", async (RecruitmentDocumentRepository repository, HttpContext context) =>
             Results.Ok(await repository.ClientSummaryAsync(currentUser(context))));
         routes.MapGet("/simple-jds", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
@@ -92,11 +106,7 @@ public static class RecruitmentDocumentEndpoints
             var (file, name, settings) = await ReadUpload(context);
             return Results.Ok(await repository.PreviewAsync(file, name, settings, currentUser(context)));
         }).WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(11 * 1024 * 1024));
-        routes.MapPost("/import", async (RecruitmentDocumentRepository repository, HttpContext context) =>
-        {
-            var (file, name, settings) = await ReadUpload(context);
-            return Results.Ok(await repository.ImportAsync(file, name, settings, currentUser(context)));
-        }).WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(11 * 1024 * 1024));
+        routes.MapPost("/import", () => Results.BadRequest(new { error = "Employee-list insertion now requires the standard template. Refresh the page and use Import employee list; for existing profiles use Update Corrected Version." }));
         routes.MapPut("/rows/{id:long}", async (RecruitmentDocumentRepository repository, int clientId, long id, RecruitmentRosterEdit request, HttpContext context) =>
         { await repository.EditAsync(clientId, id, request, currentUser(context)); return Results.NoContent(); });
         routes.MapPost("/rows/{id:long}/draft", async (RecruitmentDocumentRepository repository, int clientId, long id, HttpContext context) =>
@@ -124,4 +134,15 @@ public static class RecruitmentDocumentEndpoints
         return (output.ToArray(), file.FileName, settings);
     }
     public sealed record DocumentDraftSelection(List<long>? Ids);
+    private static async Task<(byte[] Bytes, string Name, RosterExchangeSettings Settings)> ReadStandardUpload(HttpContext context)
+    {
+        if (!context.Request.HasFormContentType) throw new InvalidOperationException("Upload the completed standard workbook.");
+        var form = await context.Request.ReadFormAsync(context.RequestAborted);
+        var file = form.Files.GetFile("file");
+        if (form.Files.Count != 1 || file is null || file.Length is < 1 or > 10 * 1024 * 1024 || form["settings"].ToString().Length > 64000)
+            throw new InvalidOperationException("Upload one standard .xlsx workbook of up to 10 MB.");
+        var settings = JsonSerializer.Deserialize<RosterExchangeSettings>(form["settings"].ToString(), Json) ?? throw new InvalidOperationException("Import settings are missing.");
+        using var stream = new MemoryStream(); await file.CopyToAsync(stream, context.RequestAborted);
+        return (stream.ToArray(), file.FileName, settings);
+    }
 }

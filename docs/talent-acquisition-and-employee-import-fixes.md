@@ -28,6 +28,41 @@ Client/employee/roster locks and repeated empty-state checks protect concurrent 
 
 A read-only preflight against the reported client found 257 linked roster records and 257 empty pay setups. Current projected inputs reconcile to saved releases for 253 rows; 4 rows have details that differ from their saved release. Those rows require release of the corrected letter before the automatic initialization can use them. Changed issued letters are marked Release again in the Employee List, with the same status in table export. No manual backfill was run.
 
+### Annual remuneration base policy — 23 November 2026
+
+The owner authorized monthly remuneration multiplied by 12 as the initial Annual CTC base, with contributions and salary-template breakup to follow. This is explicitly enabled per client through `RecruitmentSalarySync:AnnualizeMonthlyRemunerationClientIds`; the production configuration currently enables ICMR (55) only. IRCTC (70) remains disabled because the owner confirmed its earlier Salary column contained net paid amounts and will re-upload corrected gross amounts. Do not enable IRCTC annualization from the old list.
+
+The existing worker can initialize a missing annual base without inventing Basic/HRA or statutory contributions. Existing component amounts are preserved, including previously synchronized ICMR Basic/HRA. Explicit annual offer terms take precedence over the monthly fallback. Client, employee, latest-release hash, active posting, all-assignment agreement, existing CTC/template/history and payroll-result protections remain enforced. Only missing components with no configured component history may be initialized from a complete, reconciled source breakup. The salary-only save records IT0008 history and the roster receipt records the remuneration, annual base and saved components. Existing records are scanned automatically after deployment; no manual production backfill was run.
+
+When Employee Master changes the gross amount in a layout with a separate `salaryInWords` input, its projected words now follow that same amount, including paise. Equivalent unchanged amounts retain their original wording/format to avoid invalidating an unchanged release. Released PDF bytes and delivery history remain immutable.
+
+Corrections now use the standard, Profile Code-based flow below. The old name/contact-based bulk insertion endpoint no longer accepts saves. Salary in words follows the corrected gross; it does not need a separate source column.
+
+## Single-sheet standard insertion and corrected versions - 23 November 2026
+
+Owner requirement: **one Employees sheet only**, with the same standard columns for new profiles and corrections. No Instructions, Fields, Banking or salary worksheets. No source wage-sheet values are selected, copied or inferred. The user enters the authoritative values, including any joining date, monthly components, gross remuneration and annual CTC.
+
+The employee-list drawer has two actions:
+
+1. **Import employee list**: download the blank standard workbook, fill it, upload, preview and insert the valid selected rows. New Profile Codes are generated.
+2. **Update Corrected Version**: choose the saved import batch, download its current data in the same single-sheet format, edit, upload and preview. Matching uses Profile Code within the selected client/template/batch. Unknown, blank or duplicate codes are skipped and other valid rows continue. This mode never inserts a profile.
+
+Columns cover core IT0000/0001/0002/0006/0008/0009, configured custom fields, bank/account/IFSC, offer details and salary components from the existing catalog. Components carry INR/month or INR/day in their headers; Annual CTC is INR/year. Identifiers stay text. Blank retains existing data; numeric 0 sets zero. Monthly Gross does not create a Basic/HRA/CTC allocation. Existing component/gross contradictions are reported per row. No old/enhanced/earned/net values from the supplied wage workbook were chosen.
+
+Workbook scope and current-record versions travel in hidden columns in the same sheet. They prevent an old download from overwriting a later change without adding user-facing setup or a second sheet. Bracketed stable field codes remain in the headers, so column order does not require manual mapping. Portal access, active status and inactive/summary salary components are reference-only.
+
+Corrections to linked employees use existing scoped infotype writers and add dated Master history plus roster audit in the same per-row transaction. Bank and personal saves retain unrelated data; work email changes use IT0001. Candidate contact changes retain the exact profile anchor and still check duplicate identities. New profiles retain pending custom/core/pay values until the existing explicit joining import creates their Master. Work-location creation reuses existing client/WPI permission rules. Released PDFs, approvals, acceptance and delivery history are retained; changed letters need separate review/release. The automatic legacy salary initializer excludes profiles using explicit standard-template values.
+
+Verification: 65 targeted .NET checks passed; one dedicated database integration test was skipped because its isolated database was not configured. The single-sheet frontend check and TypeScript/Vite build passed. Read-only template generation found 104 unique IRCTC Profile Codes with stable versions. A real browser-generated single-sheet file with 104 synthetic rows roundtripped through the backend reader; the blank artifact template passed scope/header checks and contained no employee values. Local browser tests used synthetic in-memory APIs for the download, known/unknown profile preview, partial success, insertion template, retained HTTP 400 error and mobile layout. No production correction, insertion, letter release, email or deployment was performed.
+
+## Employee-list preview visibility — 23 November 2026
+
+A live, anonymous single-row workbook produced a valid employee-list preview, but the drawer remained scrolled to the upload form and the results were below the visible area. The sample was cancelled without saving profiles, locations or letters. The user's corrected workbook has not yet been supplied, so a file-specific error or actual drawer closure remains unconfirmed.
+
+The import drawer now scrolls directly to its completed preview. Progress and errors remain beside the footer actions, where they stay visible while the form is scrolled. The uploaded file and settings remain available after a preview failure. Background employee-list refreshes are deferred while its import drawer is open; client and permission scope reset behavior is unchanged.
+
+Verification: the live sample preview succeeded; the changed UI was then exercised against an isolated in-memory API for success and HTTP 400 failure. The preview became visible automatically; the failure retained the file/batch and disabled save. Footer feedback/actions remained reachable at default desktop, 768×1024 and 390×844 sizes. Fourteen roster operation/template checks and the TypeScript/Vite production build passed. No real import/save/release/mail or deployment was performed.
+
 ## Employee Master bulk upload dates
 
 The employee preview and save parser now recognize common slash/dash/dot numeric dates, single-digit day/month, English month names, short years, date-time text and native Excel serial dates. They normalize to `yyyy-MM-dd` independently of browser/server locale. Ambiguous numeric text is day/month/year; unambiguous month/day text also resolves. Two-digit text years follow Excel's 1930–2029 window and the resolved date is visible in preview.

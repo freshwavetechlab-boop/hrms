@@ -15,7 +15,7 @@ public partial class EmployeeRepository
     // The same pure identity rules feed recruitment, salary-preview and locked Apply.
     // Results expose masked evidence and employee codes, never raw identifier values.
     internal static List<EmployeeImportPreflightRow> BuildImportIdentityPreflightRows(
-        EmployeeImportWorkbook workbook, string importMode, IReadOnlyList<Employee> existing, bool includeFieldChanges = true)
+        EmployeeImportWorkbook workbook, string importMode, IReadOnlyList<Employee> existing, bool includeFieldChanges = true, bool allowEmployeeCodeCorrection = false)
     {
         var byId = existing.ToDictionary(employee => employee.Id);
         var byCode = BuildIdentityMap(existing, employee => NormalizeCode(employee.EmployeeCode));
@@ -84,7 +84,7 @@ public partial class EmployeeRepository
                 blocking.Add($"Employee ID and Employee Code \"{code}\" identify different employees.");
                 hardConflict = true;
             }
-            else if (stableMatch is not null && !string.IsNullOrWhiteSpace(code) && !string.Equals(stableMatch.EmployeeCode, code, StringComparison.OrdinalIgnoreCase))
+            else if (stableMatch is not null && !allowEmployeeCodeCorrection && !string.IsNullOrWhiteSpace(code) && !string.Equals(stableMatch.EmployeeCode, code, StringComparison.OrdinalIgnoreCase))
             {
                 blocking.Add($"Employee ID {stableMatch.Id} belongs to employee code \"{stableMatch.EmployeeCode}\", not \"{code}\".");
                 hardConflict = true;

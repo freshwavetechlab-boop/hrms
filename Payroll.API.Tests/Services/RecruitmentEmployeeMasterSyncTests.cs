@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using Payroll.API.Models;
 using Payroll.API.Repositories;
 
@@ -73,6 +74,33 @@ public sealed class RecruitmentEmployeeMasterSyncTests
         Assert.Equal("67200", values["monthlyGross"]); Assert.Equal("0.2", values["hraRate"]);
         Assert.Equal(0, master.AnnualCtc);
     }
+
+    [Fact]
+    public void Current_master_gross_updates_legacy_words_from_the_same_amount_and_excludes_deductions()
+    {
+        var row = Row(); row.ValuesJson = "{\"monthlyGross\":\"30000\",\"salaryInWords\":\"Rupees Thirty Thousand Only\"}";
+        var master = Master(); master.SalaryComponents = new() { ["101"] = 25000, ["103"] = 2000.13m, ["PF"] = 3000 };
+        var codes = new Dictionary<string, string> { ["101"] = "BASIC", ["103"] = "STAT_BONUS", ["PF"] = "PF" };
+        RecruitmentEmployeeMasterSync.Apply(row, master, componentCodes: codes, earningComponentIds: new HashSet<string> { "101", "103" });
+        var values = JsonSerializer.Deserialize<Dictionary<string, string>>(row.ValuesJson)!;
+        Assert.Equal("27000.13", values["monthlyGross"]);
+        Assert.Equal("Rupees Twenty seven thousand and thirteen paise only", values["salaryInWords"]);
+        Assert.Contains("salaryInWords", row.EmployeeManagedFields);
+        var once = row.ValuesJson;
+        RecruitmentEmployeeMasterSync.Apply(row, master, componentCodes: codes, earningComponentIds: new HashSet<string> { "101", "103" });
+        Assert.Equal(once, row.ValuesJson);
+    }
+
+    [Fact]
+    public void An_unchanged_amount_preserves_existing_imported_words_and_release_formatting()
+    {
+        var row = Row(); row.ValuesJson = "{\"monthlyGross\":\"40,065.00\",\"salaryInWords\":\"Rupees Forty Thousand Sixty Five Only\"}";
+        var master = Master(); master.SalaryComponents = new() { ["101"] = 40065 };
+        RecruitmentEmployeeMasterSync.Apply(row, master, componentCodes: new Dictionary<string, string> { ["101"] = "BASIC" });
+        var values = JsonSerializer.Deserialize<Dictionary<string, string>>(row.ValuesJson)!;
+        Assert.Equal("40,065.00", values["monthlyGross"]);
+        Assert.Equal("Rupees Forty Thousand Sixty Five Only", values["salaryInWords"]);
+    }
 }
 
 public sealed class RecruitmentRosterSalarySyncTests
@@ -102,6 +130,95 @@ public sealed class RecruitmentRosterSalarySyncTests
     {
         using var db = new MySqlConnector.MySqlConnection();
         foreach (var employee in new[] { new Employee { AnnualCtc = 1 }, new Employee { SalaryStructureId = "7" }, new Employee { SalaryComponents = new() { ["101"] = 1 } } })
+        {
+            employee.Id = 4; employee.ClientId = 55;
             Assert.False(await EmployeeRepository.InitializeRecruitmentSalaryAsync(db, null!, employee, new() { ["101"] = 56000 }));
+        }
+    }
+
+    [Fact]
+    public void Annualization_is_explicitly_configured_per_client()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["RecruitmentSalarySync:AnnualizeMonthlyRemunerationClientIds:0"] = "55"
+        }).Build();
+        Assert.True(RecruitmentDocumentRepository.AnnualizeRosterRemuneration(configuration, 55));
+        Assert.False(RecruitmentDocumentRepository.AnnualizeRosterRemuneration(configuration, 70));
+        Assert.False(RecruitmentDocumentRepository.AnnualizeRosterRemuneration(configuration, 71));
+        Assert.False(RecruitmentDocumentRepository.AnnualizeRosterRemuneration(new ConfigurationBuilder().Build(), 55));
+        configuration["RecruitmentSalarySync:AnnualizeMonthlyRemunerationClientIds:1"] = "70";
+        Assert.True(RecruitmentDocumentRepository.AnnualizeRosterRemuneration(configuration, 70));
+    }
+
+    [Fact]
+    public void Approved_remuneration_can_seed_an_annual_base_without_inventing_basic_or_contributions()
+    {
+        var values = new Dictionary<string, string> { ["monthlyGross"] = "40,065" };
+        var plan = Assert.IsType<RecruitmentDocumentRepository.RosterSalarySeed>(RecruitmentDocumentRepository.RosterSalarySeedFor([values], true));
+        Assert.Equal(480780, plan.AnnualCtc); Assert.Equal(40065, plan.MonthlyRemuneration); Assert.Empty(plan.Components);
+        var employee = new Employee { Id = 4, ClientId = 70 };
+        Assert.True(EmployeeRepository.ApplyRecruitmentSalarySeed(employee, [], plan.AnnualCtc));
+        Assert.Equal(480780, employee.AnnualCtc); Assert.Empty(employee.SalaryComponents); Assert.Empty(employee.SalaryStructureId);
+        Assert.False(EmployeeRepository.ApplyRecruitmentSalarySeed(employee, [], plan.AnnualCtc));
+        Assert.Null(RecruitmentDocumentRepository.RosterSalarySeedFor([values], false));
+    }
+
+    [Fact]
+    public void Existing_exact_breakup_and_annual_base_can_be_initialized_together()
+    {
+        var values = new Dictionary<string, string> { ["monthlyGross"] = "72,800", ["monthlyBasic"] = "56000", ["hraRate"] = "30%" };
+        var plan = RecruitmentDocumentRepository.RosterSalarySeedFor([values], true)!;
+        Assert.Equal(873600, plan.AnnualCtc); Assert.Equal(56000, plan.Components["BASIC"]); Assert.Equal(16800, plan.Components["HRA"]);
+        var employee = new Employee { Id = 4, ClientId = 55 };
+        Assert.True(EmployeeRepository.ApplyRecruitmentSalarySeed(employee, new() { ["101"] = plan.Components["BASIC"], ["102"] = plan.Components["HRA"] }, plan.AnnualCtc));
+        Assert.Equal(873600, employee.AnnualCtc); Assert.Equal(72800, employee.SalaryComponents.Values.Sum());
+        Assert.Equal(0, RecruitmentDocumentRepository.RosterSalarySeedFor([values], false)!.AnnualCtc);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("-40065")]
+    [InlineData("0")]
+    [InlineData("40065.001")]
+    [InlineData("1000000000000")]
+    [InlineData("not a salary")]
+    public void Missing_invalid_or_overprecise_remuneration_cannot_seed_a_salary(string gross)
+        => Assert.Null(RecruitmentDocumentRepository.RosterSalarySeedFor([new Dictionary<string, string> { ["monthlyGross"] = gross }], true));
+
+    [Fact]
+    public void Multiple_assignments_must_agree_and_explicit_annual_terms_take_precedence()
+    {
+        var first = new Dictionary<string, string> { ["monthlyGross"] = "40000", ["annualCtc"] = "500000" };
+        Assert.Equal(500000, RecruitmentDocumentRepository.RosterSalarySeedFor([first], true)!.AnnualCtc);
+        Assert.Null(RecruitmentDocumentRepository.RosterSalarySeedFor([first, new Dictionary<string, string> { ["monthlyGross"] = "41000" }], true));
+        Assert.Null(RecruitmentDocumentRepository.RosterSalarySeedFor([first, new Dictionary<string, string> { ["monthlyGross"] = "40000" }], true));
+        first["annualCtc"] = "invalid";
+        Assert.Null(RecruitmentDocumentRepository.RosterSalarySeedFor([first], true));
+    }
+
+    [Fact]
+    public void A_missing_ctc_base_preserves_current_and_historical_component_decisions()
+    {
+        var employee = new Employee { Id = 4, ClientId = 55, SalaryComponents = new() { ["101"] = 56000, ["102"] = 16800, ["PF"] = 1800 } };
+        employee.SalaryJson = JsonSerializer.Serialize(employee.SalaryComponents);
+        var original = employee.SalaryJson;
+        Assert.True(EmployeeRepository.ApplyRecruitmentSalarySeed(employee, new() { ["101"] = 40000 }, 873600, hasComponentHistory: true));
+        Assert.Equal(original, employee.SalaryJson); Assert.Equal(56000, employee.SalaryComponents["101"]); Assert.Equal(1800, employee.SalaryComponents["PF"]);
+        var historical = new Employee { Id = 5, ClientId = 55 };
+        Assert.True(EmployeeRepository.ApplyRecruitmentSalarySeed(historical, new() { ["101"] = 40000 }, 480000, hasComponentHistory: true));
+        Assert.Empty(historical.SalaryComponents);
+        Assert.False(EmployeeRepository.ApplyRecruitmentSalarySeed(new Employee { Id = 6, ClientId = 55 }, new() { ["101"] = 40000 }, hasComponentHistory: true));
+    }
+
+    [Fact]
+    public async Task Annual_base_cannot_replace_a_ctc_template_or_inactive_employee_before_database_access()
+    {
+        using var db = new MySqlConnector.MySqlConnection();
+        foreach (var employee in new[] { new Employee { AnnualCtc = 1 }, new Employee { SalaryStructureId = "7" }, new Employee { IsActive = false } })
+        {
+            employee.Id = 4; employee.ClientId = 70;
+            Assert.False(await EmployeeRepository.InitializeRecruitmentSalaryAsync(db, null!, employee, [], 480780));
+        }
     }
 }
