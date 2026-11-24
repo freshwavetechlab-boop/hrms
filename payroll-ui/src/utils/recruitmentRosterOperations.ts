@@ -14,6 +14,13 @@ export function selectedRosterRows(rows: DocumentRosterRow[], selected: number[]
   return rows.filter(row => ids.has(row.id) && (!readyOnly || !row.documentIssues.length))
 }
 
+// A filtered table can report only its current keys. Keep the selection outside
+// that result set, and discard IDs only when the underlying client rows vanish.
+export function mergeRosterSelection(current: number[], next: number[], visible: number[], available: number[]) {
+  const shown = new Set(visible), allowed = new Set(available)
+  return [...new Set([...current.filter(id => allowed.has(id) && !shown.has(id)), ...next.filter(id => allowed.has(id) && shown.has(id))])]
+}
+
 export const rosterReleaseReady = (row: DocumentRosterRow) => !row.documentIssues.length && Number(row.workLocationId) > 0
 
 export function rosterPermissions(permissions: string[]) {

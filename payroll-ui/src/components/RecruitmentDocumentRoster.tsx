@@ -6,7 +6,7 @@ import DataTable, { type Column } from './DataTable'
 import FileDropZone from './FileDropZone'
 import { PageHeaderPortal } from './layout/AppPageHeader'
 import { createRosterJobDescription, createRosterJobDescriptions, downloadRosterDrafts, editDocumentRoster, getDocumentRoster, getDocumentTemplates, getRosterJobDescription, getRosterJobDescriptions, getRosterSigningAsset, getRosterWorkLocations, linkRosterWorkLocation, prepareDocumentTemplates, preflightRosterLetters, releaseRosterLetters, removeRosterSigningAsset, uploadDocumentRoster, uploadRosterSigningAsset, type DocumentRosterRow, type DocumentTemplate, type RosterImportResult, type RosterImportSettings, type RosterJobDescription, type RosterJobDescriptionLink, type RosterPreview, type RosterSheet, type RosterSigningAsset, type RosterReleasePreflight } from '../services/recruitmentDocumentService'
-import { filterRosterRows, rosterLocationName, rosterMasterLocationField, rosterEmployeeManagedField, rosterPermissions, rosterReleaseReady, selectedRosterRows, signingAssetFileError } from '../utils/recruitmentRosterOperations'
+import { filterRosterRows, mergeRosterSelection, rosterLocationName, rosterMasterLocationField, rosterEmployeeManagedField, rosterPermissions, rosterReleaseReady, selectedRosterRows, signingAssetFileError } from '../utils/recruitmentRosterOperations'
 import { useAuthSession } from './AuthGate'
 import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
 import type { WorkLocation } from '../types/payroll'
@@ -15,6 +15,9 @@ import RecruitmentOfferMail, { OfferMailProgress } from './RecruitmentOfferMail'
 import { useRecruitmentOfferMail } from '../hooks/useRecruitmentOfferMail'
 import { downloadRosterImportTemplate, isRosterImportTemplate, templateRosterMapping } from '../utils/recruitmentRosterTemplate'
 import RecruitmentRosterExchangeDrawer from './RecruitmentRosterExchangeDrawer'
+import RecruitmentOfferDeleteAction from './RecruitmentOfferDeleteAction'
+import { canHardDeleteRecruitmentOffers } from '../utils/recruitmentOfferDeletion'
+import { canCreateHiringRequests } from '../utils/requisitionAccess'
 
 export default function RecruitmentDocumentRosterLauncher({ clientId, onChanged, openRequest = 0 }: { clientId: number; onChanged: () => Promise<void>; openRequest?: number }) {
   const location = useLocation()
@@ -59,6 +62,7 @@ export default function RecruitmentDocumentRosterLauncher({ clientId, onChanged,
 
 function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: { clientId: number; templates: DocumentTemplate[]; onClose: () => void; onChanged: () => Promise<void> }) {
   const session = useAuthSession()
+  const canHardDelete = canHardDeleteRecruitmentOffers(session?.user)
   const { canManageOffers, canImport, canRelease } = rosterPermissions(session?.user.permissions || [])
   const preferenceScope = `recruitment.document-roster:${session?.user.id}:${clientId}`
   const [rows, setRows] = useState<DocumentRosterRow[]>([]), [loading, setLoading] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('')
@@ -77,7 +81,7 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
   const [jdLinks, setJdLinks] = useState<RosterJobDescriptionLink[]>([]), [jdError, setJdError] = useState('')
   const [positionNames, setPositionNames] = useState<Record<string, string>>({})
   const [jdDetails, setJdDetails] = useState<RosterJobDescription | null>(null), [jdLoadingId, setJdLoadingId] = useState<number | null>(null)
-  const canCreateJd = canImport || canManageOffers
+  const canCreateJd = (canImport || canManageOffers) && canCreateHiringRequests(session?.user)
   const alive = useRef(true)
   useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
   const load = async () => {
@@ -126,7 +130,7 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
       const result = await createRosterJobDescription(clientId, row, positionTitle)
       if (!result.ok || !result.data) throw new Error(result.error || 'Unable to create the job description.')
       await load()
-      setNotice(`${result.data.created ? 'Simple JD created' : 'Existing JD linked'}: ${result.data.jobDescription.title}.`)
+      setNotice(`${result.data.jobDescription.source === 'Simple' ? 'Draft JD prepared in Hiring Requests and Jobs' : 'Existing JD linked'}: ${result.data.jobDescription.title}.`)
     } catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to create the job description.') }
     finally { if (alive.current) setBusy(false) }
   }
@@ -199,7 +203,7 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
       <Select aria-label="Roster work location filter" showSearch optionFilterProp="label" className="document-roster-location-select" value={workLocationFilter} options={[{ value: 0, label: 'All permitted work locations' }, { value: -1, label: 'Not linked to a work location' }, ...locations.map(location => ({ value: location.id, label: location.name }))]} onChange={setWorkLocationFilter} />
       <Input.Search aria-label="Search employee list" placeholder="Search employee list" allowClear value={search} onChange={event => setSearch(event.target.value)} className="document-roster-search" />
       <Tag>{visible.length} profiles</Tag><Tag color="green">{ready.length} draft ready</Tag><Tag color="orange">{visible.length - ready.length} need details</Tag></Space>
-      <Space wrap className="document-roster-desktop-actions"><Button icon={<ReloadOutlined />} disabled={busy} onClick={() => void load()}>Refresh</Button>{canImport && <Button type="primary" icon={<UploadOutlined />} disabled={busy} onClick={() => setImportOpen(true)}>Import employee list</Button>}{canCorrectMaster && <Button disabled={busy || !rows.length} onClick={() => setCorrecting(true)}>Update Corrected Version</Button>}<Button disabled={busy || !visible.length} onClick={() => setSelected(visible.slice(0, 200).map(row => row.id))}>Select all ({visible.length > 200 ? 'first 200' : visible.length})</Button><Button disabled={busy || !ready.length} onClick={() => setSelected(ready.slice(0, 200).map(row => row.id))}>Select ready ({ready.length > 200 ? 'first 200' : ready.length})</Button><Button disabled={busy || !selected.length} onClick={() => setSelected([])}>Clear selection</Button>
+      <Space wrap className="document-roster-desktop-actions"><Button icon={<ReloadOutlined />} disabled={busy} onClick={() => void load()}>Refresh</Button>{canImport && <Button type="primary" icon={<UploadOutlined />} disabled={busy} onClick={() => setImportOpen(true)}>Import employee list</Button>}{canCorrectMaster && <Button disabled={busy || !rows.length} onClick={() => setCorrecting(true)}>Update Corrected Version</Button>}<Button disabled={busy || !visible.length} onClick={() => setSelected(current => [...new Set([...current, ...visible.slice(0, 200).map(row => row.id)])].slice(0, 200))}>Select all ({visible.length > 200 ? 'first 200' : visible.length})</Button><Button disabled={busy || !ready.length} onClick={() => setSelected(current => [...new Set([...current, ...ready.slice(0, 200).map(row => row.id)])].slice(0, 200))}>Select ready ({ready.length > 200 ? 'first 200' : ready.length})</Button><Button disabled={busy || !selected.length} onClick={() => setSelected([])}>Clear selection</Button>{!!selected.length && <Tag>{selected.length} selected</Tag>}
         {canCreateJd && <Button icon={<FileTextOutlined />} disabled={busy || !selectedJdRows.length} title="Create a simple JD for each selected position name and reuse matching roles." onClick={() => void createSelectedJds()}>Create selected JDs ({selectedJdRows.length})</Button>}
         {canManageOffers && <Button disabled={busy || !selectedRows.length || !locations.length} onClick={() => { setLinkLocationId(undefined); setLinkOpen(true) }}>Set work location ({selectedRows.length})</Button>}
         {canManageOffers && <Button disabled={busy} onClick={() => setReleaseIds([])}>Signature &amp; stamp</Button>}
@@ -208,7 +212,7 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
         {canRelease && <Button disabled={busy || !selectedRows.length || selectedRows.length > 200} onClick={() => setMailRequest({ ids: selectedRows.map(row => row.id), retryFailed: false })}>Email selected ({selectedRows.length})</Button>}
       </Space><Space wrap className="document-roster-mobile-actions">
         <Button onClick={() => setMobileFilters(value => !value)}>Filters ({Number(!!group) + Number(!!workLocationFilter) + Number(!!search.trim())})</Button>
-        <Button disabled={busy || !visible.length} onClick={() => setSelected(visible.slice(0, 200).map(row => row.id))}>Select all ({Math.min(visible.length, 200)})</Button>
+        <Button disabled={busy || !visible.length} onClick={() => setSelected(current => [...new Set([...current, ...visible.slice(0, 200).map(row => row.id)])].slice(0, 200))}>Select all ({Math.min(visible.length, 200)})</Button>
         {canRelease && <Button type="primary" disabled={busy || !selectedRows.length || selectedRows.length > 200} onClick={() => setMailRequest({ ids: selectedRows.map(row => row.id), retryFailed: false })}>Email selected ({selectedRows.length})</Button>}
         {canRelease && <Button disabled={busy || !selectedReleaseReady.length} onClick={() => setReleaseIds(selectedReleaseReady)}>Release ({selectedReleaseReady.length})</Button>}
         <Dropdown trigger={['click']} menu={{ items: [
@@ -216,7 +220,7 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
           ...(canImport ? [{ key: 'import', label: 'Import employee list', onClick: () => setImportOpen(true) }] : []),
           ...(canCorrectMaster ? [{ key: 'correct', label: 'Update Corrected Version', onClick: () => setCorrecting(true) }] : []),
           { key: 'clear', label: 'Clear selection', disabled: !selectedRows.length, onClick: () => setSelected([]) },
-          { key: 'ready', label: `Select ready (${Math.min(ready.length, 200)})`, disabled: !ready.length, onClick: () => setSelected(ready.slice(0, 200).map(row => row.id)) },
+          { key: 'ready', label: `Select ready (${Math.min(ready.length, 200)})`, disabled: !ready.length, onClick: () => setSelected(current => [...new Set([...current, ...ready.slice(0, 200).map(row => row.id)])].slice(0, 200)) },
           { key: 'drafts', label: `Download selected drafts (${selectedReady.length})`, disabled: !selectedReady.length, onClick: () => void generate(selectedReady) },
           ...(canCreateJd ? [{ key: 'jds', label: `Create selected JDs (${selectedJdRows.length})`, disabled: !selectedJdRows.length, onClick: () => void createSelectedJds() }] : []),
           ...(canManageOffers ? [{ key: 'location', label: 'Set work location', disabled: !selectedRows.length, onClick: () => { setLinkLocationId(undefined); setLinkOpen(true) } }, { key: 'sign', label: 'Signature & stamp', onClick: () => setReleaseIds([]) }] : []),
@@ -228,7 +232,7 @@ function RecruitmentDocumentRoster({ clientId, templates, onClose, onChanged }: 
     {canRelease && <OfferMailProgress jobs={mail.jobs} loading={mail.loading} error={mail.error} onRefresh={mail.refresh} onRetry={ids => setMailRequest({ ids, retryFailed: true })} />}
     {canRelease && selectedRows.some(row => !row.workLocationId) && <Alert type="warning" showIcon message="Link a work location before releasing the selected unlinked profiles." />}
     {error && <Alert closable type="error" showIcon message={error} onClose={() => setError('')} />}{notice && <Alert closable type="success" showIcon message={notice} onClose={() => setNotice('')} />}
-    <div className="document-roster-table"><DataTable fillHeight hideSearch rows={baseVisible} columns={rosterColumns} onVisibleRowsChange={onVisibleRowsChange} loading={loading} getRowId={row => row.id} title="Employee list" exportFileName="employee-list-offer-letters" emptyText="No employee lists match these filters." rowSelection={{ selectedRowKeys: selectedRows.map(row => row.id), onChange: keys => setSelected(keys.map(Number)), getCheckboxProps: () => ({ disabled: busy }) }} actionsWidth={canRelease ? 290 : 190} actions={row => <Space><Button size="small" disabled={busy} onClick={() => { setEdit(row); setEditValues({ ...row.values }) }}>Details / Edit</Button><Button size="small" disabled={busy || !!row.documentIssues.length} onClick={() => void generate([row.id])}>Draft PDF</Button>{canRelease && <Button size="small" disabled={busy || !rosterReleaseReady(row)} title={!row.workLocationId ? 'Link a work location before release' : row.documentIssues.length ? 'Complete document details before release' : undefined} onClick={() => setReleaseIds([row.id])}>{row.hasUnreleasedChanges ? 'Release again' : 'Release'}</Button>}</Space>} /></div>
+    <div className="document-roster-table"><DataTable fillHeight hideSearch rows={baseVisible} columns={rosterColumns} onVisibleRowsChange={onVisibleRowsChange} loading={loading} getRowId={row => row.id} title="Employee list" exportFileName="employee-list-offer-letters" emptyText="No employee lists match these filters." rowSelection={{ selectedRowKeys: selected.filter(id => rows.some(row => row.id === id)), onChange: keys => setSelected(current => mergeRosterSelection(current, keys.map(Number), visible.map(row => row.id), rows.map(row => row.id))), getCheckboxProps: () => ({ disabled: busy }) }} actionsWidth={canHardDelete ? 410 : canRelease ? 290 : 190} actions={row => <Space><Button size="small" disabled={busy} onClick={() => { setEdit(row); setEditValues({ ...row.values }) }}>Details / Edit</Button><Button size="small" disabled={busy || !!row.documentIssues.length} onClick={() => void generate([row.id])}>Draft PDF</Button>{canRelease && <Button size="small" disabled={busy || !rosterReleaseReady(row)} title={!row.workLocationId ? 'Link a work location before release' : row.documentIssues.length ? 'Complete document details before release' : undefined} onClick={() => setReleaseIds([row.id])}>{row.hasUnreleasedChanges ? 'Release again' : 'Release'}</Button>}<RecruitmentOfferDeleteAction target={{ sourceType: 'Roster', sourceId: row.id, clientId }} name={row.candidateName} reference={row.candidateCode} disabled={busy} onBusyChange={setBusy} onDeleted={async () => { await load(); mail.refresh(); await onChanged() }} /></Space>} /></div>
   </Drawer>
   <Drawer open={!!jdDetails} title={jdDetails ? jdDetails.title : 'Job description'} className="document-roster-jd-details" width="min(760px, 96vw)" onClose={() => setJdDetails(null)} footer={<Button onClick={() => setJdDetails(null)}>Close</Button>}>
     {jdDetails && <><Tag color={jdDetails.source === 'Simple' ? 'green' : 'blue'}>{jdDetails.source === 'Simple' ? 'Simple JD' : 'Existing JD'}</Tag><p>{jdDetails.summary}</p>{jdDetails.rolePurpose && <><h3>Role purpose</h3><p>{jdDetails.rolePurpose}</p></>}{[{ title: 'Responsibilities', items: jdDetails.responsibilities }, { title: 'Skills', items: jdDetails.skills }, { title: 'Qualifications', items: jdDetails.qualifications }, { title: 'Certifications', items: jdDetails.certifications }, { title: 'Languages', items: jdDetails.languages }, { title: 'Benefits', items: jdDetails.benefits }].filter(section => section.items?.length).map(section => <section key={section.title}><h3>{section.title}</h3><ul>{section.items!.map((text, index) => <li key={index}>{text}</li>)}</ul></section>)}</>}

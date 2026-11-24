@@ -108,13 +108,103 @@ public sealed class SalaryTemplateCreateTests
     }
 
     [LocalWorkflowScopeDatabaseFact]
-    public async Task Existing_global_daily_rate_validation_remains_strict()
+    public async Task Monthly_component_add_and_edit_preserve_unchanged_legacy_daily_defaults_and_other_data()
     {
         await using var f = await Fixture.CreateAsync();
         var before = await f.SnapshotAsync();
-        var setup = await PayrollDataTableStore.GetSetupJsonAsync(f.Db);
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => PayrollDataTableStore.SaveSetupJsonAsync(f.Db, setup));
-        Assert.Equal("A Daily Rate component must be an earning with a positive numeric daily rate.", error.Message);
+        var setup = JsonNode.Parse(await PayrollDataTableStore.GetSetupJsonAsync(f.Db))!;
+        setup["salaryComponents"]!.AsArray().Add(new JsonObject
+        {
+            ["id"] = 50, ["code"] = "VDA", ["name"] = "VDA", ["category"] = "Earning",
+            ["calculationType"] = "Fixed Amount", ["value"] = "1", ["active"] = true
+        });
+
+        await f.Repository.SaveAsync(setup.ToJsonString());
+        Assert.Equal("1", await f.Db.ExecuteScalarAsync<string>("SELECT ValueText FROM salarycomponents WHERE Id=50"));
+        Assert.Equal(before, await f.SnapshotAsync(newComponentId: 50));
+
+        setup = JsonNode.Parse(await PayrollDataTableStore.GetSetupJsonAsync(f.Db))!;
+        setup["salaryComponents"]!.AsArray().Single(row => row!["id"]!.GetValue<long>() == 50)!["value"] = "1250";
+        await f.Repository.SaveAsync(setup.ToJsonString());
+        Assert.Equal("1250", await f.Db.ExecuteScalarAsync<string>("SELECT ValueText FROM salarycomponents WHERE Id=50"));
+        Assert.Equal(before, await f.SnapshotAsync(newComponentId: 50));
+    }
+
+    [LocalWorkflowScopeDatabaseFact]
+    public async Task New_daily_components_still_require_a_positive_numeric_rate_and_earning_category_before_any_write()
+    {
+        await using var f = await Fixture.CreateAsync();
+        var before = await f.SnapshotAsync();
+        foreach (var (rate, category) in new[] { ("0", "Earning"), ("", "Earning"), ("-1", "Earning"), ("BASIC*5%", "Earning"), ("700", "Deduction") })
+        {
+            var setup = JsonNode.Parse(await PayrollDataTableStore.GetSetupJsonAsync(f.Db))!;
+            var components = setup["salaryComponents"]!.AsArray();
+            components.Insert(0, new JsonObject { ["id"] = 50, ["code"] = "VDA", ["name"] = "VDA", ["value"] = "1" });
+            components.Add(new JsonObject
+            {
+                ["id"] = 51, ["code"] = "NEW_DAILY", ["name"] = "New daily", ["category"] = category,
+                ["calculationType"] = "Daily Rate", ["value"] = rate
+            });
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => f.Repository.SaveAsync(setup.ToJsonString()));
+            Assert.Equal("A Daily Rate component must be an earning with a positive numeric daily rate.", error.Message);
+            Assert.Equal(before, await f.SnapshotAsync());
+        }
+    }
+
+    [LocalWorkflowScopeDatabaseFact]
+    public async Task Legacy_invalid_daily_defaults_are_retained_only_when_the_whole_component_is_unchanged()
+    {
+        await using var f = await Fixture.CreateAsync();
+        var before = await f.SnapshotAsync();
+        foreach (var (id, field, value) in new[]
+        {
+            (2L, "value", "-1"), (2L, "value", ""), (2L, "formula", "BASIC*5%"),
+            (2L, "category", "Deduction"), (2L, "name", "Renamed daily"),
+            (2L, "code", "RENAMED_DAILY"), (2L, "priority", "10"), (3L, "name", "Renamed blank daily")
+        })
+        {
+            var setup = JsonNode.Parse(await PayrollDataTableStore.GetSetupJsonAsync(f.Db))!;
+            setup["salaryComponents"]!.AsArray().Single(row => row!["id"]!.GetValue<long>() == id)![field] = value;
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => f.Repository.SaveAsync(setup.ToJsonString()));
+            Assert.Equal("A Daily Rate component must be an earning with a positive numeric daily rate.", error.Message);
+            Assert.Equal(before, await f.SnapshotAsync());
+        }
+        foreach (var (id, calculationType) in new[] { (1L, "Daily Rate"), (2L, "Fixed Amount") })
+        {
+            var setup = JsonNode.Parse(await PayrollDataTableStore.GetSetupJsonAsync(f.Db))!;
+            var component = setup["salaryComponents"]!.AsArray().Single(row => row!["id"]!.GetValue<long>() == id)!;
+            component["calculationType"] = calculationType; component["value"] = "700";
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => f.Repository.SaveAsync(setup.ToJsonString()));
+            Assert.Contains("cannot be converted between monthly and daily rates", error.Message);
+            Assert.Equal(before, await f.SnapshotAsync());
+        }
+    }
+
+    [LocalWorkflowScopeDatabaseFact]
+    public async Task Positive_daily_rates_can_be_created_and_updated_but_cannot_be_replaced_by_zero()
+    {
+        await using var f = await Fixture.CreateAsync();
+        var before = await f.SnapshotAsync();
+        var setup = JsonNode.Parse(await PayrollDataTableStore.GetSetupJsonAsync(f.Db))!;
+        setup["salaryComponents"]!.AsArray().Add(new JsonObject
+        {
+            ["id"] = 50, ["code"] = "NEW_DAILY", ["name"] = "New daily", ["category"] = "Earning",
+            ["calculationType"] = "Daily Rate", ["value"] = "700.50", ["proRata"] = false
+        });
+        await f.Repository.SaveAsync(setup.ToJsonString());
+        Assert.Equal("700.50", await f.Db.ExecuteScalarAsync<string>("SELECT ValueText FROM salarycomponents WHERE Id=50"));
+        Assert.Equal(before, await f.SnapshotAsync(newComponentId: 50));
+
+        setup = JsonNode.Parse(await PayrollDataTableStore.GetSetupJsonAsync(f.Db))!;
+        setup["salaryComponents"]!.AsArray().Single(row => row!["id"]!.GetValue<long>() == 50)!["value"] = "800.25";
+        await f.Repository.SaveAsync(setup.ToJsonString());
+        Assert.Equal("800.25", await f.Db.ExecuteScalarAsync<string>("SELECT ValueText FROM salarycomponents WHERE Id=50"));
+        Assert.Equal(before, await f.SnapshotAsync(newComponentId: 50));
+
+        before = await f.SnapshotAsync();
+        setup = JsonNode.Parse(await PayrollDataTableStore.GetSetupJsonAsync(f.Db))!;
+        setup["salaryComponents"]!.AsArray().Single(row => row!["id"]!.GetValue<long>() == 50)!["value"] = "0";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Repository.SaveAsync(setup.ToJsonString()));
         Assert.Equal(before, await f.SnapshotAsync());
     }
 
@@ -197,10 +287,11 @@ INSERT INTO paysliptemplates(Id,ClientId,ClientRef,Name,Theme) VALUES(88,10,'10'
             var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:Default"] = target.ConnectionString }).Build();
             return new(root, db, name, config);
         }
-        internal async Task<string> SnapshotAsync(long newId = 0)
+        internal async Task<string> SnapshotAsync(long newId = 0, long newComponentId = 0)
         {
             var data = new Dictionary<string, object>();
-            foreach (var table in new[] { "salarycomponents", "employeesalarycomponents", "payrunemployees", "excel_payslip_batches", "paysliptemplates", "payrollsetups", "professionaltaxslabs", "clientpayschedules" })
+            data["salarycomponents"] = (await Db.QueryAsync("SELECT * FROM salarycomponents WHERE Id<>@newComponentId ORDER BY Id", new { newComponentId })).ToArray();
+            foreach (var table in new[] { "employeesalarycomponents", "payrunemployees", "excel_payslip_batches", "paysliptemplates", "payrollsetups", "professionaltaxslabs", "clientpayschedules" })
                 data[table] = (await Db.QueryAsync($"SELECT * FROM {table} ORDER BY 1")).ToArray();
             data["modulesettings"] = (await Db.QueryAsync("SELECT * FROM modulesettings ORDER BY client_id,ModuleCode")).ToArray();
             data["salarystructures"] = (await Db.QueryAsync("SELECT * FROM salarystructures WHERE Id<>@newId ORDER BY Id", new { newId })).ToArray();

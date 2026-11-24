@@ -5,6 +5,8 @@ import { useNavigate } from 'react-router-dom'
 import { useAuthSession } from './AuthGate'
 import { releasedForEmployeeMaster, saveOnboardingSelection } from '../utils/employeeOnboardingSelection'
 import DataTable, { type Column } from './DataTable'
+import RecruitmentOfferDeleteAction from './RecruitmentOfferDeleteAction'
+import { canHardDeleteRecruitmentOffers } from '../utils/recruitmentOfferDeletion'
 import { PageHeaderPortal } from './layout/AppPageHeader'
 import { useRecruitmentPreference } from '../hooks/useRecruitmentPreferences'
 import { acceptRecruitmentJoiningOffers, getRecruitmentJoiningCandidates, type RecruitmentJoiningAcceptResult, type RecruitmentJoiningCandidate } from '../services/recruitmentJoiningService'
@@ -28,6 +30,7 @@ const columns: Column<JoiningRecord>[] = [
 
 export default function RecruitmentOfferJoiningWorkspace({ clientId, offers, offerCount = 0, onChanged, canAccept }: { clientId: number; offers: ReactNode | ((records: JoiningRecord[], loading: boolean) => ReactNode); offerCount?: number; onChanged: () => Promise<void>; canAccept: boolean }) {
   const session = useAuthSession(), navigate = useNavigate()
+  const canHardDelete = canHardDeleteRecruitmentOffers(session?.user)
   const canImport = session?.user.permissions.some(permission => ['employees.manage', 'settings.manage'].includes(permission)) || false
   const [pane, setPane] = useRecruitmentPreference('offerJoiningPane', 'offers')
   const [selected, setSelected] = useRecruitmentPreference<string[]>(`offerAcceptanceSelection:${clientId}`, [])
@@ -70,6 +73,7 @@ export default function RecruitmentOfferJoiningWorkspace({ clientId, offers, off
     const next = current.map(row => row.id)
     return previous.length === next.length && previous.every((id, i) => id === next[i]) ? previous : next
   }), [])
+  const deleteAction = (row: JoiningRecord) => <RecruitmentOfferDeleteAction target={{ sourceType: row.sourceType, sourceId: row.sourceType === 'Roster' ? row.rosterRowId || row.sourceId : row.offerId, clientId: row.clientId }} name={row.candidateName} reference={row.offerNumber || row.candidateCode} disabled={busy} onBusyChange={setBusy} onDeleted={async () => { setSelected(current => current.filter(id => id !== row.id)); await Promise.all([refresh(), onChanged()]) }} />
   const accept = async () => {
     if (accepting.current || busy || !selectedCount || !canAccept) return
     accepting.current = true
@@ -105,10 +109,10 @@ export default function RecruitmentOfferJoiningWorkspace({ clientId, offers, off
     {currentPane === 'offers' ? typeof offers === 'function' ? offers(records, loading) : offers : <>
       {currentPane === 'released' ? <>
         <div className="recruitment-offer-joining-toolbar"><span>Import released letters into Employee Master for ESS. Record candidate acceptance separately when needed.</span><Button size="small" disabled={busy || loading || !visible.length || !(canAccept || canImport)} onClick={() => setSelected(current => [...new Set([...current, ...visible])])}>Select all shown</Button><Button size="small" disabled={busy || !selected.length} onClick={() => setSelected([])}>Clear selection</Button></div>
-        <DataTable key={`released:${clientId}`} rows={released} columns={columns} title="Released offer letters" rowLabel="offers" fillHeight loading={loading} onVisibleRowsChange={visibleChanged} exportFileName="released-offer-letters" rowSelection={{ selectedRowKeys: selected, onChange: keys => setSelected(keys.map(String)), getCheckboxProps: () => ({ disabled: busy || !(canAccept || canImport) }) }} emptyText="No released offers are waiting for acceptance." />
+        <DataTable key={`released:${clientId}`} rows={released} columns={columns} actions={canHardDelete ? deleteAction : undefined} title="Released offer letters" rowLabel="offers" fillHeight loading={loading} onVisibleRowsChange={visibleChanged} exportFileName="released-offer-letters" rowSelection={{ selectedRowKeys: selected, onChange: keys => setSelected(keys.map(String)), getCheckboxProps: () => ({ disabled: busy || !(canAccept || canImport) }) }} emptyText="No released offers are waiting for acceptance." />
       </> : <>
         <div className="recruitment-offer-joining-toolbar"><span>Select joining candidates to import into Employee Master. Already imported employees stay linked.</span><Button size="small" disabled={busy || loading || !canImport || !visible.length} onClick={() => setSelected(current => [...new Set([...current, ...visible.filter(id => joining.some(row => row.id === id && releasedForEmployeeMaster(row, clientId)))])])}>Select all shown</Button><Button size="small" disabled={busy || !selected.length} onClick={() => setSelected([])}>Clear selection</Button></div>
-        <DataTable key={`joining:${clientId}`} rows={joining} columns={columns} title="Selected for joining" rowLabel="candidates" fillHeight loading={loading} onVisibleRowsChange={visibleChanged} exportFileName="selected-for-joining" rowSelection={canImport ? { selectedRowKeys: selected, onChange: keys => setSelected(keys.map(String)), getCheckboxProps: row => ({ disabled: busy || !releasedForEmployeeMaster(row, clientId) }) } : undefined} emptyText="Accepted candidates will appear here after their offers are confirmed." />
+        <DataTable key={`joining:${clientId}`} rows={joining} columns={columns} actions={canHardDelete ? deleteAction : undefined} title="Selected for joining" rowLabel="candidates" fillHeight loading={loading} onVisibleRowsChange={visibleChanged} exportFileName="selected-for-joining" rowSelection={canImport ? { selectedRowKeys: selected, onChange: keys => setSelected(keys.map(String)), getCheckboxProps: row => ({ disabled: busy || !releasedForEmployeeMaster(row, clientId) }) } : undefined} emptyText="Accepted candidates will appear here after their offers are confirmed." />
       </>}
     </>}
   </section>

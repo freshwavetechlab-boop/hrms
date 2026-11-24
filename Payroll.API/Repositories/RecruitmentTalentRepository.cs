@@ -2025,6 +2025,7 @@ WHERE feedback.InterviewId=@InterviewId ORDER BY feedback.OverallScore", new { I
 
     public async Task<(bool Ok, string Error)> DeleteOfferAsync(long id, AuthUser user, string ipAddress, string userAgent)
     {
+        if (!RecruitmentPermissions.CanHardDeleteOffers(user)) return (false, "Only an unrestricted Superadmin can permanently delete offers.");
         await using var db = Db();
         await db.OpenAsync();
         var row = await db.QueryFirstOrDefaultAsync<(long Id, long ApplicationId, int ClientId, string OfferNumber, string CurrentStage, string? AttachmentPublicId)>(@"SELECT o.Id,o.ApplicationId,o.ClientId,o.OfferNumber,a.CurrentStage,CAST(o.OfferLetterAttachmentPublicId AS CHAR) AttachmentPublicId

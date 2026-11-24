@@ -117,6 +117,15 @@ public sealed class RecruitmentRosterSimpleJdTests
     }
 
     [Fact]
+    public void Creating_real_jd_drafts_requires_the_existing_hiring_request_creation_grant()
+    {
+        var user=Editor();
+        Assert.Throws<UnauthorizedAccessException>(()=>RequireSimpleJdWriteAccess(user,20));
+        user.Permissions.Add("recruitment.rfr.create");
+        RequireSimpleJdWriteAccess(user,20);
+    }
+
+    [Fact]
     public void Batch_ids_retain_roster_ownership_and_do_not_become_native_jd_ids()
     {
         Assert.True(SelectedClientOwnershipCatalog.TryReference("/api/recruitment/document-roster/simple-jds", "ids", "8", out var reference));

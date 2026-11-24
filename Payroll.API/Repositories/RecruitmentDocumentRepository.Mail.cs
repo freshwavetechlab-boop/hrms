@@ -220,7 +220,7 @@ WHERE d.ClientId=@ClientId AND d.DeliveryKey=@Key ORDER BY d.Id DESC LIMIT 1
                         var report=history.FirstOrDefault(log=>log.Status is "Bounced" or "Deferred" or "Delivered" && sent is not null && log.ProviderMessageId==sent.ProviderMessageId && log.CreatedAt>=sent.CreatedAt);
                         item.DeliveryStatus=report?.Status ?? "";if(item.DeliveryStatus=="Delivered")summary.DeliveredEmails++;
                     }
-                    item.Status=item.DeliveryStatus=="Bounced"?"Failed":item.DeliveryStatus=="Deferred"?"Unknown":accepted?"Sent":IsOfferPending(queue.Status)?"Queued":queue.Status=="Failed"?"Failed":"Unknown";
+                    item.Status=item.DeliveryStatus=="Bounced"?"Failed":item.DeliveryStatus=="Deferred"?"Unknown":accepted?"Sent":queue.Status=="Cancelled"?"Skipped":IsOfferPending(queue.Status)?"Queued":queue.Status=="Failed"?"Failed":"Unknown";
                     item.Message=accepted?item.DeliveryStatus=="Bounced"?"SMTP accepted the email, but a bounce was received. Review the address before retrying.":"SMTP accepted the email. Sent-folder copy and recipient delivery are tracked separately.":queue.ErrorMessage;
                     processing|=queue.Status is "Processing" or "Sending";
                     oldProcessing|=queue.Status is "Processing" or "Sending" && queue.CreatedAt<DateTime.UtcNow.AddMinutes(-30);

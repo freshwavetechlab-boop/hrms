@@ -283,6 +283,13 @@ if (args.Any(arg => arg.Equals("--migrate-recruitment-text-capacity", StringComp
     return;
 }
 
+if (args.Any(arg => arg.Equals("--migrate-recruitment-roster-jds", StringComparison.OrdinalIgnoreCase)))
+{
+    await RecruitmentDocumentRepository.MigrateHiringDraftsAsync(app.Configuration);
+    app.Logger.LogInformation("Existing employee-list Simple JDs are linked to hiring-request and JD drafts. No requests approved or jobs published; the web host was not started.");
+    return;
+}
+
 if (args.Any(arg => arg.StartsWith("--migrate", StringComparison.OrdinalIgnoreCase)
     && !arg.Equals("--migrate", StringComparison.OrdinalIgnoreCase)
     && !arg.Equals("--migrate-database", StringComparison.OrdinalIgnoreCase)))
@@ -2323,7 +2330,7 @@ app.MapPost("/api/recruitment/offers", async (RecruitmentTalentRepository reposi
 });
 app.MapDelete("/api/recruitment/offers/{id:long}", async (RecruitmentTalentRepository repository, long id, HttpContext context) =>
 {
-    if (!HasPermission(context, "settings.manage")) return Results.StatusCode(403);
+    if (!RecruitmentPermissions.CanHardDeleteOffers(CurrentUser(context))) return Results.StatusCode(403);
     var (ok, error) = await repository.DeleteOfferAsync(id, CurrentUser(context),
         context.Connection.RemoteIpAddress?.ToString() ?? "", context.Request.Headers.UserAgent.ToString());
     return ok ? Results.NoContent() : Results.BadRequest(new { error });
@@ -5484,6 +5491,7 @@ static async Task RunDatabaseSetupAsync(IServiceProvider services, IConfiguratio
     await scopedServices.GetRequiredService<EmployeeAttributeRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<RecruitmentCandidateActionRepository>().InitializeAsync();
     await scopedServices.GetRequiredService<RecruitmentCaseRepository>().InitializeAsync();
+    await scopedServices.GetRequiredService<RecruitmentDocumentRepository>().InitializeHiringDraftsAsync();
     await scopedServices.GetRequiredService<RecruitmentLifecycleNotificationService>().InitializeAsync();
 
     await using var workflowDb = new MySqlConnector.MySqlConnection(configuration.GetConnectionString("Default"));

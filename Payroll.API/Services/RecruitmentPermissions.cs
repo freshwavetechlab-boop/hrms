@@ -4,6 +4,10 @@ namespace Payroll.API.Services;
 
 public static class RecruitmentPermissions
 {
+    public static bool CanHardDeleteOffers(AuthUser user) => user.Id > 0 && user.IsActive && !user.MustChangePassword
+        && user.ClientId is null && !SelectedClientAccess.IsSelected(user)
+        && user.Roles.Contains("super_admin", StringComparer.OrdinalIgnoreCase);
+
     public static bool CanViewRequisitions(AuthUser user) => Has(user, "recruitment.rfr.view", "recruitment.rfr.create");
     public static bool CanCreateRequisitions(AuthUser user) => Has(user, "recruitment.rfr.create");
     public static bool CanEditRequisition(AuthUser user, RecruitmentRequisition row)

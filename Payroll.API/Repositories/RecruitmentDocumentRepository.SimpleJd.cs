@@ -9,8 +9,8 @@ namespace Payroll.API.Repositories;
 
 public sealed partial class RecruitmentDocumentRepository
 {
-    // A role guide for an existing employee list is deliberately separate from
-    // requisition-governed hiring JDs and their approval/eligibility contracts.
+    // Existing-manpower guides also prepare real hiring/JD drafts. They never
+    // approve requests, create a public vacancy or publish an application link.
     private static Task EnsureSimpleJdSchemaAsync(MySqlConnection db) => db.ExecuteAsync("""
 CREATE TABLE IF NOT EXISTS recruitment_simple_job_descriptions (
  Id BIGINT PRIMARY KEY AUTO_INCREMENT,ClientId INT NOT NULL,TitleKey CHAR(64) NOT NULL,
@@ -33,8 +33,9 @@ CREATE TABLE IF NOT EXISTS recruitment_document_roster_jds (
     internal static void RequireSimpleJdWriteAccess(AuthUser user, int clientId)
     {
         Access(user, clientId);
-        if (!RecruitmentPermissions.Has(user, "recruitment.candidate.manage", "recruitment.offer.manage"))
-            throw new UnauthorizedAccessException("Employee list editing permission is required to create a Simple JD.");
+        if (!RecruitmentPermissions.Has(user, "recruitment.candidate.manage", "recruitment.offer.manage")
+            || !RecruitmentPermissions.CanCreateRequisitions(user))
+            throw new UnauthorizedAccessException("Employee list editing and hiring request creation permissions are required to prepare a JD draft.");
     }
 
     internal static string ResolveSimpleJdTitle(string? savedTitle, string? requestedTitle)
@@ -146,8 +147,10 @@ WHERE link.ClientId=@ClientId ORDER BY link.RosterId
         var initial = await ReadSimpleJdRosterRowsAsync(db, clientId, ids, hasLocation);
         ValidateSimpleJdRows(initial, ids, revisions, requestedTitles, user, locations);
         await EnsureSimpleJdSchemaAsync(db);
+        await EnsureHiringDraftSchemaAsync(db);
 
         await using var tx = await db.BeginTransactionAsync();
+        await db.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@Id FOR UPDATE", new { Id = clientId }, tx);
         var rows = await ReadSimpleJdRosterRowsAsync(db, clientId, ids, hasLocation, tx);
         locations = await RecruitmentAccessScope.WorkLocationsAsync(db, user, clientId, tx);
         var titles = ValidateSimpleJdRows(rows, ids, revisions, requestedTitles, user, locations);
@@ -224,6 +227,12 @@ ON DUPLICATE KEY UPDATE ClientId=VALUES(ClientId),TitleKey=VALUES(TitleKey),Simp
                 description = await LoadSimpleJdAsync(db, clientId, (simpleId ?? nativeId)!.Value, source, tx)
                     ?? throw new InvalidOperationException("The linked job description could not be loaded.");
                 loadedDescriptions[descriptionKey] = description;
+            }
+            if (simpleId.HasValue)
+            {
+                var content = JsonSerializer.Deserialize<SimpleJobDescriptionContent>(savedRoles[roleKey].ContentJson, Json)
+                    ?? throw new InvalidOperationException("The Simple JD content is unavailable.");
+                await EnsureHiringDraftAsync(configuration, db, tx, clientId, simpleId.Value, roleKey, content, row.WorkLocationId, user.Id);
             }
             result.Descriptions[row.Id] = description;
         }

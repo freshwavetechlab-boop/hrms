@@ -467,17 +467,25 @@ WHERE table_schema = DATABASE() AND table_name = @TableName AND column_name = @C
 
     private static async Task SaveComponentsAsync(MySqlConnection connection, List<ComponentDto> rows)
     {
-        var existing = (await connection.QueryAsync<ComponentRow>("SELECT Id,CalculationType FROM salarycomponents")).ToDictionary(row => row.Id);
+        var existing = (await connection.QueryAsync<ComponentRow>("SELECT * FROM salarycomponents")).ToDictionary(row => row.Id);
+        var retainedDailyDefaults = new HashSet<long>();
         foreach (var row in rows)
         {
             if (existing.TryGetValue(row.Id, out var previous) && (previous.CalculationType == "Daily Rate") != (row.CalculationType == "Daily Rate"))
                 throw new InvalidOperationException("Existing salary components cannot be converted between monthly and daily rates. Create a separate component to preserve employee salary amounts.");
             if (row.CalculationType == "Daily Rate" && (row.Category != "Earning" || !decimal.TryParse(row.Value, NumberStyles.Number, CultureInfo.InvariantCulture, out var rate) || rate <= 0))
-                throw new InvalidOperationException("A Daily Rate component must be an earning with a positive numeric daily rate.");
+            {
+                // Legacy shared defaults can be supplied by a template or employee.
+                // A whole-setup save must retain them exactly, never repair them or
+                // accept a new/edited invalid daily component as an unrelated save.
+                if (previous is null || !JsonNode.DeepEquals(JsonSerializer.SerializeToNode(row, JsonOptions), JsonSerializer.SerializeToNode(ToDto(previous), JsonOptions)))
+                    throw new InvalidOperationException("A Daily Rate component must be an earning with a positive numeric daily rate.");
+                retainedDailyDefaults.Add(row.Id);
+            }
         }
         var ids = rows.Where(x => x.Id > 0).Select(x => x.Id).Distinct().ToArray();
         if (ids.Length > 0) await connection.ExecuteAsync("DELETE FROM salarycomponents WHERE Id NOT IN @ids", new { ids }); else await connection.ExecuteAsync("DELETE FROM salarycomponents");
-        foreach (var row in rows.Where(x => x.Id > 0))
+        foreach (var row in rows.Where(x => x.Id > 0 && !retainedDailyDefaults.Contains(x.Id)))
             await connection.ExecuteAsync(@"INSERT INTO salarycomponents (Id,Code,ComponentType,ComponentRole,StatutoryType,Category,Name,PayType,CalculationType,ValueText,Formula,BaseComponent,Taxable,Ctc,ProRata,Fbp,RestrictFbp,Epf,Esi,Recurring,Scheduled,InvestmentType,CorrectionOf,Active,Priority)
 VALUES (@Id,@Code,@ComponentType,@ComponentRole,@StatutoryType,@Category,@Name,@PayType,@CalculationType,@Value,@Formula,@BaseComponent,@Taxable,@Ctc,@ProRata,@Fbp,@RestrictFbp,@Epf,@Esi,@Recurring,@Scheduled,@InvestmentType,@CorrectionOf,@Active,@PriorityNumber)
 ON DUPLICATE KEY UPDATE Code=@Code,ComponentType=@ComponentType,ComponentRole=@ComponentRole,StatutoryType=@StatutoryType,Category=@Category,Name=@Name,PayType=@PayType,CalculationType=@CalculationType,ValueText=@Value,Formula=@Formula,BaseComponent=@BaseComponent,Taxable=@Taxable,Ctc=@Ctc,ProRata=@ProRata,Fbp=@Fbp,RestrictFbp=@RestrictFbp,Epf=@Epf,Esi=@Esi,Recurring=@Recurring,Scheduled=@Scheduled,InvestmentType=@InvestmentType,CorrectionOf=@CorrectionOf,Active=@Active,Priority=@PriorityNumber", new { row.Id, Code = Clean(row.Code).ToUpperInvariant(), row.ComponentType, ComponentRole = Clean(row.ComponentRole, DefaultComponentRole(row.Category)), StatutoryType = Clean(row.StatutoryType, "None"), row.Category, row.Name, row.PayType, row.CalculationType, row.Value, row.Formula, row.BaseComponent, row.Taxable, row.Ctc, row.ProRata, row.Fbp, row.RestrictFbp, row.Epf, row.Esi, row.Recurring, row.Scheduled, row.InvestmentType, row.CorrectionOf, row.Active, PriorityNumber = ToInt(row.Priority, 999) });

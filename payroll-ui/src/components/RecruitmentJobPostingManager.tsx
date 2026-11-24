@@ -32,6 +32,10 @@ import './RecruitmentOrchestration.css'
 import './RecruitmentTalentWorkspace.css'
 import './RecruitmentJobCards.css'
 import { currentRecruitmentJobPostings } from '../services/recruitmentJobVersions'
+import { getRecruitmentRequisitions } from '../services/recruitmentService'
+import type { RecruitmentRequisition } from '../types/payroll'
+import { hasRecruitmentPermission } from '../utils/requisitionAccess'
+import { rosterDraftRequest, withRosterDraftJobs } from '../utils/recruitmentRosterDraftJobs'
 
 type Props = {
   initialClientId?: number
@@ -61,6 +65,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
   const [clientId, setClientId] = useState(initialClientId || session?.user.clientId || 0)
   const [lookups, setLookups] = useState(emptyLookups)
   const [postings, setPostings] = useState<RecruitmentJobPosting[]>([])
+  const [draftRequests, setDraftRequests] = useState<RecruitmentRequisition[]>([])
   const [editor, setEditor] = useState<RecruitmentJobPosting | null>(null)
   const [jobDescriptions, setJobDescriptions] = useState<RecruitmentJobDescriptionVersion[]>([])
   const [pipelineVersionId, setPipelineVersionId] = useState<number>()
@@ -103,7 +108,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
   const positions = useMemo(() => editorClientId > 0
     ? lookups.positions.filter(row => row.clientId === editorClientId)
     : lookups.positions, [lookups.positions, editorClientId])
-  const currentPostings = useMemo(() => currentRecruitmentJobPostings(postings), [postings])
+  const currentPostings = useMemo(() => withRosterDraftJobs(currentRecruitmentJobPostings(postings), draftRequests, clientId), [postings, draftRequests, clientId])
   const historicalPostings = useMemo(() => postings.filter(row => !currentPostings.some(current => current.id === row.id)), [postings, currentPostings])
   const jobFilterDefinitions = useMemo(() => {
     const positionById = new Map(lookups.positions.map(row => [row.id, row]))
@@ -154,9 +159,11 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
 
   async function loadClient(scope: number, preferredPostingId = 0) {
     setLoading(true)
-    const [lookupRows, postingRows] = await Promise.all([
+    const [lookupRows, postingRows, requests] = await Promise.all([
       getRecruitmentOrchestrationLookups(scope), getRecruitmentJobPostings(scope, true),
+      hasRecruitmentPermission(session?.user, 'recruitment.rfr.view', 'recruitment.rfr.create') ? getRecruitmentRequisitions({ clientId: scope || undefined }) : Promise.resolve([]),
     ])
+    setDraftRequests(requests)
     setLookups(lookupRows); setPostings(postingRows)
     const preferred = postingRows.find(row => row.id === preferredPostingId)
     if (preferred) await choosePosting(preferred, lookupRows.positions)
@@ -184,6 +191,8 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
   }
 
   async function choosePosting(row: RecruitmentJobPosting, allPositions = positions) {
+    const request = rosterDraftRequest(row)
+    if (request) { navigate(`/recruitment/requisitions?clientId=${request.clientId}&requisitionId=${request.id}`); return }
     setLoading(true)
     const [detailed] = await Promise.all([
       getRecruitmentJobPosting(row.id),
@@ -408,7 +417,9 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
     }
   }
 
-  const postingActions = (row: RecruitmentJobPosting) => (<div className="candidate-card-actions" onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
+  const postingActions = (row: RecruitmentJobPosting) => rosterDraftRequest(row)
+    ? <Space direction="vertical"><Tag color="orange">Draft JD · Unpublished</Tag><Button icon={<EditOutlined />} onClick={event => { event.stopPropagation(); void choosePosting(row) }}>Open hiring request</Button></Space>
+    : (<div className="candidate-card-actions" onClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}>
                   <Space size={6}>
                     {row.status === 'Published' && <Tooltip title="Copy public link"><Button aria-label="Copy public link" size="small" shape="circle" icon={<CopyOutlined />} onClick={event => { event.stopPropagation(); void copyPostingLink(row) }} /></Tooltip>}
                     <PostingStatus status={row.status} />
@@ -474,7 +485,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
                 <div className="job-card-metrics candidate-card-contact">
                   <JobFact icon={<FieldTimeOutlined />} label="Experience" value={formatRecruitmentExperience({ experienceRange: position?.requisitionExperienceRange || position?.experienceRange, summary: position?.jobDescriptionText })} />
                   <JobFact icon={<DollarOutlined />} label="Annual salary" value={formatSalary(position)} />
-                  <JobFact icon={<EnvironmentOutlined />} label="Location" value={position?.requisitionJobLocation || position?.jobLocation || 'Not specified'} />
+                  <JobFact icon={<EnvironmentOutlined />} label="Location" value={rosterDraftRequest(row)?.jobLocation || position?.requisitionJobLocation || position?.jobLocation || 'Not specified'} />
                   <JobFact icon={<TeamOutlined />} label="Vacancies" value={position ? `${position.remainingPositions ?? 0} open / ${position.numberOfPositions || position.requisitionNumberOfOpenings || 0} total` : 'Not specified'} />
                 </div>
                 {postingActions(row)}

@@ -29,6 +29,12 @@ public static class RecruitmentDocumentEndpoints
             Results.Ok(await repository.EnsureDefaultTemplateAsync(clientId, currentUser(context))));
         routes.MapGet("/rows", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>
             Results.Ok(await repository.RowsAsync(clientId, currentUser(context))));
+        routes.MapDelete("/rows/{id:long}", async (RecruitmentDocumentRepository repository, int clientId, long id, HttpContext context) =>
+        {
+            if (!RecruitmentPermissions.CanHardDeleteOffers(currentUser(context))) return Results.StatusCode(403);
+            return await repository.HardDeleteRowAsync(clientId, id, currentUser(context))
+                ? Results.NoContent() : Results.NotFound(new { error = "The employee-list offer was already deleted or does not belong to this client." });
+        });
         routes.MapGet("/standard/template", async (RecruitmentDocumentRepository repository, int clientId, int templateId, string? sourceGroup, string? mode, HttpContext context) =>
             Results.Ok(await repository.StandardTemplateAsync(new RosterExchangeSettings { ClientId = clientId, TemplateId = templateId, SourceGroup = sourceGroup ?? "", Mode = mode ?? "Insert" }, currentUser(context))));
         routes.MapPost("/standard/preview", async (RecruitmentDocumentRepository repository, int clientId, HttpContext context) =>

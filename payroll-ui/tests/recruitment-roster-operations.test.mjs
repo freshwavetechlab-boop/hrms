@@ -7,6 +7,15 @@ const exports = {}
 const code = ts.transpileModule(readFileSync(new URL('../src/utils/recruitmentRosterOperations.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
 new Function('exports', code)(exports)
 const { filterRosterRows, selectedRosterRows, rosterLocationName, rosterMasterLocationField, rosterPermissions, rosterReleaseReady, signingAssetFileError, rosterEditValues } = exports
+
+test('searching one of 104 selected employees and deselecting it preserves the other 103', () => {
+  const available = Array.from({ length: 104 }, (_, i) => i + 1)
+  const remaining = exports.mergeRosterSelection(available, [], [45], available)
+  assert.equal(remaining.length, 103)
+  assert.equal(remaining.includes(45), false)
+  assert.deepEqual(exports.mergeRosterSelection(remaining, [45], [45], available), [...remaining, 45])
+  assert.deepEqual(exports.mergeRosterSelection([1, 2, 999], [2, 3], [2, 3], [1, 2, 3]), [1, 2, 3])
+})
 const rows = [
   { id: 1, sourceGroup: 'Original Mumbai list', workLocationId: 11, workLocation: 'Old source text', documentIssues: [] },
   { id: 2, sourceGroup: 'Original Delhi list', workLocationId: 22, workLocation: 'Delhi', documentIssues: [] },
