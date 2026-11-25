@@ -1,3 +1,4 @@
+import { clientChoice } from '../components/ClientOption'
 import { RecruitmentViewContext, useSessionPreference, type RecruitmentView } from '../hooks/useRecruitmentPreferences'
 import { PageHeaderPortal } from '../components/layout/AppPageHeader'
 import '../RecruitmentViewport.css'
@@ -90,7 +91,7 @@ export default function RecruitmentPage({ view = 'Dashboard', onRequestNavigatio
   const [publication, setPublication] = useState({ channel: '', publishingDate: new Date().toISOString().slice(0, 10), expiryDate: '', status: 'Published', remarks: '' })
   const [campaign, setCampaign] = useState({ campaignName: '', startDate: new Date().toISOString().slice(0, 10), endDate: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10), referralReward: 0, visibilityDepartment: '', visibilityBusinessUnit: '', visibilityLocation: '', visibilityEmploymentType: '', status: 'Open' })
   const permittedClients = useMemo(() => isSelectedClientUser(scopeUser) ? clients.filter(row => assignedClients(scopeUser).includes(Number(row.id))) : clients, [clients, scopeUser])
-  const clientOptions = useMemo(() => permittedClients.map(row => ({ value: Number(row.id), label: `${row.code} · ${row.name}` })), [permittedClients])
+  const clientOptions = useMemo(() => permittedClients.map(clientChoice), [permittedClients])
   const clientScopeKey = JSON.stringify([scopeUser?.id, boundClientId, scopeUser?.clientAccessMode, scopeUser?.assignedClientIds])
   const requestSequence = useRef(0)
 
@@ -111,7 +112,7 @@ export default function RecruitmentPage({ view = 'Dashboard', onRequestNavigatio
   }, [selectedClientId, isRequestWorkspace, onRequestNavigationChange])
 
   useEffect(() => {
-    void getClients(false, true).then(setClients)
+    void getClients(true, true).then(setClients)
   }, [])
   useEffect(() => {
     if (!isRequestWorkspace) return

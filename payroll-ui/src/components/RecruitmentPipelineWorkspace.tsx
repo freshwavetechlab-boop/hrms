@@ -39,7 +39,7 @@ type Props = {
   positionId?: number
   initialView?: PipelineView
   canChooseClient?: boolean
-  clientOptions?: Array<{ value: number; label: string }>
+  clientOptions?: Array<{ value: number; label: string; code?: string }>
   onClientChange?: (value?: number) => void
 }
 
@@ -210,7 +210,7 @@ export default function RecruitmentPipelineWorkspace({ initialClientId = 0, clie
           onOpenCandidates={() => setWorkspaceView('candidates')}
           onChanged={() => void load(true)}
         />)}
-    {canBrowse && displayMode !== 'flow' && view === 'candidates' && <RecruitmentPipelineBoard embedded key={`candidate-pipeline-${initialClientId}-${positionId}-${workLocationId}`} initialClientId={initialClientId} clientScopeManaged={clientScopeManaged} positionId={positionId} workLocationId={hasClientScope ? workLocationId : 0} displayMode={displayMode} onDisplayModeChange={setDisplayMode} clientPipelineCandidateCount={candidateCount} onCandidateCountChange={setSelectedCandidateCount} clientPipelineLanes={journeyLanes.filter(lane => lane.cardScope === 'Application')} />}
+    {canBrowse && displayMode !== 'flow' && view === 'candidates' && <RecruitmentPipelineBoard embedded availableClients={clientOptions} key={`candidate-pipeline-${initialClientId}-${positionId}-${workLocationId}`} initialClientId={initialClientId} clientScopeManaged={clientScopeManaged} positionId={positionId} workLocationId={hasClientScope ? workLocationId : 0} displayMode={displayMode} onDisplayModeChange={setDisplayMode} clientPipelineCandidateCount={candidateCount} onCandidateCountChange={setSelectedCandidateCount} clientPipelineLanes={journeyLanes.filter(lane => lane.cardScope === 'Application')} />}
     <Drawer className="recruitment-pipeline-manager-drawer" title="Manage pipeline" open={designerOpen && canManagePipeline && canBrowse} width="100%" onClose={() => setPipelineManagerOpen(false)} destroyOnClose>
       <Tabs className="recruitment-automation-tabs" activeKey={managerTool} onChange={key => setPipelineManagerTool(key as PipelineManagerTool)} items={[
         { key: 'pipeline', label: <span><BranchesOutlined aria-hidden /> Pipeline design</span>, children: <RecruitmentPipelineDesigner key={`pipeline-manager-${initialClientId}-${managerRevision}`} initialClientId={initialClientId} initialPipelineDefinitionId={selectedDefinitionId} initialPipelineVersionId={selectedVersionId} dropdowns={designerDropdowns} onDropdownsChange={setDesignerDropdowns} onSaved={() => void load(true)} /> },

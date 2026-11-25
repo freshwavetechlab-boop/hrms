@@ -41,7 +41,7 @@ export default function SalaryComponentEditor({ value, original, clientId, compo
   const setKind = (next: string) => {
     if (next === kind) return
     // Change calculation inputs only after an explicit method selection, never on load/save.
-    patch({ calculationType: next, formula: next === 'Formula' ? displayFormula(value) : '', value: ['Fixed Amount', 'Daily Rate'].includes(next) ? value.value : '', ...(next === 'Daily Rate' ? { proRata: false } : {}) })
+    patch({ calculationType: next, formula: next === 'Formula' ? displayFormula(value) : '', value: next === 'Fixed Amount' ? value.value.trim() || '0' : next === 'Daily Rate' ? value.value : '', ...(next === 'Daily Rate' ? { proRata: false } : {}) })
   }
   const catalogue = usePayrollCatalogue(components, formulaOpen, undefined, String(value.id))
   const formulaOptions = valueOptions(catalogue.values)

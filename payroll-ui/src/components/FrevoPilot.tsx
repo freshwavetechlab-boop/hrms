@@ -1,3 +1,4 @@
+import { clientChoice, clientSelectProps } from './ClientOption'
 import { useEffect, useState } from 'react'
 import { Alert, Button, Collapse, Drawer, Empty, Input, Progress, Select, Space, Switch, Table, Tag } from 'antd'
 import { RobotOutlined, SendOutlined } from '@ant-design/icons'
@@ -40,7 +41,7 @@ export default function FrevoPilot() {
   const [open, setOpen] = useState(false)
   const [question, setQuestion] = useState('')
   const [clientId, setClientId] = useState<number>()
-  const [clients, setClients] = useState<{ value: number; label: string }[]>([])
+  const [clients, setClients] = useState<{ value: number; label: string; code?: string }[]>([])
   const [modelId, setModelId] = useState<number>()
   const [models, setModels] = useState<{ value: number; label: string }[]>([])
   const [useFastMetrics, setUseFastMetrics] = useState(true)
@@ -57,7 +58,7 @@ export default function FrevoPilot() {
     void getJsonResult('/api/frevopilot/analytics/status', { enabled: false }, { loader: false }).then(response => {
       if (!disposed) { setEnabled(response.ok && response.data.enabled); if (!response.ok) setError(response.error) }
     })
-    void getClients().then(rows => { if (!disposed) setClients(rows.map(row => ({ value: row.id, label: row.name }))) })
+    void getClients(true).then(rows => { if (!disposed) setClients(rows.map(clientChoice)) })
     void getAiIntegration().then(pool => {
       if (disposed) return
       const available = pool.models.filter(model => model.clientId === 0 && model.hasApiKey && model.credentialStatus === 'Ready')
@@ -115,7 +116,7 @@ export default function FrevoPilot() {
           <Space wrap><Switch size="small" aria-label="Fast verified metrics" checked={useFastMetrics} onChange={setUseFastMetrics} disabled={processing} /><span>Fast verified metrics</span><small>For supported local-model questions; complex questions still use AI.</small></Space>
         </div>
         <div className="pilot-composer">
-          <Select aria-label="FrevoPilot client scope" placeholder="All clients" allowClear showSearch optionFilterProp="label" value={clientId} onChange={setClientId} options={clients} disabled={processing} />
+          <Select aria-label="FrevoPilot client scope" placeholder="All clients" allowClear value={clientId} onChange={setClientId} {...clientSelectProps(clients)} disabled={processing} />
           <Input.TextArea aria-label="FrevoPilot question" placeholder="For example: RRU active employee headcount by gender" value={question} maxLength={2000} autoSize={{ minRows: 2, maxRows: 5 }} onChange={event => setQuestion(event.target.value)} onPressEnter={event => { if (event.ctrlKey || event.metaKey) void ask() }} />
           <Button aria-label="Ask FrevoPilot" type="primary" icon={<SendOutlined />} loading={processing} disabled={!enabled || question.trim().length < 4} onClick={() => void ask()}>Ask FrevoPilot</Button>
         </div>

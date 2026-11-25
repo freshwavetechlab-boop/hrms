@@ -1,3 +1,4 @@
+import { clientChoice, clientSelectProps } from './ClientOption'
 import RecruitmentEligibilityBadge from './RecruitmentEligibilityBadge'
 import { useEffect, useMemo, useState } from 'react'
 import {
@@ -129,15 +130,18 @@ export default function RecruitmentResumeIntake({
     }
     let active = true
     setLoadingContext(true)
-    void Promise.all([contextClients ? Promise.resolve(contextClients) : getClients(), contextPositions ? Promise.resolve(contextPositions) : getRecruitmentOpenPositions()])
+    const clientsRequest = (contextClients ? Promise.resolve(contextClients) : getClients(true)).then(rows => {
+      if (active) setClients(rows)
+      return rows
+    })
+    void Promise.all([clientsRequest, contextPositions ? Promise.resolve(contextPositions) : getRecruitmentOpenPositions()])
       .then(([clientRows, positionRows]) => {
         if (!active) return
-        setClients(clientRows)
         setPositions(positionRows)
         if (!initialClientId) {
           const initialPosition = positionRows.find(row => row.id === initialPositionId)
-          if (initialPosition) setClientId(initialPosition.clientId)
-          else if (clientRows.length === 1) setClientId(clientRows[0].id)
+          const suggestedId = initialPosition?.clientId || (clientRows.length === 1 ? clientRows[0].id : 0)
+          if (suggestedId) setClientId(current => current || suggestedId)
         }
       })
       .finally(() => { if (active) setLoadingContext(false) })
@@ -229,7 +233,7 @@ export default function RecruitmentResumeIntake({
   const requirements = useMemo(() => candidateDraftRequirements(formVersionId && !formPending ? candidateForm : null, requireAtsDetails), [candidateForm, formVersionId, formPending, requireAtsDetails])
   const missingFields = (draft: RecruitmentResumeReviewedDraft) => missingCandidateDraftFields(draft, requirements.fields, requireIdentity)
 
-  const clientOptions = clients.map(row => ({ value: row.id, label: `${row.code || 'CLIENT'} - ${row.name}` }))
+  const clientOptions = clients.map(clientChoice)
   const positionOptions = availablePositions.map(row => ({
     value: row.id,
     label: `${row.positionCode} - ${row.positionTitle} · ${row.department || 'No department'}`,
@@ -408,7 +412,7 @@ export default function RecruitmentResumeIntake({
       <Card size="small" className="resume-intake-context" title={talentPoolOnly ? 'Resume source' : 'Job context'} extra={!talentPoolOnly && selectedPosition && !contextExpanded ? <Button size="small" onClick={() => onChangeJob ? onChangeJob() : setContextExpanded(true)} disabled={busy}>Change job</Button> : null}>
         <Form layout="vertical">
           <Row gutter={[16, 0]}>
-            {!talentPoolOnly && (contextExpanded || !selectedPosition) && <><Col xs={24} md={12}><Form.Item label="Client" required><Select data-testid="resume-intake-client" loading={loadingContext} disabled={busy} showSearch optionFilterProp="label" value={clientId || undefined} placeholder="Select client" options={clientOptions} onChange={changeClient} /></Form.Item></Col>
+            {!talentPoolOnly && (contextExpanded || !selectedPosition) && <><Col xs={24} md={12}><Form.Item label="Client" required><Select data-testid="resume-intake-client" loading={loadingContext} disabled={busy} value={clientId || undefined} placeholder="Select client" {...clientSelectProps(clientOptions)} onChange={changeClient} /></Form.Item></Col>
               <Col xs={24} md={12}><Form.Item label="Open position" required><Select data-testid="resume-intake-position" disabled={!clientId || busy} showSearch optionFilterProp="label" value={positionId || undefined} placeholder="Select approved position" options={positionOptions} onChange={changePosition} /></Form.Item></Col>
               <Col xs={24} md={12}><Form.Item label="Job posting"><Select data-testid="resume-intake-posting" disabled={!positionId || busy} showSearch optionFilterProp="label" value={jobPostingId || 0} options={postingOptions} onChange={changePosting} /></Form.Item></Col>
               <Col xs={24} md={12}><Form.Item label="Job description used for ATS"><Select data-testid="resume-intake-jd" disabled value={jobDescriptionId || undefined} placeholder={positionId ? 'Approved job requirements' : 'Select a position first'} options={descriptionOptions} /></Form.Item></Col></>}

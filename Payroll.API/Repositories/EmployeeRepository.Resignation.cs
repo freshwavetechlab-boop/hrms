@@ -65,7 +65,12 @@ AND t.ActionType IN ('Resign','Retire','Terminate','Rehire') ORDER BY t.Effectiv
 WHERE a.ClientId=@ClientId AND a.EmployeeId IN @Ids AND a.Status IN ('Active','Historical') AND a.ActionType IN ('Resign','Retire','Terminate','Rehire') ORDER BY a.EffectiveFrom DESC,a.Id DESC", new { request.ClientId, Ids = ids }, tx))
             .GroupBy(action => action.EmployeeId).ToDictionary(group => group.Key, group => group.First());
         var pendingIds = ids.Where(id => !latestActions.TryGetValue(id, out var action) || action.ActionType != "Resign" || action.EffectiveFrom.Date != inactiveDates[id]).ToArray();
-        if (pendingIds.Length == 0) { await tx.CommitAsync(); return new(0, ids.Length, request.LastWorkingDate, ids); }
+        if (pendingIds.Length == 0)
+        {
+            await AuthRepository.DeactivateEmployeeUsersAsync(db, tx, ids.Where(id => inactiveDates[id] <= EmployeeEmploymentRules.Today).ToArray());
+            await tx.CommitAsync(); return new(0, ids.Length, request.LastWorkingDate, ids);
+        }
+        await AuthRepository.AssertEmployeeUserDeactivationSafeAsync(db, tx, pendingIds);
         foreach (var dateGroup in pendingIds.GroupBy(id=>inactiveDates[id]))
         {
         var inactiveFrom=dateGroup.Key;
@@ -105,6 +110,7 @@ AND pr.Status IN ('Draft','Queued','Processing','Pending Approval','Approved','P
                 await db.ExecuteAsync("UPDATE employees SET IsActive=FALSE WHERE Id=@Id AND ClientId=@ClientId", new { Id = id, request.ClientId }, tx);
             marked++;
         }
+        await AuthRepository.DeactivateEmployeeUsersAsync(db, tx, ids.Where(id => inactiveDates[id] <= EmployeeEmploymentRules.Today).ToArray());
         await tx.CommitAsync();
         return new(marked, already, request.LastWorkingDate, ids);
     }
@@ -112,7 +118,18 @@ AND pr.Status IN ('Draft','Queued','Processing','Pending Approval','Approved','P
     public async Task<int> ApplyDueExitsAsync(CancellationToken token)
     {
         await using var db = Connection(); await db.OpenAsync(token);
-        var changed = await db.ExecuteAsync(new CommandDefinition("UPDATE employees e SET e.IsActive=FALSE WHERE e.IsActive=TRUE AND COALESCE(" + EmployeeEmploymentRules.LatestAction("e", "@Today") + ", 'Rehire') IN ('Resign','Retire','Terminate')", new { Today = EmployeeEmploymentRules.Today }, cancellationToken: token));
+        await using var tx = await db.BeginTransactionAsync(token);
+        var dueIds = (await db.QueryAsync<int>(new CommandDefinition(@"SELECT e.Id FROM employees e WHERE
+COALESCE(" + EmployeeEmploymentRules.LatestAction("e", "@Today") + @", 'Rehire') IN ('Resign','Retire','Terminate')
+AND (e.IsActive=TRUE OR EXISTS(SELECT 1 FROM authusers u WHERE u.EmployeeId=e.Id AND
+(u.IsActive=TRUE OR EXISTS(SELECT 1 FROM authsessions s WHERE s.UserId=u.Id AND s.RevokedAt IS NULL AND s.ExpiresAt>UTC_TIMESTAMP()))))
+ORDER BY e.Id FOR UPDATE", new { Today = EmployeeEmploymentRules.Today }, transaction: tx, cancellationToken: token))).ToArray();
+        var changed = 0;
+        if (dueIds.Length > 0)
+        {
+            await AuthRepository.DeactivateEmployeeUsersAsync(db, tx, dueIds);
+            changed = await db.ExecuteAsync(new CommandDefinition("UPDATE employees SET IsActive=FALSE WHERE Id IN @Ids AND IsActive=TRUE", new { Ids = dueIds }, transaction: tx, cancellationToken: token));
+        }
         // A scheduled rehire can follow a dated exit. Apply it only when it is the
         // latest due IT0000 action; an explicit later inactive master action wins.
         changed += await db.ExecuteAsync(new CommandDefinition(@"UPDATE employees e JOIN employee_it0000_actions rehire ON rehire.EmployeeId=e.Id AND rehire.ClientId=e.ClientId
@@ -120,7 +137,8 @@ SET e.IsActive=TRUE WHERE e.IsActive=FALSE AND rehire.ActionType='Rehire' AND re
 AND rehire.Status IN ('Active','Historical') AND rehire.EffectiveFrom<=@Today
 AND NOT EXISTS(SELECT 1 FROM employee_it0000_actions later WHERE later.EmployeeId=e.Id AND later.ClientId=e.ClientId
 AND later.Status IN ('Active','Historical') AND later.EffectiveFrom<=@Today
-AND (later.EffectiveFrom>rehire.EffectiveFrom OR (later.EffectiveFrom=rehire.EffectiveFrom AND later.Id>rehire.Id)))", new { Today = EmployeeEmploymentRules.Today }, cancellationToken: token));
+AND (later.EffectiveFrom>rehire.EffectiveFrom OR (later.EffectiveFrom=rehire.EffectiveFrom AND later.Id>rehire.Id)))", new { Today = EmployeeEmploymentRules.Today }, transaction: tx, cancellationToken: token));
+        await tx.CommitAsync(token);
         return changed;
     }
 }

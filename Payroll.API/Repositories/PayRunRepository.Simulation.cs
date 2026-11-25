@@ -13,18 +13,23 @@ public partial class PayRunRepository
 {
     public static void ValidateSimulationRequest(PayrollSimulationRequest request)
     {
-        if (request.Mode is not ("Template" or "Employee") || request.ClientId <= 0 || request.TemplateId is null || request.TemplateId.Length > 40
+        if (request.Mode is not ("Template" or "Employee" or "EmployeeTemplate") || request.ClientId <= 0 || request.TemplateId is null || request.TemplateId.Length > 40
             || request.AnnualCtc is < 0 or > 1000000000m || request.PayrollDays is < 1 or > 31
             || request.PayableDays < 0 || request.PayableDays > (request.Mode == "Template" && request.ReviewedExtraDutyUnits ? 999.99m : 31m) || request.PresentDays is < 0 or > 31
             || request.AmountOverrides is null || request.AmountOverrides.Count > 100 || request.AmountOverrides.Any(p => p.Key.Length > 40 || p.Value < 0 || p.Value > 1000000000m))
             throw new InvalidOperationException("Select a client and valid non-negative simulation inputs. Payroll days must be 1-31.");
-        if (request.Mode == "Employee" && (request.EmployeeId is not > 0 || !DateTime.TryParseExact(request.PayPeriod + "-01", "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _)))
+        if ((request.Mode is "Employee" or "EmployeeTemplate") && (request.EmployeeId is not > 0 || !DateTime.TryParseExact(request.PayPeriod + "-01", "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _)))
             throw new InvalidOperationException("Select an employee and a valid payroll month (YYYY-MM).");
-        if (request.Mode == "Template")
+        if (request.Mode is "Template" or "EmployeeTemplate")
         {
             if (request.Snapshot is null || request.Snapshot.Mode != "Template" || request.Snapshot.ClientId != request.ClientId) throw new InvalidOperationException("Provide the selected client's template draft.");
             PayrollAdvisorService.Validate(request.Snapshot);
         }
+        if (request.ClearedComponentIds is { Count: > 100 } || request.ClearedComponentIds?.Any(id => string.IsNullOrWhiteSpace(id) || id.Length > 40) == true
+            || request.ClearedComponentIds is { } cleared && cleared.Distinct(StringComparer.Ordinal).Count() != cleared.Count
+            || request.Mode != "EmployeeTemplate" && (request.ClearAnnualCtc || request.ClearedComponentIds is { Count: > 0 })
+            || request.ClearAnnualCtc && request.AnnualCtc.HasValue)
+            throw new InvalidOperationException("Clear inputs only within an employee template what-if, without supplying the same annual input.");
     }
 
     private static (List<PayrollComponent> Components, SalaryStructureSetup Structure) SimulationSetup(PayrollReviewSnapshot snapshot, string id)

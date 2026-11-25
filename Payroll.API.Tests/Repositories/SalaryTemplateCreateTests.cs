@@ -209,6 +209,102 @@ public sealed class SalaryTemplateCreateTests
     }
 
     [LocalWorkflowScopeDatabaseFact]
+    public async Task Single_component_save_preserves_700_templates_other_components_salary_and_source_records()
+    {
+        await using var f = await Fixture.CreateAsync();
+        await f.Db.ExecuteAsync("INSERT INTO salarystructures(Id,ClientId,ClientRef,Name) VALUES " + string.Join(",", Enumerable.Range(1000, 700).Select(id => $"({id},10,'10','Unchanged template {id}')")));
+        await f.Db.ExecuteAsync("INSERT INTO salarystructurelines(StructureId,ComponentId,Formula) SELECT Id,'1','GROSS*50%' FROM salarystructures WHERE Id>=1000");
+        var before = await f.SnapshotAsync();
+        var created = await f.Repository.SaveSalaryComponentAsync(ComponentRequest(50, "VDA", "Fixed Amount", "0"), null);
+        Assert.Equal("VDA", created["code"]!.GetValue<string>());
+        Assert.Equal(before, await f.SnapshotAsync(newComponentId: 50));
+
+        var edited = created.DeepClone().AsObject(); edited["name"] = "Variable Dearness Allowance";
+        var saved = await f.Repository.SaveSalaryComponentAsync(edited, created);
+        Assert.Equal("Variable Dearness Allowance", saved["name"]!.GetValue<string>());
+        Assert.Equal(before, await f.SnapshotAsync(newComponentId: 50));
+    }
+
+    [LocalWorkflowScopeDatabaseFact]
+    public async Task Single_component_save_rejects_duplicate_stale_and_changed_codes_without_other_writes()
+    {
+        await using var f = await Fixture.CreateAsync();
+        var created = await f.Repository.SaveSalaryComponentAsync(ComponentRequest(50, "VDA", "Fixed Amount", "0"), null);
+        var before = await f.SnapshotAsync();
+        await Assert.ThrowsAsync<System.Data.DBConcurrencyException>(() => f.Repository.SaveSalaryComponentAsync(ComponentRequest(51, "VDA", "Fixed Amount", "0"), null));
+        await Assert.ThrowsAsync<System.Data.DBConcurrencyException>(() => f.Repository.SaveSalaryComponentAsync(created, null));
+        Assert.Equal(before, await f.SnapshotAsync());
+
+        var edited = created.DeepClone().AsObject(); edited["value"] = "1250";
+        var saved = await f.Repository.SaveSalaryComponentAsync(edited, created);
+        before = await f.SnapshotAsync();
+        edited["value"] = "2000";
+        await Assert.ThrowsAsync<System.Data.DBConcurrencyException>(() => f.Repository.SaveSalaryComponentAsync(edited, created));
+        edited = saved.DeepClone().AsObject(); edited["code"] = "RENAMED_VDA";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Repository.SaveSalaryComponentAsync(edited, saved));
+        Assert.Equal(before, await f.SnapshotAsync());
+    }
+
+    [LocalWorkflowScopeDatabaseFact]
+    public async Task Single_component_save_keeps_daily_validation_and_retains_only_unchanged_legacy_defaults()
+    {
+        await using var f = await Fixture.CreateAsync();
+        var before = await f.SnapshotAsync();
+        foreach (var value in new[] { "0", "", "-1", "BASIC*5%" })
+            await Assert.ThrowsAsync<InvalidOperationException>(() => f.Repository.SaveSalaryComponentAsync(ComponentRequest(50, "NEW_DAILY", "Daily Rate", value), null));
+        Assert.Equal(before, await f.SnapshotAsync());
+
+        var setup = JsonNode.Parse(await PayrollDataTableStore.GetSetupJsonAsync(f.Db))!;
+        var legacy = setup["salaryComponents"]!.AsArray().Single(row => row!["id"]!.GetValue<long>() == 2)!.AsObject();
+        await f.Repository.SaveSalaryComponentAsync(legacy, legacy.DeepClone().AsObject());
+        var changed = legacy.DeepClone().AsObject(); changed["name"] = "Changed legacy default";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Repository.SaveSalaryComponentAsync(changed, legacy));
+        changed = legacy.DeepClone().AsObject(); changed["calculationType"] = "Fixed Amount";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Repository.SaveSalaryComponentAsync(changed, legacy));
+        Assert.Equal(before, await f.SnapshotAsync());
+
+        var saved = await f.Repository.SaveSalaryComponentAsync(ComponentRequest(50, "NEW_DAILY", "Daily Rate", "700.50"), null);
+        Assert.Equal("700.50", saved["value"]!.GetValue<string>());
+        Assert.Equal(before, await f.SnapshotAsync(newComponentId: 50));
+    }
+
+    [LocalWorkflowScopeDatabaseFact]
+    public async Task Single_component_http_save_enforces_permission_and_reports_duplicate_and_stale_conflicts()
+    {
+        await using var f = await Fixture.CreateAsync();
+        var builder = WebApplication.CreateBuilder(); builder.Logging.ClearProviders();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Services.AddSingleton(f.Configuration); builder.Services.AddSingleton<SettingsRepository>();
+        await using var app = builder.Build();
+        var canManage = false;
+        SalaryComponentEndpoints.Map(app, _ => canManage);
+        await app.StartAsync();
+        using var http = new HttpClient { BaseAddress = new Uri(app.Urls.Single()) };
+        var request = new SalaryComponentEndpoints.SaveRequest(ComponentRequest(50, "VDA", "Fixed Amount", "0"));
+        var before = await f.SnapshotAsync();
+        Assert.Equal(HttpStatusCode.Forbidden, (await http.PostAsJsonAsync("/api/salary-components", request)).StatusCode);
+        Assert.Equal(before, await f.SnapshotAsync());
+        canManage = true;
+        var response = await http.PostAsJsonAsync("/api/salary-components", request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var created = (await response.Content.ReadFromJsonAsync<JsonObject>())!;
+        Assert.Equal(before, await f.SnapshotAsync(newComponentId: 50));
+        Assert.Equal(HttpStatusCode.Conflict, (await http.PostAsJsonAsync("/api/salary-components", request)).StatusCode);
+        var edited = created.DeepClone().AsObject(); edited["value"] = "1250";
+        var update = new SalaryComponentEndpoints.SaveRequest(edited, created);
+        Assert.Equal(HttpStatusCode.OK, (await http.PostAsJsonAsync("/api/salary-components", update)).StatusCode);
+        before = await f.SnapshotAsync();
+        Assert.Equal(HttpStatusCode.Conflict, (await http.PostAsJsonAsync("/api/salary-components", update)).StatusCode);
+        Assert.Equal(before, await f.SnapshotAsync());
+    }
+
+    private static JsonObject ComponentRequest(long id, string code, string calculationType, string value) => new()
+    {
+        ["id"] = id, ["code"] = code, ["name"] = code, ["category"] = "Earning",
+        ["calculationType"] = calculationType, ["value"] = value, ["proRata"] = false
+    };
+
+    [LocalWorkflowScopeDatabaseFact]
     public async Task Http_endpoint_enforces_client_permissions_and_rejects_setup_payloads()
     {
         await using var f = await Fixture.CreateAsync();

@@ -1,3 +1,4 @@
+import { clientChoice, clientSelectProps } from './ClientOption'
 import { useEffect, useState } from 'react'
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { Alert, Button, Checkbox, Col, Descriptions, Divider, Drawer, Form, Input, InputNumber, Row, Segmented, Select, Space, Tag } from 'antd'
@@ -107,7 +108,7 @@ export default function PfPolicyVersions({ clients, components, templates, onMes
 
   return <section className="pf-policy-versions" aria-label="PF policy versions">
     <PageHeaderPortal slot="statutory-settings-client-controls">
-      {fixedClientId ? showFixedClientChip && <span className="scoped-client-chip">{client?.name || `Client #${fixedClientId}`}</span> : <Select aria-label="PF policy client" showSearch optionFilterProp="label" value={clientId || undefined} disabled={saving} placeholder="Select client" style={{ width: 240, maxWidth: '100%' }} options={permittedClients.map(row => ({ value: row.id, label: row.name }))} onChange={setPreferredClientId} />}
+      {fixedClientId ? showFixedClientChip && <span className="scoped-client-chip">{client?.name || `Client #${fixedClientId}`}</span> : <Select aria-label="PF policy client" value={clientId || undefined} disabled={saving} placeholder="Select client" style={{ width: 240, maxWidth: '100%' }} {...clientSelectProps(permittedClients.map(clientChoice))} onChange={setPreferredClientId} />}
     </PageHeaderPortal>
     <PageHeaderPortal slot="statutory-settings-view-controls"><Segmented aria-label="PF history view" options={['Table', 'Cards']} value={view} onChange={value => setView(value as 'Table' | 'Cards')} /></PageHeaderPortal>
     <PageHeaderPortal slot="statutory-settings-page-controls"><Space wrap><Button icon={<ReloadOutlined />} disabled={loading || saving || !clientId} onClick={() => setReload(value => value + 1)}>Refresh</Button>{canManage && <Button type="primary" icon={<PlusOutlined />} disabled={!clientId || loading || !!loadError || loadedClientId !== clientId} onClick={() => beginVersion()}>New PF version</Button>}</Space></PageHeaderPortal>

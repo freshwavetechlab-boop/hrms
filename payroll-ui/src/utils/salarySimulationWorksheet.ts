@@ -3,7 +3,7 @@ import { buildPayrollFormulaWorkbook } from './payrollFormulaWorkbook'
 import type { XlsxCell } from './xlsx'
 import type { Component, Structure } from '../types/payroll'
 
-export type SalaryWorksheetCell = { address: string; label: string; value: string | number | null; formula: string; configuredFormula?: string; source?: string; inputKey?: string; ruleComponentId?: string; category?: string; pending?: boolean }
+export type SalaryWorksheetCell = { address: string; label: string; value: string | number | null; formula: string; configuredFormula?: string; source?: string; inputKey?: string; inputValue?: string | number | null; inputUnit?: 'Daily rate' | 'Monthly amount'; editInFormulaBarOnly?: boolean; ruleComponentId?: string; category?: string; pending?: boolean }
 export const salaryColumnLetter = (index: number) => { let result = ''; for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) result = String.fromCharCode(65 + (n - 1) % 26) + result; return result }
 const columnIndex = (letter: string) => [...letter].reduce((value, char) => value * 26 + char.charCodeAt(0) - 64, 0) - 1
 const value = (cell: XlsxCell): string | number => typeof cell === 'object' ? cell.value : cell
@@ -46,6 +46,78 @@ export function alignSalaryWorksheetRows(models: { cells: SalaryWorksheetCell[];
   }) }
 }
 export const simulationUsesCtc = (result: SimulationResult | null) => !!result?.lines.some(line => /\b(?:CTC|GROSS|MONTHLY_CTC|ANNUAL_CTC)\b/i.test(`${line.formula} ${line.baseComponent || ''}`) || line.calculationType === 'Residual / Balancing' && !line.baseComponent)
+const firstSimulationText = (...values: (string | undefined)[]) => values.find(value => !!value?.trim())?.trim() || ''
+// Match the native calculator's aliases before the first result is available.
+const simulationCalculationKind = (value: string) => {
+  if (value === 'Daily Rate') return 'Daily Rate'
+  const kind = value.trim().toLowerCase()
+  if (['percentage of ctc', 'percentage of component', 'formula'].includes(kind)) return 'Formula'
+  if (['balancing amount', 'residual / balancing'].includes(kind)) return 'Residual / Balancing'
+  if (['manual entry', 'manual override', 'manual / variable'].includes(kind)) return 'Manual / Variable'
+  return kind === 'slab based' ? 'Slab Based' : 'Fixed Amount'
+}
+
+/** One payable amount per template component; native outputs remain the money authority. */
+export function salarySimulationSummary(result: SimulationResult, context: Parameters<typeof salarySimulationWorksheet>[1]): { cells: SalaryWorksheetCell[]; attendance: SalaryWorksheetCell[]; identity: SalaryWorksheetCell[]; notice: string } {
+  const detail = salarySimulationWorksheet(result, context)
+  const cells: Omit<SalaryWorksheetCell, 'address'>[] = []
+  const attendance = ['PAYROLL_DAYS', 'PRESENT_DAYS', 'PAYABLE_DAYS'].map(key => ({
+    ...(detail.cells.find(cell => cell.inputKey === key) ?? { address: key, label: canonicalInputLabels[key], value: result.inputs.find(input => input.name === key)?.value ?? null, formula: '', inputKey: key }),
+    label: key === 'PAYROLL_DAYS' ? 'Payroll divisor' : canonicalInputLabels[key],
+  }))
+  const identity = detail.cells.filter(cell => ['Employee code', 'Employee name'].includes(cell.label))
+  const consumed = new Set<SimulationResult['lines'][number]>()
+  const configured = context.template?.lines ?? result.lines.map(line => ({ componentId: line.componentId || line.code }))
+  for (const configuredLine of configured) {
+    const id = String(configuredLine.componentId)
+    const configuredRule = context.template?.lines.find(line => String(line.componentId) === id)
+    const component = context.components?.find(item => String(item.id) === id)
+    const native = result.lines.find(line => !consumed.has(line) && line.source !== 'Approved period adjustment'
+      && (line.componentId ? String(line.componentId) === id : line.code === (component?.code || id)))
+    if (native) consumed.add(native)
+    const code = component?.code || native?.code || `COMPONENT_${id}`
+    const label = component?.name || native?.name || `Component #${id}`
+    const raw = detail.cells.find(cell => cell.inputKey === `COMPONENT:${id}`)
+    const rule = detail.cells.find(cell => cell.ruleComponentId === id)
+    const policy = !!native && (native.source.includes('Effective-dated PF') || native.source.startsWith('Projected TDS')
+      || native.source.startsWith('Reviewed source-period TDS') || native.source.startsWith('Reviewed source-bound '))
+    const configuredType = firstSimulationText(configuredRule?.calculationType, component?.calculationType)
+    const method = simulationCalculationKind(firstSimulationText(native?.calculationType, configuredType))
+    // Template value precedes the component's default formula in the engine.
+    // In particular a Formula with value "0" is a numeric monthly input, not
+    // the component's inherited BASIC/GROSS formula.
+    const expression = native ? native.formula.trim() : firstSimulationText(configuredRule?.formula, configuredRule?.value, component?.formula, component?.value)
+    const literal = expression.replace(/^=/, '').trim()
+    const numericConstant = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(literal)
+      && Number.isFinite(Number(literal))
+    const percentage = ['percentage of ctc', 'percentage of component'].includes(configuredType.toLowerCase())
+    const employeeTemplate = result.mode === 'EmployeeTemplate'
+    const manual = (['Fixed Amount', 'Daily Rate', 'Manual / Variable'].includes(method)
+      || method === 'Formula' && numericConstant && !percentage)
+      && !!component?.active && !policy && (employeeTemplate || !component.statutoryType?.trim() || component.statutoryType.trim().toLowerCase() === 'none')
+    const inputKey = !policy && component?.active ? raw?.inputKey || (manual ? `COMPONENT:${id}` : undefined) : undefined
+    const initialValue = ['Fixed Amount', 'Daily Rate'].includes(method) ? literal.replaceAll(',', '') : literal
+    const inputValue = employeeTemplate
+      ? result.componentInputs && Object.hasOwn(result.componentInputs, id) ? result.componentInputs[id] : null
+      : raw?.value ?? (native ? native.dailyRate ?? native.raw : initialValue !== '' && Number.isFinite(Number(initialValue)) ? Number(initialValue) : null)
+    const daily = method === 'Daily Rate' || native?.dailyRate != null
+    const configuredFormula = manual ? undefined : expression || rule?.configuredFormula
+    const pending = !native || !Number.isFinite(native.earned)
+    const description = [code, component?.category || native?.category,
+      native ? `${native.source} · Full-period amount: ${native.monthly}. Payable amount: ${native.earned}.` : 'Native calculation pending; no amount assumed.',
+      native?.substituted,
+      native && Object.keys(native.inputs).length ? `Resolved inputs: ${Object.entries(native.inputs).map(([key, value]) => `${key} = ${value}`).join('; ')}` : '',
+      inputKey ? `Editable ${daily ? 'daily rate' : 'monthly amount'}; payable result is calculated by the native engine.` : '',
+      component && !component.active ? 'Component is inactive.' : ''].filter(Boolean).join(' · ')
+    cells.push({ label, value: native && !pending ? native.earned : null, formula: '', category: component?.category || native?.category,
+      pending, configuredFormula: policy ? undefined : configuredFormula,
+      source: description, inputKey, inputValue, inputUnit: inputKey ? daily ? 'Daily rate' : 'Monthly amount' : undefined,
+      ruleComponentId: policy ? undefined : rule?.ruleComponentId })
+  }
+  const extra = result.lines.filter(line => !consumed.has(line) && line.category !== 'Summary' && line.earned !== 0)
+  const notice = [extra.length ? `Additional payroll items included in totals: ${extra.map(line => `${line.name} (${line.code}): ${line.earned}`).join('; ')}.` : '', detail.notice ? 'Source inputs and dated policy outputs stay controlled by the payroll engine. Select a component to review its resolved calculation.' : ''].filter(Boolean).join(' ')
+  return { cells: cells.map((cell, index) => ({ ...cell, address: `${salaryColumnLetter(index)}2` })), attendance, identity, notice }
+}
 
 export function salarySimulationOperands(result: SimulationResult): Omit<SalaryWorksheetCell, 'address'>[] {
   const system = new Set(['CTC', 'GROSS', 'MONTHLY_CTC', 'ANNUAL_CTC', 'PAYROLL_DAYS', 'TOTAL_DAYS', 'WORKING_DAYS', 'PRESENT_DAYS', 'PAYABLE_DAYS', 'LOP_DAYS', 'EARNINGS_BEFORE_THIS', 'MONTHLY_EARNINGS_BEFORE_THIS', 'FIXED_EARNINGS', 'FIXED_EARNINGS_BEFORE_THIS', 'GROSS_EARNED', 'EARNED_EARNINGS_BEFORE_THIS'])
@@ -94,7 +166,8 @@ export function salarySimulationWorksheet(result: SimulationResult, context: { e
     }
     return { cells: cells.map((cell, index) => ({ ...cell, address: `${salaryColumnLetter(index)}2` })), notice }
   }
-  const code = result.employeeCode || context.employeeCode || '', name = result.employeeName || context.employeeName || result.employee || 'Template scenario'
+  const code = result.mode === 'Template' ? context.employeeCode || result.employeeCode || 'EMPLOYEE-001' : result.employeeCode || context.employeeCode || ''
+  const name = result.mode === 'Template' ? context.employeeName || result.employeeName || result.employee || 'Template scenario' : result.employeeName || context.employeeName || result.employee || 'Template scenario'
   const location = result.locations?.length ? [...new Set(result.locations.map(item => item.workLocationName || (item.workLocationId ? `Location #${item.workLocationId}` : 'Not supplied')))].join(' / ') : result.workLocationName || (result.mode === 'Template' ? 'Template scenario · no employee location' : 'Location not provided by current API')
   const input = (token: string) => result.inputs.find(item => item.name === token)?.value ?? null
   const first: Omit<SalaryWorksheetCell, 'address'>[] = [

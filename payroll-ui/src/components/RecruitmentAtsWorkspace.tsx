@@ -1,3 +1,4 @@
+import { clientChoice, clientSelectProps } from './ClientOption'
 import { useRecruitmentPreference, useRecruitmentView } from '../hooks/useRecruitmentPreferences'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Badge, Button, Card, Drawer, Dropdown, Empty, Input, Modal, Popconfirm, Select, Space, Spin, Tabs, Tag, Typography } from 'antd'
@@ -79,15 +80,18 @@ export default function RecruitmentAtsWorkspace({ initialClientId = 0, clientSco
 
   useEffect(() => {
     let active = true
-    void Promise.all([getClients(), getRecruitmentOpenPositions(), getDropdowns()]).then(([clientRows, positionRows, dropdownRows]) => {
+    const clientsRequest = getClients(true).then(rows => {
+      if (active) setClients(rows)
+      return rows
+    })
+    void Promise.all([clientsRequest, getRecruitmentOpenPositions(), getDropdowns()]).then(([clientRows, positionRows, dropdownRows]) => {
       if (!active) return
-      setClients(clientRows)
       setPositions(positionRows)
       setDropdowns(dropdownRows)
       if (!initialClientId) {
         const position = positionRows.find(row => row.id === initialPositionId)
-        if (position) setClientId(position.clientId)
-        else if (clientRows.length === 1) setClientId(clientRows[0].id)
+        const suggestedId = position?.clientId || (clientRows.length === 1 ? clientRows[0].id : 0)
+        if (suggestedId) setClientId(current => current || suggestedId)
       }
     })
     return () => { active = false }
@@ -236,7 +240,7 @@ export default function RecruitmentAtsWorkspace({ initialClientId = 0, clientSco
     <section className="ats-context-bar">
       <div className="ats-context-title"><span className="ats-context-icon"><RobotOutlined /></span><div><h3>Screen candidates</h3><p>Choose a job, add resumes and review the matching evidence.</p></div></div>
       <div className="ats-context-selectors">
-        {!clientScopeManaged && <Select aria-label="ATS client" disabled={intakeBusy} showSearch optionFilterProp="label" value={clientId || undefined} placeholder="All permitted clients" allowClear options={clients.map(row => ({ value: row.id, label: `${row.code} - ${row.name}` }))} onChange={value => changeScope(value || 0, 0)} />}
+        {!clientScopeManaged && <Select aria-label="ATS client" disabled={intakeBusy} value={clientId || undefined} placeholder="All permitted clients" allowClear {...clientSelectProps(clients.map(clientChoice))} onChange={value => changeScope(value || 0, 0)} />}
         <Select data-testid="ats-job-context" aria-label="ATS job" disabled={intakeBusy} showSearch optionFilterProp="label" value={positionId || undefined} placeholder="Choose a job / JD" allowClear options={availablePositions.map(row => ({ value: row.id, label: `${row.positionCode} - ${row.positionTitle}` }))} onChange={value => { const next = availablePositions.find(row => row.id === value); changeScope(next?.clientId || clientId, value || 0) }} />
         <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()} aria-label="Refresh applications" />
         <Dropdown menu={{ items: [

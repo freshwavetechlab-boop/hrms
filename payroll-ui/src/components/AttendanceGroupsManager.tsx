@@ -1,3 +1,4 @@
+import { clientChoice } from './ClientOption'
 import { useEffect, useMemo, useState } from 'react'
 import { Button, Card as AntCard, Checkbox as AntCheckbox, Col, Divider, Drawer, Form, Input, Row, Select, Space } from 'antd'
 import { getClients, getEmployees } from '../services/payrollService'
@@ -60,6 +61,7 @@ const clampCycleForMonth = (month: string, form: AttendancePolicyForm) => {
 }
 
 export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { onMessage: (message: string) => void; fixedClientId?: number }) {
+  const [ready, setReady] = useState(false)
   const [clients, setClients] = useState<Client[]>([])
   const [locations, setLocations] = useState<WorkLocation[]>([])
   const [employees, setEmployees] = useState<Employee[]>([])
@@ -107,20 +109,25 @@ export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { 
     return { ...next, employeeIds: employeeIdsFor(next, employeeRows.filter(employee => employee.isActive)) }
   }
 
-  const load = async () => {
-    const [clientRows, locationRows, employeeRows, groupRows, dropdownRows] = await Promise.all([getClients(), getWorkLocations(), getEmployees(), getAttendanceGroups(), getDropdowns()])
-    const activeClients = clientRows.filter(client => client.isActive)
-    const activeLocations = locationRows.filter(location => location.isActive)
-    const activeEmployeeRows = employeeRows.filter(employee => employee.isActive)
-    setClients(activeClients)
-    setLocations(activeLocations)
-    setEmployees(employeeRows)
-    setDropdowns(dropdownRows)
-    setGroups(groupRows)
-    setForm(current => current.clientId ? current : defaultFor(activeClients, activeLocations, activeEmployeeRows))
-  }
-
-  useEffect(() => { void load() }, [])
+  useEffect(() => {
+    let active = true
+    const directory = getClients(true).then(rows => {
+      const activeClients = rows.filter(client => client.isActive)
+      if (active) setClients(activeClients)
+      return activeClients
+    })
+    void Promise.all([directory, getWorkLocations(), getEmployees(), getAttendanceGroups(), getDropdowns()]).then(([clientRows, locationRows, employeeRows, groupRows, dropdownRows]) => {
+      if (!active) return
+      const activeLocations = locationRows.filter(location => location.isActive)
+      setLocations(activeLocations)
+      setEmployees(employeeRows)
+      setDropdowns(dropdownRows)
+      setGroups(groupRows)
+      setForm(current => current.clientId ? current : defaultFor(clientRows, activeLocations, employeeRows))
+      setReady(true)
+    })
+    return () => { active = false }
+  }, [])
   useEffect(() => { setDrawerOpen(false) }, [fixedClientId])
 
   const policyRows = useMemo<AttendancePolicyRow[]>(() => {
@@ -277,8 +284,8 @@ export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { 
 
   return <section className="attendance-groups">
         <AntCard className="settings-panel settings-table-panel attendance-group-panel attendance-group-table" size="small" aria-label="Attendance policy master">
-          <PageHeaderPortal slot="attendance-settings-page-controls"><Button type="primary" onClick={openNew}>Add policy</Button></PageHeaderPortal>
-          <RecruitmentRecordList rows={policyRows} title={row => row.name} subtitle={row => row.workLocationName} filters={[{ key: 'location', label: 'Location', value: row => row.workLocationName }, { key: 'status', label: 'Status', value: row => row.isActive ? 'Active' : 'Inactive' }]} emptyText="No attendance policies configured." exportFileName="attendance-policies" columns={[
+          <PageHeaderPortal slot="attendance-settings-page-controls"><Button type="primary" onClick={openNew} disabled={!ready}>Add policy</Button></PageHeaderPortal>
+          <RecruitmentRecordList rows={policyRows} title={row => row.name} subtitle={row => row.workLocationName} filters={[{ key: 'location', label: 'Location', value: row => row.workLocationName }, { key: 'status', label: 'Status', value: row => row.isActive ? 'Active' : 'Inactive' }]} emptyText={ready ? 'No attendance policies configured.' : 'Loading attendance policies…'} exportFileName="attendance-policies" columns={[
             { key: 'name', label: 'Policy' },
             { key: 'clientName', label: 'Client' },
             { key: 'workLocationName', label: 'Location' },
@@ -295,7 +302,7 @@ export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { 
     <Drawer className="settings-master-drawer attendance-policy-master-drawer" title={<div className="settings-drawer-title"><span>Attendance policy</span><h3>{form.id ? 'Edit attendance policy' : 'Add attendance policy'}</h3><p>Define client, location, employee scope, weekly off, cycle, and payroll report day.</p></div>} open={drawerOpen} width={760} onClose={() => setDrawerOpen(false)} destroyOnClose>
       <Form className="attendance-group-form settings-quick-form" component="div" layout="vertical" requiredMark={false}>
         <Form.Item label="Policy name" required><Input value={form.name} onChange={event => set('name', event.target.value)} placeholder="Consultants - RECL Site A" /></Form.Item>
-        {!fixedClientId && <Form.Item label="Client" required><SearchSelect value={form.clientId} onChange={value => applyScope({ clientId: Number(value), id: 0 })} options={clients.map(client => ({ value: client.id, label: client.name }))} /></Form.Item>}
+        {!fixedClientId && <Form.Item label="Client" required><SearchSelect value={form.clientId} onChange={value => applyScope({ clientId: Number(value), id: 0 })} options={clients.map(clientChoice)} /></Form.Item>}
         <AttendancePolicyShiftFields value={form} allowLegacy={!!form.id || !!form.policyBatchId} onChange={patch => setForm(current => ({ ...current, ...patch }))} />
         <Form.Item label="Work Location" extra="Leave blank for all work locations."><Select mode="multiple" className="app-search-select attendance-policy-multi" popupClassName="app-search-select-dropdown" showSearch value={form.workLocationIds.map(String)} optionFilterProp="label" onChange={values => applyScope({ workLocationIds: values.map(Number), id: 0 })} options={clientLocations.map(location => ({ value: String(location.id), label: `${location.name} - ${location.city || location.state || 'Location'}` }))} /></Form.Item>
         <Row gutter={12}>

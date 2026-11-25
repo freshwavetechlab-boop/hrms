@@ -465,31 +465,71 @@ WHERE table_schema = DATABASE() AND table_name = @TableName AND column_name = @C
         if (exists == 0) await connection.ExecuteAsync($"ALTER TABLE `{tableName}` ADD COLUMN `{columnName}` {definition}");
     }
 
+    internal static async Task<JsonObject> SaveSalaryComponentAsync(MySqlConnection connection, JsonObject component, JsonObject? expected)
+    {
+        var row = component.Deserialize<ComponentDto>(JsonOptions) ?? throw new InvalidOperationException("Submit a valid salary component.");
+        if (row.Id <= 0 || row.Id > 9007199254740991L || string.IsNullOrWhiteSpace(row.Name) || row.Name.Length > 160
+            || string.IsNullOrWhiteSpace(row.Code) || row.Code.Length > 80
+            || !System.Text.RegularExpressions.Regex.IsMatch(row.Code, "^[A-Za-z][A-Za-z0-9_]*$")
+            || row.Category is not ("Earning" or "Deduction" or "Reimbursement" or "Benefit" or "Correction"))
+            throw new InvalidOperationException("Enter a valid component name, code and category.");
+
+        await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable);
+        var matches = (await connection.QueryAsync<ComponentRow>(
+            "SELECT * FROM salarycomponents WHERE Id=@Id OR Code=@Code FOR UPDATE", new { row.Id, row.Code }, transaction)).ToArray();
+        var previous = matches.SingleOrDefault(value => value.Id == row.Id);
+        if (matches.Any(value => value.Id != row.Id) || expected is null && previous is not null)
+            throw new DBConcurrencyException("This component already exists. Refresh the list and edit the saved record; no duplicate was created.");
+        if (expected is not null && (previous is null || !JsonNode.DeepEquals(expected, JsonSerializer.SerializeToNode(ToDto(previous), JsonOptions))))
+            throw new DBConcurrencyException("This salary component changed after the form was opened. Refresh and review it before saving.");
+        if (previous is not null && row.Code != previous.Code)
+            throw new InvalidOperationException("Keep the saved component code unchanged so existing formulas and mappings remain valid.");
+
+        if (ShouldWriteComponent(row, previous))
+        {
+            var formulas = new JsonObject { ["salaryComponents"] = new JsonArray(JsonSerializer.SerializeToNode(row, JsonOptions)) };
+            await PayrollFormulaStorage.RequireAsync(connection, transaction, PayrollFormulaStorage.SetupJsonFormulas(formulas));
+            await WriteComponentAsync(connection, row, transaction);
+        }
+        var stored = await connection.QuerySingleAsync<ComponentRow>("SELECT * FROM salarycomponents WHERE Id=@Id", new { row.Id }, transaction);
+        var result = JsonSerializer.SerializeToNode(ToDto(stored), JsonOptions)!.AsObject();
+        await transaction.CommitAsync();
+        return result;
+    }
+
     private static async Task SaveComponentsAsync(MySqlConnection connection, List<ComponentDto> rows)
     {
         var existing = (await connection.QueryAsync<ComponentRow>("SELECT * FROM salarycomponents")).ToDictionary(row => row.Id);
         var retainedDailyDefaults = new HashSet<long>();
         foreach (var row in rows)
         {
-            if (existing.TryGetValue(row.Id, out var previous) && (previous.CalculationType == "Daily Rate") != (row.CalculationType == "Daily Rate"))
-                throw new InvalidOperationException("Existing salary components cannot be converted between monthly and daily rates. Create a separate component to preserve employee salary amounts.");
-            if (row.CalculationType == "Daily Rate" && (row.Category != "Earning" || !decimal.TryParse(row.Value, NumberStyles.Number, CultureInfo.InvariantCulture, out var rate) || rate <= 0))
-            {
-                // Legacy shared defaults can be supplied by a template or employee.
-                // A whole-setup save must retain them exactly, never repair them or
-                // accept a new/edited invalid daily component as an unrelated save.
-                if (previous is null || !JsonNode.DeepEquals(JsonSerializer.SerializeToNode(row, JsonOptions), JsonSerializer.SerializeToNode(ToDto(previous), JsonOptions)))
-                    throw new InvalidOperationException("A Daily Rate component must be an earning with a positive numeric daily rate.");
+            existing.TryGetValue(row.Id, out var previous);
+            if (!ShouldWriteComponent(row, previous))
                 retainedDailyDefaults.Add(row.Id);
-            }
         }
         var ids = rows.Where(x => x.Id > 0).Select(x => x.Id).Distinct().ToArray();
         if (ids.Length > 0) await connection.ExecuteAsync("DELETE FROM salarycomponents WHERE Id NOT IN @ids", new { ids }); else await connection.ExecuteAsync("DELETE FROM salarycomponents");
         foreach (var row in rows.Where(x => x.Id > 0 && !retainedDailyDefaults.Contains(x.Id)))
-            await connection.ExecuteAsync(@"INSERT INTO salarycomponents (Id,Code,ComponentType,ComponentRole,StatutoryType,Category,Name,PayType,CalculationType,ValueText,Formula,BaseComponent,Taxable,Ctc,ProRata,Fbp,RestrictFbp,Epf,Esi,Recurring,Scheduled,InvestmentType,CorrectionOf,Active,Priority)
-VALUES (@Id,@Code,@ComponentType,@ComponentRole,@StatutoryType,@Category,@Name,@PayType,@CalculationType,@Value,@Formula,@BaseComponent,@Taxable,@Ctc,@ProRata,@Fbp,@RestrictFbp,@Epf,@Esi,@Recurring,@Scheduled,@InvestmentType,@CorrectionOf,@Active,@PriorityNumber)
-ON DUPLICATE KEY UPDATE Code=@Code,ComponentType=@ComponentType,ComponentRole=@ComponentRole,StatutoryType=@StatutoryType,Category=@Category,Name=@Name,PayType=@PayType,CalculationType=@CalculationType,ValueText=@Value,Formula=@Formula,BaseComponent=@BaseComponent,Taxable=@Taxable,Ctc=@Ctc,ProRata=@ProRata,Fbp=@Fbp,RestrictFbp=@RestrictFbp,Epf=@Epf,Esi=@Esi,Recurring=@Recurring,Scheduled=@Scheduled,InvestmentType=@InvestmentType,CorrectionOf=@CorrectionOf,Active=@Active,Priority=@PriorityNumber", new { row.Id, Code = Clean(row.Code).ToUpperInvariant(), row.ComponentType, ComponentRole = Clean(row.ComponentRole, DefaultComponentRole(row.Category)), StatutoryType = Clean(row.StatutoryType, "None"), row.Category, row.Name, row.PayType, row.CalculationType, row.Value, row.Formula, row.BaseComponent, row.Taxable, row.Ctc, row.ProRata, row.Fbp, row.RestrictFbp, row.Epf, row.Esi, row.Recurring, row.Scheduled, row.InvestmentType, row.CorrectionOf, row.Active, PriorityNumber = ToInt(row.Priority, 999) });
+            await WriteComponentAsync(connection, row);
     }
+
+    private static bool ShouldWriteComponent(ComponentDto row, ComponentRow? previous)
+    {
+        if (previous is not null && (previous.CalculationType == "Daily Rate") != (row.CalculationType == "Daily Rate"))
+            throw new InvalidOperationException("Existing salary components cannot be converted between monthly and daily rates. Create a separate component to preserve employee salary amounts.");
+        if (row.CalculationType != "Daily Rate" || row.Category == "Earning" && decimal.TryParse(row.Value, NumberStyles.Number, CultureInfo.InvariantCulture, out var rate) && rate > 0)
+            return true;
+        // Retain unchanged legacy shared defaults supplied by a template or employee.
+        // New/edited invalid daily components still fail before any write.
+        if (previous is null || !JsonNode.DeepEquals(JsonSerializer.SerializeToNode(row, JsonOptions), JsonSerializer.SerializeToNode(ToDto(previous), JsonOptions)))
+            throw new InvalidOperationException("A Daily Rate component must be an earning with a positive numeric daily rate.");
+        return false;
+    }
+
+    private static Task WriteComponentAsync(MySqlConnection connection, ComponentDto row, MySqlTransaction? transaction = null) =>
+        connection.ExecuteAsync(@"INSERT INTO salarycomponents (Id,Code,ComponentType,ComponentRole,StatutoryType,Category,Name,PayType,CalculationType,ValueText,Formula,BaseComponent,Taxable,Ctc,ProRata,Fbp,RestrictFbp,Epf,Esi,Recurring,Scheduled,InvestmentType,CorrectionOf,Active,Priority)
+VALUES (@Id,@Code,@ComponentType,@ComponentRole,@StatutoryType,@Category,@Name,@PayType,@CalculationType,@Value,@Formula,@BaseComponent,@Taxable,@Ctc,@ProRata,@Fbp,@RestrictFbp,@Epf,@Esi,@Recurring,@Scheduled,@InvestmentType,@CorrectionOf,@Active,@PriorityNumber)
+ON DUPLICATE KEY UPDATE Code=@Code,ComponentType=@ComponentType,ComponentRole=@ComponentRole,StatutoryType=@StatutoryType,Category=@Category,Name=@Name,PayType=@PayType,CalculationType=@CalculationType,ValueText=@Value,Formula=@Formula,BaseComponent=@BaseComponent,Taxable=@Taxable,Ctc=@Ctc,ProRata=@ProRata,Fbp=@Fbp,RestrictFbp=@RestrictFbp,Epf=@Epf,Esi=@Esi,Recurring=@Recurring,Scheduled=@Scheduled,InvestmentType=@InvestmentType,CorrectionOf=@CorrectionOf,Active=@Active,Priority=@PriorityNumber", new { row.Id, Code = Clean(row.Code).ToUpperInvariant(), row.ComponentType, ComponentRole = Clean(row.ComponentRole, DefaultComponentRole(row.Category)), StatutoryType = Clean(row.StatutoryType, "None"), row.Category, row.Name, row.PayType, row.CalculationType, row.Value, row.Formula, row.BaseComponent, row.Taxable, row.Ctc, row.ProRata, row.Fbp, row.RestrictFbp, row.Epf, row.Esi, row.Recurring, row.Scheduled, row.InvestmentType, row.CorrectionOf, row.Active, PriorityNumber = ToInt(row.Priority, 999) }, transaction);
 
     private static async Task SaveStructuresAsync(MySqlConnection connection, List<StructureDto> rows)
     {

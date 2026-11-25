@@ -35,6 +35,7 @@ import './RecruitmentOrchestration.css'
 type Props = {
   initialClientId?: number
   clientScopeManaged?: boolean
+  availableClients: Array<{ value: number; label: string; code?: string }>
   positionId?: number
   onOpenCandidate?: (candidateId: number, applicationId: number) => void
   onScheduleInterview?: (applicationId: number) => void
@@ -68,7 +69,7 @@ type PipelineTableRow = {
   liveElapsed: number
 }
 
-export default function RecruitmentPipelineBoard({ initialClientId = 0, clientScopeManaged = false, positionId: suppliedPositionId = 0, onOpenCandidate, onScheduleInterview, embedded = false, displayMode, onDisplayModeChange, clientPipelineCandidateCount, onCandidateCountChange, clientPipelineLanes = [], workLocationId: suppliedWorkLocationId }: Props) {
+export default function RecruitmentPipelineBoard({ availableClients, initialClientId = 0, clientScopeManaged = false, positionId: suppliedPositionId = 0, onOpenCandidate, onScheduleInterview, embedded = false, displayMode, onDisplayModeChange, clientPipelineCandidateCount, onCandidateCountChange, clientPipelineLanes = [], workLocationId: suppliedWorkLocationId }: Props) {
   const session = useAuthSession()
   const canDelete = Boolean(session?.user.permissions.includes('settings.manage'))
   const [postings, setPostings] = useState<RecruitmentJobPosting[]>([])
@@ -204,7 +205,11 @@ export default function RecruitmentPipelineBoard({ initialClientId = 0, clientSc
       }))
     return [...postingTargets, ...positionTargets]
   }, [postings, positions])
-  const clientOptions = useMemo(() => Array.from(new Map(pipelineTargets.map(row => [row.clientId, row.clientName])).entries()).map(([value, label]) => ({ value, label })), [pipelineTargets])
+  const clientOptions = useMemo(() => {
+    const catalogue = new Map(availableClients.map(client => [client.value, client]))
+    const targetNames = new Map(pipelineTargets.map(row => [row.clientId, row.clientName]))
+    return Array.from(targetNames, ([value, label]) => catalogue.get(value) ?? { value, label })
+  }, [availableClients, pipelineTargets])
   const targetOptions = pipelineTargets.filter(row => (!clientId || row.clientId === clientId) && matchesRecruitmentWorkLocation(row.workLocationId, workLocationId)).map(row => ({ value: row.key, label: row.label }))
   const selectedTargetKey = postingId ? `posting:${postingId}` : positionId ? `position:${positionId}` : undefined
   const elapsedSinceLoad = Math.max(0, Math.floor((tick - loadedAt) / 1000))

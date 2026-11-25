@@ -1,0 +1,21 @@
+.payslip-settings-client-control{display:flex;align-items:center;gap:9px;min-width:0;font-size:12px}
+.payslip-settings-client-control>.ant-select{width:310px;max-width:calc(100vw - 110px)}
+.payslip-settings-client-option{display:grid;gap:3px;padding:8px 10px;border-radius:6px;background:#fff;white-space:normal;overflow-wrap:anywhere}
+.payslip-settings-client-option.is-ready{background:#edf8f1}
+.payslip-settings-client-option small{font-size:11px;color:var(--hrms-muted,#64748b)}
+.payslip-settings-client-popup .ant-select-item-option{padding:2px}
+.payslip-settings-client-label.is-ready{color:#217349}
+.payslip-settings-client-label.is-ready:before{content:'';display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;background:#26945f}
+.payslip-settings-workspace{min-width:0}
+.payslip-settings-workspace .ant-card-body{padding:16px}
+.payslip-settings-workspace .payslip-template-settings-form>.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px 16px;margin-bottom:10px}
+.payslip-settings-workspace .payslip-template-settings-form>.grid label{min-width:0;font-size:12px}
+.payslip-settings-workspace .payslip-template-settings-form>.grid input:not([type=checkbox]){min-width:0;width:100%}
+.payslip-settings-workspace .excel-payslip-design-editor{gap:10px;margin-top:10px}
+.payslip-settings-workspace .excel-payslip-design-controls>label{flex:1 1 180px;font-size:12px}
+.payslip-settings-workspace .excel-payslip-design-editor>.ant-alert{padding:8px 12px}
+.payslip-design-simulator-toolbar{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;padding:12px;border:1px solid var(--hrms-line,#e2e8f0);border-radius:8px;background:var(--hrms-canvas,#f8fafc)}
+.payslip-design-simulator-toolbar>label{display:grid;gap:5px;flex:1 1 240px;min-width:0;max-width:420px;font-size:12px;font-weight:600}
+.payslip-design-simulator-toolbar .ant-select{width:100%}
+@media(max-width:900px){.payslip-settings-workspace .payslip-template-settings-form>.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:600px){.payslip-settings-workspace .ant-card-body{padding:12px}.payslip-settings-workspace .payslip-template-settings-form>.grid{grid-template-columns:minmax(0,1fr)}.payslip-settings-client-control>span{display:none}.payslip-design-simulator-toolbar>label{max-width:none;flex-basis:100%}.payslip-design-simulator-toolbar>.ant-btn{flex:1 1 auto}}

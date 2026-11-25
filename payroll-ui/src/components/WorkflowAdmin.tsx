@@ -1,3 +1,4 @@
+import { clientChoice } from './ClientOption'
 import { useEffect, useState } from 'react'
 import { Alert, Collapse, Modal, Tag } from 'antd'
 import { getJson, postJson } from '../services/apiClient'
@@ -125,7 +126,7 @@ export default function WorkflowAdmin() {
   useEffect(() => {
     void load()
     void loadRules()
-    void getClients().then(setClients)
+    void getClients(true).then(setClients)
     void loadActivities()
     void getJson<Approver[]>('/api/workflows/approvers', []).then(setApprovers)
   }, [])
@@ -376,7 +377,7 @@ export default function WorkflowAdmin() {
       {section === 'designer' && <section className="approval-stages" data-testid="workflow-section-designer">
         <div className="approval-stages-heading"><div><h3>Who should approve?</h3><p>Select the business activity and use a ready-made approval chain. You can still fine-tune every stage.</p></div><span>{rows.length} workflows</span></div>
         <div className="grid workflow-business-grid">
-          <label><span>Applies to</span><SearchSelect testId="workflow-client" value={flow.clientId ?? ''} onChange={selectFlowClient} options={[{ value: '', label: 'All clients (global default)' }, ...clients.filter(client => client.isActive).map(client => ({ value: client.id, label: client.name }))]} /><small>Choose a client only when its approval chain is different.</small></label>
+          <label><span>Applies to</span><SearchSelect testId="workflow-client" value={flow.clientId ?? ''} onChange={selectFlowClient} options={[{ value: '', label: 'All clients (global default)' }, ...clients.filter(client => client.isActive).map(clientChoice)]} /><small>Choose a client only when its approval chain is different.</small></label>
           <label><span>Activity</span><SearchSelect testId="workflow-designer-activity" value={selectedFlowActivityCode || flow.code} onChange={selectActivity} options={[{ value: '', label: 'Select what needs approval' }, ...Array.from(new Map([...activities, ...(selectedActivity ? [selectedActivity] : [])].map(item => [item.activityCode, item])).values()).map(item => ({ value: item.activityCode, label: `${item.displayName} - ${item.moduleCode}` }))]} /><small>{selectedActivity?.description || 'Create it first in Activity Master if it is not listed.'}</small></label>
           <label><span>Workflow name</span><input data-testid="workflow-name" value={flow.name} onChange={event => setFlow({ ...flow, name: event.target.value })} placeholder="For example, TA hiring approval" /><small>A familiar name users can recognise.</small></label>
         </div>

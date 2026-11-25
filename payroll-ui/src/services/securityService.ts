@@ -7,7 +7,7 @@ export const loadSecurityData = async () => {
     getJson<AuthRole[]>('/api/security/roles', []),
     getJson<AuthPermission[]>('/api/security/permissions', []),
     getJson<AuditLog[]>('/api/audit-logs?limit=75', []),
-    getJson<Client[]>('/api/clients', []),
+    getJson<Client[]>('/api/clients?lookup=true', []),
     getJson<Employee[]>('/api/employees', []),
     getJson<WorkLocation[]>('/api/work-locations', [])
   ])

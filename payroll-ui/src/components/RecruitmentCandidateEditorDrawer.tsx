@@ -1,3 +1,4 @@
+import { clientChoice } from './ClientOption'
 import { useState, type ReactNode } from 'react'
 import { Alert, Form, Input, InputNumber, Select, Space } from 'antd'
 import type { Client, SaveRecruitmentCandidate } from '../types/payroll'
@@ -13,7 +14,7 @@ export default function CandidateEditorDrawer({ draft, clients, onChange, onClos
   return <RecruitmentEditorDrawer open={!!draft} eyebrow="Talent profile" title={draft?.id ? 'Edit candidate' : 'Add candidate'} description="Maintain the candidate identity, work profile and consent details." onClose={onClose} onSubmit={onSubmit} submitLoading={saving} submitText={draft?.id ? 'Save changes' : 'Add candidate'} width="min(850px, 96vw)">{draft && <><Form layout="vertical" className="talent-form-grid">
     {guidance && <Alert className="talent-form-wide" showIcon type="warning" message="Required profile information" description={guidance} />}
     <Alert className="talent-form-wide" showIcon type="info" message="ATS profile fields" description="Current title, experience, location and qualification are used with the parsed resume and approved JD during ATS scoring. Correct any parser mismatch before running ATS." />
-    <Form.Item label="Client" required><SearchSelect disabled={draft.id > 0} value={draft.clientId} onChange={value => patch({ clientId: Number(value) })} options={selectOptions(clients.map(row => ({ value: row.id, label: row.name })), 'Select client', 0)} /></Form.Item>
+    <Form.Item label="Client" required><SearchSelect disabled={draft.id > 0} value={draft.clientId} onChange={value => patch({ clientId: Number(value) })} options={selectOptions(clients.map(clientChoice), 'Select client', 0)} /></Form.Item>
     <Form.Item label="First name" required><Input value={draft.firstName} onChange={event => patch({ firstName: event.target.value })} /></Form.Item><Form.Item label="Last name"><Input value={draft.lastName} onChange={event => patch({ lastName: event.target.value })} /></Form.Item>
     <Form.Item label="Email" extra="Email or phone is required before the candidate can continue through ATS."><Input value={draft.email} onChange={event => patch({ email: event.target.value })} /></Form.Item><Form.Item label="Phone"><Input value={draft.phone} onChange={event => patch({ phone: event.target.value })} /></Form.Item>
     <Form.Item label="Current company"><Input value={draft.currentCompany} onChange={event => patch({ currentCompany: event.target.value })} /></Form.Item><Form.Item label="Current title (ATS)"><Input value={draft.currentTitle} onChange={event => patch({ currentTitle: event.target.value })} /></Form.Item>

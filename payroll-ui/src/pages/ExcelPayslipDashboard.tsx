@@ -1,3 +1,4 @@
+import { clientChoice, clientSelectProps } from '../components/ClientOption'
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Alert, Button, Empty, Select, Tag } from 'antd'
@@ -7,7 +8,7 @@ import DataTable from '../components/DataTable'
 import { PageHeaderPortal } from '../components/layout/AppPageHeader'
 import { DashboardChartCard, DashboardChartGrid, DashboardEngine, DashboardKpiGrid, DashboardSectionCard, type DashboardChartSpec } from '../components/dashboard/DashboardEngine'
 import { useSessionPreference } from '../hooks/useRecruitmentPreferences'
-import { getExcelPayslipClients, getExcelPayslipDashboard, type ExcelPayslipDashboard as DashboardSnapshot, type ExcelPayslipSummary } from '../services/excelPayslipService'
+import { getExcelPayslipClients, getExcelPayslipDashboard, type ExcelPayslipDashboard as DashboardSnapshot, type ExcelPayslipSummary, type ExcelPayslipClient } from '../services/excelPayslipService'
 import './DashboardPage.css'
 import './ExcelPayslipDashboard.css'
 
@@ -32,7 +33,7 @@ export default function ExcelPayslipDashboard() {
   const canRead = !!session?.user.permissions.includes('reports.view')
   const scopedClientId = Number(session?.user.clientId || 0)
   const clientScoped = scopedClientId > 0 && !session?.user.permissions.includes('security.manage')
-  const [clients, setClients] = useState<{ id: number; name: string }[]>([])
+  const [clients, setClients] = useState<ExcelPayslipClient[]>([])
   const [preferredClient, setPreferredClient] = useSessionPreference(`excel-payslips:${session?.user.id}:client`, scopedClientId)
   const clientId = clientScoped ? clients.find(client => client.id === scopedClientId)?.id || 0 : clients.find(client => client.id === preferredClient)?.id || clients[0]?.id || 0
   const [preferredBatch, setPreferredBatch] = useSessionPreference(`excel-payslip-dashboard:${session?.user.id}:${clientId}:batch`, '')
@@ -96,7 +97,7 @@ export default function ExcelPayslipDashboard() {
   if (!canRead) return <Alert type="warning" showIcon message="Excel Payslips dashboard is not available for your role." />
   return <section className="hrms-dashboard excel-payslip-dashboard" aria-label="Excel Payslips dashboard">
     <PageHeaderPortal slot="dashboard-client-controls">
-      {!clientScoped && (clients.length === 1 ? <span className="scoped-client-chip">{currentClient?.name || (clientsLoading ? 'Loading client…' : 'No accessible client')}</span> : <Select aria-label="Excel dashboard client" showSearch optionFilterProp="label" placeholder="Search or select client" value={clientId || undefined} loading={clientsLoading} disabled={clientsLoading} options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={setPreferredClient} style={{ width: 250, maxWidth: '100%' }} />)}
+      {!clientScoped && (clients.length === 1 ? <span className="scoped-client-chip">{currentClient?.name || (clientsLoading ? 'Loading client…' : 'No accessible client')}</span> : <Select aria-label="Excel dashboard client" placeholder="Search or select client" value={clientId || undefined} loading={clientsLoading} disabled={clientsLoading} {...clientSelectProps(clients.map(clientChoice))} onChange={setPreferredClient} style={{ width: 250, maxWidth: '100%' }} />)}
     </PageHeaderPortal>
     <PageHeaderPortal slot="dashboard-page-controls"><div className="excel-dashboard-controls">
       <Select aria-label="Salary month" placeholder="Salary month" value={pendingSelection?.month} disabled={loading || !months.length} options={months.map(month => ({ value: month, label: monthLabel(month) }))} onChange={month => { const batch = history.find(item => item.month === month); if (batch) setPreferredBatch(batch.id) }} className="excel-dashboard-month" />

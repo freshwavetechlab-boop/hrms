@@ -1,3 +1,4 @@
+import { clientChoice } from './ClientOption'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AuditOutlined,
@@ -447,7 +448,7 @@ export default function RecruitmentDashboardOverview({
   })
 
   const filterDefinitions = [
-    { key: 'client', label: 'Client', value: selectedClientId || 'all', allowClear: false, disabled: !canChooseClient, searchable: true, options: [{ value: 'all', label: 'All accessible clients' }, ...clients.map(row => ({ value: row.id, label: `${row.code} · ${row.name}` }))] },
+    { key: 'client', label: 'Client', value: selectedClientId || 'all', allowClear: false, disabled: !canChooseClient, searchable: true, options: [{ value: 'all', label: 'All accessible clients' }, ...clients.map(clientChoice)] },
     { key: 'dateRange', label: 'Date range', value: filters.dateRange, allowClear: false, options: [{ value: 'month', label: 'This month' }, { value: 'quarter', label: 'This quarter' }, { value: 'year', label: 'This year' }, { value: 'custom', label: 'Custom range' }, { value: 'all', label: 'All time' }] },
     { key: 'department', label: 'Department', value: filters.department, searchable: true, options: options.departments.map(value => ({ value, label: value })) },
     { key: 'location', label: 'Location', value: filters.location, searchable: true, options: options.locations.map(value => ({ value, label: value })) },

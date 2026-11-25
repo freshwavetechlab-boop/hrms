@@ -1,3 +1,4 @@
+import { clientChoice } from './ClientOption'
 import { useEffect, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
 import dayjs from 'dayjs'
 import {
@@ -147,7 +148,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
   }
 
   useEffect(() => {
-    void (employeeMode ? getClients() : getClients(false, true)).then(rows => {
+    void (employeeMode ? getClients(true) : getClients(true, true)).then(rows => {
       setClients(rows)
       if (employeeMode && rows.length) setClientId(current => current || rows[0].id)
     })
@@ -592,7 +593,7 @@ export default function RecruitmentFormBuilder({ initialClientId = 0, clientScop
     await load(row.clientId)
   }
 
-  const clientOptions = clients.map(row => ({ value: row.id, label: row.name }))
+  const clientOptions = clients.map(clientChoice)
   const isUnsavedRevision = Boolean(definition?.id && definition.currentPublishedVersionId && version?.id === 0)
   if (employeeMode) {
     const fields = version?.sections.flatMap(section => section.fields).filter(field => field.isActive) ?? []

@@ -40,7 +40,7 @@ const functionFormulaTokens = [
 type SalaryTemplateDesignerProps = {
   fixedClientId?: number
   clients: Client[]
-  employees?: Employee[]
+  employees?: Pick<Employee, 'id' | 'clientId' | 'isActive'>[]
   locations?: WorkLocation[]
   canCreateComponentMasters?: boolean
   components: Component[]
@@ -161,9 +161,21 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
   const scopeTemplates = scopeSalaryTemplates(templates, clientId)
   const templateReadiness = useMemo(() => new Map(templates.map(row => [String(row.id), salaryTemplateReadiness(row, savedComponents)])), [templates, savedComponents])
   const readinessFor = (row: Structure) => templateReadiness.get(String(row.id)) ?? salaryTemplateReadiness(row, savedComponents)
-  const clientOptions = clients.map(client => ({ value: client.id, label: client.name,
-    count: new Set(employees.filter(employee => employee.clientId === client.id && employee.isActive).map(employee => employee.id)).size,
-    hasTemplate: templates.some(row => row.active && row.lines.length > 0 && idsFor(row.clientId).includes(client.id)) }))
+  const clientOptions = useMemo(() => {
+    const employeesByClient = new Map<number, Set<number>>()
+    for (const employee of employees) {
+      if (!employee.isActive) continue
+      const roster = employeesByClient.get(employee.clientId)
+      if (roster) roster.add(employee.id)
+      else employeesByClient.set(employee.clientId, new Set([employee.id]))
+    }
+    const configured = new Set(templates.filter(row => row.active && row.lines.length)
+      .flatMap(row => salaryTemplateClientIds(row.clientId)))
+    return clients.map(client => ({
+      value: client.id, label: client.name, code: client.code,
+      count: employeesByClient.get(client.id)?.size ?? 0, hasTemplate: configured.has(client.id),
+    }))
+  }, [clients, employees, templates])
   const newDraft = (id: number): Structure => ({ id: 0, clientId: String(id || ''), name: '', annualCtc: '', active: true, lines: [] })
   const hasUnsavedChanges = (editorIntent === 'new' || !!openedTemplateId) && JSON.stringify(structure) !== editorBaseline.current
   const canLeaveEditor = () => !saving && (!hasUnsavedChanges || window.confirm('Discard unsaved template changes?'))
@@ -286,7 +298,7 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
       </div>}
       {extractOpen && clientId > 0 && <SalaryTemplateExcelExtractor clientId={clientId} clientName={clientName(clientId)} components={savedComponents} locations={locations.filter(location => location.clientId === clientId && location.isActive)} canCreateComponentMasters={canCreateComponentMasters} onClose={() => setExtractOpen(false)} onUseDraft={useExtractedDraft} />}
       {formulaDownloadOpen && clientId > 0 && <SalaryTemplateExcelDownload key={`download:${clientId}`} clientId={clientId} clientName={clientName(clientId)} templates={templates} components={savedComponents} locations={locations} preferredTemplateId={openedTemplateId} onClose={() => setFormulaDownloadOpen(false)} />}
-      {simulationOpen && <PayrollSimulation template={playerTemplate} components={components} clients={clients} fixedClientId={clientId || fixedClientId} sourceScenario={simulationSourceScenario} preferEmployeeSalary={simulationFromMaster} onClose={() => setSimulationOpen(false)} />}
+      {simulationOpen && <PayrollSimulation template={playerTemplate} components={components} clients={clients} fixedClientId={clientId || fixedClientId} clientEmployeeCounts={Object.fromEntries(clientOptions.map(option => [option.value, option.count]))} sourceScenario={simulationSourceScenario} preferEmployeeSalary={simulationFromMaster} onClose={() => setSimulationOpen(false)} />}
       {builderOpen && <div className="formula-modal-backdrop" role="dialog" aria-modal="true">
         <section className="salary-formula-builder formula-modal">
           <button type="button" className="formula-modal-close" onClick={() => setBuilderOpen(false)} aria-label="Close formula builder">x</button>

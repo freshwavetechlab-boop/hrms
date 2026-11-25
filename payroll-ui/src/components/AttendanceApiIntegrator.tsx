@@ -1,3 +1,4 @@
+import { clientChoice, clientSelectProps } from './ClientOption'
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Alert, Button, Checkbox, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Segmented, Select, Space, Switch, Tabs, Tag } from 'antd'
@@ -55,7 +56,7 @@ export default function AttendanceApiIntegrator() {
 
   useEffect(() => {
     let current = true
-    void getJsonResult<Client[]>('/api/clients', [], { loader: false }).then(response => {
+    void getJsonResult<Client[]>('/api/clients?lookup=true', [], { loader: false }).then(response => {
       if (!current) return
       if (!response.ok) { setMessage(response.error); return }
       setClients(response.data.filter(c => c.isActive))
@@ -141,7 +142,7 @@ export default function AttendanceApiIntegrator() {
 
   return <RecruitmentViewContext.Provider value={{ view, scope: `${session?.user.id}:${clientId}`, namespace: 'attendance-api-adapters.ui' }}>
     <section className="recruitment-viewport attendance-adapter-workspace" data-testid="attendance-api-integrator">
-      <PageHeaderPortal slot="attendance-adapters-client-controls"><Select aria-label="Attendance adapter client" showSearch optionFilterProp="label" value={clientId || undefined} disabled={busy} onChange={changeClient} placeholder="Select client" options={clients.map(c => ({ value: c.id, label: c.name }))} style={{ minWidth: 180, maxWidth: '100%' }} /></PageHeaderPortal>
+      <PageHeaderPortal slot="attendance-adapters-client-controls"><Select aria-label="Attendance adapter client" value={clientId || undefined} disabled={busy} onChange={changeClient} placeholder="Select client" {...clientSelectProps(clients.map(clientChoice))} style={{ minWidth: 180, maxWidth: '100%' }} /></PageHeaderPortal>
       <PageHeaderPortal slot="attendance-adapters-view-controls"><Segmented aria-label="Adapter view" options={['Cards', 'Table']} value={view} onChange={v => setView(v as RecruitmentView)} /></PageHeaderPortal>
       <PageHeaderPortal slot="attendance-adapters-page-controls"><Space wrap><Button aria-label="Refresh" icon={<ReloadOutlined />} disabled={!clientId || busy} onClick={() => { setLoading(true); void load().finally(() => setLoading(false)) }}>Refresh</Button><Button aria-label="Add adapter" type="primary" icon={<PlusOutlined />} disabled={!clientId || busy} onClick={() => edit(emptyAttendanceAdapter(clientId))}>Add adapter</Button><Button disabled={!clientId || busy} onClick={() => edit(idmsAttendanceAdapter(clientId))}>Use iDMS preset</Button></Space></PageHeaderPortal>
       {message && <Alert type="info" showIcon message={message} closable onClose={() => setMessage('')} />}

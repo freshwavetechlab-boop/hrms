@@ -42,6 +42,9 @@ public sealed partial class PayslipDesignRepository
         var template = selection.Template; var profile = selection.Profile;
         NativePayslipDesignService.ValidateProfile(profile, template);
         if (profile.ClientId != clientId) throw new InvalidOperationException("The selected source design belongs to another client.");
+        // Portable presentation mappings use saved native payroll accounting,
+        // without creating an Excel-source currency processing authority.
+        if (profile.SourceKind == "CorePayroll") return null;
         var stored = await SourceAsync(db, clientId, profile.SourceBatchId, tx, locked);
         var metadata = await MetadataAsync(db, tx, stored, clientId);
         if (profile.SourceHash != metadata.Hash)

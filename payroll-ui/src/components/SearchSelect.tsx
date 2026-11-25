@@ -1,25 +1,26 @@
 import { PlusOutlined } from '@ant-design/icons'
 import { Button, Divider, Select } from 'antd'
+import { clientSelectProps } from './ClientOption'
 
-export type SearchOption = { value: string | number; label: string }
+export type SearchOption = { value: string | number; label: string; code?: string }
 export type SearchSelectAddAction = { label: string; onClick: () => void; disabled?: boolean; disabledReason?: string; testId?: string }
 
 export default function SearchSelect({ value, options, onChange, placeholder = 'Select', disabled = false, allowClear = false, addAction, testId }: { value?: string | number; options: SearchOption[]; onChange?: (value: string) => void; placeholder?: string; disabled?: boolean; allowClear?: boolean; addAction?: SearchSelectAddAction; testId?: string }) {
-  const normalizedOptions = options.map(item => ({ value: String(item.value), label: item.label }))
+  const normalizedOptions = options.map(item => ({ ...item, value: String(item.value) }))
   const selectedValue = resolveSelectedValue(value, normalizedOptions)
-  return <Select
+  const clientOptions = normalizedOptions.some(item => item.code)
+  return <Select<string>
     className="app-search-select"
     popupClassName="app-search-select-dropdown"
-    showSearch
     allowClear={allowClear}
     disabled={disabled}
     data-testid={testId}
     value={selectedValue}
     placeholder={placeholder}
-    optionFilterProp="label"
-    filterOption={(input, option) => String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())}
+    {...(clientOptions ? clientSelectProps(normalizedOptions) : {
+      showSearch: true, options: normalizedOptions, optionFilterProp: 'label',
+    })}
     onChange={next => onChange?.(next == null ? '' : String(next))}
-    options={normalizedOptions}
     dropdownRender={menu => addAction ? <>
       <Button
         block

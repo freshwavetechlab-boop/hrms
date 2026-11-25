@@ -22,17 +22,19 @@ public static class PayrollCalculationEndpoints
             catch (MySqlConnector.MySqlException) { return Results.Json(new { error = "Simulation data is unavailable. Check database connectivity and schema. No payroll has been created." }, statusCode: 503); }
         });
         group.MapPost("/catalogue", (PayrollCatalogueRequest request) => Results.Ok(PayrollValueCatalogue.Build(request)));
-        group.MapGet("/employees", async (int clientId, string? search, string? templateId, string? payPeriod, HttpContext context, PayRunRepository repository) =>
+        group.MapGet("/employees", async (int clientId, string? search, string? templateId, string? payPeriod, string? scope, HttpContext context, PayRunRepository repository) =>
             context.Items["User"] is AuthUser user && CanAccess(user, clientId, true)
-                ? Results.Ok(await repository.SimulationEmployeesAsync(clientId, search?.Length > 100 ? search[..100] : search, templateId, payPeriod, context.RequestAborted)) : Results.StatusCode(403));
+                ? scope == "Client" ? Results.Ok(await repository.SimulationClientEmployeesAsync(clientId, search?.Length > 100 ? search[..100] : search, context.RequestAborted))
+                    : Results.Ok(await repository.SimulationEmployeesAsync(clientId, search?.Length > 100 ? search[..100] : search, templateId, payPeriod, context.RequestAborted)) : Results.StatusCode(403));
         group.MapGet("/template-snapshots",async (int clientId,HttpContext context,PayRunRepository repository) =>
             context.Items["User"] is AuthUser user && CanAccess(user,clientId)
                 ? Results.Ok(await repository.SimulationTemplatesAsync(clientId,context.RequestAborted)) : Results.StatusCode(403));
         group.MapPost("/simulate", async (PayrollSimulationRequest request, HttpContext context, PayRunRepository repository) =>
         {
-            if (context.Items["User"] is not AuthUser user || !CanAccess(user, request.ClientId, request.Mode == "Employee")) return Results.StatusCode(403);
+            if (context.Items["User"] is not AuthUser user || !CanAccess(user, request.ClientId, request.Mode is "Employee" or "EmployeeTemplate")) return Results.StatusCode(403);
             PayRunRepository.ValidateSimulationRequest(request);
-            return Results.Ok(request.Mode == "Employee" ? await repository.SimulateEmployeeAsync(request, context.RequestAborted) : PayRunRepository.SimulateTemplate(request));
+            return Results.Ok(request.Mode == "Employee" ? await repository.SimulateEmployeeAsync(request, context.RequestAborted)
+                : request.Mode == "EmployeeTemplate" ? await repository.SimulateEmployeeTemplateAsync(request, context.RequestAborted) : PayRunRepository.SimulateTemplate(request));
         });
         group.MapPost("/extract-template", async (SalaryTemplateExcelExtractionRequest request, HttpContext context, SettingsRepository settings) =>
         {

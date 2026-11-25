@@ -1,3 +1,4 @@
+import { clientChoice } from '../components/ClientOption'
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowRightOutlined, CalendarOutlined, CheckCircleOutlined, ClockCircleOutlined, ReloadOutlined, TeamOutlined, WalletOutlined } from '@ant-design/icons'
@@ -135,7 +136,7 @@ export default function DashboardPage({ view = 'overview' }: { view?: DashboardV
   }
 
   return <section className={'hrms-dashboard dashboard-view-' + view}>
-    <PageHeaderPortal slot="dashboard-client-controls">{!clientScoped && <SearchSelect testId="dashboard-client" value={clientId} onChange={value => setClientId(Number(value))} disabled={loading} options={[{ value: 0, label: 'All clients' }, ...(dashboard?.clients ?? []).map(client => ({ value: client.id, label: client.name }))]} />}</PageHeaderPortal>
+    <PageHeaderPortal slot="dashboard-client-controls">{!clientScoped && <SearchSelect testId="dashboard-client" value={clientId} onChange={value => setClientId(Number(value))} disabled={loading} options={[{ value: 0, label: 'All clients' }, ...(dashboard?.clients ?? []).map(clientChoice)]} />}</PageHeaderPortal>
     <PageHeaderPortal slot="dashboard-page-controls"><Space wrap><label className="dashboard-month-control"><CalendarOutlined /><span>Payroll / attendance month</span><input aria-label="Dashboard month" type="month" min="0001-01" max="9999-12" value={month} disabled={loading} onChange={event => { if (/^(?!0000)\d{4}-(0[1-9]|1[0-2])$/.test(event.target.value)) setMonth(event.target.value) }} /></label><Button aria-label="Refresh dashboard" icon={<ReloadOutlined spin={loading} />} disabled={loading} onClick={() => setRevision(value => value + 1)}>Refresh</Button></Space></PageHeaderPortal>
     <DashboardEngine loading={loading}>
       {kpis.length > 0 ? <DashboardKpiGrid items={kpis} label="HR and payroll metrics" /> : <Empty description="No dashboard sections are assigned for this view." />}

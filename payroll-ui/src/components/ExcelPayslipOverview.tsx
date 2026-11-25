@@ -1,3 +1,4 @@
+import { clientSearchText } from './ClientOption'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Button, Checkbox, Drawer, Empty, Input, Select, Space, Statistic, Table, Tag, Tooltip } from 'antd'
 import { getOverviewScopes, previewOverview, type OverviewBatch, type OverviewResult, type OverviewRow } from '../services/excelPayslipOverviewService'
@@ -46,10 +47,10 @@ export default function ExcelPayslipOverview({ open, permittedClients, canConfig
   }, [open, result])
   const clients = useMemo(() => {
     const idsWithBatches = new Set(catalog.map(batch => batch.clientId))
-    const available = permittedClients ?? [...new Map(catalog.map(batch => [batch.clientId, { id: batch.clientId, name: batch.clientName, hasSavedBatch: true }])).values()]
+    const available: ExcelPayslipClient[] = permittedClients ?? [...new Map(catalog.map(batch => [batch.clientId, { id: batch.clientId, name: batch.clientName, hasSavedBatch: true }])).values()]
     return available.map(client => {
       const hasSavedBatch = typeof client.hasSavedBatch === 'boolean' ? client.hasSavedBatch : catalogReady && idsWithBatches.has(client.id)
-      return { value: client.id, label: client.name, hasSavedBatch, className: hasSavedBatch ? 'excel-payslip-client-has-batches' : 'excel-payslip-client-no-batches' }
+      return { value: client.id, label: client.name, code: client.code, hasSavedBatch, className: hasSavedBatch ? 'excel-payslip-client-has-batches' : 'excel-payslip-client-no-batches' }
     })
   }, [permittedClients, catalog, catalogReady])
   const months = useMemo(() => [...new Set(catalog.filter(b => !clientFilter || b.clientId === clientFilter).map(b => b.month))].sort().reverse().map(value => ({ value, label: value })), [catalog, clientFilter])
@@ -89,7 +90,7 @@ export default function ExcelPayslipOverview({ open, permittedClients, canConfig
       {catalogError && <Alert type="error" showIcon message={catalogError} action={<Button size="small" disabled={catalogLoading} onClick={() => setCatalogRevision(value => value + 1)}>Retry client/batch list</Button>} />}
       {error && <Alert type="error" showIcon message={error} />}
       <Space wrap className="excel-payslip-overview-filters">
-        <Select allowClear showSearch optionFilterProp="label" optionLabelProp="label" aria-label="Overview client" placeholder="All permitted clients" style={{ width: 260 }} value={clientFilter} loading={catalogLoading} onChange={value => { setClientFilter(value); setMonth(undefined); setSelected([]); setOverlapOnly(false); resetResult() }}>{clients.map(client => <Select.Option key={client.value} value={client.value} label={client.label} className={client.className}><ExcelPayslipClientOption name={client.label} hasSavedBatch={client.hasSavedBatch} /></Select.Option>)}</Select>
+        <Select allowClear showSearch optionFilterProp="searchText" optionLabelProp="label" aria-label="Overview client" placeholder="All permitted clients" style={{ width: 260 }} value={clientFilter} loading={catalogLoading} onChange={value => { setClientFilter(value); setMonth(undefined); setSelected([]); setOverlapOnly(false); resetResult() }}>{clients.map(client => <Select.Option key={client.value} value={client.value} label={client.label} searchText={clientSearchText(client.label, client.code)} className={client.className}><ExcelPayslipClientOption name={client.label} code={client.code} hasSavedBatch={client.hasSavedBatch} /></Select.Option>)}</Select>
         <Select allowClear aria-label="Overview period" placeholder="All source periods" style={{ width: 180 }} options={months} value={month} onChange={value => { setMonth(value); setSelected([]); setOverlapOnly(false); resetResult() }} />
       </Space>
       <Select mode="multiple" showSearch optionFilterProp="label" aria-label="Overview selected batches" placeholder="Select saved client/month payslips" maxTagCount="responsive" style={{ width: '100%' }} loading={catalogLoading} value={selected}

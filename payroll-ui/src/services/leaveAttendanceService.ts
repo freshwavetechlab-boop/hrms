@@ -11,7 +11,8 @@ const reviewContextFallback: AttendanceReviewContext = { settings: attendanceFal
 export const getLeaveAttendanceSetup = (clientId: number) => getJson<LeaveAttendanceSetup>(`/api/leave-attendance/setup?clientId=${clientId}`, fallback)
 export const setLeaveAttendanceEnabled = (clientId: number, isEnabled: boolean) => postJson('/api/leave-attendance/module', { clientId, isEnabled }, fallback)
 export const updateLeaveAttendanceStep = (clientId: number, stepCode: string, status: SetupStatus) => putJson(`/api/leave-attendance/setup/${stepCode}`, { clientId, status }, fallback)
-export const getLeaveAttendancePreferences = (clientId: number, workLocationId = 0) => getJson<LeaveAttendancePreferences>(`/api/leave-attendance/preferences?${new URLSearchParams({ clientId: String(clientId), ...(workLocationId ? { workLocationId: String(workLocationId) } : {}) })}`, preferencesFallback)
+export const getLeaveAttendancePreferenceResult = (clientId: number, workLocationId = 0) => getJsonResult<LeaveAttendancePreferences>(`/api/leave-attendance/preferences?${new URLSearchParams({ clientId: String(clientId), ...(workLocationId ? { workLocationId: String(workLocationId) } : {}) })}`, preferencesFallback, { loader: false, toast: false })
+export const getLeaveAttendancePreferences = async (clientId: number, workLocationId = 0) => (await getLeaveAttendancePreferenceResult(clientId, workLocationId)).data
 export async function saveLeaveAttendancePreferences(preferences: Omit<LeaveAttendancePreferences, 'id' | 'createdAt' | 'updatedAt'>) {
   return postJson('/api/leave-attendance/preferences', preferences, preferencesFallback)
 }

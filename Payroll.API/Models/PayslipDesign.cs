@@ -24,6 +24,13 @@ public sealed class PayslipDesignTemplate
     public bool Active { get; set; } = true;
 }
 public sealed class PayslipDesignPreviewRequest { public int ClientId { get; set; } public string SourceBatchId { get; set; } = ""; }
+public sealed class PayslipDesignCopyPreviewRequest
+{
+    public int ClientId { get; set; }
+    public int SourceClientId { get; set; }
+    public long SourceTemplateId { get; set; }
+    public string SourceProfileHash { get; set; } = "";
+}
 public sealed class PayslipDesignSaveRequest
 {
     public string RequestId { get; set; } = "";
@@ -31,6 +38,12 @@ public sealed class PayslipDesignSaveRequest
     public string SourceBatchId { get; set; } = "";
     public string SourceHash { get; set; } = "";
     public string ExistingProfileHash { get; set; } = "";
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? SourceKind { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public bool? SimpleLayout { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public bool? KeepMappedZeroRows { get; set; }
     public int AmountDecimalPlaces { get; set; }
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public List<string>? PayPeriods { get; set; }
@@ -45,6 +58,8 @@ public sealed record PayslipDesignPreview(int ClientId, string SourceBatchId, st
     IReadOnlyList<PayslipDesignField> Fields, IReadOnlyList<PayslipDesignCode> NativeCodes, IReadOnlyList<string> InfoTokens)
 {
     public bool SupportsPayrollMonthScope { get; init; } = true;
+    public string SourceKind { get; init; } = "ExcelSource";
+    public bool KeepMappedZeroRows { get; init; } = true;
 }
 public sealed class PayslipDesignProfile
 {
@@ -53,6 +68,7 @@ public sealed class PayslipDesignProfile
     public long TemplateId { get; set; }
     public string SourceBatchId { get; set; } = "";
     public string SourceHash { get; set; } = "";
+    public string SourceKind { get; set; } = "ExcelSource";
     public bool SimpleLayout { get; set; }
     // Old protected profiles deliberately retain their previous zero-row display.
     // A newly reviewed source derives this setting from its actual layout.

@@ -59,13 +59,15 @@ export const nativePayslipKind = (category: string): PayslipDesignKind | '' => {
 export function payslipDesignIssues(catalog: PayslipDesignCatalog | null, fields: PayslipDesignField[], clientId: number): string[] {
   if (!catalog || catalog.clientId !== clientId || clientId <= 0) return ['Choose a saved source for this client.']
   const issues: string[] = []
-  if (!catalog.sourceBatchId || !/^[a-f0-9]{64}$/i.test(catalog.sourceHash)) issues.push('Reload the saved source before reviewing the design.')
-  if (!fields.length || fields.length > 100 || fields.length !== catalog.fields.length || new Set(fields.map(field => field.sourceColumn)).size !== fields.length) issues.push('Keep each source field exactly once in the design.')
+  const portable = catalog.sourceKind === 'CorePayroll'
+  if (!(catalog.sourceKind === 'CorePayroll' ? catalog.sourceBatchId === '' && typeof catalog.keepMappedZeroRows === 'boolean' : !!catalog.sourceBatchId) || !/^[a-f0-9]{64}$/i.test(catalog.sourceHash)) issues.push('Reload the saved design before reviewing its mappings.')
+  if (!fields.length || fields.length > 100 || !portable && fields.length !== catalog.fields.length || new Set(fields.map(field => field.sourceColumn)).size !== fields.length) issues.push(portable ? 'Keep a bounded set of unique design fields.' : 'Keep each source field exactly once in the design.')
   const mapped = new Set<string>()
   for (const field of fields) {
     const original = catalog.fields.find(value => value.sourceColumn === field.sourceColumn)
-    if (!original || original.label !== field.label || original.kind !== field.kind) { issues.push('Source labels and classifications changed. Reload the saved source.'); continue }
-    if (field.sourceColumn >= 1500 && (field.infoToken !== original.infoToken || field.kind !== 'info')) { issues.push(field.label + ': retain the verified Master information field.'); continue }
+    if (!portable && (!original || original.label !== field.label || original.kind !== field.kind)) { issues.push('Source labels and classifications changed. Reload the saved source.'); continue }
+    if (portable && (field.sourceColumn < 0 || !Number.isInteger(field.sourceColumn) || !field.label.trim() || field.label.length > 150 || !['info', 'earning', 'deduction', 'employer'].includes(field.kind))) { issues.push('Review the design field labels and classifications.'); continue }
+    if (field.sourceColumn >= 1500 && (!original || field.label !== original.label || field.infoToken !== original.infoToken || field.kind !== 'info')) { issues.push(field.label + ': retain the verified Master information field.'); continue }
     if (field.kind === 'info') {
       if (field.nativeCode || (field.visible || field.infoToken) && !catalog.infoTokens.includes(field.infoToken)) issues.push(`${field.label}: select a supported information field or hide it.`)
     } else {
@@ -82,12 +84,14 @@ export function payslipDesignIssues(catalog: PayslipDesignCatalog | null, fields
 export function payslipDesignPreviewIssues(catalog: PayslipDesignCatalog | null, fields: PayslipDesignField[], clientId: number): string[] {
   if (!catalog || catalog.clientId !== clientId || clientId <= 0) return ['Choose a saved source for this client.']
   const issues: string[] = []
-  if (!catalog.sourceBatchId || !/^[a-f0-9]{64}$/i.test(catalog.sourceHash)) issues.push('Reload the saved source before previewing.')
-  if (!fields.length || fields.length > 100 || fields.length !== catalog.fields.length || new Set(fields.map(field => field.sourceColumn)).size !== fields.length) issues.push('Keep each source field exactly once in the design.')
+  const portable = catalog.sourceKind === 'CorePayroll'
+  if (!(catalog.sourceKind === 'CorePayroll' ? catalog.sourceBatchId === '' && typeof catalog.keepMappedZeroRows === 'boolean' : !!catalog.sourceBatchId) || !/^[a-f0-9]{64}$/i.test(catalog.sourceHash)) issues.push('Reload the saved design before previewing.')
+  if (!fields.length || fields.length > 100 || !portable && fields.length !== catalog.fields.length || new Set(fields.map(field => field.sourceColumn)).size !== fields.length) issues.push(portable ? 'Keep a bounded set of unique design fields.' : 'Keep each source field exactly once in the design.')
   for (const field of fields) {
     const original = catalog.fields.find(value => value.sourceColumn === field.sourceColumn)
-    if (!original || original.label !== field.label || original.kind !== field.kind) { issues.push('Source labels changed. Reload the saved source.'); continue }
-    if (field.sourceColumn >= 1500 && (field.infoToken !== original.infoToken || field.kind !== 'info')) issues.push('Retain the verified Master information field.')
+    if (!portable && (!original || original.label !== field.label || original.kind !== field.kind)) { issues.push('Source labels changed. Reload the saved source.'); continue }
+    if (portable && (field.sourceColumn < 0 || !Number.isInteger(field.sourceColumn) || !field.label.trim() || field.label.length > 150 || !['info', 'earning', 'deduction', 'employer'].includes(field.kind))) { issues.push('Review the design field labels and classifications.'); continue }
+    if (field.sourceColumn >= 1500 && (!original || field.label !== original.label || field.infoToken !== original.infoToken || field.kind !== 'info')) issues.push('Retain the verified Master information field.')
     if (field.kind === 'info') {
       if (field.nativeCode || field.infoToken && !catalog.infoTokens.includes(field.infoToken) && !existingMonthlyInformationCode(field.infoToken, catalog.nativeCodes)) issues.push('Choose a supported information field.')
     } else if (field.infoToken || field.nativeCode && !catalog.nativeCodes.some(code => code.code === field.nativeCode && nativePayslipKind(code.category) === field.kind)) issues.push('Choose a supported payroll component.')

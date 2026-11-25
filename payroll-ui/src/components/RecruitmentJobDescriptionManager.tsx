@@ -1,3 +1,4 @@
+import { clientChoice, clientSelectProps } from './ClientOption'
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowDownOutlined, ArrowRightOutlined, ArrowUpOutlined, AuditOutlined, DeleteOutlined, FileAddOutlined,
@@ -102,7 +103,7 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
   useEffect(() => {
     if (clientScopeManaged) return
     let active = true
-    void getClients().then(rows => {
+    void getClients(true).then(rows => {
       if (!active) return
       setClients(rows)
       if (!clientId && rows.length === 1) setClientId(rows[0].id)
@@ -523,8 +524,8 @@ const RecruitmentJobDescriptionManager = forwardRef<RecruitmentJobDescriptionMan
         <p className="orchestration-subtitle">Review the role, set the skills, then screen resumes against the approved JD.</p>
       </div>
       <Space wrap className="jd-scope-controls">
-        {!clientScopeManaged && <Select aria-label="Client" value={clientId || undefined} placeholder="Select client" showSearch optionFilterProp="label" className="jd-client-select"
-          options={clients.map(row => ({ value: row.id, label: row.name }))}
+        {!clientScopeManaged && <Select aria-label="Client" value={clientId || undefined} placeholder="Select client" className="jd-client-select"
+          {...clientSelectProps(clients.map(clientChoice))}
           disabled={saving || sourceParsing} onChange={selectClient} />}
         <Select aria-label="Requisition" value={requisitionId || undefined} placeholder="Select requisition" showSearch optionFilterProp="label" className="jd-request-select"
           options={requisitions.map(row => ({ value: row.id, label: `${row.rfrNumber} · ${row.positionTitle}` }))}

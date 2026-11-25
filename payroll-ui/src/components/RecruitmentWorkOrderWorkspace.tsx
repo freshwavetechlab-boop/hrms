@@ -1,3 +1,4 @@
+import { clientChoice, clientSelectProps } from './ClientOption'
 import RecruitmentJourneyPath from './RecruitmentJourneyPath'
 import { recruitmentDuration, recruitmentJobSla } from '../utils/recruitmentSla'
 import RecruitmentMomSignature from './RecruitmentMomSignature'
@@ -81,7 +82,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
     const [orders, hiringCases] = await Promise.all([getRecruitmentWorkOrders(clientId), getRecruitmentHiringCases(clientId, true)])
     setWorkOrders(orders); setCases(hiringCases); setCasesSyncedAt(Date.now())
   }
-  useEffect(() => { void getClients().then(setClients) }, [])
+  useEffect(() => { void getClients(true).then(setClients) }, [])
   useEffect(() => { setClientId(initialClientId) }, [initialClientId])
   useEffect(() => { void load() }, [clientId])
   useEffect(() => {
@@ -349,7 +350,7 @@ export default function RecruitmentWorkOrderWorkspace({ initialClientId = 0, cli
     </>}
     {!postInterview && <>
     <PageHeaderPortal slot="recruitment-page-controls"><Button data-testid="work-order-add" type="primary" icon={<PlusOutlined />} onClick={openNew}>Add work order</Button></PageHeaderPortal>
-    {!clientScopeManaged && <Select allowClear value={clientId || undefined} placeholder="All accessible clients" showSearch optionFilterProp="label" options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={value => setClientId(value || 0)} />}
+    {!clientScopeManaged && <Select allowClear value={clientId || undefined} placeholder="All accessible clients" {...clientSelectProps(clients.map(clientChoice))} onChange={value => setClientId(value || 0)} />}
     <Tabs className="work-order-list-tabs" items={[
       { key: 'orders', label: 'Work orders', children: <RecruitmentRecordList<RecruitmentWorkOrder> view={displayMode === 'table' ? 'Table' : 'Cards'} title={row => row.workOrderNumber} subtitle={row => row.subject || row.clientName}
         actions={row =>  <Space size={4} wrap><Button size="small" onClick={() => void viewWorkOrder(row)}>View</Button><Button size="small" onClick={() => void openEdit(row)}>Edit</Button>{canDelete && <Popconfirm title="Delete this work order?" description="Delete its live cumulative pipeline cases first. This cannot be undone." okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => void removeWorkOrder(row)}><Button danger size="small" icon={<DeleteOutlined />}>Delete</Button></Popconfirm>}</Space>}

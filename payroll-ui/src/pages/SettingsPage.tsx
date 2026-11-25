@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { clientChoice, clientSearchText, ClientOptionName } from '../components/ClientOption'
+import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import type { Dispatch, FormEvent, ReactNode, SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
-import { DownloadOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons'
-import { Button, Card as AntCard, Checkbox as AntCheckbox, Col, Divider, Drawer, Form, Input, Modal, Row, Select as AntSelect, Space } from 'antd'
+import { CopyOutlined, DownloadOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons'
+import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Col, Divider, Drawer, Form, Input, Modal, Row, Select as AntSelect, Space, Tag } from 'antd'
 import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewState } from '../components/BulkUploadPreviewModal'
 import BulkUploadProgressModal, { type BulkUploadState, type BulkUploadSummary } from '../components/BulkUploadProgressModal'
 import DataTable from '../components/DataTable'
@@ -13,9 +14,14 @@ import PageTabs from '../components/PageTabs'
 import SalaryTemplateDesigner from '../components/SalaryTemplateDesigner'
 import SalaryComponentEditor from '../components/SalaryComponentEditor'
 import ExcelPayslipDesignEditor from '../components/ExcelPayslipDesignEditor'
+import PayslipTemplateCopyDialog from '../components/PayslipTemplateCopyDialog'
+import PayrollSimulation from '../components/PayrollSimulation'
+import { PageHeaderPortal } from '../components/layout/AppPageHeader'
+import { salaryTemplateClientIds } from '../utils/salaryTemplateContext'
+import './PayslipSetup.css'
 import SearchSelect from '../components/SearchSelect'
 import { excelPayslipTheme, newestClientExcelPayslip } from '../utils/payslipDesign'
-import type { PayslipDesignTemplate } from '../services/payslipService'
+import type { PayslipDesignTemplate, SavedPayslipDesign } from '../services/payslipService'
 import { getJsonResult } from '../services/apiClient'
 import { calculationChoices, validateSalaryComponent } from '../utils/salaryComponentConfig'
 import TaxEngineManager from '../components/TaxEngineManager'
@@ -29,14 +35,14 @@ import { useToast, type ToastType } from '../components/ToastProvider'
 import { useAuthSession } from '../components/AuthGate'
 import { billingOnlySettings } from '../utils/workspaceAccess'
 import { client0, component0, drop0, dropTypes, location0, org0, payslip0, settingsMenus, setup0, structure0, workWeekOptions, workWeekPatternConfigs } from '../data/payrollDefaults'
-import { getClients, getEmployees } from '../services/payrollService'
+import { getClients, getSettingsEmployeeReferences, type SettingsEmployeeReference } from '../services/payrollService'
 import { getAttendanceGroups } from '../services/leaveAttendanceService'
 import { getClientBillingAdvanced, getClientBillingConfigurations, getClientBillingImportJob, getClientBillingModule, getClientImportJob, getDropdownImportJob, getDropdowns, getOrganization, getSalaryComponentImportJob, getSalaryTemplateImportJob, getSetup, getWorkLocationImportJob, getWorkLocations, saveClient as persistClient, saveClientBillingAdvancedLine, saveClientBillingConfiguration, saveClientBillingModule, saveDropdown, saveOrganization, saveSetup, saveWorkLocation, startClientBillingImport, startClientImport, startDropdownImport, startSalaryComponentImport, startSalaryTemplateImport, startWorkLocationImport, type BulkImportStatus } from '../services/settingsService'
-import type { AttendanceGroup, Client, ClientBillingConfiguration, ClientBillingCostRuleHeader, ClientBillingCostRuleLine, ClientBillingRateCardType, ClientBillingRateType, Component, Drop, Employee, Org, ProfessionalTaxSlab, Setup, Structure, WorkLocation } from '../types/payroll'
+import type { AttendanceGroup, Client, ClientBillingConfiguration, ClientBillingCostRuleHeader, ClientBillingCostRuleLine, ClientBillingRateCardType, ClientBillingRateType, Component, Drop, Org, ProfessionalTaxSlab, Setup, Structure, WorkLocation } from '../types/payroll'
 import { money } from '../utils/salary'
 import { mergeSalaryTemplateDraftComponents } from '../utils/salaryTemplateDraftComponents'
 import { salaryTemplatesForVisibleClients } from '../utils/employeeSalaryTemplate'
-import { createClientSalaryTemplate } from '../services/settingsService'
+import { createClientSalaryTemplate, saveSalaryComponent } from '../services/settingsService'
 import { isSelectedClientUser } from '../utils/clientAccess'
 import { parseImportPreviewFile, parseImportPreviewSheets, validateImportPreview, type ImportPreviewData, type ImportPreviewIssue, type ImportPreviewRules } from '../utils/importPreview'
 import { downloadXlsx } from '../utils/xlsx'
@@ -184,12 +190,13 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const [searchParams] = useSearchParams()
   const requestedPayslipClientId = Number(searchParams.get('clientId')) || 0
   const clientScopedAdmin = Boolean(session?.user.clientId && !session.user.permissions.includes('settings.manage'))
+  const payslipFixedClientId = clientScopedAdmin || isSelectedClientUser(session?.originalUser) ? Number(session?.user.clientId) || 0 : 0
   const toast = useToast()
   const [org, setOrg] = useState(org0), [setup, setSetup] = useState(settingsSetup0), [clients, setClients] = useState<Client[]>([]), [client, setClient] = useState(client0)
   const [locations, setLocations] = useState<WorkLocation[]>([]), [location, setLocation] = useState(location0), [drops, setDrops] = useState<Drop[]>([]), [drop, setDrop] = useState(drop0)
   const requestedLocationClient = clients.find(item => item.id === Number(searchParams.get('clientId')))
   const newLocation = { ...location0, clientId: clientScopedAdmin ? Number(session?.user.clientId) : requestedLocationClient?.id || Number(searchParams.get('clientId')) || 0, clientName: requestedLocationClient?.name || '' }
-  const [employees, setEmployees] = useState<Employee[]>([]), [attendanceGroups, setAttendanceGroups] = useState<AttendanceGroup[]>([])
+  const [employees, setEmployees] = useState<SettingsEmployeeReference[]>([]), [attendanceGroups, setAttendanceGroups] = useState<AttendanceGroup[]>([])
   const [component, setComponent] = useState(component0), [structure, setStructure] = useState(structure0), [payslip, setPayslip] = useState(() => newExcelPayslipDraft()), [componentTab, setComponentTab] = useState<ComponentCategory>('Earning')
   const [billingEnabled, setBillingEnabled] = useState(false), [billingRows, setBillingRows] = useState<ClientBillingConfiguration[]>([]), [billingRow, setBillingRow] = useState<ClientBillingConfiguration>(billing0), [billingDrawerOpen, setBillingDrawerOpen] = useState(false)
   const [billingAdvancedEnabled, setBillingAdvancedEnabled] = useState(false), [billingAdvancedHeaders, setBillingAdvancedHeaders] = useState<ClientBillingCostRuleHeader[]>([]), [billingAdvancedLines, setBillingAdvancedLines] = useState<ClientBillingCostRuleLine[]>([]), [billingAdvancedLine, setBillingAdvancedLine] = useState<ClientBillingCostRuleLine>(billingAdvancedLine0), [billingAdvancedLineDrawerOpen, setBillingAdvancedLineDrawerOpen] = useState(false)
@@ -218,6 +225,10 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const [payslipSaving, setPayslipSaving] = useState(false)
   const [payslipReady, setPayslipReady] = useState(false)
   const [payslipDesignRevision, setPayslipDesignRevision] = useState(0)
+  const [payslipCopyDialog, setPayslipCopyDialog] = useState<{ sourceId?: number } | null>(null)
+  const [payslipCopySeed, setPayslipCopySeed] = useState<SavedPayslipDesign | null>(null)
+  const [legacyPayslipSimulationOpen, setLegacyPayslipSimulationOpen] = useState(false)
+  const [legacyPayslipSalaryId, setLegacyPayslipSalaryId] = useState('')
   const [saving, setSaving] = useState(false)
   const [dropState, setDropState] = useState('')
   const [bulkPreview, setBulkPreview] = useState<BulkUploadPreviewState>(emptyBulkUploadPreview)
@@ -225,10 +236,35 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const [bulkPreviewConfirm, setBulkPreviewConfirm] = useState<((preview: BulkUploadPreviewState) => Promise<void>) | null>(null)
   const isErrorMessage = (message: string) => /error|unable|failed|required|resolve|select|invalid|must|cannot|some/i.test(message)
 
+  const managesOwnData = ['Travel & Expense Policies', 'Attachments', 'Notifications', 'AI Integration', 'Scheduled Jobs'].includes(tab)
+  const loadGroup = managesOwnData ? 'Standalone' : tab === 'Salary Templates' || tab === 'Payslip Templates' ? tab : 'General'
+  const dataScope = JSON.stringify([loadGroup, session?.user.id, session?.user.clientId, clientScopedAdmin])
+  const loadVersion = useRef(0)
+  const [loadedScope, setLoadedScope] = useState('')
+  const [loadError, setLoadError] = useState('')
   const load = async () => {
-    if (tab === 'Payslip Templates') return
+    const version = ++loadVersion.current
+    setLoadError('')
+    if (tab === 'Payslip Templates' || managesOwnData) return
+    if (tab === 'Salary Templates') {
+      const [setupResult, clientRows, locationRows, references] = await Promise.all([
+        getJsonResult<Setup | null>('/api/setup', null, { toast: false }), getClients(true), getWorkLocations(), getSettingsEmployeeReferences(),
+      ])
+      if (version !== loadVersion.current) return
+      if (!setupResult.ok || !setupResult.data) { setLoadedScope(''); setLoadError(setupResult.error || 'Unable to load salary templates.'); return }
+      const rawSetup = setupResult.data
+      setSetup({ ...settingsSetup0, ...rawSetup, salaryComponents: (rawSetup.salaryComponents ?? []).map(normalizeComponentForUi), salaryStructures: rawSetup.salaryStructures ?? [], payslipTemplates: rawSetup.payslipTemplates ?? [] })
+      setClients(clientRows)
+      setLocations(locationRows.filter(row => row.isActive && clientRows.some(client => client.id === row.clientId)))
+      setEmployees(references)
+      if (clientScopedAdmin) setStructure(current => ({ ...current, clientId: String(session?.user.clientId) }))
+      setLoadedScope(dataScope)
+      return
+    }
     if (billingOnlySettings(session?.user.permissions ?? [])) {
-      const [clientRows, locationRows, billingModule, billingConfigs, billingAdvanced] = await Promise.all([getClients(), getWorkLocations(), getClientBillingModule(), getClientBillingConfigurations(), getClientBillingAdvanced()])
+      const [clientRows, locationRows, billingModule, billingConfigs, billingAdvanced] = await Promise.all([getClients(true), getWorkLocations(), getClientBillingModule(), getClientBillingConfigurations(), getClientBillingAdvanced()])
+      if (version !== loadVersion.current) return
+      setLoadedScope(dataScope)
       setClients(clientRows)
       setLocations(locationRows.filter(location => location.isActive && clientRows.some(client => client.id === location.clientId)).map(location => ({ ...location0, ...location })))
       setBillingEnabled(billingModule.isEnabled)
@@ -239,7 +275,9 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
       return
     }
     if (clientScopedAdmin) {
-      const [rawSetup, clientRows, locationRows] = await Promise.all([getSetup(settingsSetup0), getClients(), getWorkLocations()])
+      const [rawSetup, clientRows, locationRows] = await Promise.all([getSetup(settingsSetup0), getClients(true), getWorkLocations()])
+      if (version !== loadVersion.current) return
+      setLoadedScope(dataScope)
       setSetup({ ...settingsSetup0, ...rawSetup, tax: { ...setup0.tax, ...rawSetup.tax, clientSettings: rawSetup.tax?.clientSettings ?? [] }, schedule: { ...setup0.schedule, ...rawSetup.schedule }, statutory: { ...setup0.statutory, ...rawSetup.statutory }, salaryComponents: (rawSetup.salaryComponents ?? []).map(normalizeComponentForUi), salaryStructures: rawSetup.salaryStructures ?? [], payslipTemplates: rawSetup.payslipTemplates ?? [] })
       setClients(clientRows)
       setLocations(locationRows.filter(row => row.isActive))
@@ -248,7 +286,9 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
       setPayslip(current => ({ ...current, clientId: scopedId }))
       return
     }
-    const [organization, rawSetup, clientRows, locationRows, dropdownRows, employeeRows, groupRows, billingModule, billingConfigs, billingAdvanced] = await Promise.all([getOrganization(org0), getSetup(settingsSetup0), getClients(), getWorkLocations(), getDropdowns(), getEmployees(), getAttendanceGroups(), getClientBillingModule(), getClientBillingConfigurations(), getClientBillingAdvanced()])
+    const [organization, rawSetup, clientRows, locationRows, dropdownRows, employeeRows, groupRows, billingModule, billingConfigs, billingAdvanced] = await Promise.all([getOrganization(org0), getSetup(settingsSetup0), getClients(), getWorkLocations(), getDropdowns(), getSettingsEmployeeReferences(), getAttendanceGroups(), getClientBillingModule(), getClientBillingConfigurations(), getClientBillingAdvanced()])
+    if (version !== loadVersion.current) return
+    setLoadedScope(dataScope)
     setOrg({ ...org0, ...organization, pan: organization.pan || rawSetup.tax?.pan || '', tanNumber: organization.tanNumber || rawSetup.tax?.tan || '', professionalTaxNumber: organization.professionalTaxNumber || rawSetup.statutory?.ptNumber || '' })
     setSetup({ ...settingsSetup0, ...rawSetup, tax: { ...setup0.tax, ...rawSetup.tax, clientSettings: rawSetup.tax?.clientSettings ?? setup0.tax.clientSettings, slabs: rawSetup.tax?.slabs ?? setup0.tax.slabs, surcharges: rawSetup.tax?.surcharges ?? setup0.tax.surcharges, finalAdjustments: rawSetup.tax?.finalAdjustments ?? setup0.tax.finalAdjustments, declarationSections: rawSetup.tax?.declarationSections ?? setup0.tax.declarationSections }, schedule: { ...setup0.schedule, ...rawSetup.schedule }, statutory: { ...setup0.statutory, ...rawSetup.statutory }, salaryComponents: (rawSetup.salaryComponents ?? []).map(normalizeComponentForUi), salaryStructures: rawSetup.salaryStructures ?? [], payslipTemplates: rawSetup.payslipTemplates ?? [] })
     setClients(clientRows)
@@ -263,13 +303,21 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     setBillingAdvancedLines(billingAdvanced.lines)
   }
 
-  useEffect(() => { void load() }, [])
+  useEffect(() => {
+    setLoadedScope('')
+    void load()
+    return () => { loadVersion.current++ }
+    // Reload only when switching data requirements or client scope, not for each general tab.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataScope])
   useEffect(() => {
     if (tab !== 'Payslip Templates') return
     let active = true
     // Prevent a stale/default setup from being saved while this scope reloads.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setPayslipReady(false)
+    setPayslipCopySeed(null)
+    setPayslipCopyDialog(null)
     void Promise.all([getOrganization(org0), getJsonResult<Setup | null>('/api/setup', null, { toast: false }), getClients(true)]).then(([organization, result, clientRows]) => {
       if (!active) return
       if (!result.ok || !result.data) { toast(result.error || 'Unable to load payslip settings. Refresh before saving.', 'error'); return }
@@ -277,14 +325,14 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
       setOrg({ ...org0, ...organization })
       setSetup(current => ({ ...current, ...rawSetup, payslipTemplates: rawSetup.payslipTemplates ?? [], salaryComponents: (rawSetup.salaryComponents ?? []).map(normalizeComponentForUi), salaryStructures: rawSetup.salaryStructures ?? [] }))
       setClients(clientRows)
-      const selectedClient = clientScopedAdmin ? Number(session?.user.clientId) : clientRows.some(client => client.id === requestedPayslipClientId) ? requestedPayslipClientId : 0
+      const selectedClient = payslipFixedClientId || (clientRows.some(client => client.id === requestedPayslipClientId) ? requestedPayslipClientId : 0)
       if (selectedClient > 0) setPayslip(current => current.id > 0 && Number(refId(current.clientId)) === selectedClient ? current : newestClientExcelPayslip(rawSetup.payslipTemplates ?? [], selectedClient) ?? newExcelPayslipDraft(String(selectedClient)))
       setPayslipReady(true)
     })
     return () => { active = false }
     // Toast identity changes with the shared provider; loading is keyed to page and scope.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, clientScopedAdmin, session?.user.clientId, requestedPayslipClientId])
+  }, [tab, clientScopedAdmin, session?.user.clientId, payslipFixedClientId, requestedPayslipClientId])
   const o = <K extends keyof Org>(key: K, value: Org[K]) => setOrg(current => ({ ...current, [key]: value }))
   const u = <S extends keyof Setup, K extends keyof Setup[S]>(section: S, key: K, value: Setup[S][K]) => setSetup(current => ({ ...current, [section]: { ...current[section], [key]: value } }))
   const setPtSlabField = <K extends keyof ProfessionalTaxSlab>(key: K, value: ProfessionalTaxSlab[K]) => setPtSlab(current => ({ ...current, [key]: value }))
@@ -661,6 +709,11 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   }
   const activeDrops = drops.filter(item => item.isActive)
   const activeClientIds = new Set(clients.map(item => String(item.id)))
+  const payslipClientId = Number(refId(payslip.clientId)) || 0
+  const payslipReadyClientIds = new Set(clients.filter(item => setup.salaryStructures.some(value => value.active && value.lines.length > 0 && salaryTemplateClientIds(value.clientId).includes(item.id))).map(item => item.id))
+  const payslipSalaryTemplates = setup.salaryStructures.filter(value => value.active && value.lines.length > 0 && salaryTemplateClientIds(value.clientId).includes(payslipClientId))
+  const canCreatePayslip = payslipReady && payslipReadyClientIds.has(payslipClientId)
+  const legacyPayslipSalary = payslipSalaryTemplates.find(value => String(value.id) === legacyPayslipSalaryId) ?? (payslipSalaryTemplates.length === 1 ? payslipSalaryTemplates[0] : undefined)
   const stateOptions = unique([...activeDrops.filter(item => item.type === 'State').map(item => item.value), ...locations.map(item => item.state), org.state, location.state, dropState, setup.statutory.ptState, setup.statutory.lwfState, ptSlab.state, ...(setup.statutory.ptStateSlabs ?? []).map(item => item.state)])
   const cityOptions = (state: string) => unique([...activeDrops.filter(item => isCityType(item.type) && (!state || item.type === cityType(state))).map(item => item.value), ...locations.filter(item => !state || item.state === state).map(item => item.city), !state || org.state === state ? org.city : '', !state || location.state === state ? location.city : ''])
   const clientName = (id: string | number) => clients.find(item => String(item.id) === refId(id))?.name || (id ? String(id).split(':')[1] || `Client #${refId(id)}` : 'Default')
@@ -724,6 +777,17 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     const row = { ...component, id: component.id || Date.now(), code: original ? original.code : component.code.trim().toUpperCase() }
     const errors = validateSalaryComponent(row, setup.salaryComponents, original)
     if (errors.length) { notify(errors[0], 'error'); return }
+    if (!clientScopedAdmin && session?.user.clientAccessMode !== 'Selected') {
+      setComponentSaving(true)
+      try {
+        const response = await saveSalaryComponent(row, original, { toast: false })
+        if (!response.ok) { notify(response.error || 'Unable to save salary component.', 'error'); return }
+        setSetup(current => ({ ...current, salaryComponents: [...current.salaryComponents.filter(item => item.id !== response.data.id), response.data] }))
+        notify(original ? 'Salary component updated successfully.' : 'Salary component added successfully.')
+        setComponent({ ...component0, category: componentTab }); setComponentDrawerOpen(false)
+      } finally { setComponentSaving(false) }
+      return
+    }
     const nextSetup = { ...setup, salaryComponents: [...setup.salaryComponents.filter(item => item.id !== row.id), row] }
     if (await persistComponentSetup(nextSetup, original ? 'Salary component updated successfully.' : 'Salary component added successfully.')) { setComponent({ ...component0, category: componentTab }); setComponentDrawerOpen(false) }
   }
@@ -809,6 +873,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     if (!payslipReady) return notify('Wait for saved payslip settings to load before saving.', 'error')
     if (payslip.theme === excelPayslipTheme || setup.payslipTemplates.some(item => item.id === payslip.id && item.theme === excelPayslipTheme)) return notify('Save this template through its reviewed Excel Payslip design.', 'error')
     if (!payslip.name.trim()) return notify('Payslip template name is required.', 'error')
+    if (!payslip.id && !canCreatePayslip) return notify('Create and save this client’s salary template before configuring its payslip.', 'error')
     const row = { ...payslip, clientId: refId(payslip.clientId), id: payslip.id || Date.now() }
     const nextSetup = { ...setup, payslipTemplates: [...setup.payslipTemplates.filter(item => item.id !== row.id), row] }
     setPayslipSaving(true)
@@ -820,6 +885,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     notify(row.id === payslip.id ? 'Payslip template updated.' : 'Payslip template saved.')
   }
   const onPayslipDesignSaved = async (saved: PayslipDesignTemplate) => {
+    setPayslipCopySeed(null)
     const row = { ...saved, clientId: String(saved.clientId) }
     const merged = { ...setup, payslipTemplates: [...setup.payslipTemplates.filter(item => item.id !== saved.id), row] }
     setSetup(current => ({ ...current, payslipTemplates: [...current.payslipTemplates.filter(item => item.id !== saved.id), row] }))
@@ -833,9 +899,13 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const selectPayslipClient = (value: string) => {
     if (payslipSaving) return
     const id = Number(refId(value)) || 0
+    if (payslipFixedClientId && id !== payslipFixedClientId) return
     if (id > 0 && !clients.some(client => client.id === id)) return
-    if (payslip.theme !== excelPayslipTheme && !managedPayslip) { setPayslip(current => ({ ...current, clientId: value })); return }
-    setPayslip(newestClientExcelPayslip(setup.payslipTemplates, id) ?? newExcelPayslipDraft(id > 0 ? String(id) : ''))
+    setPayslipCopySeed(null)
+    setLegacyPayslipSimulationOpen(false)
+    setLegacyPayslipSalaryId('')
+    const existing = setup.payslipTemplates.filter(row => row.active && Number(refId(row.clientId)) === id && id > 0).sort((left, right) => right.id - left.id)[0]
+    setPayslip(existing ?? newExcelPayslipDraft(id > 0 ? String(id) : ''))
     setPayslipDesignRevision(current => current + 1)
   }
   const previewStructure = setup.salaryStructures.find(item => refId(item.clientId) === refId(payslip.clientId)) ?? setup.salaryStructures[0]
@@ -933,7 +1003,10 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
 
 
   const pfPolicyTab = tab === 'Statutory Setup' && statutoryTab === 'PF Policy Versions'
-  return <form className={pfPolicyTab ? 'pf-policy-settings-page' : undefined} onSubmit={event => { if (pfPolicyTab || tab === 'Salary Templates' || tab === 'Payslip Templates' && payslip.theme === excelPayslipTheme) event.preventDefault(); else void saveAll(event) }}>
+  if (!managesOwnData && loadGroup !== 'Payslip Templates' && loadedScope !== dataScope) return loadError
+    ? <Alert type="error" message={loadError} action={<Button onClick={() => void load()}>Retry</Button>} />
+    : <div role="status">Loading settings…</div>
+  return <form className={pfPolicyTab ? 'pf-policy-settings-page' : undefined} onSubmit={event => { if (managesOwnData || pfPolicyTab || tab === 'Salary Templates' || tab === 'Payslip Templates' && payslip.theme === excelPayslipTheme) event.preventDefault(); else void saveAll(event) }}>
     {tab === 'Organization' && <AntCard size="small" className="settings-panel organization-settings-page" aria-label="Organization configuration"><PageTabs items={organizationTabs} value={organizationTab} onChange={setOrganizationTab} label="Organization sections" />{renderOrganizationBody()}</AntCard>}
     {tab === 'Clients' && <>
       <AntCard size="small" className="settings-panel settings-table-panel" aria-label="Client master">
@@ -955,7 +1028,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
         <Form component="div" layout="vertical" className="settings-quick-form"><Form.Item label="Client logo"><FileDropZone accept="image/png,image/jpeg,image/webp" title="Drop client logo here or browse" hint="PNG, JPG or WebP, up to 1 MB." onFile={uploadClientLogo} preview={client.logoDataUrl ? <img className="client-logo-preview" src={client.logoDataUrl} alt="Client logo preview" /> : undefined} />{client.logoDataUrl && <Button className="client-logo-remove" onClick={() => setClient({ ...client, logoDataUrl: '' })}>Remove logo</Button>}</Form.Item><Form.Item label="Client name" required><Input value={client.name} onChange={event => setClient({ ...client, name: event.target.value })} /></Form.Item><Form.Item label="Code"><Input value={client.code} onChange={event => setClient({ ...client, code: event.target.value })} /></Form.Item><Form.Item label="Contact"><Input value={client.contactPerson} onChange={event => setClient({ ...client, contactPerson: event.target.value })} /></Form.Item><Form.Item label="Email"><Input value={client.email} onChange={event => setClient({ ...client, email: event.target.value })} /></Form.Item><Form.Item label="Phone"><Input value={client.phone} onChange={event => setClient({ ...client, phone: event.target.value })} /></Form.Item><Form.Item label="Address"><Input value={client.address} onChange={event => setClient({ ...client, address: event.target.value })} /></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => setClient(client0)}>Reset</Button><Button type="primary" onClick={saveClient}>{client.id ? 'Update client' : 'Add client'}</Button></Space></Row></Form>
       </Drawer>
     </>}
-    {tab === 'Work Locations' && <><AntCard size="small" className="settings-panel settings-table-panel" aria-label="Work-location master"><div className="component-table-head"><div><b>Work-location master</b><span>Maintain operating locations, state/city, GST, and primary-location flags.</span></div><Space className="settings-master-actions" size={8} wrap><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={downloadLocationTemplate}>Template</Button><label className={`settings-upload-action ${!locationTemplateDownloaded ? 'disabled' : ''}`} title={locationTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!locationTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadWorkLocations(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button type="primary" icon={<PlusOutlined />} onClick={() => { setLocation(newLocation); setLocationDrawerOpen(true) }}>Add work location</Button></Space></div><DataTable rows={locations.filter(item => item.isActive && (!requestedLocationClient || item.clientId === requestedLocationClient.id))} columns={[{ key: 'clientName', label: 'Client', value: row => row.clientName || clients.find(item => item.id === row.clientId)?.name || '-' }, { key: 'name', label: 'Location' }, { key: 'city', label: 'City' }, { key: 'state', label: 'State' }, { key: 'postalCode', label: 'PIN' }, { key: 'gstin', label: 'GST Number' }, { key: 'isPrimary', label: 'Primary', render: item => item.isPrimary ? 'Yes' : 'No' }]} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => { setLocation(row); setLocationDrawerOpen(true) }}>Edit</Button><Button size="small" danger onClick={() => void deleteLocation(row)}>Delete</Button></Space>} /></AntCard><Drawer className="settings-master-drawer work-location-master-drawer" title={<div className="settings-drawer-title"><span>Work location</span><h3>{location.id ? 'Edit work location' : 'Add work location'}</h3><p>Maintain client location, address, GST, and primary-location details.</p></div>} open={locationDrawerOpen} width={760} onClose={() => { setLocationDrawerOpen(false); setLocation(location0) }} destroyOnClose><Form component="div" layout="vertical" className="settings-quick-form"><Form.Item label="Client" required><Sel v={location.clientId || ''} set={applyLocationClient} a={clients.map(item => `${item.id}:${item.name}`)} /></Form.Item><Form.Item label="Location name" required><Input value={location.name} onChange={event => setLocation({ ...location, name: event.target.value })} placeholder="Head Office / WFH - Employee Name" /></Form.Item><Row gutter={12}><Col xs={24} md={12}><Form.Item label="State"><Sel v={location.state} set={value => setLocation({ ...location, state: value, city: '' })} a={stateOptions} /></Form.Item></Col><Col xs={24} md={12}><Form.Item label="City"><CitySelectWithAdd value={location.city} stateName={location.state} options={cityOptions(location.state)} onChange={value => setLocation({ ...location, city: value })} onAddCity={addCityForSelectedState} /></Form.Item></Col></Row><Row gutter={12}><Col xs={24} md={12}><Form.Item label="PIN code"><Input value={location.postalCode} onChange={event => setLocation({ ...location, postalCode: event.target.value.replace(/\D/g, '').slice(0, 6) })} /></Form.Item></Col><Col xs={24} md={12}><Form.Item label="GST Number"><Input value={location.gstin} onChange={event => setLocation({ ...location, gstin: event.target.value.toUpperCase() })} /></Form.Item></Col></Row><Form.Item label="Address"><Input value={location.address} onChange={event => setLocation({ ...location, address: event.target.value })} /></Form.Item><Form.Item><Space direction="vertical"><AntCheckbox checked={location.isPrimary} onChange={event => setLocation({ ...location, isPrimary: event.target.checked })}>Primary work location</AntCheckbox><AntCheckbox checked={location.isActive} onChange={event => setLocation({ ...location, isActive: event.target.checked })}>Active</AntCheckbox></Space></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => setLocation(location0)}>Reset</Button><Button type="primary" onClick={saveLocation}>{location.id ? 'Update location' : 'Add location'}</Button></Space></Row></Form></Drawer></>}
+    {tab === 'Work Locations' && <><AntCard size="small" className="settings-panel settings-table-panel" aria-label="Work-location master"><div className="component-table-head"><div><b>Work-location master</b><span>Maintain operating locations, state/city, GST, and primary-location flags.</span></div><Space className="settings-master-actions" size={8} wrap><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={downloadLocationTemplate}>Template</Button><label className={`settings-upload-action ${!locationTemplateDownloaded ? 'disabled' : ''}`} title={locationTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!locationTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadWorkLocations(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button type="primary" icon={<PlusOutlined />} onClick={() => { setLocation(newLocation); setLocationDrawerOpen(true) }}>Add work location</Button></Space></div><DataTable rows={locations.filter(item => item.isActive && (!requestedLocationClient || item.clientId === requestedLocationClient.id))} columns={[{ key: 'clientName', label: 'Client', value: row => row.clientName || clients.find(item => item.id === row.clientId)?.name || '-' }, { key: 'name', label: 'Location' }, { key: 'city', label: 'City' }, { key: 'state', label: 'State' }, { key: 'postalCode', label: 'PIN' }, { key: 'gstin', label: 'GST Number' }, { key: 'isPrimary', label: 'Primary', render: item => item.isPrimary ? 'Yes' : 'No' }]} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => { setLocation(row); setLocationDrawerOpen(true) }}>Edit</Button><Button size="small" danger onClick={() => void deleteLocation(row)}>Delete</Button></Space>} /></AntCard><Drawer className="settings-master-drawer work-location-master-drawer" title={<div className="settings-drawer-title"><span>Work location</span><h3>{location.id ? 'Edit work location' : 'Add work location'}</h3><p>Maintain client location, address, GST, and primary-location details.</p></div>} open={locationDrawerOpen} width={760} onClose={() => { setLocationDrawerOpen(false); setLocation(location0) }} destroyOnClose><Form component="div" layout="vertical" className="settings-quick-form"><Form.Item label="Client" required><Sel v={location.clientId || ''} set={applyLocationClient} a={clients.map(clientChoice)} /></Form.Item><Form.Item label="Location name" required><Input value={location.name} onChange={event => setLocation({ ...location, name: event.target.value })} placeholder="Head Office / WFH - Employee Name" /></Form.Item><Row gutter={12}><Col xs={24} md={12}><Form.Item label="State"><Sel v={location.state} set={value => setLocation({ ...location, state: value, city: '' })} a={stateOptions} /></Form.Item></Col><Col xs={24} md={12}><Form.Item label="City"><CitySelectWithAdd value={location.city} stateName={location.state} options={cityOptions(location.state)} onChange={value => setLocation({ ...location, city: value })} onAddCity={addCityForSelectedState} /></Form.Item></Col></Row><Row gutter={12}><Col xs={24} md={12}><Form.Item label="PIN code"><Input value={location.postalCode} onChange={event => setLocation({ ...location, postalCode: event.target.value.replace(/\D/g, '').slice(0, 6) })} /></Form.Item></Col><Col xs={24} md={12}><Form.Item label="GST Number"><Input value={location.gstin} onChange={event => setLocation({ ...location, gstin: event.target.value.toUpperCase() })} /></Form.Item></Col></Row><Form.Item label="Address"><Input value={location.address} onChange={event => setLocation({ ...location, address: event.target.value })} /></Form.Item><Form.Item><Space direction="vertical"><AntCheckbox checked={location.isPrimary} onChange={event => setLocation({ ...location, isPrimary: event.target.checked })}>Primary work location</AntCheckbox><AntCheckbox checked={location.isActive} onChange={event => setLocation({ ...location, isActive: event.target.checked })}>Active</AntCheckbox></Space></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => setLocation(location0)}>Reset</Button><Button type="primary" onClick={saveLocation}>{location.id ? 'Update location' : 'Add location'}</Button></Space></Row></Form></Drawer></>}
     {tab === 'Dropdown Masters' && <>
       <AntCard size="small" className="settings-panel settings-table-panel" aria-label="Dropdown value register">
         <div className="component-table-head">
@@ -977,7 +1050,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
         </Form>
         <DataTable rows={visibleDrops} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => editDrop(row)}>Edit</Button><Button size="small" danger onClick={() => void deleteDrop(row)}>Delete</Button></Space>} columns={[{ key: 'master', label: 'Master', value: row => isCityType(row.type) ? 'City' : row.type }, { key: 'clientId', label: 'Scope', value: row => Number(row.clientId || 0) ? clientName(row.clientId) : 'Global' }, { key: 'state', label: 'State', value: row => cityState(row.type) || '-' }, { key: 'value', label: 'Value' }, { key: 'isActive', label: 'Status', render: item => item.isActive ? 'Active' : 'Inactive' }]} />
       </AntCard>
-      <Drawer className="settings-master-drawer dropdown-master-drawer" title={<div className="settings-drawer-title"><span>{selectedDropType === 'Work Week' ? 'Work week pattern' : 'Dropdown master'}</span><h3>{drop.id ? 'Edit dropdown value' : 'Add dropdown value'}</h3><p>{selectedDropType === 'Work Week' ? 'Maintain weekly off rules used by attendance policy, review, payroll attendance, and reports.' : 'Maintain reusable values for departments, designations, states, cities, grades, travel types, and work weeks.'}</p></div>} open={dropDrawerOpen} width={760} onClose={() => { setDropDrawerOpen(false); setDrop({ ...drop0, type: drop.type, clientId: isClientScopedDropdown(drop.type) ? drop.clientId : 0 }); setDropState('') }} destroyOnClose><Form component="div" layout="vertical" className="settings-quick-form"><Form.Item label="Master type" required><Sel v={selectedDropType} set={changeDropType} a={dropTypes} /></Form.Item>{isClientScopedDropdown(selectedDropType) && <Form.Item label="Client" required><Sel v={drop.clientId || ''} set={value => setDrop({ ...drop, clientId: Number(refId(value) || 0) })} a={clients.map(item => `${item.id}:${item.name}`)} /></Form.Item>}{selectedDropType === 'City' && <Form.Item label="State" required><Sel v={dropState} set={value => { setDropState(value); setDrop({ ...drop, type: 'City' }) }} a={stateOptions} /></Form.Item>}{selectedDropType === 'Work Week' ? <WorkWeekMasterFields drop={drop} setDrop={setDrop} /> : <Form.Item label={selectedDropType === 'City' ? 'City' : 'Value'} required><Input value={drop.value} onChange={event => setDrop({ ...drop, value: event.target.value })} placeholder={selectedDropType === 'City' ? 'e.g. Bengaluru / Pune' : selectedDropType === 'Employee Grade' ? 'e.g. G1 / Supervisor' : selectedDropType === 'Travel Type' ? 'e.g. Domestic official travel' : 'e.g. Finance / Manager'} /></Form.Item>}<Form.Item><AntCheckbox checked={drop.isActive} onChange={event => setDrop({ ...drop, isActive: event.target.checked })}>Active</AntCheckbox></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => { setDrop({ ...drop0, type: drop.type, clientId: isClientScopedDropdown(drop.type) ? drop.clientId : 0 }); setDropState('') }}>Reset</Button><Button type="primary" style={drop.id ? { background: '#f59e0b', borderColor: '#f59e0b' } : undefined} onClick={saveDrop}>{drop.id ? 'Update value' : 'Add value'}</Button></Space></Row></Form></Drawer>
+      <Drawer className="settings-master-drawer dropdown-master-drawer" title={<div className="settings-drawer-title"><span>{selectedDropType === 'Work Week' ? 'Work week pattern' : 'Dropdown master'}</span><h3>{drop.id ? 'Edit dropdown value' : 'Add dropdown value'}</h3><p>{selectedDropType === 'Work Week' ? 'Maintain weekly off rules used by attendance policy, review, payroll attendance, and reports.' : 'Maintain reusable values for departments, designations, states, cities, grades, travel types, and work weeks.'}</p></div>} open={dropDrawerOpen} width={760} onClose={() => { setDropDrawerOpen(false); setDrop({ ...drop0, type: drop.type, clientId: isClientScopedDropdown(drop.type) ? drop.clientId : 0 }); setDropState('') }} destroyOnClose><Form component="div" layout="vertical" className="settings-quick-form"><Form.Item label="Master type" required><Sel v={selectedDropType} set={changeDropType} a={dropTypes} /></Form.Item>{isClientScopedDropdown(selectedDropType) && <Form.Item label="Client" required><Sel v={drop.clientId || ''} set={value => setDrop({ ...drop, clientId: Number(refId(value) || 0) })} a={clients.map(clientChoice)} /></Form.Item>}{selectedDropType === 'City' && <Form.Item label="State" required><Sel v={dropState} set={value => { setDropState(value); setDrop({ ...drop, type: 'City' }) }} a={stateOptions} /></Form.Item>}{selectedDropType === 'Work Week' ? <WorkWeekMasterFields drop={drop} setDrop={setDrop} /> : <Form.Item label={selectedDropType === 'City' ? 'City' : 'Value'} required><Input value={drop.value} onChange={event => setDrop({ ...drop, value: event.target.value })} placeholder={selectedDropType === 'City' ? 'e.g. Bengaluru / Pune' : selectedDropType === 'Employee Grade' ? 'e.g. G1 / Supervisor' : selectedDropType === 'Travel Type' ? 'e.g. Domestic official travel' : 'e.g. Finance / Manager'} /></Form.Item>}<Form.Item><AntCheckbox checked={drop.isActive} onChange={event => setDrop({ ...drop, isActive: event.target.checked })}>Active</AntCheckbox></Form.Item><Divider /><Row justify="end"><Space><Button onClick={() => { setDrop({ ...drop0, type: drop.type, clientId: isClientScopedDropdown(drop.type) ? drop.clientId : 0 }); setDropState('') }}>Reset</Button><Button type="primary" style={drop.id ? { background: '#f59e0b', borderColor: '#f59e0b' } : undefined} onClick={saveDrop}>{drop.id ? 'Update value' : 'Add value'}</Button></Space></Row></Form></Drawer>
     </>}
     {tab === 'Tax Engine' && <TaxEngineManager clients={clients} onMessage={notifyFromChild} mode="company" />}
     {tab === 'Statutory Setup' && <><PageTabs items={statutoryTabs} value={statutoryTab} onChange={setStatutoryTab} label="Statutory setup sections" />{statutoryTab === 'Income Tax Rules' ? <TaxEngineManager clients={clients} onMessage={notifyFromChild} mode="statutory" /> : statutoryTab === 'PF Policy Versions' ? <PfPolicyVersions showFixedClientChip={!clientScopedAdmin} clients={clients} components={setup.salaryComponents} templates={setup.salaryStructures} onMessage={notifyFromChild} /> : renderProfessionalTaxSetup()}</>}
@@ -989,27 +1062,35 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     {tab === 'Attachments' && <AttachmentSettings />}
     {tab === 'Salary Components' && <Card t="Salary components"><PageTabs items={componentTabs} value={componentTab} onChange={item => { setComponentTab(item); setComponent(normalizeComponentForUi({ ...component0, category: item })); setComponentDrawerOpen(false) }} label="Salary component categories" getLabel={item => `${item}s`} /><div className="component-table-head"><div><b>{componentTab}s</b><span>Maintain salary component formulas, flags, and payroll order.</span></div><Space className="settings-master-actions" size={8} wrap><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={downloadSalaryComponentTemplate}>Template</Button><label className={`settings-upload-action ${!componentTemplateDownloaded ? 'disabled' : ''}`} title={componentTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!componentTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadSalaryComponents(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button type="primary" icon={<PlusOutlined />} disabled={componentSaving} onClick={openNewComponent}>Add {componentTab}</Button></Space></div><DataTable rows={componentRows} actions={row => <span className="row-actions"><button type="button" onClick={() => editComponent(row)}>Edit</button><button type="button" className="danger" disabled={componentSaving} onClick={() => void deleteComponent(row)}>Delete</button></span>} emptyText={`No ${componentTab.toLowerCase()} components configured yet.`} exportFileName={`salary-${componentTab.toLowerCase()}-components`} columns={[{ key: 'code', label: 'Code' }, { key: 'name', label: 'Name' }, { key: 'componentType', label: 'Type' }, { key: 'componentRole', label: 'Role' }, { key: 'statutoryType', label: 'Statutory', render: item => item.statutoryType && item.statutoryType !== 'None' ? item.statutoryType : '-' }, { key: 'calculationType', label: 'Calculation' }, { key: 'payType', label: 'Pay Type' }, { key: 'priority', label: 'Priority' }, { key: 'locked', label: 'Lock', render: item => componentUsed(item.id, setup) ? 'Locked' : 'Open' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} /></Card>}
     {tab === 'Salary Templates' && <SalaryTemplateDesigner fixedClientId={clientScopedAdmin ? Number(session?.user.clientId || 0) : undefined} clients={clients} employees={employees} locations={locations} canCreateComponentMasters={!!session?.user.permissions.includes('settings.manage') && !isSelectedClientUser(session.originalUser)} components={setup.salaryComponents} structure={structure} setStructure={setStructure} templates={salaryTemplatesForVisibleClients(setup.salaryStructures, activeClientIds)} saveTemplate={saveStructure} saving={templateSaving} templateDownloaded={salaryTemplateDownloaded} onDownloadTemplate={downloadSalaryTemplateTemplate} onUploadTemplate={uploadSalaryTemplates} />}
-    {tab === 'Payslip Templates' && <Card t="Payslip templates">
-      <section className="payslip-template-settings-form">
+    {tab === 'Payslip Templates' && <AntCard size="small" className="settings-panel payslip-settings-workspace">
+      <PageHeaderPortal slot="payslip-settings-client-controls"><label className="payslip-settings-client-control"><span>Client</span><AntSelect aria-label="Payslip setup client" value={payslipClientId || undefined} disabled={payslipSaving || !payslipReady || !!payslipFixedClientId} showSearch optionFilterProp="searchLabel" optionLabelProp="selectedLabel" placeholder="Select client" popupClassName="payslip-settings-client-popup" options={clients.map(item => ({ value: item.id, searchLabel: clientSearchText(item.name, item.code), selectedLabel: <span className={`payslip-settings-client-label${payslipReadyClientIds.has(item.id) ? ' is-ready' : ''}`}>{item.name}</span>, label: <span className={`payslip-settings-client-option${payslipReadyClientIds.has(item.id) ? ' is-ready' : ''}`}><ClientOptionName name={item.name} code={item.code} /><small>{payslipReadyClientIds.has(item.id) ? 'Salary template configured' : 'Create salary template first'}</small></span> }))} onChange={value => selectPayslipClient(String(value))} /></label></PageHeaderPortal>
+      <PageHeaderPortal slot="payslip-settings-page-controls"><Space wrap>{payslipFixedClientId > 0 && <Tag color={canCreatePayslip ? "green" : undefined}>{canCreatePayslip ? "Salary template configured" : "Salary template needed"}</Tag>}<Button icon={<CopyOutlined />} disabled={payslipSaving || !canCreatePayslip || !setup.payslipTemplates.length} onClick={() => setPayslipCopyDialog({})}>Create similar</Button><Button type="primary" icon={<PlusOutlined />} disabled={payslipSaving || !canCreatePayslip} onClick={() => { setPayslipCopySeed(null); setPayslip(newExcelPayslipDraft(String(payslipClientId))); setPayslipDesignRevision(current => current + 1) }}>New template</Button></Space></PageHeaderPortal>
+      {!payslipClientId && <Alert type="info" showIcon message="Select a client above to configure its payslip." />}
+      {payslipClientId > 0 && !payslipReadyClientIds.has(payslipClientId) && <Alert type="info" showIcon message="Create this client’s salary template first" description="Payslip fields and amounts come after its salary template is configured." action={<Button href={`/settings/salary-templates?clientId=${payslipClientId}`}>Open salary templates</Button>} />}
+      {payslipClientId > 0 && (canCreatePayslip || payslip.id > 0) && <section className="payslip-template-settings-form">
         <div className="grid">
-          <F l="Client"><SearchSelect value={payslip.clientId} disabled={payslipSaving} onChange={selectPayslipClient} options={[{ value: '', label: 'Select client' }, ...clients.map(item => ({ value: item.id, label: item.name }))]} /></F>
           <F l="Template name"><input disabled={payslipSaving} value={payslip.name} onChange={event => setPayslip({ ...payslip, name: event.target.value })} /></F>
-          <F l="Theme"><SearchSelect value={payslip.theme} disabled={payslipSaving || managedPayslip} onChange={value => setPayslip({ ...payslip, theme: value })} options={['Classic', 'Modern', 'Compact', excelPayslipTheme].map(value => ({ value, label: value }))} /></F>
+          <F l="Theme"><SearchSelect value={payslip.theme} disabled={payslipSaving || managedPayslip} onChange={value => { setPayslipCopySeed(null); setPayslip({ ...payslip, theme: value }) }} options={['Classic', 'Modern', 'Compact', excelPayslipTheme].map(value => ({ value, label: value }))} /></F>
           <F l="Show logo"><input type="checkbox" disabled={payslipSaving} checked={payslip.showLogo} onChange={event => setPayslip({ ...payslip, showLogo: event.target.checked })} /></F>
           <F l="Show client"><input type="checkbox" disabled={payslipSaving} checked={payslip.showClient} onChange={event => setPayslip({ ...payslip, showClient: event.target.checked })} /></F>
-          {payslip.theme !== excelPayslipTheme && <F l="Show YTD"><input type="checkbox" disabled={payslipSaving} checked={payslip.showYtd} onChange={event => setPayslip({ ...payslip, showYtd: event.target.checked })} /></F>}
+          <F l="Show YTD"><input type="checkbox" disabled={payslipSaving} checked={payslip.showYtd} onChange={event => setPayslip({ ...payslip, showYtd: event.target.checked })} /></F>
           <F l="Show bank info"><input type="checkbox" disabled={payslipSaving} checked={payslip.showBank} onChange={event => setPayslip({ ...payslip, showBank: event.target.checked })} /></F>
           <F l="Active"><input type="checkbox" disabled={payslipSaving} checked={payslip.active} onChange={event => setPayslip({ ...payslip, active: event.target.checked })} /></F>
           <F l="Footer note" w><input disabled={payslipSaving} value={payslip.note} onChange={event => setPayslip({ ...payslip, note: event.target.value })} /></F>
           {payslip.theme !== excelPayslipTheme && <button type="button" disabled={payslipSaving || !payslipReady} onClick={() => void savePayslip()}>{payslipSaving ? 'Saving...' : 'Add / Update template'}</button>}
-          <Button disabled={payslipSaving} onClick={() => setPayslip(newExcelPayslipDraft(clientScopedAdmin ? String(session?.user.clientId || '') : refId(payslip.clientId)))}>New template</Button>
         </div>
         {payslip.theme === excelPayslipTheme
-          ? <ExcelPayslipDesignEditor key={refId(payslip.clientId) + ':' + payslip.id + ':' + payslipDesignRevision} template={{ ...payslip, clientId: Number(refId(payslip.clientId)) || 0, theme: 'Excel Payslip' }} onBusyChange={setPayslipSaving} onSaved={saved => void onPayslipDesignSaved(saved)} />
-          : <div className={`payslip-preview ${payslip.theme.toLowerCase()}`}><header>{payslip.showLogo && <b className={org.logoDataUrl ? 'payslip-logo-mark' : ''}>{org.logoDataUrl ? <img src={org.logoDataUrl} alt="Organization logo" /> : 'P'}</b>}<div><h3>{org.name || 'Your Organization'}</h3><p>Payslip for June 2026</p>{payslip.showClient && <small>Client: {clientName(payslip.clientId)}</small>}</div></header><section><div><span>Employee</span><strong>Demo Employee</strong></div><div><span>Designation</span><strong>Software Engineer</strong></div><div><span>Pay Days</span><strong>30</strong></div><div><span>Bank</span><strong>{payslip.showBank ? 'HDFC ****1234' : '-'}</strong></div></section><table><thead><tr><th>Earnings</th><th>Amount</th><th>Deductions</th><th>Amount</th></tr></thead><tbody>{previewLines.map((item, index) => <tr key={item.componentRow.id}><td>{item.componentRow.category !== 'Deduction' ? item.componentRow.name : ''}</td><td>{item.componentRow.category !== 'Deduction' ? money(item.amount) : ''}</td><td>{item.componentRow.category === 'Deduction' ? item.componentRow.name : index === 0 ? 'Professional Tax' : ''}</td><td>{item.componentRow.category === 'Deduction' ? money(item.amount) : index === 0 ? '200' : ''}</td></tr>)}</tbody></table>{payslip.showYtd && <p className="ytd">YTD Gross: Rs {money(monthly * 6)} | YTD Tax: Rs {money(1200)}</p>}<footer>{payslip.note}</footer></div>}
-      </section>
-      <DataTable rows={setup.payslipTemplates.filter(item => !item.clientId || activeClientIds.has(refId(item.clientId)))} onEdit={row => { if (!payslipSaving) setPayslip(row) }} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client', value: row => clientName(row.clientId) }, { key: 'theme', label: 'Theme' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} />
-    </Card>}
+          ? <ExcelPayslipDesignEditor key={refId(payslip.clientId) + ':' + payslip.id + ':' + payslipDesignRevision} template={{ ...payslip, clientId: payslipClientId, theme: 'Excel Payslip' }} copySeed={payslip.id === 0 ? payslipCopySeed ?? undefined : undefined} salaryTemplates={payslipSalaryTemplates} components={setup.salaryComponents} clients={clients} organizationName={org.name} logoDataUrl={org.logoDataUrl} onBusyChange={setPayslipSaving} onSaved={saved => void onPayslipDesignSaved(saved)} />
+           : <>
+            <div className="payslip-design-simulator-toolbar"><label><span>Salary template for simulation</span><AntSelect aria-label="Legacy payslip simulation salary template" value={legacyPayslipSalary ? String(legacyPayslipSalary.id) : undefined} showSearch optionFilterProp="label" placeholder="Select salary template / location" options={payslipSalaryTemplates.map(value => ({ value: String(value.id), label: value.name }))} onChange={setLegacyPayslipSalaryId} /></label><Button type="primary" disabled={!legacyPayslipSalary || payslipSaving} onClick={() => setLegacyPayslipSimulationOpen(true)}>Simulate & preview payslip</Button></div>
+            <details className="payslip-legacy-layout-sample"><summary>Legacy layout sample (synthetic values)</summary><div className={`payslip-preview ${payslip.theme.toLowerCase()}`}><header>{payslip.showLogo && <b className={org.logoDataUrl ? 'payslip-logo-mark' : ''}>{org.logoDataUrl ? <img src={org.logoDataUrl} alt="Organization logo" /> : 'P'}</b>}<div><h3>{org.name || 'Your Organization'}</h3><p>Payslip for June 2026</p>{payslip.showClient && <small>Client: {clientName(payslip.clientId)}</small>}</div></header><section><div><span>Employee</span><strong>Demo Employee</strong></div><div><span>Designation</span><strong>Software Engineer</strong></div><div><span>Pay Days</span><strong>30</strong></div><div><span>Bank</span><strong>{payslip.showBank ? 'HDFC ****1234' : '-'}</strong></div></section><table><thead><tr><th>Earnings</th><th>Amount</th><th>Deductions</th><th>Amount</th></tr></thead><tbody>{previewLines.map((item, index) => <tr key={item.componentRow.id}><td>{item.componentRow.category !== 'Deduction' ? item.componentRow.name : ''}</td><td>{item.componentRow.category !== 'Deduction' ? money(item.amount) : ''}</td><td>{item.componentRow.category === 'Deduction' ? item.componentRow.name : index === 0 ? 'Professional Tax' : ''}</td><td>{item.componentRow.category === 'Deduction' ? money(item.amount) : index === 0 ? '200' : ''}</td></tr>)}</tbody></table>{payslip.showYtd && <p className="ytd">YTD Gross: Rs {money(monthly * 6)} | YTD Tax: Rs {money(1200)}</p>}<footer>{payslip.note}</footer></div></details>
+            {legacyPayslipSimulationOpen && legacyPayslipSalary && <PayrollSimulation template={legacyPayslipSalary} components={setup.salaryComponents} clients={clients} fixedClientId={payslipClientId} onClose={() => setLegacyPayslipSimulationOpen(false)} />}
+          </>}
+      </section>}
+      <Divider orientation="left">Saved payslip designs</Divider>
+      <DataTable rows={setup.payslipTemplates.filter(item => (!item.clientId || activeClientIds.has(refId(item.clientId))) && (!payslipClientId || Number(refId(item.clientId)) === payslipClientId))} actionsWidth={235} actions={row => <Space wrap><Button size="small" disabled={payslipSaving} onClick={() => { setPayslipCopySeed(null); setPayslip(row); setPayslipDesignRevision(current => current + 1) }}>Edit</Button><Button size="small" icon={<CopyOutlined />} disabled={payslipSaving || !canCreatePayslip} onClick={() => setPayslipCopyDialog({ sourceId: row.id })}>Create similar</Button></Space>} columns={[{ key: 'name', label: 'Template' }, { key: 'clientId', label: 'Client', value: row => clientName(row.clientId) }, { key: 'theme', label: 'Theme' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} />
+      <PayslipTemplateCopyDialog open={!!payslipCopyDialog} initialSourceId={payslipCopyDialog?.sourceId} templates={setup.payslipTemplates.filter(item => !item.clientId || activeClientIds.has(refId(item.clientId)))} clients={clients} targetClientIds={[...payslipReadyClientIds]} targetClientId={payslipClientId} fixedTargetClientId={payslipFixedClientId || undefined} onClose={() => setPayslipCopyDialog(null)} onUse={(draft, seed) => { setPayslip(draft); setPayslipCopySeed(seed); setPayslipDesignRevision(current => current + 1); setPayslipCopyDialog(null); notify('Independent payslip draft created. Review it and save, or edit it first.') }} />
+    </AntCard>}
     {!pfPolicyTab && !['Clients', 'Client Billing Configuration', 'Travel & Expense Policies', 'Notifications', 'AI Integration', 'Attendance API Integrator', 'Scheduled Jobs', 'Attachments', 'Salary Components', 'Salary Templates', 'Payslip Templates', 'Work Locations', 'Dropdown Masters', 'ESS Settings'].includes(tab) && <div className="actions"><p>Structures are client-wise. Components are global.</p><button disabled={saving}>{saving ? 'Saving...' : 'Save settings'}</button></div>}
     <BulkUploadProgressModal open={clientUpload.open} title="Client bulk upload" state={clientUpload.state} percent={clientUpload.percent} summary={clientUpload.summary} onClose={() => setClientUpload(current => ({ ...current, open: false }))} />
     <BulkUploadProgressModal open={locationUpload.open} title="Work-location bulk upload" state={locationUpload.state} percent={locationUpload.percent} summary={locationUpload.summary} onClose={() => setLocationUpload(current => ({ ...current, open: false }))} />

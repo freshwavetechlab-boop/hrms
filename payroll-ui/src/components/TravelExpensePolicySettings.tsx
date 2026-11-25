@@ -1,3 +1,4 @@
+import { clientChoice } from './ClientOption'
 import { useEffect, useMemo, useState } from 'react'
 import { DeleteOutlined } from '@ant-design/icons'
 import { Button, Card, Checkbox, Col, Drawer, Form, Input, InputNumber, Popconfirm, Radio, Row, Select, Space, Switch, Tabs, Tag } from 'antd'
@@ -43,7 +44,7 @@ export default function TravelExpensePolicySettings() {
   const load = async () => {
     const [travelSetup, clientRows, locationRows, employeeRows, dropdownRows, workflowRows] = await Promise.all([
       getTravelExpenseSetup(),
-      getClients(),
+      getClients(true),
       getWorkLocations(),
       getEmployees(),
       getDropdowns(),
@@ -171,7 +172,7 @@ export default function TravelExpensePolicySettings() {
     </Card>
     <Drawer className="settings-master-drawer travel-policy-drawer" title={drawerTitle(drawer)} open={drawer !== null} width="min(980px, 96vw)" destroyOnClose onClose={closeDrawer} footer={<Space><Button onClick={closeDrawer}>Cancel</Button><Button type="primary" onClick={() => drawer === 'clientSetting' ? void saveClientSettingRow() : drawer === 'policy' ? void savePolicyRow() : drawer === 'assignment' ? void saveAssignmentRow() : drawer === 'rule' ? void saveRuleRow() : void saveCategoryRow()}>Save</Button></Space>}>
       {drawer === 'clientSetting' && <Form layout="vertical" requiredMark={false}><Row gutter={12}>
-        <Col xs={24} md={10}><Form.Item label="Client"><SearchSelect value={clientSetting.clientId} onChange={value => setClientSetting({ ...clientSetting, clientId: Number(value) })} options={selectOptions(clients.map(item => ({ value: item.id, label: item.name })), 'Select client', 0)} /></Form.Item></Col>
+        <Col xs={24} md={10}><Form.Item label="Client"><SearchSelect value={clientSetting.clientId} onChange={value => setClientSetting({ ...clientSetting, clientId: Number(value) })} options={selectOptions(clients.map(clientChoice), 'Select client', 0)} /></Form.Item></Col>
         <Col xs={24} md={6}><Form.Item label="Visible in ESS"><Switch checked={clientSetting.isEnabled} onChange={value => setClientSetting({ ...clientSetting, isEnabled: value })} /></Form.Item></Col>
         <Col xs={24} md={4}><Form.Item label="Effective from"><Input type="date" value={clientSetting.effectiveFrom || ''} onChange={event => setClientSetting({ ...clientSetting, effectiveFrom: event.target.value || null })} /></Form.Item></Col>
         <Col xs={24} md={4}><Form.Item label="Effective to"><Input type="date" value={clientSetting.effectiveTo || ''} onChange={event => setClientSetting({ ...clientSetting, effectiveTo: event.target.value || null })} /></Form.Item></Col>
@@ -182,7 +183,7 @@ export default function TravelExpensePolicySettings() {
       {drawer === 'policy' && <Form layout="vertical" requiredMark={false}><Row gutter={12}>
         <Col xs={24} md={8}><Form.Item label="Policy code"><Input value={policy.policyCode} onChange={event => setPolicy({ ...policy, policyCode: event.target.value.toUpperCase() })} /></Form.Item></Col>
         <Col xs={24} md={16}><Form.Item label="Policy name"><Input value={policy.policyName} onChange={event => setPolicy({ ...policy, policyName: event.target.value })} /></Form.Item></Col>
-        <Col xs={24} md={8}><Form.Item label="Company"><SearchSelect value={policy.companyId} onChange={value => setPolicy({ ...policy, companyId: Number(value) })} options={selectOptions(clients.map(item => ({ value: item.id, label: item.name })), 'Select company', 0)} /></Form.Item></Col>
+        <Col xs={24} md={8}><Form.Item label="Company"><SearchSelect value={policy.companyId} onChange={value => setPolicy({ ...policy, companyId: Number(value) })} options={selectOptions(clients.map(clientChoice), 'Select company', 0)} /></Form.Item></Col>
         <Col xs={24} md={8}><Form.Item label="Business unit"><Input value={policy.businessUnit} onChange={event => setPolicy({ ...policy, businessUnit: event.target.value })} /></Form.Item></Col>
         <Col xs={24} md={8}><Form.Item label="Status"><Select value={policy.status} onChange={value => setPolicy({ ...policy, status: value })} options={['Draft', 'Active', 'Inactive'].map(value => ({ value, label: value }))} /></Form.Item></Col>
         <Col xs={24} md={8}><Form.Item label="Effective from"><Input type="date" value={policy.effectiveFrom} onChange={event => setPolicy({ ...policy, effectiveFrom: event.target.value })} /></Form.Item></Col>
@@ -192,7 +193,7 @@ export default function TravelExpensePolicySettings() {
       </Row></Form>}
       {drawer === 'assignment' && <Form layout="vertical" requiredMark={false}><Row gutter={12}>
         <Col xs={24} md={12}><Form.Item label="Policy"><SearchSelect value={assignment.policyId} onChange={value => { const next = activePolicies.find(item => item.id === Number(value)); setAssignment({ ...assignment, policyId: Number(value), companyId: next?.companyId || assignment.companyId }) }} options={policyOptions} /></Form.Item></Col>
-        <Col xs={24} md={12}><Form.Item label="Company"><SearchSelect value={assignment.companyId} onChange={value => setAssignment({ ...assignment, companyId: Number(value), branchId: null, employeeId: null })} options={selectOptions(clients.map(item => ({ value: item.id, label: item.name })), 'Policy company', selectedPolicy?.companyId ?? 0)} /></Form.Item></Col>
+        <Col xs={24} md={12}><Form.Item label="Company"><SearchSelect value={assignment.companyId} onChange={value => setAssignment({ ...assignment, companyId: Number(value), branchId: null, employeeId: null })} options={selectOptions(clients.map(clientChoice), 'Policy company', selectedPolicy?.companyId ?? 0)} /></Form.Item></Col>
         <Col xs={24} md={8}><Form.Item label="Branch / location"><SearchSelect value={assignment.branchId || 0} onChange={value => setAssignment({ ...assignment, branchId: Number(value) || null })} options={selectOptions(companyLocations.map(item => ({ value: item.id, label: item.name })), 'All branches', 0)} /></Form.Item></Col>
         <Col xs={24} md={8}><Form.Item label="Department"><SearchSelect value={assignment.department} onChange={value => setAssignment({ ...assignment, department: String(value) })} options={[{ value: '', label: 'All departments' }, ...departments.map(value => ({ value, label: value }))]} /></Form.Item></Col>
         <Col xs={24} md={8}><Form.Item label="Designation"><SearchSelect value={assignment.designation} onChange={value => setAssignment({ ...assignment, designation: String(value) })} options={[{ value: '', label: 'All designations' }, ...designations.map(value => ({ value, label: value }))]} /></Form.Item></Col>
@@ -222,7 +223,7 @@ export default function TravelExpensePolicySettings() {
         <Col xs={24}><Form.Item label="Additional config JSON"><Input.TextArea rows={5} value={rule.configJson} onChange={event => setRule({ ...rule, configJson: event.target.value })} placeholder={sampleConfig(rule.ruleType)} /></Form.Item></Col>
       </Row></Form>}
       {drawer === 'category' && <Form layout="vertical" requiredMark={false}><Row gutter={12}>
-        {categoryMode === 'clientSetting' && <Col xs={24} md={8}><Form.Item label="Client"><SearchSelect value={category.clientId} onChange={value => setCategory({ ...category, clientId: Number(value) })} options={selectOptions(clients.map(item => ({ value: item.id, label: item.name })), 'Select client', 0)} /></Form.Item></Col>}
+        {categoryMode === 'clientSetting' && <Col xs={24} md={8}><Form.Item label="Client"><SearchSelect value={category.clientId} onChange={value => setCategory({ ...category, clientId: Number(value) })} options={selectOptions(clients.map(clientChoice), 'Select client', 0)} /></Form.Item></Col>}
         <Col xs={24} md={8}><Form.Item label="Record type"><Select disabled value={categoryMode === 'globalHeader' || category.isClaimHeader ? 'Header' : 'Category'} options={[{ value: 'Header', label: 'Expense header' }, { value: 'Category', label: 'Line category' }]} /></Form.Item></Col>
         {(categoryMode === 'globalCategory' || (!category.isClaimHeader && categoryMode === 'clientSetting')) && <Col xs={24} md={8}><Form.Item label="Expense header"><SearchSelect disabled={categoryMode === 'clientSetting'} value={category.parentId || 0} onChange={value => { const parent = categoryHeaders.find(item => item.id === Number(value)); setCategory({ ...category, isClaimHeader: false, parentId: Number(value) || null, expenseType: parent?.expenseType || parent?.categoryName || category.expenseType, parentName: parent?.categoryName || '' }) }} options={selectOptions(categoryHeaders.map(item => ({ value: item.id, label: item.categoryName })), 'Select header', 0)} /></Form.Item></Col>}
         <Col xs={24} md={8}><Form.Item label="Code"><Input disabled={categoryMode === 'clientSetting'} value={category.categoryCode} onChange={event => setCategory({ ...category, categoryCode: event.target.value.toUpperCase().replace(/\s+/g, '_') })} /></Form.Item></Col>

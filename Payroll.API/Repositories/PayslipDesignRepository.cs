@@ -78,7 +78,8 @@ WHERE b.client_id=@ClientId AND b.id=@Id"+(locked?" FOR UPDATE":""),new{ClientId
         var metadata=await MetadataAsync(db,tx,await SourceAsync(db,request.ClientId,request.SourceBatchId,tx),request.ClientId);
         var codes=await CodesAsync(db,tx);
         var tokens=NativePayslipMonthlyComponentInformation.CatalogueTokens(codes,configuration.GetValue<bool>(NativePayslipMonthlyComponentInformation.WriterFlag));
-        var result=new PayslipDesignPreview(request.ClientId,request.SourceBatchId,metadata.Hash,metadata.Batch.SimpleLayout,metadata.Fields,codes,tokens);await tx.CommitAsync();return result;
+        var result=new PayslipDesignPreview(request.ClientId,request.SourceBatchId,metadata.Hash,metadata.Batch.SimpleLayout,metadata.Fields,codes,tokens)
+            { KeepMappedZeroRows=NativePayslipDesignService.SourceKeepsMappedZeroRows(metadata.Batch.SimpleLayout) };await tx.CommitAsync();return result;
     }
     private async Task<PayslipDesignProfile?> ReadProfileAsync(MySqlConnection db,int clientId,long templateId,MySqlTransaction? tx=null)
     {
@@ -94,13 +95,14 @@ WHERE b.client_id=@ClientId AND b.id=@Id"+(locked?" FOR UPDATE":""),new{ClientId
         await using var db=Db();await db.OpenAsync();var template=await db.QuerySingleOrDefaultAsync<PayslipDesignTemplate>("SELECT * FROM paysliptemplates WHERE Id=@Id AND ClientId=@ClientId",new{Id=id,ClientId=clientId});
         if(template is null)return null;var profile=await ReadProfileAsync(db,clientId,id);if(profile is null)return null;
         NativePayslipDesignService.ValidateProfile(profile,template);
-        return new{Template=template,profile.SourceBatchId,profile.SourceHash,ProfileHash=profile.RequestHash,profile.AmountDecimalPlaces,profile.Fields,profile.PayPeriods};
+        return new{Template=template,profile.SourceBatchId,profile.SourceHash,profile.SourceKind,profile.SimpleLayout,profile.KeepMappedZeroRows,ProfileHash=profile.RequestHash,profile.AmountDecimalPlaces,profile.Fields,profile.PayPeriods};
     }
     public async Task<PayslipDesignTemplate> SaveAsync(PayslipDesignSaveRequest request,AuthUser actor)
     {
         if(request.Template is null || request.Fields is null || request.Template.Note is null || request.SourceHash is null)
             throw new InvalidOperationException("Supply a complete reviewed payslip presentation request.");
         var template=JsonSerializer.Deserialize<PayslipDesignTemplate>(JsonSerializer.Serialize(request.Template,Json),Json)!;
+        var designSourceKind=request.SourceKind??"ExcelSource";
         var isNew=template.Id==0;
         if(!CanManage(actor,template.ClientId))throw new UnauthorizedAccessException();
         if(!request.Reviewed || !Guid.TryParse(request.RequestId,out _) || template.Id<0 || template.Theme!=NativePayslipDesignService.Theme || string.IsNullOrWhiteSpace(template.Name) || template.Name.Length>200 || template.Note.Length>120)
@@ -118,9 +120,10 @@ WHERE b.client_id=@ClientId AND b.id=@Id"+(locked?" FOR UPDATE":""),new{ClientId
             if(prior is null || prior.RequestHash!=requestHash)throw new InvalidOperationException("This request reference was used for a different presentation review.");
             var saved=await db.QuerySingleAsync<PayslipDesignTemplate>("SELECT * FROM paysliptemplates WHERE Id=@Id AND ClientId=@ClientId",new{Id=prior.TemplateId,template.ClientId},tx);await tx.CommitAsync();return saved;
         }
+        if(isNew || designSourceKind==CorePayrollPayslipDesign.SourceKind)await RequireClientSalaryTemplateAsync(db,tx,template.ClientId);
         NativePayslipMonthlyComponentInformation.RequireWriter(request.Fields,configuration.GetValue<bool>(NativePayslipMonthlyComponentInformation.WriterFlag));
-        var metadata=await MetadataAsync(db,tx,await SourceAsync(db,template.ClientId,request.SourceBatchId,tx,true),template.ClientId);
-        if(request.SourceHash!=metadata.Hash)throw new InvalidOperationException("The saved Excel source changed. Reload and review its current presentation mapping.");
+        var metadata=await DesignMetadataAsync(db,tx,request,true);
+        if(designSourceKind!="CorePayroll" && request.SourceHash!=metadata.Hash)throw new InvalidOperationException("The design schema or saved source changed. Reload and review its current presentation mapping.");
         if(request.Fields.Count!=metadata.Fields.Count || !request.Fields.OrderBy(f=>f.SourceColumn).Select(f=>(f.SourceColumn,f.Label,f.Kind)).SequenceEqual(metadata.Fields.OrderBy(f=>f.SourceColumn).Select(f=>(f.SourceColumn,f.Label,f.Kind))))
             throw new InvalidOperationException("The reviewed fields must retain every saved source column, label and kind; use visibility to hide a field.");
         PayslipDesignTemplate? originalTemplate=null;PayslipDesignProfile? existingProfile=null;
@@ -132,6 +135,8 @@ WHERE b.client_id=@ClientId AND b.id=@Id"+(locked?" FOR UPDATE":""),new{ClientId
             if((existingProfile?.RequestHash??"")!=request.ExistingProfileHash)
                 throw new InvalidOperationException("This payslip design changed after you opened it. Reload and review the current design before saving.");
             if(existingProfile is not null)NativePayslipDesignService.ValidateProfile(existingProfile,originalTemplate);
+            if(existingProfile is not null && existingProfile.SourceKind!=designSourceKind)
+                throw new InvalidOperationException("Create a separate template to change its design source. The existing template and payroll presentation stay unchanged.");
         }
         var periods=NativePayslipDesignScope.Resolve(request,existingProfile);
         RequireScopedPresentationWrite(periods,existingProfile);
@@ -141,11 +146,11 @@ WHERE b.client_id=@ClientId AND b.id=@Id"+(locked?" FOR UPDATE":""),new{ClientId
         if(template.Active && await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM paysliptemplates WHERE ClientId=@ClientId AND Active=TRUE AND Id>@Id)",new{template.ClientId,Id=templateId},tx))
             throw new InvalidOperationException("A newer active client template takes precedence. Deactivate it before activating this template.");
         var profile=new PayslipDesignProfile { ClientId=template.ClientId,TemplateId=templateId,SourceBatchId=request.SourceBatchId,SourceHash=metadata.Hash,SimpleLayout=metadata.Batch.SimpleLayout,
-            KeepMappedZeroRows=NativePayslipDesignService.SourceKeepsMappedZeroRows(metadata.Batch.SimpleLayout),
+            SourceKind=designSourceKind,KeepMappedZeroRows=designSourceKind==CorePayrollPayslipDesign.SourceKind?request.KeepMappedZeroRows!.Value:NativePayslipDesignService.SourceKeepsMappedZeroRows(metadata.Batch.SimpleLayout),
             AmountDecimalPlaces=request.AmountDecimalPlaces,PayPeriods=periods,PreviousClassicTemplate=previousClassic,
             Fields=request.Fields,ReviewedBy=actor.Id,RequestId=request.RequestId,RequestHash=requestHash };
         template.Id=templateId;NativePayslipDesignService.ValidateProfile(profile,template);
-        var nativeCodes=await CodesAsync(db,tx);
+        var nativeCodes=designSourceKind==CorePayrollPayslipDesign.SourceKind?await ClientSalaryCodesAsync(db,tx,template.ClientId):await CodesAsync(db,tx);
         NativePayslipMonthlyComponentInformation.ValidateCatalogue(request.Fields,nativeCodes);
         foreach(var field in request.Fields.Where(f=>f.Kind!="info"))
             if(!nativeCodes.Any(c=>c.Code==field.NativeCode && NativePayslipDesignService.LineKind(c.Category)==field.Kind))throw new InvalidOperationException($"Native component {field.NativeCode} does not match the reviewed {field.Kind} field.");

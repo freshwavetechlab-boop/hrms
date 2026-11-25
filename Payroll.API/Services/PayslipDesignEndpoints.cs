@@ -24,6 +24,13 @@ public static class PayslipDesignEndpoints
             if(!Manage(context,clientId))return Results.StatusCode(403);
             var profile=await repository.GetAsync(clientId,templateId);return profile is null?Results.NotFound():Results.Ok(profile);
         });
+        routes.MapPost("/copy-preview",async(PayslipDesignCopyPreviewRequest request,PayslipDesignRepository repository,HttpContext context)=>
+            Manage(context,request.ClientId) && Manage(context,request.SourceClientId)
+                ? Results.Ok(await repository.CopyPreviewAsync(request,(AuthUser)context.Items["User"]!)) : Results.StatusCode(403))
+            .WithMetadata(new CalculationOnlyPayrollReview());
+        routes.MapPost("/core-preview",async(PayslipDesignPreviewRequest request,PayslipDesignRepository repository,HttpContext context)=>
+            Manage(context,request.ClientId)?Results.Ok(await repository.CorePreviewAsync(request.ClientId)):Results.StatusCode(403))
+            .WithMetadata(new CalculationOnlyPayrollReview());
         routes.MapPost("/preview",async(PayslipDesignPreviewRequest request,PayslipDesignRepository repository,HttpContext context)=>
             Manage(context,request.ClientId)?Results.Ok(await repository.PreviewAsync(request)):Results.StatusCode(403))
             .WithMetadata(new CalculationOnlyPayrollReview());

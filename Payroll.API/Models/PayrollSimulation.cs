@@ -20,7 +20,13 @@ public sealed class PayrollSimulationRequest
     public Dictionary<string, decimal> AmountOverrides { get; set; } = [];
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public NamedFormulaInputContext? NamedInputs { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? ClearedComponentIds { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ClearAnnualCtc { get; set; }
 }
+public sealed record PayrollSimulationEmployeeOption(int Id, string Code, string Name, bool IsActive);
+public sealed record PayrollSimulationEmployeeRoster(IReadOnlyList<PayrollSimulationEmployeeOption> Items, int Total);
 public sealed record PayrollSimulationInput(string Name, decimal? Value, string Source, string Unit);
 public sealed record PayrollAttendanceInputEvidence(string SourceKind, string PayPeriod, decimal? WorkingDays,
     decimal? PresentDays, decimal? PayableDays, decimal? WeeklyOffPayableUnits, decimal? HolidayPayableUnits,
@@ -85,4 +91,6 @@ public sealed class PayrollSimulationResult
     public decimal? Benefits { get; set; }
     public decimal? Net { get; set; }
     public string Coverage { get; set; } = "";
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string, decimal?>? ComponentInputs { get; set; }
 }

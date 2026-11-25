@@ -1,3 +1,4 @@
+import { clientChoice } from './ClientOption'
 import { useEffect, useMemo, useState } from 'react'
 import DataTable from './DataTable'
 import PageTabs from './PageTabs'
@@ -30,7 +31,7 @@ export default function TaxEngineManager({ clients, onMessage, mode = 'company' 
   const [profileEmployeeId, setProfileEmployeeId] = useState('')
   const [profileFy, setProfileFy] = useState(fy)
   const [taxProfile, setTaxProfile] = useState<EmployeeTaxProfile | null>(null)
-  const clientOptions = clients.map(client => `${client.id}:${client.name}`)
+  const clientOptions = clients.map(clientChoice)
   const employeeOptions = employees.filter(employee => !profileClientId || String(employee.clientId) === profileClientId.split(':')[0]).map(employee => `${employee.id}:${employee.employeeCode} - ${employee.firstName} ${employee.lastName}`)
   const clientName = (id: string | number) => clients.find(client => String(client.id) === String(id).split(':')[0])?.name || (id ? `Client #${String(id).split(':')[0]}` : 'Default')
   const load = async () => setTax(await getTaxEngineSetup())

@@ -29,7 +29,9 @@ public partial class EmployeeRepository(IConfiguration configuration, AuthReposi
     private static readonly string[] It0009ImportHeaders = ["Bank Name", "Bank Account No", "IFSC", "Payment Mode"];
     private MySqlConnection Connection() => new(configuration.GetConnectionString("Default"));
     public async Task InitializeAsync() { await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db); }
-    public async Task<IEnumerable<Employee>> GetAsync(int? clientId = null) { await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db); var rows = (await db.QueryAsync<Employee>("SELECT * FROM employees WHERE (@ClientId IS NULL OR ClientId=@ClientId) ORDER BY FirstName, LastName", new { ClientId = clientId })).ToList(); await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, rows); await ApplyEmploymentStatusAsync(db, rows); return rows; }
+    // Startup initialization creates the infotype tables. Directory reads should
+    // not execute DDL and INFORMATION_SCHEMA probes on every refresh.
+    public async Task<IEnumerable<Employee>> GetAsync(int? clientId = null) { await using var db = Connection(); await db.OpenAsync(); var rows = (await db.QueryAsync<Employee>("SELECT * FROM employees WHERE (@ClientId IS NULL OR ClientId=@ClientId) ORDER BY FirstName, LastName", new { ClientId = clientId })).ToList(); await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, rows); await ApplyEmploymentStatusAsync(db, rows); return rows; }
     public async Task<int?> GetClientIdAsync(int employeeId) { await using var db = Connection(); await db.OpenAsync(); return await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM employees WHERE Id=@EmployeeId", new { EmployeeId = employeeId }); }
     public async Task<IEnumerable<WorkflowApprover>> GetManagerUsersAsync(int? clientId = null)
     {
@@ -143,27 +145,7 @@ UNIQUE KEY UX_employee_tax_regime (employee_id, financial_year));");
     }
     public async Task<EmployeeDeletePreview?> GetDeletePreviewAsync(int id)
     {
-        await using var db = Connection(); await db.OpenAsync();
-        var employee = await db.QueryFirstOrDefaultAsync<(int Id, string EmployeeCode, string FirstName, string LastName)>("SELECT Id,EmployeeCode,FirstName,LastName FROM employees WHERE Id=@id", new { id });
-        if (employee.Id == 0) return null;
-        var links = new List<string>();
-        async Task Add(string label, string table, string column, string filter = "") { var count = await CountSafeAsync(db, table, column, id, filter); if (count > 0) links.Add($"{count} {label}{(count == 1 ? "" : "s")}"); }
-        await Add("reporting employee", "employees", "ReportingManagerId", "AND IsActive=TRUE");
-        await Add("released offer employee link", "recruitment_document_roster", "EmployeeId");
-        await Add("reporting manager user", "employees", "ReportingManagerUserId", "AND IsActive=TRUE");
-        await Add("login user", "authusers", "EmployeeId", "AND IsActive=TRUE");
-        await Add("pay run row", "payrunemployees", "EmployeeId");
-        await Add("payroll adjustment", "payrolladjustments", "EmployeeId");
-        await Add("attendance group mapping", "attendance_group_employees", "employee_id");
-        await Add("geo fence mapping", "attendance_geo_fence_rule_employees", "employee_id");
-        await Add("monthly attendance row", "employee_monthly_attendance", "employee_id");
-        await Add("daily attendance row", "employee_daily_attendance", "employee_id");
-        await Add("leave balance", "employee_leave_balances", "employee_id");
-        await Add("ESS leave request", "essleaverequests", "EmployeeId");
-        await Add("tax declaration", "employee_tax_declaration_headers", "employee_id");
-        await Add("tax computation", "tax_computation_snapshots", "employee_id");
-        var name = $"{employee.FirstName} {employee.LastName}".Trim();
-        return new EmployeeDeletePreview(employee.Id, employee.EmployeeCode, string.IsNullOrWhiteSpace(name) ? employee.EmployeeCode : name, links, links.Count == 0);
+        return await ReadManagementPreviewAsync(id);
     }
     public async Task<(bool Ok, string Error)> DeleteAsync(int id)
     {
@@ -2157,4 +2139,9 @@ public record EmployeeImportJobStatus(
 {
     public int? ClientId { get; init; }
 }
-public record EmployeeDeletePreview(int EmployeeId, string EmployeeCode, string EmployeeName, List<string> Links, bool CanDelete);
+public record EmployeeDeletePreview(int EmployeeId, string EmployeeCode, string EmployeeName, List<string> Links, bool CanDelete)
+{
+    public int ClientId { get; init; }
+    public List<EmployeeLinkedLogin> LinkedUsers { get; init; } = [];
+    public List<EmployeeLinkedRecord> Dependencies { get; init; } = [];
+}

@@ -1,3 +1,4 @@
+import { clientChoice } from './ClientOption'
 import { useEffect, useState } from 'react'
 import { getJson, postJson } from '../services/apiClient'
 import { getClients } from '../services/payrollService'
@@ -19,7 +20,7 @@ export default function DepartmentHeadAssignments() {
   const [message, setMessage] = useState('')
 
   useEffect(() => {
-    void getClients().then(setClients)
+    void getClients(true).then(setClients)
     void getJson<Approver[]>('/api/workflows/approvers', []).then(setApprovers)
   }, [])
 
@@ -61,7 +62,7 @@ export default function DepartmentHeadAssignments() {
     <section className="card department-heads">
       {message && <p className="form-warning">{message}</p>}
       <div className="department-heads-form">
-        <label><span>Client</span><SearchSelect value={clientId} onChange={value => selectClient(Number(value))} options={selectOptions(clients.filter(client => client.isActive).map(client => ({ value: client.id, label: client.name })), 'Select client', 0)} /></label>
+        <label><span>Client</span><SearchSelect value={clientId} onChange={value => selectClient(Number(value))} options={selectOptions(clients.filter(client => client.isActive).map(clientChoice), 'Select client', 0)} /></label>
         <label><span>Department</span><SearchSelect value={department} onChange={setDepartment} disabled={!clientId} options={selectOptions(departments, 'Select department')} /></label>
         <label><span>Department head user</span><SearchSelect value={userId} onChange={setUserId} disabled={!clientId} options={selectOptions(eligibleUsers.map(user => ({ value: user.id, label: `${user.displayName} - ${user.email}` })), 'Select user')} /></label>
         <button type="button" onClick={() => void save()}>Save assignment</button>

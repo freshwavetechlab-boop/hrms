@@ -1,0 +1,32 @@
+.employee-lifecycle-modal .ant-modal-content { border-radius: 16px; }
+.employee-lifecycle-modal .ant-modal-body { display: flex; flex-direction: column; gap: 14px; max-height: 65dvh; overflow-y: auto; }
+.employee-lifecycle-modal .ant-spin-container { display: flex; flex-direction: column; gap: 12px; min-height: 72px; }
+.employee-lifecycle-title { display: inline-flex; align-items: center; gap: 9px; }
+.employee-lifecycle-title > .anticon { color: #d92d20; }
+.employee-lifecycle-person { display: flex; align-items: center; gap: 12px; padding: 14px; background: #f8f7ff; border: 1px solid #e7e1ff; border-radius: 12px; min-width: 0; }
+.employee-lifecycle-avatar { width: 40px; height: 40px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 12px; background: #eee8ff; color: #7251e8; font-size: 20px; }
+.employee-lifecycle-person > div { flex: 1; min-width: 0; }
+.employee-lifecycle-person strong, .employee-lifecycle-person div > span { display: block; overflow-wrap: anywhere; }
+.employee-lifecycle-person div > span { color: #667085; margin-top: 3px; font-size: 12px; }
+.employee-lifecycle-section-title { display: flex; align-items: center; gap: 7px; margin-top: 3px; }
+.employee-lifecycle-section-title > .anticon { color: #7251e8; }
+.employee-lifecycle-logins { display: flex; flex-direction: column; gap: 8px; }
+.employee-lifecycle-login { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px; border: 1px solid #e4e7ec; border-radius: 10px; }
+.employee-lifecycle-login > div { min-width: 0; }
+.employee-lifecycle-login strong, .employee-lifecycle-login div > span:not(.ant-tag) { display: block; overflow-wrap: anywhere; }
+.employee-lifecycle-login div > span:not(.ant-tag) { color: #667085; font-size: 12px; margin: 3px 0 6px; }
+.employee-lifecycle-empty, .employee-lifecycle-hint { color: #667085; margin: 0; font-size: 12px; }
+.employee-lifecycle-dependencies { border: 1px solid #e4e7ec; border-radius: 10px; padding: 10px 12px; }
+.employee-lifecycle-dependencies summary { cursor: pointer; font-weight: 600; }
+.employee-lifecycle-dependencies summary .ant-tag { margin-left: 6px; }
+.employee-lifecycle-dependencies > div { display: flex; gap: 8px; align-items: center; padding-top: 9px; font-size: 12px; }
+.employee-lifecycle-dependencies > div > span:first-child { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.employee-lifecycle-footer, .employee-lifecycle-footer-end { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.employee-lifecycle-footer { justify-content: space-between; }
+.employee-lifecycle-footer-end { margin-left: auto; }
+@media (max-width: 600px) {
+  .employee-lifecycle-modal .ant-modal-body { max-height: 68dvh; }
+  .employee-lifecycle-login { align-items: flex-start; flex-wrap: wrap; }
+  .employee-lifecycle-footer > .ant-btn, .employee-lifecycle-footer-end { flex: 1; }
+  .employee-lifecycle-footer-end .ant-btn { flex: 1; }
+}

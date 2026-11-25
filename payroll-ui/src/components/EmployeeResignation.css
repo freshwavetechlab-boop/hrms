@@ -4,3 +4,29 @@
 .excel-payslip-workspace tr.employee-exit-record>td { background:#fff5f5!important; }
 .employee-record-workspace .employee-exit-record .candidate-card-title h3 { color:#b42318; }
 .employee-resignation-modal { --data-table-body-min-height: 140px; }
+.employee-resignation-title { display: inline-flex; align-items: center; gap: 9px; }
+.employee-resignation-title > .anticon { color: var(--ant-color-error, #d14343); }
+.employee-resignation-modal .ant-modal-body { display: flex; flex-direction: column; gap: 14px; padding-top: 6px; }
+.employee-resignation-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid var(--ant-color-border-secondary, #e8edf3); background: var(--ant-color-bg-layout, #f5f8fc); border-radius: 10px; }
+.employee-resignation-summary > div { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.employee-resignation-summary strong { font-size: 14px; color: var(--ant-color-text, #172136); overflow-wrap: anywhere; }
+.employee-resignation-summary span:not(.ant-tag) { font-size: 12px; color: var(--ant-color-text-secondary, #667085); }
+.employee-resignation-summary .ant-tag { margin: 0; flex-shrink: 0; }
+.employee-resignation-form { min-width: 0; }
+.employee-resignation-form .ant-form-item { margin-bottom: 14px; }
+.employee-resignation-form .ant-form-item:last-child { margin-bottom: 0; }
+.employee-resignation-form .ant-form-item-extra { padding-top: 5px; font-size: 12px; }
+.employee-resignation-form .data-table-wrap { margin-bottom: 14px; }
+.employee-resignation-impact { padding: 11px 12px; background: var(--ant-color-info-bg, #f0f7fc); border: 1px solid var(--ant-color-info-border, #d7e8f5); border-radius: 9px; }
+.employee-resignation-impact-label { display: block; margin-bottom: 8px; font-size: 11px; font-weight: 600; color: var(--ant-color-text-secondary, #667085); }
+.employee-resignation-impact > div { display: flex; flex-wrap: wrap; gap: 7px 14px; }
+.employee-resignation-impact > div > span { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ant-color-text, #172136); }
+.employee-resignation-impact .anticon { color: var(--ant-color-primary, #0b6fad); }
+.employee-resignation-history { display: flex; gap: 8px; margin: 0; font-size: 12px; line-height: 1.6; color: var(--ant-color-text-secondary, #667085); }
+.employee-resignation-history > .anticon { margin-top: 3px; color: var(--ant-color-success, #16845b); }
+@media (max-width: 560px) {
+  .employee-resignation-summary { align-items: flex-start; padding: 11px; }
+  .employee-resignation-summary .ant-tag { font-size: 10px; }
+  .employee-resignation-modal .ant-modal-footer { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+  .employee-resignation-modal .ant-modal-footer .ant-btn + .ant-btn { margin-inline-start: 0; }
+}

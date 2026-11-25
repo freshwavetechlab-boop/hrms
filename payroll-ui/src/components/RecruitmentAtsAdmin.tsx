@@ -1,3 +1,4 @@
+import { clientChoice } from './ClientOption'
 import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Card, Checkbox, Col, Form, Input, InputNumber, List, Popconfirm, Progress, Row, Select, Space, Switch, Tabs, Tag, Tooltip, Typography } from 'antd'
 import { CheckCircleOutlined, DeleteOutlined, EditOutlined, PlusOutlined, QuestionCircleOutlined } from '@ant-design/icons'
@@ -64,7 +65,7 @@ export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsCha
   const scopedClients = initialClientId ? clients.filter(row => row.id === initialClientId) : clients
   const visibleProfiles = initialClientId ? profiles.filter(row => row.clientId === initialClientId) : profiles
   const visibleSkills = initialClientId ? skills.filter(row => row.clientId === initialClientId) : skills
-  const clientOptions = selectOptions(scopedClients.map(row => ({ value: row.id, label: row.name })), 'Select client', 0)
+  const clientOptions = selectOptions(scopedClients.map(clientChoice), 'Select client', 0)
   const positionCategories = (clientId: number) => Array.from(new Set(dropdowns.filter(row => row.isActive && row.type === 'Position Category' && (row.clientId === 0 || row.clientId === clientId)).map(row => row.value).filter(Boolean)))
   const activeWeight = useMemo(() => profile?.criteria.filter(row => row.isActive).reduce((sum, row) => sum + Number(row.weight || 0), 0) ?? 0, [profile])
   const profileError = !profile
@@ -191,7 +192,7 @@ export default function RecruitmentAtsAdmin({ clients, dropdowns, onDropdownsCha
       onClose={() => setSkill(null)} onSubmit={() => void saveSkill()} submitText={skill?.id ? 'Save changes' : 'Add skill'}
       submitDisabled={!skill?.skillName.trim()} width="min(680px, 96vw)">
       {skill && <Form component="div" layout="vertical">
-        <Form.Item label="Client scope"><SearchSelect disabled={skill.id > 0} value={skill.clientId} onChange={value => setSkill({ ...skill, clientId: Number(value) })} options={selectOptions(clients.map(row => ({ value: row.id, label: row.name })), 'Global', 0)} /></Form.Item>
+        <Form.Item label="Client scope"><SearchSelect disabled={skill.id > 0} value={skill.clientId} onChange={value => setSkill({ ...skill, clientId: Number(value) })} options={selectOptions(clients.map(clientChoice), 'Global', 0)} /></Form.Item>
         <Form.Item label="Skill name" required><Input value={skill.skillName} onChange={event => setSkill({ ...skill, skillName: event.target.value })} /></Form.Item>
         <Form.Item label="Code"><Input value={skill.skillCode} onChange={event => setSkill({ ...skill, skillCode: event.target.value.toUpperCase() })} /></Form.Item>
         <Form.Item label="Category"><Input value={skill.category} onChange={event => setSkill({ ...skill, category: event.target.value })} /></Form.Item>

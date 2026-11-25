@@ -1,3 +1,4 @@
+import { clientChoice } from '../components/ClientOption'
 import { useEffect, useState } from 'react'
 import ClLwpPolicySimulator from '../components/ClLwpPolicySimulator'
 import AttendanceSettingsForm from '../components/AttendanceSettingsForm'
@@ -32,7 +33,7 @@ export default function LeaveAttendancePage({ activeMenu }: { activeMenu: LeaveA
   useEffect(() => { const requested = Number(searchParams.get('clientId')); if (requested > 0 && clients.some(c => c.id === requested) && (!clientScoped || requested === scopedClientId)) setClientId(requested) }, [searchParams, clients, clientScoped, scopedClientId])
 
   useEffect(() => {
-    void getClients().then(rows => {
+    void getClients(true).then(rows => {
       const active = rows.filter(row => row.isActive)
       setClients(active)
       setClientId(current => clientScoped ? scopedClientId : current || active[0]?.id || 0)
@@ -42,7 +43,7 @@ export default function LeaveAttendancePage({ activeMenu }: { activeMenu: LeaveA
   if (!clientId) return <section className="leave-attendance empty-state"><div><span className="eyebrow purple">Leave & Attendance</span><h3>No active client</h3><p>Create an active client before configuring Leave & Attendance.</p></div></section>
 
   const showMessage = (text: string) => toast(text, /error|unable|failed|required|resolve|select|cannot|must|invalid|at least/i.test(text) ? 'error' : 'success')
-  const clientFilter = clientScoped ? null : <PageHeaderPortal slot="attendance-settings-client-controls"><SearchSelect testId="attendance-client" value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(client => ({ value: client.id, label: client.name }))} /></PageHeaderPortal>
+  const clientFilter = clientScoped ? null : <PageHeaderPortal slot="attendance-settings-client-controls"><SearchSelect testId="attendance-client" value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(clientChoice)} /></PageHeaderPortal>
   const content = activeMenu === 'Shift Master' ? <AttendanceShiftsManager clientId={clientId} clientName={clients.find(client => client.id === clientId)?.name || ''} /> : activeMenu === 'Attendance Policies' ? <AttendanceGroupsManager fixedClientId={clientId} onMessage={showMessage} /> : activeMenu === 'Leave Types' ? <LeaveTypesManager clientId={clientId} onMessage={showMessage} /> : activeMenu === 'Holiday' ? <HolidayManager clientId={clientId} onMessage={showMessage} /> : activeMenu === 'Attendance' ? <AttendanceSettingsForm clientId={clientId} onSaved={showMessage} /> : activeMenu === 'Geo-Fencing' ? <GeoFenceManager clients={clients} clientId={clientId} fixedClientId={clientId} onClientChange={setClientId} onMessage={showMessage} /> : <LeaveBalanceImportManager clientId={clientId} onMessage={showMessage} />
 
   const recordList = !['Attendance', 'Import Balance'].includes(activeMenu)

@@ -4,6 +4,7 @@ namespace Payroll.API.Models;
 
 public sealed class ExcelPayslipClient
 {
+    public string Code { get; set; } = "";
     public int Id { get; set; }
     public string Name { get; set; } = "";
     public bool HasSavedBatch { get; set; }

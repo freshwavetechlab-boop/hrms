@@ -1,10 +1,12 @@
 import { Select } from 'antd'
 import type { ReactNode } from 'react'
+import { ClientOptionName, clientSearchText } from './ClientOption'
 import './PayrollScopeSelect.css'
 
 export type PayrollScopeOption = {
   value: string | number
   label: string
+  code?: string
   count: number
   hint?: string
   available?: boolean
@@ -20,6 +22,7 @@ type Props = {
   ariaLabel: string
   placeholder?: string
   availabilityKind?: 'employees' | 'monthly-payroll'
+  indicatorsPending?: boolean
 }
 
 type RenderedOption = {
@@ -48,7 +51,7 @@ function Markers({ available, hasPayroll, label, presenceLabel = 'Payroll exists
 }
 
 /** Scoped payroll picker; counts are supplied by the already authorized roster. */
-export default function PayrollScopeSelect({ value, options, onChange, disabled = false, ariaLabel, placeholder = 'Select', availabilityKind = 'employees' }: Props) {
+export default function PayrollScopeSelect({ value, options, onChange, disabled = false, ariaLabel, placeholder = 'Select', availabilityKind = 'employees', indicatorsPending = false }: Props) {
   const selected = options.find(option => option.value === value)
     ?? options.find(option => String(option.value) === String(value))
   const rendered: RenderedOption[] = options.map(option => {
@@ -57,19 +60,22 @@ export default function PayrollScopeSelect({ value, options, onChange, disabled 
     const hasPayroll = option.hasPayroll === true || option.hasTemplate === true
     const presenceLabel = option.hasTemplate ? 'Salary template configured' : 'Payroll exists · any month or location'
     const availabilityLabel = availabilityKind === 'monthly-payroll' ? available ? 'Payroll exists for selected month' : 'No saved payroll for selected month' : available ? 'Employees available' : 'No active employees'
-    const title = `${option.label} · ${count.toLocaleString('en-IN')} employees${hasPayroll ? ' · ' + presenceLabel : ''}`
+    const title = indicatorsPending ? option.label : `${option.label} · ${count.toLocaleString('en-IN')} employees${hasPayroll ? ' · ' + presenceLabel : ''}`
+    const markers = indicatorsPending
+      ? <span className="payroll-scope-markers" role="img" aria-label="Checking availability" title="Checking availability">…</span>
+      : <Markers available={available} hasPayroll={hasPayroll} label={availabilityLabel} presenceLabel={presenceLabel} />
     return {
       value: option.value,
-      plainLabel: option.label,
+      plainLabel: clientSearchText(option.label, option.code),
       title,
-      label: <div className={`payroll-scope-option${available ? ' has-employees' : ' is-empty'}`}>
-        <Markers available={available} hasPayroll={hasPayroll} label={availabilityLabel} presenceLabel={presenceLabel} />
-        <span className="payroll-scope-option-copy"><span className="payroll-scope-option-name">{option.label}</span>{option.hint && <span className="payroll-scope-option-hint">{option.hint}</span>}</span>
-        <Count count={count} available={available} />
+      label: <div className={`payroll-scope-option${indicatorsPending ? ' is-pending' : available ? ' has-employees' : ' is-empty'}`}>
+        {markers}
+        <span className="payroll-scope-option-copy"><span className="payroll-scope-option-name"><ClientOptionName name={option.label} code={option.code} /></span>{option.hint && <span className="payroll-scope-option-hint">{option.hint}</span>}</span>
+        {!indicatorsPending && <Count count={count} available={available} />}
       </div>,
       // AntD5.5's optionLabelProp provides the compact selected rendering;
       // optionRender/labelRender are unavailable in the installed version.
-      selectedLabel: <span className="payroll-scope-selected" title={title}><Markers available={available} hasPayroll={hasPayroll} label={availabilityLabel} presenceLabel={presenceLabel} /><span className="payroll-scope-selected-name">{option.label}</span><Count count={count} selected available={available} /></span>,
+      selectedLabel: <span className="payroll-scope-selected" title={title}>{markers}<span className="payroll-scope-selected-name">{option.label}</span>{!indicatorsPending && <Count count={count} selected available={available} />}</span>,
     }
   })
 

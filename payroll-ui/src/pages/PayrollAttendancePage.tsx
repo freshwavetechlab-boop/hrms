@@ -1,3 +1,4 @@
+import { clientChoice } from '../components/ClientOption'
 import { useEffect, useMemo, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import PayrollLocationAttendance from '../components/PayrollLocationAttendance'
@@ -46,7 +47,7 @@ export default function PayrollAttendancePage() {
   const toast = useToast()
 
   useEffect(() => {
-    void getClients().then((rows) => {
+    void getClients(true).then((rows) => {
       const active = rows.filter(row => row.isActive)
       setClients(active)
       setClientId(current => {
@@ -133,7 +134,7 @@ export default function PayrollAttendancePage() {
   }, [groups, reviewScope, selectedGroups.length])
 
   const clientControl = <>
-    {!clientScoped && <label className="attendance-client-control attendance-client-field"><span>Client</span><SearchSelect value={clientId || ''} placeholder="Select client" onChange={value => { setClientId(Number(value)); setGroups([]); setGroupsLoaded(false); setReviewScope(''); setFocusedEmployeeIds([]) }} options={clients.map(client => ({ value: client.id, label: client.name }))} /></label>}
+    {!clientScoped && <label className="attendance-client-control attendance-client-field"><span>Client</span><SearchSelect value={clientId || ''} placeholder="Select client" onChange={value => { setClientId(Number(value)); setGroups([]); setGroupsLoaded(false); setReviewScope(''); setFocusedEmployeeIds([]) }} options={clients.map(clientChoice)} /></label>}
     <label className="attendance-client-control attendance-scope-field"><span>Attendance policy</span><SearchSelect value={reviewScope} placeholder={clientId ? 'Select attendance policy' : 'Select client first'} disabled={!clientId || !groupsLoaded || !groups.length} onChange={value => { setReviewScope(value); setFocusedEmployeeIds([]) }} options={groups.length ? reviewScopeOptions : [{ value: '', label: !clientId ? 'Select client first' : groupsLoaded ? 'No policy configured' : 'Loading policies...' }]} /></label>
   </>
 

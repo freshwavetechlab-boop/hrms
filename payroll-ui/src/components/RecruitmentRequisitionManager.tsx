@@ -1,3 +1,4 @@
+import { clientChoice, clientSelectProps } from './ClientOption'
 import DataTable, { type Column } from './DataTable'
 import RecruitmentRecordList from './RecruitmentRecordList'
 import { useRecruitmentPreference, useRecruitmentView } from '../hooks/useRecruitmentPreferences'
@@ -153,7 +154,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
   const budgetAvailable = watchedForm.budgetAvailable
   useEffect(() => { if (saveError) saveFeedbackRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }) }, [saveError])
   const approvedEdit = activeRequest?.status === 'Approved' && watchedForm.id > 0 && canEditHiringRequest(session?.user, activeRequest) && !readOnly
-  const clientOptions = useMemo(() => clients.map(row => ({ value: Number(row.id), label: row.name })), [clients])
+  const clientOptions = useMemo(() => clients.map(clientChoice), [clients])
 
   function newBrowserDraftKey() {
     return `frevo:hiring-request:draft:${session?.user.id || 'anonymous'}:${initialClientId || clientFilter || 0}:${initialWorkOrderId || 0}:${initialWorkOrderLineId || 0}:${new URLSearchParams(window.location.search).get('draft') || 'default'}`
@@ -261,9 +262,12 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
       setRows(requestRows)
       setLoading(false)
     })
-    void fetchWorkspace().then(async data => {
+    const clientsRequest = getClients(true).then(rows => {
+      if (active) setClients(rows)
+      return rows
+    })
+    void Promise.all([clientsRequest, fetchWorkspace()]).then(async ([clientRows, data]) => {
       if (!active) return
-      setClients(data.clientRows)
       setDropdowns(data.dropRows)
       setLocations(data.locationRows)
       setEmployees(data.employeeRows)
@@ -273,7 +277,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
         experienceRanges: data.experienceRanges, priorities: data.priorities,
       })
       if (initialOpen) {
-        const nextClientId = initialClientId || data.clientRows[0]?.id || 0
+        const nextClientId = initialClientId || clientRows[0]?.id || 0
         let draft = blankRequest(nextClientId)
         if (initialWorkOrderId) {
           const workOrder = await getRecruitmentWorkOrder(initialWorkOrderId)
@@ -899,8 +903,8 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
 
     {recordView !== 'Cards' && <div className={`rfr-toolbar${clientScopeManaged ? ' is-client-scoped' : ''}${!showStatusFilter && clientScopeManaged ? ' is-status-scoped' : ''}`}>
       <Input allowClear prefix={<SearchOutlined />} value={query} onChange={event => setQuery(event.target.value)} placeholder="Search role, RFR or requester" />
-      {!clientScopeManaged && <Select allowClear value={clientFilter || undefined} onChange={value => setClientFilter(value || 0)} placeholder="All clients" showSearch optionFilterProp="label"
-        options={clients.map(row => ({ value: row.id, label: row.name }))} />}
+      {!clientScopeManaged && <Select allowClear value={clientFilter || undefined} onChange={value => setClientFilter(value || 0)} placeholder="All clients"
+        {...clientSelectProps(clients.map(clientChoice))} />}
       {showStatusFilter && <Select allowClear value={statusFilter || undefined} onChange={value => setStatusFilter(value || '')} placeholder="All statuses" options={asOptions(statuses)} />}
     </div>}
       <PageHeaderPortal slot="recruitment-page-controls"><Space className="rfr-toolbar-actions" wrap>
@@ -978,7 +982,7 @@ export default function RecruitmentRequisitionManager({ initialClientId = 0, cli
           <Form.Item name="id" hidden><InputNumber /></Form.Item>
           <Form.Item name="branchId" hidden><InputNumber /></Form.Item>
           <Form.Item className="rfr-span-2" name="clientId" label="Client" rules={[{ required: true, message: 'Select the hiring client.' }]}>
-            <Select showSearch optionFilterProp="label" optionLabelProp="label" placeholder={clients.length ? 'Select client' : 'Loading client...'} loading={!clients.length} disabled={clientScopeManaged && initialClientId > 0} options={clientOptions}
+            <Select placeholder={clients.length ? 'Select client' : 'Loading client...'} loading={!clients.length} disabled={clientScopeManaged && initialClientId > 0} {...clientSelectProps(clientOptions)}
               onChange={value => {
                 form.setFieldValue('requesterUserId', recruitmentRequesterSelection(requesterSnapshot, value, null, session?.user.id))
               }} />
@@ -1170,13 +1174,13 @@ function addDays(value: string, days: number) {
 }
 
 async function fetchWorkspace() {
-  const [clientRows, dropRows, locationRows, employeeRows, hiringTypes, positionCategories, experienceRanges, priorities, fieldLimits] = await Promise.all([
-    getClients(), getDropdowns(), getWorkLocations(), getEmployees(),
+  const [dropRows, locationRows, employeeRows, hiringTypes, positionCategories, experienceRanges, priorities, fieldLimits] = await Promise.all([
+    getDropdowns(), getWorkLocations(), getEmployees(),
     getRecruitmentMasterOptions('Hiring Type'), getRecruitmentMasterOptions('Position Category'),
     getRecruitmentMasterOptions('Experience Range'), getRecruitmentMasterOptions('Assignment Priority'),
     getJson<RequisitionTextLimit[]>('/api/recruitment/requisitions/field-limits', []),
   ])
-  return { clientRows, dropRows, locationRows, employeeRows, hiringTypes, positionCategories, experienceRanges, priorities, fieldLimits }
+  return { dropRows, locationRows, employeeRows, hiringTypes, positionCategories, experienceRanges, priorities, fieldLimits }
 }
 
 function fromRow(row: RecruitmentRequisition): SaveRecruitmentRequisition {

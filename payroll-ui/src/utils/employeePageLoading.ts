@@ -6,14 +6,16 @@ export function createEmployeePageLoader<Directory extends object, References>(
   reads: Reads<Directory>, publish: Publishers<Directory>,
   references: () => Promise<References>, publishReferences: (value: References) => void,
 ) {
-  let active = true, generation = 0
+  let active = true
+  const generations = new Map<keyof Directory, number>()
   let referenceRead: Promise<References | undefined> | undefined
-  const load = async () => {
+  const load = async (keys = Object.keys(reads) as (keyof Directory)[]) => {
     if (!active) return
-    const token = ++generation
-    await Promise.allSettled((Object.keys(reads) as (keyof Directory)[]).map(async key => {
+    await Promise.allSettled(keys.map(async key => {
+      const token = (generations.get(key) ?? 0) + 1
+      generations.set(key, token)
       const value = await reads[key]()
-      if (active && token === generation) publish[key](value)
+      if (active && token === generations.get(key)) publish[key](value)
     }))
   }
   const editor = () => {
@@ -25,5 +27,5 @@ export function createEmployeePageLoader<Directory extends object, References>(
     }).catch(error => { referenceRead = undefined; if (!active) return undefined; throw error })
     return referenceRead
   }
-  return { load, editor, dispose: () => { active = false; generation++ } }
+  return { load, editor, dispose: () => { active = false; generations.clear() } }
 }

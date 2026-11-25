@@ -1,3 +1,4 @@
+import { clientChoice, clientSelectProps } from './ClientOption'
 import DataTable from './DataTable'
 import { useRecruitmentPreference, useRecruitmentView } from '../hooks/useRecruitmentPreferences'
 import RecruitmentHiringProgress from './RecruitmentHiringProgress'
@@ -83,7 +84,7 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
   const [quickPublishingId, setQuickPublishingId] = useState(0)
 
   useEffect(() => {
-    void getClients().then(rows => {
+    void getClients(true).then(rows => {
       setClients(rows)
       if (canViewAllClients) {
         setClientId(current => current > 0 && rows.some(row => row.id === current) ? current : 0)
@@ -438,8 +439,8 @@ export default function RecruitmentJobPostingManager({ initialClientId = 0, clie
         <p className="orchestration-subtitle">Publish approved roles and manage their public candidate intake.</p>
       </div>
       <Space wrap>
-        {!clientScopeManaged && <Select value={clientId} placeholder="Select client" showSearch optionFilterProp="label" style={{ minWidth: 230 }}
-          options={[...(canViewAllClients ? [{ value: 0, label: 'All clients' }] : []), ...clients.map(row => ({ value: row.id, label: row.name }))]}
+        {!clientScopeManaged && <Select value={clientId} placeholder="Select client" style={{ minWidth: 230 }}
+          {...clientSelectProps([...(canViewAllClients ? [{ value: 0, label: 'All clients' }] : []), ...clients.map(clientChoice)])}
           onChange={value => { setClientId(value); setEditor(null); setActionFeedback(null) }} />}
       </Space>
     </div>}

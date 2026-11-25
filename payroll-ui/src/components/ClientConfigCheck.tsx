@@ -1,3 +1,4 @@
+import { clientChoice, clientSelectProps } from './ClientOption'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Button, Col, Collapse, Empty, Row, Select, Space, Spin, Tabs, Tag } from 'antd'
 import { Link } from 'react-router-dom'
@@ -367,7 +368,7 @@ export default function ClientConfigCheck() {
         {state && <small>Checked {state.checkedAt}</small>}
       </div>
       <Space wrap>
-        <Select aria-label="Client" disabled={loading} className="config-check-client" showSearch optionFilterProp="label" value={clientId || undefined} placeholder="Select client" onChange={value => { setClientId(Number(value)); setState(null) }} options={clients.map(client => ({ value: client.id, label: `${client.name} (${client.code || 'No code'})` }))} />
+        <Select aria-label="Client" disabled={loading} className="config-check-client" value={clientId || undefined} placeholder="Select client" onChange={value => { setClientId(Number(value)); setState(null) }} {...clientSelectProps(clients.map(clientChoice))} />
         <Button type="primary" disabled={!clientId} icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>Run check</Button>
       </Space>
     </div>

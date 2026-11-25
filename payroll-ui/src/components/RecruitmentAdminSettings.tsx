@@ -1,3 +1,4 @@
+import { clientChoice } from './ClientOption'
 import { useEffect, useRef, useState } from 'react'
 import { Alert, Button, Drawer, Form, Input, Modal, Popconfirm, Select, Space, Tooltip, message } from 'antd'
 import { CopyOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons'
@@ -107,10 +108,10 @@ export default function RecruitmentHiringTemplateManager({ initialClientId = 0, 
     setTemplates(result.ok ? result.data : []); setLoadingTemplates(false)
     if (!result.ok) setLoadError(result.error || 'Hiring templates could not be loaded.')
   }
-  useEffect(() => { let active = true; void getClients(false, true).then(rows => { if (active) setClients(rows) }); return () => { active = false } }, [])
+  useEffect(() => { let active = true; void getClients(true, true).then(rows => { if (active) setClients(rows) }); return () => { active = false } }, [])
   useEffect(() => { setTemplates([]); void load(); return () => { ++loadRequest.current; loadAbort.current?.abort() } }, [selectedClientId])
   useEffect(() => () => { ++sourceRequest.current; sourceAbort.current?.abort() }, [])
-  const clientOptions = clients.map(c => ({ value: c.id, label: c.name }))
+  const clientOptions = clients.map(clientChoice)
   const visibleTemplates = selectedClientId ? templates.filter(row => row.clientId === selectedClientId || row.clientId === 0) : templates
   const loadSources = async (sourceClientId: number, source?: RecruitmentTemplate) => {
     const request = ++sourceRequest.current

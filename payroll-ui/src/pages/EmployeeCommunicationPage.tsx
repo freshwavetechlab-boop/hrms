@@ -1,3 +1,4 @@
+import { clientChoice, clientSelectProps } from '../components/ClientOption'
 import { useCallback, useEffect, useMemo, useRef, useState, type Key } from 'react'
 import DOMPurify from 'dompurify'
 import {
@@ -174,7 +175,7 @@ export default function EmployeeCommunicationPage() {
 
   useEffect(() => {
     if (!canView) return
-    void getClients().then(rows => {
+    void getClients(true).then(rows => {
       setClients(rows)
       setClientId(current => fixedClientId || current || rows[0]?.id || 0)
     })
@@ -487,7 +488,7 @@ export default function EmployeeCommunicationPage() {
           value={clientId || undefined}
           disabled={Boolean(fixedClientId)}
           onChange={value => { setClientId(Number(value)); setSelectedConversationId(null) }}
-          options={clients.filter(item => item.isActive).map(item => ({ value: item.id, label: item.name }))}
+          {...clientSelectProps(clients.filter(item => item.isActive).map(clientChoice))}
           placeholder="Select client"
         />
         <Button data-testid="communication-history-tab" icon={<HistoryOutlined />} onClick={() => { setHistoryOpen(true); void loadCampaigns() }}>Campaigns</Button>

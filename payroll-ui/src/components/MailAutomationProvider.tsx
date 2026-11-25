@@ -1,3 +1,4 @@
+import { clientChoice, clientSelectProps } from './ClientOption'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Divider, Drawer, Empty, Select, Spin, Switch, Tag } from 'antd'
 import { ApiOutlined, CheckCircleOutlined, MailOutlined, SettingOutlined, TeamOutlined } from '@ant-design/icons'
@@ -85,7 +86,7 @@ export default function MailAutomationProvider({ enabled }: { enabled: boolean }
     if (!open) return
     let cancelled = false
     setLoading(true)
-    void Promise.all([getNotificationAutomationCatalog(), getNotificationSetup(), getClients()]).then(([catalog, notificationSetup, clientRows]) => {
+    void Promise.all([getNotificationAutomationCatalog(), getNotificationSetup(), getClients(true)]).then(([catalog, notificationSetup, clientRows]) => {
       if (cancelled) return
       setEvents(catalog.events)
       setSetup(notificationSetup)
@@ -186,7 +187,7 @@ export default function MailAutomationProvider({ enabled }: { enabled: boolean }
 
       <div className="mail-automation-grid">
         <Field label="Client scope" hint="Keep global only when the same rule must apply to every client.">
-          <Select value={clientId ?? 0} onChange={value => setClientId(value === 0 ? null : value)} options={[{ value: 0, label: 'All clients' }, ...clients.map(client => ({ value: client.id, label: client.name }))]} />
+          <Select value={clientId ?? 0} onChange={value => setClientId(value === 0 ? null : value)} {...clientSelectProps([{ value: 0, label: 'All clients' }, ...clients.map(clientChoice)])} />
         </Field>
         <Field label="Email template" required hint="Templates are managed in Settings > Integrations > Notifications.">
           <Select showSearch optionFilterProp="label" value={templateId} placeholder="Select template" onChange={setTemplateId} options={activeTemplates.map(template => ({ value: template.id, label: template.name }))} />

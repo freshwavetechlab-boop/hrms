@@ -1,3 +1,4 @@
+import { clientChoice, clientSelectProps } from './ClientOption'
 import { useEffect, useState } from 'react'
 import { Alert, Button, Drawer, Form, Select, Space, Spin, Switch } from 'antd'
 import { SettingOutlined } from '@ant-design/icons'
@@ -53,8 +54,8 @@ export default function FinalOfferSettings({ clients, initialClientId, reload }:
         disabled={loading || !settings || settings.clientId !== clientId || (settings.enabled && !settings.finalApproverUserId)} onClick={() => void save()}>Save configuration</Button></Space>}>
       <Form layout="vertical">
         <Form.Item label="Client" htmlFor="final-offer-client" required>
-          <Select id="final-offer-client" aria-label="Signing client" showSearch optionFilterProp="label" value={clientId || undefined} disabled={saving}
-            placeholder="Select client" onChange={setClientId} options={clients.map(client => ({ value: client.id, label: client.name }))} />
+          <Select id="final-offer-client" aria-label="Signing client" value={clientId || undefined} disabled={saving}
+            placeholder="Select client" onChange={setClientId} {...clientSelectProps(clients.map(clientChoice))} />
         </Form.Item>
         {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} />}
         {loading ? <Spin /> : settings && <>

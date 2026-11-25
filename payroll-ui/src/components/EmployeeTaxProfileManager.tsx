@@ -1,3 +1,4 @@
+import { clientChoice } from './ClientOption'
 import { useEffect, useMemo, useState } from 'react'
 import DataTable from './DataTable'
 import { Card, F, Sel } from './FormPrimitives'
@@ -17,6 +18,7 @@ export default function EmployeeTaxProfileManager() {
   const scopedClientId = String(session?.user.clientId || '')
   const clientScoped = Boolean(scopedClientId && !session?.user.permissions.includes('security.manage'))
   const [clients, setClients] = useState<Client[]>([])
+  const [searchReady, setSearchReady] = useState(false)
   const [employees, setEmployees] = useState<Employee[]>([])
   const [locations, setLocations] = useState<WorkLocation[]>([])
   const [salaryStructures, setSalaryStructures] = useState<Structure[]>([])
@@ -38,14 +40,19 @@ export default function EmployeeTaxProfileManager() {
   const [message, setMessage] = useState('Fill any criteria and click Search.')
 
   useEffect(() => {
-    void Promise.all([getClients(), getEmployees(), getWorkLocations(), getTaxEngineSetup(), getSetup(setup0)]).then(([clientRows, employeeRows, locationRows, setup, payrollSetup]) => {
-      setClients(clientRows)
+    let active = true
+    setSearchReady(false)
+    if (clientScoped) setClientId(scopedClientId)
+    const directory = getClients(true).then(rows => { if (active) setClients(rows) })
+    void Promise.all([directory, getEmployees(), getWorkLocations(), getTaxEngineSetup(), getSetup(setup0)]).then(([, employeeRows, locationRows, setup, payrollSetup]) => {
+      if (!active) return
       setEmployees(employeeRows.filter(row => row.isActive))
       setLocations(locationRows.filter(row => row.isActive))
       setTaxSetup(setup)
       setSalaryStructures(payrollSetup.salaryStructures ?? [])
-      if (clientScoped) setClientId(scopedClientId)
+      setSearchReady(true)
     })
+    return () => { active = false }
   }, [clientScoped, scopedClientId])
 
   const filteredEmployees = useMemo(() => employees.filter(employee => {
@@ -155,13 +162,13 @@ export default function EmployeeTaxProfileManager() {
   return <Card t="Employee Tax Profile">
     <div className="component-guide tax-guide"><b>Employee tax profile</b><span>Search employees first, then open one employee to maintain regime, planned declaration, and approved POI values.</span></div>
     <section className="tax-rule-card"><h3>Search criteria</h3><div className="grid">
-      {!clientScoped && <F l="Client"><Sel v={clientId} set={value => resetScope({ clientId: value })} a={clients.map(client => `${client.id}:${client.name}`)} /></F>}
+      {!clientScoped && <F l="Client"><Sel v={clientId} set={value => resetScope({ clientId: value })} a={clients.map(clientChoice)} /></F>}
       <F l="Work location"><Sel v={workLocationId} set={value => resetScope({ workLocationId: value })} a={clientLocations.map(location => `${location.id}:${location.name} - ${location.city || location.state || 'Location'}`)} /></F>
       <F l="Department"><Sel v={department} set={value => resetScope({ department: value })} a={departments} /></F>
       <F l="Designation"><Sel v={designation} set={value => resetScope({ designation: value })} a={designations} /></F>
       <F l="Financial year"><input value={financialYear} onChange={event => { setFinancialYear(event.target.value); setResultRows([]); setSearched(false) }} placeholder="2026-27" /></F>
       <F l="Employee search"><input value={employeeSearch} onChange={event => { setEmployeeSearch(event.target.value); setResultRows([]); setSearched(false) }} placeholder="Code, name, department, designation, location" /></F>
-    </div><div className="tax-sticky-actions"><span>{message}</span><button type="button" className="secondary" onClick={clearFilters}>Clear</button><button type="button" onClick={search}>Search</button></div></section>
+    </div><div className="tax-sticky-actions"><span>{message}</span><button type="button" className="secondary" onClick={clearFilters}>Clear</button><button type="button" onClick={search} disabled={!searchReady}>{searchReady ? 'Search' : 'Loading search data…'}</button></div></section>
 
     {searched && <DataTable rows={resultRows} getRowId={row => row.id} emptyText="No employees found for selected criteria." exportFileName="employee-tax-profile-search" columns={[
       { key: 'employeeCode', label: 'Code' },

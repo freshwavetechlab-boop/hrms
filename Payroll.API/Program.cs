@@ -3610,6 +3610,7 @@ app.MapPost("/api/organization", async (OrganizationRepository repository, Organ
 .WithOpenApi();
 
 SalaryTemplateEndpoints.Map(app, CurrentUser, CanAccessClient);
+SalaryComponentEndpoints.Map(app, context => HasPermission(context, "settings.manage") && !SelectedClientAccess.IsSelected(CurrentUser(context)));
 
 app.MapGet("/api/setup", async (SettingsRepository repository, HttpContext context) =>
 {
@@ -4618,9 +4619,17 @@ app.MapGet("/api/payroll/employee-options", async (EmployeeRepository repository
 .WithName("GetPayrollEmployeeOptions")
 .WithOpenApi();
 
-app.MapGet("/api/employees", async (EmployeeRepository repository, HttpContext context) =>
+app.MapGet("/api/employees/clients", async (EmployeeRepository repository, HttpContext context) =>
     HasPermission(context, "employees.view") || HasPermission(context, "employees.manage") || HasClientUserManagement(context)
-        ? Results.Ok(await repository.GetAsync(CurrentUser(context).ClientId))
+        ? Results.Ok(await repository.GetDirectoryClientsAsync(CurrentUser(context).ClientId))
+        : Results.StatusCode(StatusCodes.Status403Forbidden))
+.WithName("GetEmployeeDirectoryClients")
+.WithOpenApi();
+
+app.MapGet("/api/employees", async (EmployeeRepository repository, HttpContext context, bool? lookup) =>
+    HasPermission(context, "employees.view") || HasPermission(context, "employees.manage") || HasClientUserManagement(context)
+        ? lookup == true ? Results.Ok(await repository.GetSettingsReferencesAsync(CurrentUser(context).ClientId))
+            : Results.Ok(await repository.GetAsync(CurrentUser(context).ClientId))
         : Results.StatusCode(StatusCodes.Status403Forbidden))
 .WithName("GetEmployees")
 .WithOpenApi();

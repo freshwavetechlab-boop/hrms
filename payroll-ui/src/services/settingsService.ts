@@ -1,9 +1,9 @@
 import type { Client, ClientBillingAdvancedSetup, ClientBillingConfiguration, ClientBillingCostRuleHeader, ClientBillingCostRuleLine, ClientBillingModule, Drop, Employee, EmployeeActionRequest, EmployeeAuditTrail, EmployeeInfotypeRecord, EssClientSetting, Org, PayTravelAdvanceRequest, RecoverTravelAdvanceRequest, RecruitmentAdminSetup, RecruitmentApprovalMapping, RecruitmentAssignmentRule, RecruitmentDocumentChecklist, RecruitmentMasterValue, RecruitmentPartner, RecruitmentSetting, RecruitmentSlaRule, RecruitmentTemplate, ScheduledJob, ScheduledJobAction, ScheduledJobHandlerOption, ScheduledJobRun, SettleTravelAdvanceRequest, Setup, TravelAdvance, TravelExpenseCategory, TravelExpenseClientSetting, TravelExpenseSetup, TravelPolicy, TravelPolicyAssignment, TravelPolicyRule, WorkLocation, WorkflowApprover } from '../types/payroll'
 import { apiRequest, deleteJson, getBlob, getJson, getJsonResult, postForm, postJson, type ApiOptions, type ApiResult } from './apiClient'
-import type { Structure } from '../types/payroll'
+import type { Component, Structure } from '../types/payroll'
 
 export type BulkImportStatus = { jobId: string; state: 'Queued' | 'Processing' | 'NeedsConfirmation' | 'Completed' | 'Failed'; totalRows: number; completedRows: number; inserted: number; updated: number; errors: string[] }
-export type EmployeeDeletePreview = { employeeId: number; employeeCode: string; employeeName: string; links: string[]; canDelete: boolean }
+export type EmployeeDeletePreview = { employeeId: number; employeeCode: string; employeeName: string; clientId?: number; links: string[]; canDelete: boolean; linkedUsers?: { id: number; displayName: string; email: string; isActive: boolean }[]; dependencies?: { key: string; label: string; count: number; route: string }[] }
 export type EmployeeImportReviewChange = {
   field: string
   label: string
@@ -68,6 +68,8 @@ export const getPublicOrganizationBrand = () => getJson<{ name: string; logoData
 export const saveOrganization = (organization: Org) => postJson('/api/organization', organization, organization)
 export const getSetup = (fallback: Setup) => getJson<Setup>('/api/setup', fallback)
 export const saveSetup = (setup: Setup, options: ApiOptions = {}) => postJson('/api/setup', setup, setup, options)
+export const saveSalaryComponent = (component: Component, expected?: Component, options: ApiOptions = {}) =>
+  postJson('/api/salary-components', { component, expected: expected ?? null }, component, options)
 export const createClientSalaryTemplate = (clientId: number, template: Structure, options: ApiOptions = {}) =>
   postJson(`/api/clients/${clientId}/salary-templates`, {
     name: template.name, annualCtc: template.annualCtc, active: template.active,

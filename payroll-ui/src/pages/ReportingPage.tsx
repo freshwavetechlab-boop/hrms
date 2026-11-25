@@ -1,3 +1,4 @@
+import { clientChoice } from '../components/ClientOption'
 import { useEffect, useMemo, useState } from 'react'
 import { emptyEmployeeFields, getEmployeeFields, type EmployeeFieldExchange } from '../utils/employeeFields'
 import { Alert, Button, Select, Spin } from 'antd'
@@ -347,7 +348,7 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
     {fieldsError && isEmployeeMaster && <Alert type="error" showIcon message={fieldsError} action={<Button onClick={() => setReportReloadKey(value => value + 1)}>Retry</Button>} />}
     <div className="report-filter-surface">
       {activeReport.code && <div className="report-filters">
-        {!clientScoped && <label className="report-client"><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(c => ({ value: c.id, label: c.name }))} /></label>}
+        {!clientScoped && <label className="report-client"><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={clients.map(clientChoice)} /></label>}
         {showClassifications && (['employmentType', 'skillCategory'] as const).map(key => <label className="report-client" key={key}><span>{key === 'employmentType' ? 'Employee type' : 'Employee category'}</span><Select allowClear showSearch optionFilterProp="label" placeholder="All" value={classificationFilters[key] || undefined} onChange={value => setClassifications({ clientId, ...classificationFilters, [key]: value || '' })} options={[...new Set(employees.filter(row => row.clientId === clientId).map(row => workforceValue(row, key)))].sort().map(value => ({ value, label: value }))} /></label>)}
         {showMonth && <label className="report-client"><span>{['salary-register', 'component-ledger', 'monthly-advice-report', 'bank-transfer-report'].includes(activeReport.code) ? 'Pay Period' : 'Month'}</span><input type="month" value={month} onChange={e => setMonth(e.target.value)} /></label>}
         {showPayRun && <label className="report-client"><span>Payrun</span><SearchSelect value={payRunId} onChange={value => setPayRunId(Number(value))} options={[{ value: 0, label: 'Use selected month' }, ...clientPayRuns.map(run => ({ value: run.id, label: `${run.payPeriod} - ${run.runName || run.runType} - ${run.status}` }))]} /></label>}

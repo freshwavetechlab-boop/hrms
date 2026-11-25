@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { clientChoice } from './ClientOption'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Col, Form, Row, Space, Table, Tag, type TableColumnsType } from 'antd'
 import { setup0, workWeekOptionsFromDrops } from '../data/payrollDefaults'
 import { getClients } from '../services/payrollService'
 import { getDropdowns, getSetup, getWorkLocations } from '../services/settingsService'
-import { getLeaveAttendancePreferences, saveLeaveAttendancePreferences } from '../services/leaveAttendanceService'
+import { getLeaveAttendancePreferenceResult, saveLeaveAttendancePreferences } from '../services/leaveAttendanceService'
 import type { AttendanceWorkWeek, Client, Component, Drop, LeaveAttendancePreferences, WorkLocation } from '../types/payroll'
 import SearchSelect, { selectOptions } from './SearchSelect'
 
@@ -19,6 +20,12 @@ export default function LeaveAttendancePreferencesForm({ clientId, onSaved }: { 
   const [dropdowns, setDropdowns] = useState<Drop[]>([])
   const [preferences, setPreferences] = useState<LeaveAttendancePreferences>(empty(clientId))
   const [savedRows, setSavedRows] = useState<LeaveAttendancePreferences[]>([])
+  const [referencesReady, setReferencesReady] = useState(false)
+  const [preferenceReady, setPreferenceReady] = useState(false)
+  const [rowsLoading, setRowsLoading] = useState(true)
+  const [tableError, setTableError] = useState('')
+  const preferenceRequest = useRef(0)
+  const tableRequest = useRef(0)
   const [errors, setErrors] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
 
@@ -31,32 +38,70 @@ export default function LeaveAttendancePreferencesForm({ clientId, onSaved }: { 
   const warning = preferences.includeLeaveEncashmentInPayRun && selectedComponent && !isFormulaBased ? 'Leave encashment can only be enabled for formula-based salary components.' : ''
 
   const loadPreference = async (nextClientId = preferences.clientId, nextLocationId = Number(preferences.workLocationId || 0)) => {
+    const request = ++preferenceRequest.current
+    setPreferenceReady(false)
+    setErrors([])
+    setPreferences(empty(nextClientId, nextLocationId || null))
     if (!nextClientId) return
-    const saved = await getLeaveAttendancePreferences(nextClientId, nextLocationId)
-    setPreferences({ ...empty(nextClientId, nextLocationId || null), ...saved, clientId: nextClientId, workLocationId: nextLocationId || null })
+    const result = await getLeaveAttendancePreferenceResult(nextClientId, nextLocationId)
+    if (request !== preferenceRequest.current) return
+    if (!result.ok) { setErrors([result.error || 'Unable to load the selected attendance cycle.']); return }
+    setPreferences({ ...empty(nextClientId, nextLocationId || null), ...result.data, clientId: nextClientId, workLocationId: nextLocationId || null })
+    setPreferenceReady(true)
   }
 
   const loadSavedRows = async (clientRows = activeClients, locationRows = locations) => {
-    const rows = await Promise.all(clientRows.flatMap(client => [
-      getLeaveAttendancePreferences(client.id, 0),
-      ...locationRows.filter(location => location.clientId === client.id && location.isActive).map(location => getLeaveAttendancePreferences(client.id, location.id))
-    ]))
-    const uniqueRows = rows.filter(row => row.id > 0).filter((row, index, all) => all.findIndex(item => item.clientId === row.clientId && Number(item.workLocationId || 0) === Number(row.workLocationId || 0)) === index)
-    setSavedRows(uniqueRows)
+    const request = ++tableRequest.current
+    setRowsLoading(true)
+    setTableError('')
+    const scopes = clientRows.flatMap(client => [0, ...locationRows
+      .filter(location => location.clientId === client.id && location.isActive)
+      .map(location => location.id)].map(locationId => ({ clientId: client.id, locationId })))
+    const rows: (LeaveAttendancePreferences | undefined)[] = []
+    let index = 0
+    let incomplete = false
+    // Keep background table requests from crowding out a user's selected cycle.
+    const worker = async () => {
+      while (request === tableRequest.current && index < scopes.length) {
+        const position = index++
+        const scope = scopes[position]
+        const result = await getLeaveAttendancePreferenceResult(scope.clientId, scope.locationId)
+        if (!result.ok) incomplete = true
+        else if (result.data.id > 0) rows[position] = result.data
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(4, scopes.length) }, worker))
+    if (request !== tableRequest.current) return
+    const unique = new Map(rows.flatMap(row => row ? [[row.id, row] as const] : []))
+    setSavedRows([...unique.values()])
+    setTableError(incomplete ? 'Some saved cycles could not be loaded.' : '')
+    setRowsLoading(false)
   }
 
   useEffect(() => {
-    void Promise.all([getClients(), getWorkLocations(), getSetup(setup0), getDropdowns()]).then(async ([clientRows, locationRows, setup, dropdownRows]) => {
-      const active = clientRows.filter(row => row.isActive)
-      const nextClientId = clientId || active[0]?.id || 0
-      setClients(active)
+    let active = true
+    setReferencesReady(false)
+    setPreferenceReady(false)
+    setRowsLoading(true)
+    setTableError('')
+    setSavedRows([])
+    const directory = getClients(true).then(rows => {
+      const activeClients = rows.filter(row => row.isActive)
+      if (active) {
+        setClients(activeClients)
+        void loadPreference(clientId || activeClients[0]?.id || 0, 0)
+      }
+      return activeClients
+    })
+    void Promise.all([directory, getWorkLocations(), getSetup(setup0), getDropdowns()]).then(([clientRows, locationRows, setup, dropdownRows]) => {
+      if (!active) return
       setLocations(locationRows.filter(row => row.isActive))
       setComponents(setup.salaryComponents ?? [])
       setDropdowns(dropdownRows)
-      setPreferences(empty(nextClientId))
-      await loadSavedRows(active, locationRows)
-      if (nextClientId) await loadPreference(nextClientId, 0)
+      setReferencesReady(true)
+      void loadSavedRows(clientRows, locationRows)
     })
+    return () => { active = false; ++preferenceRequest.current; ++tableRequest.current }
   }, [clientId])
 
   const set = <K extends keyof LeaveAttendancePreferences>(key: K, value: LeaveAttendancePreferences[K]) => {
@@ -66,7 +111,6 @@ export default function LeaveAttendancePreferencesForm({ clientId, onSaved }: { 
 
   const changeClient = async (value: string) => {
     const nextClientId = Number(value)
-    setPreferences(empty(nextClientId))
     await loadPreference(nextClientId, 0)
   }
 
@@ -89,7 +133,8 @@ export default function LeaveAttendancePreferencesForm({ clientId, onSaved }: { 
   }
 
   const save = async () => {
-    if (!validate()) return
+    if (!preferenceReady || !referencesReady || !validate()) return
+    const request = preferenceRequest.current
     setSaving(true)
     const response = await saveLeaveAttendancePreferences({
       clientId: preferences.clientId,
@@ -102,6 +147,7 @@ export default function LeaveAttendancePreferencesForm({ clientId, onSaved }: { 
       leaveEncashmentSalaryComponentId: preferences.leaveEncashmentSalaryComponentId ? Number(preferences.leaveEncashmentSalaryComponentId) : null
     })
     setSaving(false)
+    if (request !== preferenceRequest.current) return
     if (response.ok) {
       setPreferences(response.data)
       setErrors([])
@@ -125,8 +171,9 @@ export default function LeaveAttendancePreferencesForm({ clientId, onSaved }: { 
         <Form className="settings-quick-form" component={false} layout="vertical" requiredMark={false}>
           {errors.length > 0 && <Alert type="error" showIcon message={errors.join(' ')} />}
           {warning && <Alert type="warning" showIcon message={warning} />}
-          <Form.Item label="Client" required><SearchSelect value={preferences.clientId} onChange={changeClient} options={activeClients.map(client => ({ value: client.id, label: client.name }))} /></Form.Item>
-          <Form.Item label="Work Location" required><SearchSelect value={preferences.workLocationId ?? 0} onChange={changeLocation} options={selectOptions([{ value: 0, label: 'All locations' }, ...clientLocations.map(location => ({ value: location.id, label: `${location.name} - ${location.clientName || activeClients.find(client => client.id === location.clientId)?.name || 'Client'} - ${location.city || location.state || 'Location'}` }))])} /></Form.Item>
+          <Form.Item label="Client" required><SearchSelect disabled={saving} value={preferences.clientId} onChange={changeClient} options={activeClients.map(clientChoice)} /></Form.Item>
+          <Form.Item label="Work Location" required><SearchSelect disabled={!referencesReady || saving} value={preferences.workLocationId ?? 0} onChange={changeLocation} options={selectOptions([{ value: 0, label: 'All locations' }, ...clientLocations.map(location => ({ value: location.id, label: `${location.name} - ${location.clientName || activeClients.find(client => client.id === location.clientId)?.name || 'Client'} - ${location.city || location.state || 'Location'}` }))])} /></Form.Item>
+          {preferenceReady && referencesReady ? <>
           <Form.Item label="Weekly off pattern" required><SearchSelect value={preferences.workWeek} onChange={value => set('workWeek', value as AttendanceWorkWeek)} options={selectOptions(workWeeks, 'Select weekly off pattern')} /></Form.Item>
           <Row gutter={12}>
             <Col span={8}><Form.Item label="Cycle start date" required><SearchSelect value={preferences.attendanceCycleStartDay} onChange={value => set('attendanceCycleStartDay', Number(value))} options={selectOptions(dayOptions)} /></Form.Item></Col>
@@ -135,13 +182,14 @@ export default function LeaveAttendancePreferencesForm({ clientId, onSaved }: { 
           </Row>
           <Form.Item label="Leave encashment salary component"><SearchSelect value={preferences.leaveEncashmentSalaryComponentId ?? ''} onChange={value => set('leaveEncashmentSalaryComponentId', value ? Number(value) : null)} options={selectOptions(components.map(component => ({ value: component.id, label: `${component.name} / ${component.calculationType}` })), 'Select salary component')} /></Form.Item>
           <Form.Item><AntCheckbox checked={preferences.includeLeaveEncashmentInPayRun} disabled={!!selectedComponent && !isFormulaBased} onChange={event => set('includeLeaveEncashmentInPayRun', event.target.checked)}>Include leave encashment details in pay run</AntCheckbox></Form.Item>
-          <Space><Button onClick={() => void loadPreference(preferences.clientId, Number(preferences.workLocationId || 0))}>Reset</Button><Button type="primary" loading={saving} onClick={() => void save()}>Save cycle</Button></Space>
+          <Space><Button onClick={() => void loadPreference(preferences.clientId, Number(preferences.workLocationId || 0))}>Reset</Button><Button type="primary" loading={saving} onClick={() => void save()}>Save cycle</Button></Space></> : errors.length ? <Button onClick={() => void loadPreference()}>Retry</Button> : <small role="status">{preferences.clientId ? 'Loading attendance cycle…' : 'Select a client.'}</small>}
         </Form>
       </AntCard>
     </Col>
     <Col xs={24} lg={14}>
       <AntCard className="settings-panel settings-table-panel" title="Saved attendance cycles" size="small">
-        <Table size="small" rowKey={row => `${row.clientId}-${row.workLocationId || 0}`} dataSource={savedRows} pagination={false} columns={savedColumns} />
+        {tableError && <Alert type="warning" showIcon message={tableError} action={<Button onClick={() => void loadSavedRows()}>Retry</Button>} />}
+        <Table loading={rowsLoading} size="small" rowKey={row => `${row.clientId}-${row.workLocationId || 0}`} dataSource={savedRows} pagination={false} columns={savedColumns} />
       </AntCard>
     </Col>
   </Row>

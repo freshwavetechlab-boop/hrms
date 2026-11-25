@@ -1,3 +1,4 @@
+import { clientChoice } from './ClientOption'
 import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Segmented } from 'antd'
 import { useSearchParams } from 'react-router-dom'
@@ -27,7 +28,7 @@ export default function ApiCatalog() {
   const [keysOpen, setKeysOpen] = useState(false)
   const canManageKeys = session?.user.permissions.some(p => ['settings.manage', 'client.settings.manage'].includes(p))
   const scoped = Boolean(session?.user.clientId && !session.user.permissions.includes('settings.manage'))
-  useEffect(() => { let active = true; void getClients().then(data => { if (!active) return; const rows = data.filter(c => c.isActive); setClients(rows); setClientId(id => scoped ? Number(session?.user.clientId) : rows.some(c => c.id === id) ? id : rows[0]?.id || 0) }); return () => { active = false } }, [scope, scoped])
+  useEffect(() => { let active = true; void getClients(true).then(data => { if (!active) return; const rows = data.filter(c => c.isActive); setClients(rows); setClientId(id => scoped ? Number(session?.user.clientId) : rows.some(c => c.id === id) ? id : rows[0]?.id || 0) }); return () => { active = false } }, [scope, scoped])
   useEffect(() => {
     const id = Number(params.get('clientId'))
     if (clients.some(c => c.id === id) && (!scoped || id === session?.user.clientId)) { setClientId(id); if (params.get('keys') === '1' && canManageKeys) setKeysOpen(true) }
@@ -40,7 +41,7 @@ export default function ApiCatalog() {
   const closeKeys = () => { setKeysOpen(false); if (params.has('keys')) { const next = new URLSearchParams(params); next.delete('keys'); setParams(next, { replace: true }) } }
 
   return <RecruitmentViewContext.Provider value={{ view, scope: scope + ':' + clientId, namespace: 'workflows.ui' }}>
-    {!scoped && <PageHeaderPortal slot="workflows-client-controls"><SearchSelect testId="api-catalog-client" value={clientId} onChange={value => { setClientId(Number(value)); const next = new URLSearchParams(params); next.set('clientId', String(value)); setParams(next, { replace: true }) }} options={clients.map(client => ({ value: client.id, label: client.name }))} /></PageHeaderPortal>}
+    {!scoped && <PageHeaderPortal slot="workflows-client-controls"><SearchSelect testId="api-catalog-client" value={clientId} onChange={value => { setClientId(Number(value)); const next = new URLSearchParams(params); next.set('clientId', String(value)); setParams(next, { replace: true }) }} options={clients.map(clientChoice)} /></PageHeaderPortal>}
     <PageHeaderPortal slot="workflows-view-controls"><Segmented options={[{ label: 'Card view', value: 'Cards' }, { label: 'Table view', value: 'Table' }]} value={view} onChange={value => setView(value as RecruitmentView)} /></PageHeaderPortal>
     <PageHeaderPortal slot="workflows-page-controls">{canManageKeys && <Button type="primary" disabled={!clientId} onClick={() => setKeysOpen(true)}>API keys</Button>}</PageHeaderPortal>
     <section className="recruitment-monitor-page recruitment-experience recruitment-viewport">

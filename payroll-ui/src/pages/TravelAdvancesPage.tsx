@@ -1,3 +1,4 @@
+import { clientChoice } from '../components/ClientOption'
 import { useEffect, useMemo, useState } from 'react'
 import { Button, Modal } from 'antd'
 import DataTable from '../components/DataTable'
@@ -25,7 +26,7 @@ export default function TravelAdvancesPage() {
   const [form, setForm] = useState({ amount: 0, mode: 'Bank Transfer', reference: '', date: new Date().toISOString().slice(0, 10), remarks: '' })
 
   const load = async () => setRows(await getTravelAdvances(clientId, status))
-  useEffect(() => { void getClients().then(setClients) }, [])
+  useEffect(() => { void getClients(true).then(setClients) }, [])
   useEffect(() => { void load() }, [clientId, status])
 
   const summary = useMemo(() => ({
@@ -62,7 +63,7 @@ export default function TravelAdvancesPage() {
   return <section className="travel-advances-page">
     <div className="card report-workspace travel-advance-workspace">
       <div className="travel-advance-filters">
-        {!clientScoped && <label><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={selectOptions(clients.map(client => ({ value: client.id, label: client.name })), 'All clients', 0)} /></label>}
+        {!clientScoped && <label><span>Client</span><SearchSelect value={clientId} onChange={value => setClientId(Number(value))} options={selectOptions(clients.map(clientChoice), 'All clients', 0)} /></label>}
         <label><span>Status</span><SearchSelect value={status} onChange={setStatus} options={selectOptions(statuses, 'All statuses')} /></label>
         <Button onClick={() => void load()}>Refresh</Button>
       </div>

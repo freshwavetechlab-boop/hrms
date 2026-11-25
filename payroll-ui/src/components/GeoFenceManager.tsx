@@ -1,3 +1,4 @@
+import { clientChoice } from './ClientOption'
 import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Col, Divider, Drawer, Form, Input, InputNumber, Row, Space, Tag } from 'antd'
 import RecruitmentRecordList from './RecruitmentRecordList'
@@ -160,7 +161,7 @@ function GeoFenceForm(p: {
   return <Form className="settings-quick-form geo-fence-form" component={false} layout="vertical" requiredMark={false}>
     {p.errors.length > 0 && <Alert type="error" showIcon message={p.errors.join(' ')} />}
     <Row gutter={12}>
-      {!p.fixedClientId && <Col xs={24} md={12}><Form.Item label="Client" required><SearchSelect value={p.clientId} onChange={value => p.changeClient(Number(value))} options={p.clients.map(client => ({ value: client.id, label: client.name }))} /></Form.Item></Col>}
+      {!p.fixedClientId && <Col xs={24} md={12}><Form.Item label="Client" required><SearchSelect value={p.clientId} onChange={value => p.changeClient(Number(value))} options={p.clients.map(clientChoice)} /></Form.Item></Col>}
       <Col xs={24} md={12}><Form.Item label="Rule name" required><Input value={p.form.name} onChange={event => p.set('name', event.target.value)} placeholder="Head office fence" /></Form.Item></Col>
       <Col xs={24} md={12}><Form.Item label="Work location" required><SearchSelect value={p.form.workLocationId ?? ''} onChange={value => void p.changeWorkLocation(Number(value))} options={selectOptions(p.locations.map(location => ({ value: location.id, label: `${location.name}${location.city ? ` - ${location.city}` : ''}` })))} /></Form.Item></Col>
     </Row>

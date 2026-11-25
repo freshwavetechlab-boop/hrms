@@ -1,3 +1,4 @@
+import { clientChoice, clientSelectProps } from './ClientOption'
 ﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import DOMPurify from 'dompurify'
 import { Alert, Button, Checkbox, Drawer, Input, Modal, Select, Space, Spin, Switch, Tag, Tooltip } from 'antd'
@@ -128,7 +129,7 @@ export function useEmployeeProfileCompletion(rows: Employee[], clients: Client[]
     dialogs: <>
       <Drawer title="Manage employee master" open={manageOpen} width="min(720px, 96vw)" onClose={() => !saving && setManageOpen(false)}>
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-          {!session?.user.clientId && (clientScopeOptions ? <PayrollScopeSelect ariaLabel="Profile completion client" placeholder="Select client" value={manageClient} options={clientScopeOptions.filter(option => Number(option.value) > 0 && clients.some(client => client.id === Number(option.value)))} onChange={value => setManageClient(Number(value))} /> : <Select aria-label="Profile completion client" placeholder="Select client" style={{ width: '100%' }} value={manageClient || undefined} options={clients.map(client => ({ value: client.id, label: client.name }))} onChange={setManageClient} />)}
+          {!session?.user.clientId && (clientScopeOptions ? <PayrollScopeSelect ariaLabel="Profile completion client" placeholder="Select client" value={manageClient} options={clientScopeOptions.filter(option => Number(option.value) > 0 && clients.some(client => client.id === Number(option.value)))} onChange={value => setManageClient(Number(value))} /> : <Select aria-label="Profile completion client" placeholder="Select client" style={{ width: '100%' }} value={manageClient || undefined} {...clientSelectProps(clients.map(clientChoice))} onChange={setManageClient} />)}
           {onConfigure && <Button disabled={!manageClient} onClick={() => { setManageOpen(false); onConfigure(manageClient) }}>Configure fields</Button>}
           {manageLoading && <Spin />}
           {setup && <>

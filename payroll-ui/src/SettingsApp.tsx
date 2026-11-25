@@ -1,3 +1,4 @@
+import { clientChoice, clientSelectProps } from './components/ClientOption'
 import { Fragment, useEffect, useRef, useState, type MouseEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { AppstoreOutlined, BankOutlined, BellOutlined, DownOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons'
@@ -190,13 +191,13 @@ const surfaceDescriptions: Record<string, string> = {
 
 const modules: { code: ModuleCode | 'Reports'; label: string; icon: IconName; description: string; disabled?: boolean }[] = [
   { code: 'Dashboard', label: 'Dashboard', icon: 'dashboard', description: 'Client-wise payroll, attendance and approval overview.' },
-  { code: 'Payroll', label: 'Payroll', icon: 'payruns', description: 'Run payroll, compare variances and review history.' },
-  { code: 'LeaveAttendance', label: 'Leave & Attendance', icon: 'calendar', description: 'Review attendance before payroll processing.' },
+  { code: 'Settings', label: 'Settings', icon: 'settings', description: 'Configure organization, clients and payroll setup.' },
   { code: 'Employees', label: 'Employees', icon: 'employees', description: 'Manage employee master, salary and statutory profile.' },
+  { code: 'LeaveAttendance', label: 'Leave & Attendance', icon: 'calendar', description: 'Review attendance before payroll processing.' },
+  { code: 'Payroll', label: 'Payroll', icon: 'payruns', description: 'Run payroll, compare variances and review history.' },
   { code: 'TalentAcquisition', label: 'Talent Acquisition', icon: 'job', description: 'Monitor requisitions and open positions.' },
   { code: 'Security', label: 'Security', icon: 'security', description: 'Control users, roles, permissions and audit evidence.' },
   { code: 'Workflows', label: 'Workflows', icon: 'workflow', description: 'Configure reusable approval workflows and tasks.' },
-  { code: 'Settings', label: 'Settings', icon: 'settings', description: 'Configure organization, clients and payroll setup.' },
   { code: 'Reports', label: 'Reports', icon: 'reports', description: 'Client-scoped reporting and analytics.' }
 ]
 
@@ -427,7 +428,7 @@ export default function SettingsApp() {
     if (!selectedClientAccess) { setAssignedClientOptions([]); setAssignedClientLoading(false); return }
     setAssignedClientLoading(true)
     const allowed = new Set(assignedClients(currentUser))
-    void getClients(false, true).then(rows => { if (active) setAssignedClientOptions(rows.filter(row => allowed.has(row.id) && row.isActive)) }).finally(() => { if (active) setAssignedClientLoading(false) })
+    void getClients(true, true).then(rows => { if (active) setAssignedClientOptions(rows.filter(row => allowed.has(row.id) && row.isActive)) }).finally(() => { if (active) setAssignedClientLoading(false) })
     return () => { active = false }
   }, [selectedClientAccess, assignedClientKey, currentUser?.id, currentUser?.clientId])
   const activeModule = visibleModules.find(module => module.code === mainModule) ?? modules[0]
@@ -795,30 +796,36 @@ export default function SettingsApp() {
     </>
     if (mainModule === 'Settings') {
       if (billingOnly) return menuLink('/settings/client-billing-configuration', 'Client Billing Configuration', true, () => setTab('Client Billing Configuration'), 'Billing')
+      const settingsGroup = (label: string, key: string, icon: IconName, open: boolean, active: boolean, toggle: () => void, children: React.ReactNode) => {
+        const expanded = navOpen ? open : collapsedFlyout === key
+        return <div className={`settings-nav-group flyout-align-end ${expanded ? 'expanded' : ''} ${collapsedFlyout === key ? 'flyout-open' : ''}`}>
+          <button {...navAttrs(label)} type="button" className={active ? 'active' : ''} aria-expanded={expanded}
+            onClick={() => toggleNavGroup(key, toggle)}>
+            {menuLabel(label, icon)}<DownOutlined aria-hidden="true" className="nav-group-chevron" />
+          </button>
+          {expanded && <div className="settings-nav-submenu">{children}</div>}
+        </div>
+      }
+      const attendanceGroup = settingsGroup('Leave & Attendance', 'settings-leave-attendance', 'calendar', leaveAttendanceOpen, settingsSection === 'LeaveAttendance',
+        () => { setPayrollSetupOpen(false); setIntegrationsOpen(false); setLeaveAttendanceOpen(open => !navOpen || !open) },
+        leaveAttendanceMenus.map(item => <Fragment key={item}>{menuLink(`/settings/leave-attendance/${slug(item)}`, item, settingsSection === 'LeaveAttendance' && leaveAttendanceTab === item, () => setLeaveAttendanceSettingsTab(item), undefined, leaveAttendanceIcons[item])}</Fragment>))
       if (clientScopedAdmin) return <>
         {tasks}
         {menuLink('/settings/client-config-check', 'Client Config Check', settingsSection === 'General' && tab === 'Client Config Check', () => setTab('Client Config Check'), 'Readiness', 'shield')}
         {menuLink('/settings/salary-templates', 'Salary Templates', settingsSection === 'General' && tab === 'Salary Templates', () => setTab('Salary Templates'), 'Client-wise', 'template')}
         {menuLink('/settings/payslip-templates', 'Payslip Templates', settingsSection === 'General' && tab === 'Payslip Templates', () => setTab('Payslip Templates'), 'Client-wise', 'payslip')}
         {menuLink('/settings/work-locations', 'Work Locations', settingsSection === 'General' && tab === 'Work Locations', () => setTab('Work Locations'), undefined, 'location')}
-        <div className={`settings-nav-group ${leaveAttendanceOpen ? 'expanded' : ''}`}>
-          <button {...navAttrs('Leave & Attendance')} className={settingsSection === 'LeaveAttendance' ? 'active' : ''} type="button" aria-expanded={leaveAttendanceOpen} onClick={() => setLeaveAttendanceOpen(open => !open)}>{menuLabel('Leave & Attendance', null)}<small>{leaveAttendanceOpen ? '-' : '+'}</small></button>
-          {leaveAttendanceOpen && <div className="settings-nav-submenu">{leaveAttendanceMenus.map(item => <Fragment key={item}>{menuLink(`/settings/leave-attendance/${slug(item)}`, item, settingsSection === 'LeaveAttendance' && leaveAttendanceTab === item, () => setLeaveAttendanceSettingsTab(item), undefined, leaveAttendanceIcons[item])}</Fragment>)}</div>}
-        </div>
+        {attendanceGroup}
       </>
-      const generalSettings = settingsMenus.filter(item => !payrollSetupMenus.includes(item) && !integrationMenus.includes(item))
+      const generalSettings = settingsMenus.filter(item => !allPayrollSetupMenus.includes(item) && !integrationMenus.includes(item))
       const payrollSetupActive = payrollSetupMenus.includes(tab)
       return <>
         {tasks}
         {generalSettings.map(item => <Fragment key={item}>{menuLink(`/settings/${slug(item)}`, item, settingsSection === 'General' && tab === item, () => setTab(item), undefined, generalSettingsIcons[item])}</Fragment>)}
-        <div className={`settings-nav-group flyout-align-end ${payrollSetupOpen ? 'expanded' : ''} ${collapsedFlyout === 'settings-payroll' ? 'flyout-open' : ''}`}>
-          <button {...navAttrs('Payroll Setup')} className={settingsSection === 'General' && payrollSetupActive ? 'active' : ''} type="button" aria-expanded={payrollSetupOpen} onClick={() => toggleNavGroup('settings-payroll', () => { setLeaveAttendanceOpen(false); setIntegrationsOpen(false); setPayrollSetupOpen(open => navOpen ? !open : true) })}>{menuLabel('Payroll Setup', null)}<small>{payrollSetupOpen ? '-' : '+'}</small></button>
-          {payrollSetupOpen && <div className="settings-nav-submenu">{payrollSetupMenus.map(item => <Fragment key={item}>{menuLink(`/settings/${slug(item)}`, item, settingsSection === 'General' && tab === item, () => setTab(item), item === 'Salary Templates' ? 'Client-wise' : undefined, payrollSetupIcons[item])}</Fragment>)}</div>}
-        </div>
-        <div className={`settings-nav-group flyout-align-end ${leaveAttendanceOpen ? 'expanded' : ''} ${collapsedFlyout === 'settings-leave-attendance' ? 'flyout-open' : ''}`}>
-          <button {...navAttrs('Leave & Attendance')} className={settingsSection === 'LeaveAttendance' ? 'active' : ''} type="button" aria-expanded={leaveAttendanceOpen} onClick={() => toggleNavGroup('settings-leave-attendance', () => { setPayrollSetupOpen(false); setIntegrationsOpen(false); setLeaveAttendanceOpen(open => navOpen ? !open : true) })}>{menuLabel('Leave & Attendance', null)}<small>{leaveAttendanceOpen ? '-' : '+'}</small></button>
-          {leaveAttendanceOpen && <div className="settings-nav-submenu">{leaveAttendanceMenus.map(item => <Fragment key={item}>{menuLink(`/settings/leave-attendance/${slug(item)}`, item, settingsSection === 'LeaveAttendance' && leaveAttendanceTab === item, () => setLeaveAttendanceSettingsTab(item), undefined, leaveAttendanceIcons[item])}</Fragment>)}</div>}
-        </div>
+        {settingsGroup('Payroll Setup', 'settings-payroll', 'payruns', payrollSetupOpen, settingsSection === 'General' && payrollSetupActive,
+          () => { setLeaveAttendanceOpen(false); setIntegrationsOpen(false); setPayrollSetupOpen(open => !navOpen || !open) },
+          payrollSetupMenus.map(item => <Fragment key={item}>{menuLink(`/settings/${slug(item)}`, item, settingsSection === 'General' && tab === item, () => setTab(item), item === 'Salary Templates' ? 'Client-wise' : undefined, payrollSetupIcons[item])}</Fragment>))}
+        {attendanceGroup}
       </>
     }
     if (mainModule === 'Payroll') return <>
@@ -861,7 +868,7 @@ export default function SettingsApp() {
     if (mainModule === 'Reports') return <>{tasks}{reportingMenus.filter(item => permittedReportItems(item).length > 0).map(item => {
       const expanded = reportingTab === item
       return <div className={`report-nav-group ${['Leave Reports', 'Tax Reports'].includes(item) ? 'flyout-align-end' : ''} ${expanded ? 'expanded' : ''} ${collapsedFlyout === `reports-${slug(item)}` ? 'flyout-open' : ''}`} key={item}>
-        <button {...navAttrs(item)} className={expanded ? 'active' : ''} type="button" aria-expanded={expanded} onClick={() => toggleNavGroup(`reports-${slug(item)}`, () => setReportingModuleTab(item))}>{menuLabel(item, null)}<small>{expanded ? '-' : '+'}</small></button>
+        <button {...navAttrs(item)} className={expanded ? 'active' : ''} type="button" aria-expanded={navOpen ? expanded : collapsedFlyout === `reports-${slug(item)}`} onClick={() => toggleNavGroup(`reports-${slug(item)}`, () => setReportingModuleTab(item))}>{menuLabel(item, null)}<DownOutlined aria-hidden="true" className="nav-group-chevron" /></button>
         {expanded && <div className="report-nav-submenu">{permittedReportItems(item).map(report => <Fragment key={report.name}>{menuLink(`/reports/${slug(item)}?report=${slug(report.name)}`, report.name, reportingReport.name === report.name, () => setReportingReportTab(item, report), undefined, null)}</Fragment>)}</div>}
       </div>
     })}</>
@@ -894,8 +901,8 @@ export default function SettingsApp() {
 
   const clientScopeControl = selectedClientAccess
     ? mainModule === 'TalentAcquisition' && recruitmentView === 'Offers & Pre-Onboarding'
-      ? <RecruitmentOfferClientSelect aria-label="Assigned client" allowClear={false} style={{ width: 280, maxWidth: '100%' }} value={session?.activeClientId || undefined} placeholder="Select assigned client" loading={assignedClientLoading} disabled={!assignedClientOptions.length} options={assignedClientOptions.map(client => ({ value: client.id, label: client.name }))} onChange={value => { if (value && !session?.selectClient(value)) void message.info('Wait for the current save or upload to finish before switching clients.') }} />
-      : <Select aria-label="Assigned client" style={{ width: 280, maxWidth: '100%' }} value={session?.activeClientId || undefined} showSearch optionFilterProp="label" placeholder="Select assigned client" loading={assignedClientLoading} disabled={!assignedClientOptions.length} options={assignedClientOptions.map(client => ({ value: client.id, label: client.name }))} onChange={value => { if (!session?.selectClient(value)) void message.info('Wait for the current save or upload to finish before switching clients.') }} />
+      ? <RecruitmentOfferClientSelect aria-label="Assigned client" allowClear={false} style={{ width: 280, maxWidth: '100%' }} value={session?.activeClientId || undefined} placeholder="Select assigned client" loading={assignedClientLoading} disabled={!assignedClientOptions.length} options={assignedClientOptions.map(clientChoice)} onChange={value => { if (value && !session?.selectClient(value)) void message.info('Wait for the current save or upload to finish before switching clients.') }} />
+      : <Select aria-label="Assigned client" style={{ width: 280, maxWidth: '100%' }} value={session?.activeClientId || undefined} placeholder="Select assigned client" loading={assignedClientLoading} disabled={!assignedClientOptions.length} {...clientSelectProps(assignedClientOptions.map(clientChoice))} onChange={value => { if (!session?.selectClient(value)) void message.info('Wait for the current save or upload to finish before switching clients.') }} />
     : clientScopedAdmin && scopedClient ? <span className="scoped-client-chip" data-testid="scoped-client-chip">{scopedClient.logoDataUrl ? <img src={scopedClient.logoDataUrl} alt={`${scopedClient.name} logo`} /> : <BankOutlined />}{scopedClient.name}</span> : undefined
   const shellClassName = ['hrms-shell', navOpen ? '' : 'rail-collapsed', appDrawerOpen ? 'drawer-open' : '', mobileShell && navOpen ? 'mobile-nav-open' : ''].filter(Boolean).join(' ')
 
@@ -934,7 +941,7 @@ export default function SettingsApp() {
             </button>
           </Dropdown>
         </Space>
-        <AppPageHeader workspace={!showMyTasks && !isProfile ? mainModule === 'Security' && securityAppsTab === 'Attendance API Integrator' ? 'attendance-adapters' : mainModule === 'Workflows' && workflowTab === 'API Catalog' ? 'workflows' : mainModule === 'Settings' && settingsSection === 'LeaveAttendance' ? 'attendance-settings' : mainModule === 'Settings' && settingsSection === 'General' && tab === 'Statutory Setup' ? 'statutory-settings' : mainModule === 'Settings' && settingsSection === 'General' && tab === 'Salary Templates' ? 'salary-templates' : mainModule === 'Dashboard' ? 'dashboard' : mainModule === 'Payroll' && !isPayHistory && payrollTab === 'Regular Run' ? 'regular-payroll' : mainModule === 'Employees' && employeeTab === 'Employee Master' ? 'employees' : mainModule === 'Reports' && reportingReport.code === 'payslip-register' ? 'payslips' : mainModule === 'Reports' && reportingReport.code === 'excel-payslips' ? 'excel-payslips' : undefined : undefined} recruitment={mainModule === 'TalentAcquisition' && !showMyTasks && !isProfile} title={pageTitle} description={pageDescription} icon={<AppIcon name={pageIconName} />} breadcrumbs={breadcrumbItems} actions={clientScopeControl} externalClientScope={selectedClientAccess} />
+        <AppPageHeader workspace={!showMyTasks && !isProfile ? mainModule === 'Security' && securityAppsTab === 'Attendance API Integrator' ? 'attendance-adapters' : mainModule === 'Workflows' && workflowTab === 'API Catalog' ? 'workflows' : mainModule === 'Settings' && settingsSection === 'LeaveAttendance' ? 'attendance-settings' : mainModule === 'Settings' && settingsSection === 'General' && tab === 'Statutory Setup' ? 'statutory-settings' : mainModule === 'Settings' && settingsSection === 'General' && tab === 'Salary Templates' ? 'salary-templates' : mainModule === 'Settings' && settingsSection === 'General' && tab === 'Payslip Templates' ? 'payslip-settings' : mainModule === 'Dashboard' ? 'dashboard' : mainModule === 'Payroll' && !isPayHistory && payrollTab === 'Regular Run' ? 'regular-payroll' : mainModule === 'Employees' && employeeTab === 'Employee Master' ? 'employees' : mainModule === 'Reports' && reportingReport.code === 'payslip-register' ? 'payslips' : mainModule === 'Reports' && reportingReport.code === 'excel-payslips' ? 'excel-payslips' : undefined : undefined} recruitment={mainModule === 'TalentAcquisition' && !showMyTasks && !isProfile} title={pageTitle} description={pageDescription} icon={<AppIcon name={pageIconName} />} breadcrumbs={breadcrumbItems} actions={clientScopeControl} externalClientScope={selectedClientAccess} />
       </div>
       <div className="hrms-content">
         <div className="hrms-page-body">{renderPage()}</div>

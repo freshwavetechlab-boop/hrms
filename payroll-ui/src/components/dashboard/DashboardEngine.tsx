@@ -1,3 +1,4 @@
+import { clientSelectProps } from '../ClientOption'
 import { useState, type ReactNode } from 'react'
 import {
   ArrowDownOutlined,
@@ -31,7 +32,7 @@ ChartJS.register(ArcElement, BarElement, CategoryScale, Filler, Legend, LinearSc
 
 const dashboardPalette = ['#6546e8', '#2f80ed', '#20a46b', '#f59e0b', '#e25563', '#17a2b8', '#8b5cf6', '#64748b']
 
-export type DashboardOption = { value: string | number; label: string }
+export type DashboardOption = { value: string | number; label: string; code?: string | null }
 export type DashboardFilter = {
   key: string
   label: string
@@ -131,16 +132,14 @@ export function DashboardFilterBar({
     <div className="dashboard-filter-grid">
       {filters.map(filter => <label key={filter.key}>
         <span>{filter.label}</span>
-        <Select
+        <Select<string | number>
           data-testid={`dashboard-filter-${filter.key}`}
           aria-label={filter.label}
           allowClear={filter.allowClear !== false}
           disabled={filter.disabled}
-          showSearch={filter.searchable}
-          optionFilterProp="label"
+          {...(filter.key === 'client' ? clientSelectProps(filter.options) : { showSearch: filter.searchable, optionFilterProp: 'label', options: filter.options })}
           value={filter.value === '' ? undefined : filter.value}
           placeholder={filter.placeholder || `All ${filter.label.toLowerCase()}`}
-          options={filter.options}
           onChange={value => onChange(filter.key, value)}
         />
       </label>)}

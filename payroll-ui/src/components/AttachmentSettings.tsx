@@ -1,3 +1,4 @@
+import { clientChoice } from './ClientOption'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Button, Card, Checkbox, Col, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Row, Select, Space, Switch, Tabs, Tag } from 'antd'
 import DataTable from './DataTable'
@@ -119,7 +120,7 @@ export default function AttachmentSettings({ mode = 'attachments' }: { mode?: 'a
       return
     }
     const [clientRows, attributeRows, configurationRows, targetRows] = await Promise.all([
-      getClients(), getAttachmentAttributes(), getAttachmentConfigurations(), getAttachmentTargets()
+      getClients(true), getAttachmentAttributes(), getAttachmentConfigurations(), getAttachmentTargets()
     ])
     setClients(clientRows.filter(item => item.isActive))
     setAttributes(attributeRows)
@@ -162,7 +163,7 @@ export default function AttachmentSettings({ mode = 'attachments' }: { mode?: 'a
     }
   }, [load, notify, stopGooglePopupTracking])
 
-  const clientOptions = [{ value: 0, label: 'Global / all clients' }, ...clients.map(item => ({ value: item.id, label: item.name }))]
+  const clientOptions = [{ value: 0, label: 'Global / all clients' }, ...clients.map(clientChoice)]
   const targetOptions = Array.from(new Map([...targets, ...configurations].map(item => [
     `${item.moduleCode}|${item.formCode}`,
     { value: `${item.moduleCode}|${item.formCode}`, label: attachmentTargetLabel(item.moduleCode, item.formCode) }

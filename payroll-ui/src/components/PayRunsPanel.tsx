@@ -1,3 +1,4 @@
+import { clientChoice } from './ClientOption'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { MoreOutlined, RocketOutlined, WarningOutlined, ReloadOutlined } from '@ant-design/icons'
 import { Button, Checkbox, Dropdown, Select } from 'antd'
@@ -117,6 +118,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   const [includedIds, setIncludedIds] = useState<number[]>([]), [attendancePolicyBatchId, setAttendancePolicyBatchId] = useState(''), [offcycleEmployeeIds, setOffcycleEmployeeIds] = useState<number[]>([]), [offcycleAdjustmentIds, setOffcycleAdjustmentIds] = useState<number[]>([])
   const scopeChoice = useRef({ clientId: clientScoped ? scopedClientId : clientId, policyBatchId: '' })
   const loadSequence = useRef(0)
+  const [workspaceReady, setWorkspaceReady] = useState(false)
   const [adjustments, setAdjustments] = useState<PayrollAdjustment[]>([]), [adjustment, setAdjustment] = useState<PayrollAdjustment>(adjustment0)
   const [tab] = useState<PayrollTab>(mode === 'adjustments' ? 'Adjustments' : initialRunType), [busy, setBusy] = useState(false), [message, setMessage] = useState('Select client, verify employees, then run payroll.')
   const [stage, setStage] = useState<PayrollStage>('Employees')
@@ -224,7 +226,11 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
 
   const load = async () => {
     const sequence = ++loadSequence.current
-    const [clientRows, employeeRows, runRows, setupRow, adjustmentRows, groupRows, locationRows] = await Promise.all([getClients(), getPayrollEmployeeOptions(), getPayRuns(), getSetup(setup0), getPayrollAdjustments(), getAttendanceGroups(), tab === 'Regular Run' && mode !== 'adjustments' ? getWorkLocations() : Promise.resolve([])])
+    const directory = getClients(true).then(rows => {
+      if (sequence === loadSequence.current) setClients(rows)
+      return rows
+    })
+    const [clientRows, employeeRows, runRows, setupRow, adjustmentRows, groupRows, locationRows] = await Promise.all([directory, getPayrollEmployeeOptions(), getPayRuns(), getSetup(setup0), getPayrollAdjustments(), getAttendanceGroups(), tab === 'Regular Run' && mode !== 'adjustments' ? getWorkLocations() : Promise.resolve([])])
     if (sequence !== loadSequence.current) return
     const choice = scopeChoice.current
     const nextClientId = clientScoped ? scopedClientId : clientRows.some(row => row.id === choice.clientId) ? choice.clientId : clientRows[0]?.id || 0
@@ -232,7 +238,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     const nextBatches = buildPolicyBatches(activeGroups.filter(group => group.clientId === nextClientId))
     const nextBatch = nextBatches.find(batch => batch.id === choice.policyBatchId) || null
     const fallbackBatch = nextBatches[0] || null
-    setClients(clientRows)
+    setWorkspaceReady(true)
     if (nextClientId !== clientId) setClientId(nextClientId)
     setEmployees(employeeRows)
     setAttendanceGroups(groupRows)
@@ -255,7 +261,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     setDiagnostics(diagnosticRows)
   }
 
-  useEffect(() => { void Promise.resolve().then(load) }, [])
+  useEffect(() => { void load(); return () => { ++loadSequence.current } }, [])
   useEffect(() => {
     let cancelled = false
     setAttendanceRows([])
@@ -471,10 +477,11 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     } catch (error) { if (formulaScope.current === requestedScope) setMessage(error instanceof Error ? error.message : 'Formula workbook download failed.') }
     finally { setFormulaBusy(false) }
   }
+  const clientInput = !clientScoped && <label>Client<SearchSelect disabled={busy} value={clientId} onChange={value => changeClient(Number(value))} options={clients.filter(client => client.isActive).map(clientChoice)} /></label>
   const contextPanel = <div className="card payroll-control-panel">
     <header><i className="blue">R</i><div><h3>Run context</h3><p>Client, attendance policy and pay period are selected before draft processing. Working days come from Attendance Review.</p></div></header>
     <div className={`pay-run-form enterprise${tab === 'Off-cycle Run' ? ' offcycle-context' : ''}`}>
-      {!clientScoped && <label>Client<SearchSelect disabled={busy} value={clientId} onChange={value => changeClient(Number(value))} options={clients.filter(client => client.isActive).map(client => ({ value: client.id, label: client.name }))} /></label>}
+      {clientInput}
       {tab === 'Regular Run' && mode !== 'adjustments' && <label>Attendance Policy<Select disabled={busy} className="app-search-select payroll-policy-select" popupClassName="app-search-select-dropdown" showSearch optionFilterProp="label" value={attendancePolicyBatchId} onChange={value => changeAttendancePolicyBatch(String(value))} options={attendancePolicyOptions} /></label>}
       {tab === 'Regular Run' && mode !== 'adjustments' && <label>Location<SearchSelect value={selectedPayrollLocationId} disabled={busy || !locationContext} options={locationOptions} onChange={value => {
         const next = Number(value); setPayrollLocationId(next)
@@ -498,6 +505,10 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   </div>
 
   if (tab === 'Regular Run' && mode !== 'adjustments') {
+    const clientIndicators = payrollClientIndicators(employees, runs)
+    const clientControl = <PageHeaderPortal slot="regular-payroll-client-controls">{!clientScoped && <label className="regular-header-client"><span>Client</span><PayrollScopeSelect ariaLabel="Client" disabled={busy} indicatorsPending={!workspaceReady} value={clientId} onChange={value => changeClient(Number(value))} options={clients.filter(client => client.isActive).map(client => ({ ...clientChoice(client), count: clientIndicators.get(client.id)?.count ?? 0, hasPayroll: clientIndicators.get(client.id)?.hasPayroll ?? false }))} /></label>}</PageHeaderPortal>
+    if (!workspaceReady) return <section className="regular-run-workspace">{clientControl}<p role="status">Loading payroll data…</p></section>
+
     const run = selectedReviewRun?.payPeriod === period ? selectedReviewRun : null
     const previouslySaved = !!run && !explicitlyStartedRuns.current.has(run.id)
     const journey = buildRegularRunJourney({ run, diagnostics: run ? diagnostics : null, clientId,
@@ -506,7 +517,6 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     const periodLabel = /^\d{4}-\d{2}$/.test(period) ? new Date(`${period}-01T12:00:00`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }) : period
     const processingPermitted = !!session?.user.isActive && session.user.clientId == null && !!session.user.roles.includes('super_admin') && !!session.user.permissions.includes('payroll.run')
     const canRun = !!session?.user.permissions.includes('payroll.run')
-    const clientIndicators = payrollClientIndicators(employees, runs)
     const locationOverview = regularPayrollLocations(clientId, period, workLocations, employees, locationContext, reviewRuns)
     const scopeLocationOptions = [{ value: 0, label: 'All locations', available: locationOverview.some(row => row.runIds.length > 0), count: new Set((locationContext?.rows ?? []).map(row => row.employeeId)).size || regularEmployees.length, hint: `${periodLabel} · all locations` }, ...locationOverview.filter(row => row.id > 0).map(row => ({ value: row.id, label: row.name, count: row.count, available: row.runIds.length > 0, hint: row.runIds.length ? `${row.runIds.length} saved payroll run${row.runIds.length === 1 ? '' : 's'} · ${periodLabel}` : `No saved payroll · ${periodLabel}` }))]
     const openLocation = (id: number) => { setPayrollLocationId(id); setSelected(null); setDiagnostics(null); setMessage(''); const ids = new Set(locationContext?.rows.filter(row => !id || row.workLocationId === id).map(row => row.employeeId)); setIncludedIds(clientEmployees.filter(employee => groupEmployeeIds.has(employee.id) && (!id || ids.has(employee.id))).map(employee => employee.id)); setRegularView(id ? 'Run payroll' : 'Locations') }
@@ -532,7 +542,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     const roster = <RosterCard key={JSON.stringify([clientId, period, attendancePolicyBatchId])} selectionScope={{ clientId, period, policyBatchId: attendancePolicyBatchId }} disabled={busy} employees={regularEmployees} includedIds={includedIds} setIncludedIds={ids => { if (!selectedDraftPending.current) { setIncludedIds(ids); setSelectedAdjustmentReview({ key: '', ids: [] }) } }} adjustments={regularAdjustments}
       selectedDraftAdjustmentReview={canCreateSelectedDraft ? <SelectedDraftAdjustmentSelection rows={applicableSelectedAdjustments} selectedIds={selectedDraftAdjustmentIds} disabled={busy || selectedDraftUncertain} onSelect={ids => { if (!selectedDraftPending.current) setSelectedAdjustmentReview({ key: adjustmentReviewKey, ids }) }} sourceRequest={selectedDraftBase.request} sourceRequestKey={sourceReviewKey} onSourceReviewChange={choice => { if (!selectedDraftPending.current) setSelectedAdjustmentReview(current => current.key === adjustmentReviewKey ? { ...current, sourceReview: choice } : current) }} /> : undefined} />
     return <section className="regular-run-workspace">
-      <PageHeaderPortal slot="regular-payroll-client-controls">{!clientScoped && <label className="regular-header-client"><span>Client</span><PayrollScopeSelect ariaLabel="Client" disabled={busy} value={clientId} onChange={value => changeClient(Number(value))} options={clients.filter(client => client.isActive).map(client => ({ value: client.id, label: client.name, count: clientIndicators.get(client.id)?.count ?? 0, hasPayroll: clientIndicators.get(client.id)?.hasPayroll ?? false }))} /></label>}</PageHeaderPortal>
+      {clientControl}
       <PageHeaderPortal slot="regular-payroll-page-controls"><nav className="regular-view-tabs" aria-label="Regular payroll workspace">{(['Run payroll', 'Employees', 'Locations', 'Review & correct', 'Run history'] as const).map(view => <button type="button" key={view} aria-current={regularView === view ? 'page' : undefined} onClick={() => setRegularView(view)}>{view}</button>)}</nav></PageHeaderPortal>
       <div className="regular-context-bar">
         <label>Pay period<input disabled={busy} type="month" value={period} onChange={event => changePeriod(event.target.value)} /></label>
@@ -555,6 +565,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     </section>
   }
 
+  if (!workspaceReady) return <section className="pay-runs payroll-cockpit">{clientInput}<p role="status">Loading payroll data…</p></section>
   return <section className={`pay-runs payroll-cockpit${tab === 'Regular Run' && mode !== 'adjustments' ? ' payroll-location-flow' : ''}`}>
     <div className="payroll-status-strip"><span>{message}</span>{attendanceReady ? <span className="status-chip paid">Attendance ready</span> : <Link className="status-chip pending-approval attendance-review-link" to={attendanceReviewLink} state={{ clientId, period, policyBatchId: selectedPolicyBatch?.id, groupIds: selectedAttendanceGroupIds, employeeIds: includedIds }} title="Open Attendance Review">{`${attendanceIssues || includedCount} attendance issue${(attendanceIssues || includedCount) === 1 ? '' : 's'}`}</Link>}</div>
     {contextPanel}

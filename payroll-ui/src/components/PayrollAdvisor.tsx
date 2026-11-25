@@ -4,6 +4,7 @@ import { BulbOutlined, HistoryOutlined, ReloadOutlined } from '@ant-design/icons
 import type { Client, Component, Structure } from '../types/payroll'
 import { getPayrollReview, getPayrollReviewHistory, queuePayrollReview, recordPayrollReviewDecision, reviewSnapshot, snapshotKey, type ReviewFinding, type ReviewJob } from '../services/payrollAdvisorService'
 import SalaryFieldHelp from './SalaryFieldHelp'
+import { clientChoice, clientSelectProps } from './ClientOption'
 import './PayrollAdvisor.css'
 
 export default function PayrollAdvisor({ components, component, template, clients = [], fixedClientId, onDisableProration }: { components: Component[]; component?: Component; template?: Structure; clients?: Client[]; fixedClientId?: number; onDisableProration: (code: string) => void }) {
@@ -13,6 +14,10 @@ export default function PayrollAdvisor({ components, component, template, client
   const [pendingFinding, setPendingFinding] = useState<ReviewFinding | null>(null)
   const scopeIds = template ? String(template.clientId || '').split(/[;,|]/).map(v => Number(v.split(':')[0])).filter(Boolean) : []
   const [chosenClient, setChosenClient] = useState<number>()
+  const reviewClients = scopeIds.map(id => {
+    const client = clients.find(row => row.id === id)
+    return client ? clientChoice(client) : { value: id, label: `Client ${id}` }
+  })
   const clientId = fixedClientId || (scopeIds.includes(chosenClient || 0) ? chosenClient! : scopeIds[0]) || 0
   const snapshot = reviewSnapshot(components, component, template, clientId)
   const key = snapshotKey(snapshot), currentKey = useRef(key)
@@ -61,7 +66,7 @@ export default function PayrollAdvisor({ components, component, template, client
       <div className="payroll-advisor-content">
         <Alert type="info" showIcon message="Suggestions only, not statutory approval" description="Verified statutory sources are not attached. Review eligibility, jurisdiction, effective dates and exceptions with your payroll reviewer. Nothing here saves or activates live configuration." />
         <div className="payroll-advisor-toolbar">
-          {!component && <div className="payroll-advisor-client"><span>Client<SalaryFieldHelp label="Review client" text="Review the selected client's draft. The review does not certify client-specific statutory applicability." example="For a shared template, select the client being reviewed. A review for another client is not reused." /></span><Select aria-label="Review client" value={clientId || undefined} disabled={!!fixedClientId} options={scopeIds.map(id => ({ value:id, label:clients.find(c => c.id === id)?.name || `Client ${id}` }))} onChange={setChosenClient} placeholder="Assign a client to the template" /></div>}
+          {!component && <div className="payroll-advisor-client"><span>Client<SalaryFieldHelp label="Review client" text="Review the selected client's draft. The review does not certify client-specific statutory applicability." example="For a shared template, select the client being reviewed. A review for another client is not reused." /></span><Select aria-label="Review client" value={clientId || undefined} disabled={!!fixedClientId} {...clientSelectProps(reviewClients)} onChange={setChosenClient} placeholder="Assign a client to the template" /></div>}
           <Button icon={<HistoryOutlined />} loading={busy} onClick={async () => { setBusy(true); const r = await getPayrollReviewHistory(clientId); setBusy(false); if (r.ok) { setHistory(r.data); setError(r.data.length ? '' : 'No previous reviews for this scope.') } else setError(r.error) }}>My review history</Button>
           {job && <Button icon={<ReloadOutlined />} disabled={busy} onClick={() => void refresh()}>Refresh status</Button>}
         </div>

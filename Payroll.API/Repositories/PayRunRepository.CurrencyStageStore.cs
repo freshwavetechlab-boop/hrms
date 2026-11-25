@@ -120,6 +120,17 @@ VALUES(@PayRunId,@EmployeeId,@EmployeeCode,@ComponentCode,@ComponentName,@Parent
         var protector = nativeCurrencyProtector ?? throw new InvalidOperationException("Native currency-stage protection is not available.");
         var designs = new PayslipDesignRepository(configuration, protector, new ExcelPayslipPdfService());
         var selection = await designs.ReadNativeSourceDesignSelectionAsync(db, tx, clientId, payPeriod: period);
+        if (selection?.Profile.SourceKind == "CorePayroll")
+        {
+            // A portable layout has no source-based currency stage. A layout
+            // switch must never discard protected or observed processing proof.
+            if (pointer is not null)
+                throw new InvalidOperationException("The protected native currency source design changed; a portable layout cannot replace its original processing evidence.");
+            var captured = await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM payroll_calculation_traces WHERE PayRunId=@RunId AND JSON_EXTRACT(InputJson,'$.nativeCurrencyContext') IS NOT NULL)",new{RunId=runId},tx);
+            if (captured)
+                throw new InvalidOperationException("This captured payroll requires its original native processing currency receipt; a portable layout cannot replace it.");
+            return null;
+        }
         if (selection is null || selection.Profile.AmountDecimalPlaces != 0 || !selection.Applies)
         {
             if (pointer is not null) throw new InvalidOperationException("The protected native currency source design changed; review the complete run again.");

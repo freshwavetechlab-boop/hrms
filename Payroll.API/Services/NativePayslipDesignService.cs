@@ -114,6 +114,11 @@ public static class NativePayslipDesignService
     {
         if(profile.Version!=1 || profile.ClientId<=0 || profile.TemplateId!=template.Id || profile.ClientId!=template.ClientId || template.Theme!=Theme)
             throw new InvalidOperationException("The reviewed payslip design is not valid for this client/template.");
+        if(profile.SourceKind is not ("ExcelSource" or CorePayrollPayslipDesign.SourceKind))
+            throw new InvalidOperationException("The reviewed payslip design source is unsupported.");
+        if(profile.SourceKind==CorePayrollPayslipDesign.SourceKind && (profile.SourceBatchId!=""
+            || profile.SourceHash!=CorePayrollPayslipDesign.SchemaHash(profile.ClientId,profile.Fields,profile.SimpleLayout,profile.KeepMappedZeroRows)))
+            throw new InvalidOperationException("The core payroll design metadata is invalid for this client.");
         NativePayslipDesignScope.ValidatePeriods(profile.PayPeriods);
         NativePayslipDesignScope.ValidateFallback(profile);
         if(profile.AmountDecimalPlaces is not (0 or 2) || profile.Fields.Count is <1 or >100) throw new InvalidOperationException("Choose a supported precision and a bounded set of presentation fields.");

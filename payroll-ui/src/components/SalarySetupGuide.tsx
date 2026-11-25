@@ -72,7 +72,7 @@ export default function SalarySetupGuide({ value, original, components, usedBy, 
   const visibleErrors = step === 5 ? allErrors : stepErrors(step)
   const changeKind = (next: string) => {
     if (next === kind) return
-    patch({ calculationType: next, formula: next === 'Formula' ? displayFormula(draft) : '', value: ['Fixed Amount', 'Daily Rate'].includes(next) ? draft.value : '', ...(next === 'Daily Rate' ? { proRata: false } : {}) })
+    patch({ calculationType: next, formula: next === 'Formula' ? displayFormula(draft) : '', value: next === 'Fixed Amount' ? draft.value.trim() || '0' : next === 'Daily Rate' ? draft.value : '', ...(next === 'Daily Rate' ? { proRata: false } : {}) })
     setFormulaStyle('custom'); setSlabs([])
   }
   const updateSlabs = (rows: Slab[]) => { setSlabs(rows); patch({ formula: rows.map(row => `${row.from}${row.to ? `-${row.to}` : '+'}:${row.amount}`).join(';'), value: '' }) }

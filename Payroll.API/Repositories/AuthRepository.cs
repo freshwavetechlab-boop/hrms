@@ -161,7 +161,8 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
         if (row is null || !row.IsActive || !VerifyPassword(request.Password, row.PasswordHash))
             return null;
 
-        var user = await BuildUserAsync(connection, row.Id) ?? new AuthUser();
+        var user = await BuildUserAsync(connection, row.Id);
+        if (user is null || !user.IsActive) return null;
         if (phoneLogin && (!user.IsActive || user.EmployeeId is null ||
             !user.Permissions.Contains("ess.self", StringComparer.OrdinalIgnoreCase)))
             return null;
@@ -265,7 +266,9 @@ UPDATE authusers SET LastLoginAt = UTC_TIMESTAMP() WHERE Id = @UserId;", new { U
         await using var connection = CreateConnection();
         await connection.OpenAsync();
         var userId = await connection.ExecuteScalarAsync<int?>(@"SELECT UserId FROM authsessions WHERE TokenHash = @TokenHash AND RevokedAt IS NULL AND ExpiresAt > UTC_TIMESTAMP()", new { TokenHash = HashToken(token) });
-        return userId is null ? null : await BuildUserAsync(connection, userId.Value);
+        if (userId is null) return null;
+        var user = await BuildUserAsync(connection, userId.Value);
+        return user?.IsActive == true ? user : null;
     }
 
     public async Task LogoutAsync(string token, AuthUser? user, string ipAddress, string userAgent)
@@ -357,7 +360,13 @@ ORDER BY r.Name;", new { ClientId = clientId, AssignableRoleCodes = ClientAssign
 
     private static async Task<AuthUser?> BuildUserAsync(MySqlConnection connection, int userId)
     {
-        var user = await connection.QueryFirstOrDefaultAsync<AuthUser>("SELECT Id, Email, DisplayName, Mobile, ClientId, ClientAccessMode, EmployeeId, RecruitmentScopeMode, IsActive, MustChangePassword FROM authusers WHERE Id = @UserId", new { UserId = userId });
+        // Evaluate dated exits inside the existing identity read: scheduled exits
+        // are enforced even while background workers are disabled, without an
+        // extra round trip on every ESS request. Employer-only users are unchanged.
+        var user = await connection.QueryFirstOrDefaultAsync<AuthUser>(@"SELECT u.Id,u.Email,u.DisplayName,u.Mobile,u.ClientId,u.ClientAccessMode,u.EmployeeId,u.RecruitmentScopeMode,
+(u.IsActive=TRUE AND (u.EmployeeId IS NULL OR EXISTS(SELECT 1 FROM employees e WHERE e.Id=u.EmployeeId AND "
+            + Payroll.API.Services.EmployeeEmploymentRules.EligibleOn("e", "@Today") + @"))) IsActive,u.MustChangePassword
+FROM authusers u WHERE u.Id=@UserId", new { UserId = userId, Today = Payroll.API.Services.EmployeeEmploymentRules.Today });
         if (user is null) return null;
         user.Roles = (await connection.QueryAsync<string>(@"SELECT r.Code FROM authroles r JOIN authuserroles ur ON ur.RoleId = r.Id WHERE ur.UserId = @UserId ORDER BY r.Code", new { UserId = userId })).ToList();
         user.Permissions = (await connection.QueryAsync<string>(@"SELECT DISTINCT p.Code FROM authpermissions p JOIN authrolepermissions rp ON rp.PermissionId = p.Id JOIN authuserroles ur ON ur.RoleId = rp.RoleId WHERE ur.UserId = @UserId ORDER BY p.Code", new { UserId = userId })).ToList();

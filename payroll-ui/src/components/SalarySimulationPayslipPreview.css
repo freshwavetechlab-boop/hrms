@@ -1,0 +1,17 @@
+.salary-simulation-payslip-modal .ant-modal-body{max-height:calc(100dvh - 210px);overflow:auto;overscroll-behavior:contain}
+.salary-simulation-preview-reason{display:block;margin-bottom:8px;text-align:left;font-size:12px;color:var(--hrms-muted,#657086);overflow-wrap:anywhere}
+.salary-simulation-payslip{padding:18px;border:1px solid var(--hrms-line,#dce2ec);border-radius:8px;color:var(--hrms-ink,#20304a);font-size:13px}
+.salary-simulation-payslip>header{display:flex;align-items:start;justify-content:space-between;gap:12px;border-bottom:1px solid var(--hrms-line,#dce2ec);padding-bottom:12px}
+.salary-simulation-payslip-logo{display:block;max-width:110px;max-height:64px;object-fit:contain;margin-bottom:8px}
+.salary-simulation-payslip h2{font-size:19px;margin:0 0 6px;overflow-wrap:anywhere}.salary-simulation-payslip h3{font-size:13px;margin:0;padding:9px;background:var(--hrms-canvas,#f7f8fc)}
+.salary-simulation-payslip p{margin:4px 0}.salary-simulation-payslip .salary-simulation-payslip-note{margin:10px 0;color:var(--hrms-muted,#657086)}
+.salary-simulation-payslip-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 20px;margin:16px 0}
+.salary-simulation-payslip-facts>div{display:flex;gap:8px;min-width:0}.salary-simulation-payslip dt{font-weight:600}.salary-simulation-payslip dd{margin:0;overflow-wrap:anywhere}
+.salary-simulation-payslip-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.salary-simulation-payslip-simple .salary-simulation-payslip-columns{grid-template-columns:minmax(0,1fr)}
+.salary-simulation-payslip-group{margin-bottom:14px;border:1px solid var(--hrms-line,#dce2ec);min-width:0;overflow:hidden;border-radius:6px}
+.salary-simulation-payslip table{border-collapse:collapse;width:100%;font-size:13px}.salary-simulation-payslip th,.salary-simulation-payslip td{padding:8px;text-align:left;border-top:1px solid var(--hrms-line,#dce2ec);overflow-wrap:anywhere}.salary-simulation-payslip th:last-child,.salary-simulation-payslip td:last-child{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}.salary-simulation-payslip td small{display:block;color:var(--hrms-muted,#657086);font-size:11px;margin-top:3px}
+.salary-simulation-payslip-other{margin-top:12px}.salary-simulation-payslip-other>p{color:var(--hrms-muted,#657086);margin-bottom:8px}
+.salary-simulation-payslip-totals{display:flex;flex-wrap:wrap;gap:12px 24px;margin:12px 0}.salary-simulation-payslip-totals>div{display:flex;flex-direction:column;gap:4px}
+.salary-simulation-payslip-net{display:flex;justify-content:space-between;gap:12px;background:var(--hrms-canvas,#f7f8fc);padding:15px;border:1px solid var(--hrms-line,#dce2ec);border-radius:6px;font-size:18px}
+@media(max-width:600px){.salary-simulation-payslip-modal{top:12px}.salary-simulation-payslip-modal .ant-modal-body{max-height:calc(100dvh - 160px)}.salary-simulation-payslip{padding:12px}.salary-simulation-payslip-columns,.salary-simulation-payslip-facts{grid-template-columns:minmax(0,1fr)}.salary-simulation-payslip-facts>div{flex-wrap:wrap}}

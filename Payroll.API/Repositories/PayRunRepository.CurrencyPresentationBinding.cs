@@ -45,7 +45,7 @@ public partial class PayRunRepository
         var selection=await new PayslipDesignRepository(configuration,protector,new ExcelPayslipPdfService())
             .ReadNativeSourceDesignSelectionAsync(db,tx,clientId,payPeriod:period);
         if(period is null||stored.Receipt.Profile.PayPeriod!=period||selection is null||selection.Template.Id!=selectedTemplate.Id
-            ||selection.Profile.AmountDecimalPlaces!=0||!selection.Applies
+            ||selection.Profile.SourceKind=="CorePayroll"||selection.Profile.AmountDecimalPlaces!=0||!selection.Applies
             ||NativeCurrencyPresentation.Hash(selection.Template,selection.Profile,period)!=stored.Receipt.Profile.ProfileHash)
             throw new InvalidOperationException("The captured native financial mapping, precision or payroll-month scope changed; no other layout replaces its protected currency stage.");
         return true;

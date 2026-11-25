@@ -50,7 +50,7 @@ public sealed partial class ExcelPayslipRepository(IConfiguration configuration,
         var clients = await db.QueryAsync<PayslipClientPresence>(@"SELECT c.Id,c.Name,c.Code,c.IsActive,
 EXISTS(SELECT 1 FROM excel_payslip_batches b WHERE b.client_id=c.Id) AS HasSavedBatch
 FROM clients c WHERE c.IsActive=TRUE AND (@ClientId IS NULL OR c.Id=@ClientId) ORDER BY c.Name", new { ClientId = scopedClientId });
-        return clients.Where(IsSupportedClient).Select(c => new ExcelPayslipClient { Id = c.Id, Name = c.Name, HasSavedBatch = c.HasSavedBatch, LocationBatchesSupported = true, AtomicMappingSaveSupported = true, CorrectedResendSupported = true, BulkUpdateSupported = true }).ToArray();
+        return clients.Where(IsSupportedClient).Select(c => new ExcelPayslipClient { Id = c.Id, Name = c.Name, Code = c.Code, HasSavedBatch = c.HasSavedBatch, LocationBatchesSupported = true, AtomicMappingSaveSupported = true, CorrectedResendSupported = true, BulkUpdateSupported = true }).ToArray();
     }
 
     public async Task<IReadOnlyList<ExcelPayslipTemplate>> GetTemplatesAsync(int clientId)

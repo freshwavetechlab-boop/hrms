@@ -305,6 +305,20 @@ body.portal-shell-mounted {
   gap: 2px;
 }
 
+.hrms-sidebar .nav-group-chevron {
+  margin-inline-start: auto;
+  font-size: 11px;
+  transform: rotate(-90deg);
+}
+
+.hrms-sidebar [aria-expanded="true"] > .nav-group-chevron {
+  transform: none;
+}
+
+.rail-collapsed .hrms-sidebar .nav-group-chevron {
+  display: none;
+}
+
 .hrms-sidebar .settings-nav-submenu,
 .hrms-sidebar .report-nav-submenu {
   display: grid;

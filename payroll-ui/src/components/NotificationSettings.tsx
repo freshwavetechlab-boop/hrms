@@ -1,3 +1,4 @@
+import { clientChoice, clientSelectProps } from './ClientOption'
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
@@ -206,7 +207,7 @@ export default function NotificationSettings() {
     try {
       const [notificationSetup, clientRows, activityRows, providerRows, communicationTemplateRows] = await Promise.all([
         getNotificationSetup(),
-        getClients(),
+        getClients(true),
         getJson<Activity[]>('/api/workflows/activities/catalog', []),
         getCommunicationProviders(),
         getCommunicationTemplates()
@@ -460,7 +461,7 @@ export default function NotificationSettings() {
     >
       <Form component={false} layout="vertical" requiredMark={false} className="settings-quick-form communication-provider-form">
         <Alert className="communication-provider-alert" type="info" showIcon message="Provider adapter required" description="Enter the provider code and API base URL supported by your deployment. A saved account is only marked healthy after a successful backend connection test." />
-        <Form.Item label="Configuration scope"><Select value={provider.clientId ?? 0} onChange={value => setProvider({ ...provider, clientId: value ? Number(value) : null })} options={[{ value: 0, label: 'All clients (global)' }, ...clients.filter(item => item.isActive).map(item => ({ value: item.id, label: item.name }))]} /></Form.Item>
+        <Form.Item label="Configuration scope"><Select value={provider.clientId ?? 0} onChange={value => setProvider({ ...provider, clientId: value ? Number(value) : null })} {...clientSelectProps([{ value: 0, label: 'All clients (global)' }, ...clients.filter(item => item.isActive).map(clientChoice)])} /></Form.Item>
         <Form.Item label="Channel"><Select disabled={provider.id > 0} value={provider.channel} onChange={value => setProvider({ ...provider, channel: value })} options={[{ value: 'Sms', label: 'SMS' }, { value: 'WhatsApp', label: 'WhatsApp' }]} /></Form.Item>
         <Form.Item label="Account name"><Input value={provider.accountName} onChange={event => setProvider({ ...provider, accountName: event.target.value })} placeholder="India employee messaging" /></Form.Item>
         <Form.Item label="Provider code" tooltip="Must match an adapter registered by the backend deployment."><Input value={provider.providerCode} onChange={event => setProvider({ ...provider, providerCode: event.target.value })} placeholder="Provider adapter code" /></Form.Item>
@@ -503,7 +504,7 @@ export default function NotificationSettings() {
       footer={<Space><Button onClick={() => setCommunicationTemplateOpen(false)}>Cancel</Button><Button data-testid="communication-template-save" type="primary" loading={communicationTemplateSaving} disabled={!communicationTemplate.code.trim() || !communicationTemplate.name.trim() || !communicationTemplate.bodyTemplate.trim() || (communicationTemplate.channel === 'Email' && !communicationTemplate.subjectTemplate.trim())} onClick={() => void saveEmployeeTemplate()}>{communicationTemplate.id ? 'Update template' : 'Save template'}</Button></Space>}
     >
       <Form component={false} layout="vertical" requiredMark={false} className="settings-quick-form communication-template-form">
-        <Form.Item label="Configuration scope"><Select value={communicationTemplate.clientId ?? 0} onChange={value => setCommunicationTemplate({ ...communicationTemplate, clientId: value ? Number(value) : null })} options={[{ value: 0, label: 'All clients (global)' }, ...clients.filter(item => item.isActive).map(item => ({ value: item.id, label: item.name }))]} /></Form.Item>
+        <Form.Item label="Configuration scope"><Select value={communicationTemplate.clientId ?? 0} onChange={value => setCommunicationTemplate({ ...communicationTemplate, clientId: value ? Number(value) : null })} {...clientSelectProps([{ value: 0, label: 'All clients (global)' }, ...clients.filter(item => item.isActive).map(clientChoice)])} /></Form.Item>
         <Form.Item label="Channel"><Select value={communicationTemplate.channel} onChange={value => setCommunicationTemplate({ ...communicationTemplate, channel: value, isHtml: value === 'Email' ? communicationTemplate.isHtml : false })} options={[{ value: 'Email', label: 'Email' }, { value: 'Sms', label: 'SMS' }, { value: 'WhatsApp', label: 'WhatsApp' }]} /></Form.Item>
         <Form.Item label="Template code"><Input value={communicationTemplate.code} onChange={event => setCommunicationTemplate({ ...communicationTemplate, code: event.target.value.toUpperCase().replace(/\s+/g, '_') })} placeholder="POLICY_UPDATE" /></Form.Item>
         <Form.Item label="Template name"><Input value={communicationTemplate.name} onChange={event => setCommunicationTemplate({ ...communicationTemplate, name: event.target.value })} placeholder="Policy update" /></Form.Item>
@@ -555,7 +556,7 @@ export default function NotificationSettings() {
           <Row gutter={12}>
             <Col xs={24} lg={12}><Form.Item label="Rule name"><Input value={rule.name} onChange={event => setRule({ ...rule, name: event.target.value })} /></Form.Item></Col>
             <Col xs={24} lg={12}><Form.Item label="Event / activity"><SearchSelect value={rule.eventCode} onChange={value => setRule({ ...rule, eventCode: value })} options={[{ value: '', label: 'Select event' }, ...activityOptions]} /></Form.Item></Col>
-            <Col xs={24} lg={12}><Form.Item label="Client"><SearchSelect value={rule.clientId ?? ''} onChange={value => setRule({ ...rule, clientId: value ? Number(value) : null })} options={[{ value: '', label: 'All clients' }, ...clients.filter(item => item.isActive).map(item => ({ value: item.id, label: item.name }))]} /></Form.Item></Col>
+            <Col xs={24} lg={12}><Form.Item label="Client"><SearchSelect value={rule.clientId ?? ''} onChange={value => setRule({ ...rule, clientId: value ? Number(value) : null })} options={[{ value: '', label: 'All clients' }, ...clients.filter(item => item.isActive).map(clientChoice)]} /></Form.Item></Col>
             <Col xs={24} lg={12}><Form.Item label="Template"><SearchSelect value={rule.templateId || ''} onChange={value => setRule({ ...rule, templateId: Number(value || 0) })} options={[{ value: '', label: 'Select template' }, ...templateOptions]} /></Form.Item></Col>
             <Col xs={24} md={6}><Form.Item label="Enabled"><Switch checked={rule.isEnabled} onChange={value => setRule({ ...rule, isEnabled: value })} /></Form.Item></Col>
             <Col xs={24} md={6}><Form.Item label="Record type"><Input value={selectedActivity?.resourceType || ''} readOnly /></Form.Item></Col>

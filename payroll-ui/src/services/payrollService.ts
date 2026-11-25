@@ -1,5 +1,5 @@
 import type { Client, Employee, PayRun, PayRunDiagnostics, PayrollAdjustment, RunEmployee } from '../types/payroll'
-import { deleteJson, getJson, postEmpty, postJson, putJson } from './apiClient'
+import { deleteJson, getJson, getJsonResult, postEmpty, postJson, putJson } from './apiClient'
 import { payrollAdjustmentPayload } from '../utils/payrollAdjustmentIdentity'
 import { filterActiveClientOptions } from './clientRequestScope'
 
@@ -7,6 +7,17 @@ export const getClients = async (lookup = false, includeAssigned = false) => fil
   .map(client => ({ ...client, id: Number(client.id) }))
   .filter(client => client.isActive && Number.isSafeInteger(client.id) && client.id > 0), includeAssigned)
 export const getEmployees = () => getJson<Employee[]>('/api/employees', [])
+export type SettingsEmployeeReference = Pick<Employee, 'id' | 'clientId' | 'department' | 'designation' | 'workLocationId' | 'isActive'>
+export const getSettingsEmployeeReferences = () => getJson<SettingsEmployeeReference[]>('/api/employees?lookup=true', [])
+export type EmployeeDirectoryClient = Client & { activeEmployeeCount?: number }
+export const getEmployeeDirectoryClients = async () => {
+  const result = await getJsonResult<EmployeeDirectoryClient[]>('/api/employees/clients', [], { loader: false })
+  // The count summary is optional: keep the existing picker usable while an
+  // older API is running or if only the summary request is unavailable.
+  if (!result.ok) return getClients(true)
+  return filterActiveClientOptions(result.data.map(client => ({ ...client, id: Number(client.id) }))
+    .filter(client => client.isActive && Number.isSafeInteger(client.id) && client.id > 0))
+}
 export const getPayrollEmployeeOptions = () => getJson<Employee[]>('/api/payroll/employee-options', [])
 export const getPayRuns = () => getJson<PayRun[]>('/api/pay-runs', [])
 export const getPayRun = (id: number) => getJson<PayRun | null>(`/api/pay-runs/${id}`, null)

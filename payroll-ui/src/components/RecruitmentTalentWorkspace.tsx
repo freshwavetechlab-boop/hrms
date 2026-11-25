@@ -203,8 +203,13 @@ export default function RecruitmentTalentWorkspace({ mode, initialClientId = 0, 
   }, [initialClientId, mode, canScheduleInterviews, negotiationMode])
   useEffect(() => {
     if (mode === 'interviews' && !canScheduleInterviews) { void load(); return }
-    void Promise.all([getClients(), getWorkLocations(), getEmployeeManagerUsers(), getRecruitmentOpenPositions(initialClientId)]).then(([clientRows, locationRows, userRows, positionRows]) => { setClients(clientRows); setWorkLocations(locationRows); setPanelUsers(userRows); setPositions(positionRows) })
+    let active = true
+    void getClients(true).then(rows => { if (active) setClients(rows) })
+    void Promise.all([getWorkLocations(), getEmployeeManagerUsers(), getRecruitmentOpenPositions(initialClientId)]).then(([locationRows, userRows, positionRows]) => {
+      if (active) { setWorkLocations(locationRows); setPanelUsers(userRows); setPositions(positionRows) }
+    })
     void load()
+    return () => { active = false }
   }, [initialClientId, load, mode, canScheduleInterviews])
   useEffect(() => {
     if (String(mode) !== 'applications' || !['single', 'bulk'].includes(requestedUploadMode || '')) return
