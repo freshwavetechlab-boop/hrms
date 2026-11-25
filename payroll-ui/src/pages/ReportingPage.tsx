@@ -1,5 +1,6 @@
 import { clientChoice } from '../components/ClientOption'
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { emptyEmployeeFields, getEmployeeFields, type EmployeeFieldExchange } from '../utils/employeeFields'
 import { Alert, Button, Select, Spin } from 'antd'
 import { getClients, getEmployees, getPayrollEmployeeOptions, getPayRuns } from '../services/payrollService'
@@ -34,7 +35,7 @@ const employeeExportOptions = [
   { value: '0009', label: '0009 — Bank details' }
 ] satisfies { value: EmployeeExportGroup; label: string }[]
 const catalogue = {
-  'Payroll Reports': [{ name: 'Salary Register', code: 'salary-register' }, { name: 'Payslip Register', code: 'payslip-register' }, { name: 'Excel Payslips', code: 'excel-payslips' }, { name: 'Payroll Summary', code: 'payroll-summary' }, { name: 'Component Ledger', code: 'component-ledger' }, { name: 'Monthly Advice Report', code: 'monthly-advice-report' }, { name: 'Department Payroll Cost', code: 'headcount' }, { name: 'Location Payroll Cost', code: 'location-cost' }, { name: 'Employee Wise Salary', code: 'salary-register' }, { name: 'Net Pay Report', code: 'net-pay-estimate' }, { name: 'Bank Transfer Report', code: 'bank-transfer-report' }],
+  'Payroll Reports': [{ name: 'Salary Register', code: 'salary-register' }, { name: 'Employee Payroll History', code: 'employee-payroll-history' }, { name: 'Payslip Register', code: 'payslip-register' }, { name: 'Excel Payslips', code: 'excel-payslips' }, { name: 'Payroll Summary', code: 'payroll-summary' }, { name: 'Component Ledger', code: 'component-ledger' }, { name: 'Monthly Advice Report', code: 'monthly-advice-report' }, { name: 'Department Payroll Cost', code: 'headcount' }, { name: 'Location Payroll Cost', code: 'location-cost' }, { name: 'Employee Wise Salary', code: 'salary-register' }, { name: 'Net Pay Report', code: 'net-pay-estimate' }, { name: 'Bank Transfer Report', code: 'bank-transfer-report' }],
   'Client Billing Report': [{ name: 'Payrun Billing Basis', code: 'client-billing-report' }, { name: 'Payroll Cost Report', code: 'payroll-cost-report' }],
   'Employee Reports': [
     { name: 'Employee Master Report', code: 'employee-master' },
@@ -45,13 +46,13 @@ const catalogue = {
     { name: 'Employee Tenure Report', code: 'tenure' },
     // { name: 'Employee Demographics' }
   ],
-  'Attendance Reports': [{ name: 'Daily Attendance', code: 'daily-attendance' }, { name: 'Monthly Attendance', code: 'monthly-attendance' }, { name: 'Late Coming Report', code: 'attendance-exception' }, { name: 'Attendance Exception Report', code: 'attendance-exception' }, { name: 'Attendance Trend Analysis', code: 'attendance-trend' }],
+  'Attendance Reports': [{ name: 'Daily Attendance', code: 'daily-attendance' }, { name: 'Monthly Attendance', code: 'monthly-attendance' }, { name: 'Attendance Punches', code: 'attendance-punches' }, { name: 'Late Coming Report', code: 'attendance-exception' }, { name: 'Attendance Exception Report', code: 'attendance-exception' }, { name: 'Attendance Trend Analysis', code: 'attendance-trend' }],
   'Leave Reports': [{ name: 'Leave Balance Report', code: 'leave-balance' }, { name: 'Leave Accrual Report', code: 'leave-accrual' }, { name: 'Leave Utilization Report', code: 'leave-utilization' }, { name: 'Leave Without Pay Report', code: 'lwp-balance' }, { name: 'Leave Approval Status', code: 'leave-approval-status' }],
   'Recruitment Reports': [{ name: 'Open Requisitions' }, { name: 'Recruitment Funnel' }, { name: 'Candidate Pipeline' }, { name: 'Time To Hire' }, { name: 'Cost Per Hire' }],
   'Onboarding Reports': [{ name: 'Joining Tracker' }, { name: 'Documentation Status' }, { name: 'Induction Completion' }, { name: 'Pending Onboarding Tasks' }],
   'Separation Reports': [{ name: 'Resignation Report' }, { name: 'Attrition Report' }, { name: 'Full & Final Tracker' }, { name: 'Notice Period Tracker' }],
   'Compliance Reports': [{ name: 'PF Report', code: 'pf-register' }, { name: 'PF ECR Report', code: 'pf-ecr-report' }, { name: 'ESI Report', code: 'esi-register' }, { name: 'PT Report', code: 'pt-register' }, { name: 'Statutory Deduction Summary', code: 'statutory-summary' }],
-  'Tax Reports': [{ name: 'TDS Register', code: 'tds-register' }, { name: 'Employee Tax Projection' }, { name: 'Form 16 Preparation Register', code: 'form16-register' }, { name: 'Tax Liability Report', code: 'tds-register' }],
+  'Tax Reports': [{ name: 'TDS Register', code: 'tds-register' }, { name: 'Tax Computation History', code: 'tax-computation-history' }, { name: 'Employee Tax Projection' }, { name: 'Form 16 Preparation Register', code: 'form16-register' }, { name: 'Tax Liability Report', code: 'tds-register' }],
   'Loan & Advance Reports': [{ name: 'Loan Register' }, { name: 'Loan Outstanding Report' }, { name: 'EMI Recovery Report' }, { name: 'Salary Advance Report' }],
   'Cost Center Reports': [{ name: 'Cost Center Salary Cost' }, { name: 'Cost Center Headcount' }, { name: 'Cost Center Variance' }, { name: 'Cost Allocation Report' }],
   'Department Reports': [{ name: 'Department Headcount', code: 'headcount' }, { name: 'Department Payroll Cost', code: 'headcount' }, { name: 'Department Attrition' }, { name: 'Department Attendance' }],
@@ -73,6 +74,13 @@ export default function ReportingPage({ activeMenu, activeReport }: { activeMenu
 
 function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }) {
   const session = useAuthSession()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedClientId = Number(searchParams.get('clientId')) || 0
+  const linkedEmployeeId = searchParams.get('source') === 'employee-links' ? Number(searchParams.get('employeeId')) || 0 : 0
+  const requestedPayRunId = linkedEmployeeId ? Number(searchParams.get('payRunId')) || 0 : 0
+  const requestedMonth = linkedEmployeeId && /^\d{4}-\d{2}$/.test(searchParams.get('month') || '') ? searchParams.get('month')! : ''
+  const requestedFrom = linkedEmployeeId && /^\d{4}-\d{2}-\d{2}$/.test(searchParams.get('fromDate') || '') ? searchParams.get('fromDate')! : ''
+  const requestedTo = linkedEmployeeId && /^\d{4}-\d{2}-\d{2}$/.test(searchParams.get('toDate') || '') ? searchParams.get('toDate')! : ''
   const scopedClientId = Number(session?.user.clientId || 0)
   const clientScoped = scopedClientId > 0 && !session?.user.permissions.includes('security.manage')
   const [clients, setClients] = useState<Client[]>([]), [clientId, setClientId] = useState(0), [result, setResult] = useState<ReportResult>({ title: '', columns: [], rows: [] })
@@ -87,10 +95,10 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
   const [reportLoading, setReportLoading] = useState(false), [reportError, setReportError] = useState(''), [reportReloadKey, setReportReloadKey] = useState(0)
   const [payRunId, setPayRunId] = useState(0), [employeeId, setEmployeeId] = useState(0), [componentCode, setComponentCode] = useState('')
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7)), [fromDate, setFromDate] = useState(`${new Date().toISOString().slice(0, 7)}-01`), [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10))
-  const periodCodes = ['daily-attendance', 'attendance-trend', 'leave-utilization', 'leave-approval-status']
-  const monthCodes = ['monthly-attendance', 'attendance-exception', 'salary-register', 'component-ledger', 'pf-register', 'pf-ecr-report', 'esi-register', 'pt-register', 'tds-register', 'statutory-summary', 'client-billing-report', 'payroll-cost-report', 'monthly-advice-report', 'bank-transfer-report']
-  const payRunCodes = ['salary-register', 'component-ledger', 'pf-register', 'pf-ecr-report', 'esi-register', 'pt-register', 'tds-register', 'statutory-summary', 'client-billing-report', 'payroll-cost-report', 'monthly-advice-report', 'bank-transfer-report']
-  const employeeCodes = ['salary-register', 'component-ledger', 'pf-register', 'pf-ecr-report', 'esi-register', 'pt-register', 'tds-register', 'statutory-summary', 'form16-register']
+  const periodCodes = ['daily-attendance', 'attendance-punches', 'attendance-trend', 'leave-utilization', 'leave-approval-status']
+  const monthCodes = ['monthly-attendance', 'attendance-exception', 'salary-register', 'employee-payroll-history', 'tax-computation-history', 'component-ledger', 'pf-register', 'pf-ecr-report', 'esi-register', 'pt-register', 'tds-register', 'statutory-summary', 'client-billing-report', 'payroll-cost-report', 'monthly-advice-report', 'bank-transfer-report']
+  const payRunCodes = ['salary-register', 'employee-payroll-history', 'component-ledger', 'pf-register', 'pf-ecr-report', 'esi-register', 'pt-register', 'tds-register', 'statutory-summary', 'client-billing-report', 'payroll-cost-report', 'monthly-advice-report', 'bank-transfer-report']
+  const employeeCodes = ['salary-register', 'employee-payroll-history', 'tax-computation-history', 'component-ledger', 'pf-register', 'pf-ecr-report', 'esi-register', 'pt-register', 'tds-register', 'statutory-summary', 'form16-register', 'daily-attendance', 'monthly-attendance', 'attendance-punches', 'leave-balance', 'lwp-balance', 'leave-utilization', 'leave-approval-status']
   const showPeriod = !!activeReport.code && periodCodes.includes(activeReport.code)
   const showMonth = !!activeReport.code && (monthCodes.includes(activeReport.code) || activeReport.code === 'form16-register')
   const showPayRun = !!activeReport.code && payRunCodes.includes(activeReport.code)
@@ -109,7 +117,7 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
   }, [isEmployeeMaster, clientId, reportReloadKey])
   const employeeExportReady = employeeDataReady && employeeLookupReady && setupReady && fieldsReady
   const clientPayRuns = useMemo(() => payRuns.filter(run => run.clientId === clientId).sort((a, b) => b.id - a.id), [clientId, payRuns])
-  const clientEmployees = useMemo(() => employees.filter(employee => employee.clientId === clientId && employee.isActive), [clientId, employees])
+  const clientEmployees = useMemo(() => employees.filter(employee => employee.clientId === clientId && (employee.isActive || employee.id === linkedEmployeeId)), [clientId, employees, linkedEmployeeId])
   const componentOptions = useMemo(() => [
     { value: '', label: 'All components' },
     { value: 'Earning', label: 'All earnings' },
@@ -124,10 +132,10 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
       if (!active) return
       const available = clientRows.filter(x => x.isActive)
       setClients(available)
-      setClientId(current => clientScoped ? scopedClientId : available.some(client => client.id === current) ? current : available[0]?.id || 0)
+      setClientId(current => clientScoped ? scopedClientId : available.some(client => client.id === requestedClientId) ? requestedClientId : available.some(client => client.id === current) ? current : available[0]?.id || 0)
     })
     return () => { active = false }
-  }, [clientScoped, scopedClientId])
+  }, [clientScoped, scopedClientId, requestedClientId])
   useEffect(() => {
     let active = true
     setPayRunsReady(false)
@@ -163,17 +171,23 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
   }, [isEmployeeMaster])
   useEffect(() => {
     if (showPayRun && !payRunsReady) return
-    setEmployeeId(0)
+    const useReference = linkedEmployeeId > 0 && clientId === requestedClientId
+    setEmployeeId(useReference ? linkedEmployeeId : 0)
     setComponentCode('')
     setFilterScope(`${clientId}:${activeReport.code}`)
+    if (useReference) {
+      if (requestedMonth) setMonth(requestedMonth)
+      if (requestedFrom) setFromDate(requestedFrom)
+      if (requestedTo) setToDate(requestedTo)
+    }
     if (!showPayRun) {
       setPayRunId(0)
       return
     }
-    const latestRun = clientPayRuns[0]
-    setPayRunId(latestRun?.id ?? 0)
-    if (latestRun?.payPeriod) setMonth(latestRun.payPeriod)
-  }, [activeReport.code, clientId, showPayRun, clientPayRuns, payRunsReady])
+    const selectedRun = useReference ? clientPayRuns.find(run => run.id === requestedPayRunId) : clientPayRuns[0]
+    setPayRunId(selectedRun?.id ?? 0)
+    if (selectedRun?.payPeriod) setMonth(selectedRun.payPeriod)
+  }, [activeReport.code, clientId, showPayRun, clientPayRuns, payRunsReady, linkedEmployeeId, requestedClientId, requestedPayRunId, requestedMonth, requestedFrom, requestedTo])
   useEffect(() => {
     setResult({ title: '', columns: [], rows: [] })
     setReportError('')
@@ -345,6 +359,7 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
   /> : undefined
 
   return <section className={`reporting-page${isEmployeeMaster ? ' employee-master-report' : ''}`}>
+    {linkedEmployeeId > 0 && clientId === requestedClientId && <Alert type="info" showIcon message={`Employee Master reference: ${clientEmployees.find(row => row.id === linkedEmployeeId)?.employeeCode || `Employee #${linkedEmployeeId}`}`} description="Opened this employee's linked records. You can change the filters below." action={<Button size="small" onClick={() => { const next = new URLSearchParams(searchParams); ['source', 'employeeLink', 'employeeId', 'payRunId', 'month', 'fromDate', 'toDate'].forEach(key => next.delete(key)); setSearchParams(next, { replace: true }) }}>Clear reference</Button>} />}
     {fieldsError && isEmployeeMaster && <Alert type="error" showIcon message={fieldsError} action={<Button onClick={() => setReportReloadKey(value => value + 1)}>Retry</Button>} />}
     <div className="report-filter-surface">
       {activeReport.code && <div className="report-filters">

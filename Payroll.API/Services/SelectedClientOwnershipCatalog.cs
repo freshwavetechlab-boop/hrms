@@ -109,12 +109,15 @@ public static class SelectedClientOwnershipCatalog
         if (Under(path, "/api/recruitment-orchestration/applications")) AddNested("transitions", "pipeline-transition");
         if (Under(path, "/api/employees")) AddNested("dynamic-fields", "form-field");
         if (Under(path, "/api/clients")) AddNested("pf-policy-versions", "pf-policy-version");
+        if (Regex.IsMatch(path, @"^/api/clients/\d+/salary-templates/\d+(/(deletion-preview|editable-mappings|unlink))?$"))
+            AddNested("salary-templates", "salary-structure", allowGlobal: path.EndsWith("/deletion-preview", StringComparison.Ordinal)
+                || path.EndsWith("/editable-mappings", StringComparison.Ordinal));
         return result.Distinct().ToArray();
-        void AddNested(string token, string resource)
+        void AddNested(string token, string resource, bool allowGlobal = false)
         {
             var segments = path.Split('/');
             for (var i = 0; i + 1 < segments.Length; i++)
-                if (segments[i] == token && Identity(segments[i + 1])) result.Add(new(resource, segments[i + 1]));
+                if (segments[i] == token && Identity(segments[i + 1])) result.Add(new(resource, segments[i + 1], allowGlobal));
         }
     }
 

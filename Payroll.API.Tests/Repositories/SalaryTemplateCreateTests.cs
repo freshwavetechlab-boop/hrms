@@ -17,8 +17,83 @@ using Payroll.API.Services;
 
 namespace Payroll.API.Tests.Repositories;
 
-public sealed class SalaryTemplateCreateTests
+public sealed partial class SalaryTemplateCreateTests
 {
+    private static Task PrepareDeletionFixture(Fixture f) => f.Db.ExecuteAsync("""
+        CREATE TABLE employees(Id INT PRIMARY KEY,ClientId INT,EmployeeCode VARCHAR(80),FirstName VARCHAR(80),LastName VARCHAR(80),SalaryStructureId VARCHAR(80));
+        ALTER TABLE excel_payslip_batches ADD client_id INT, ADD batch_json JSON;
+        ALTER TABLE payrunemployees ADD ClientId INT, ADD PayRunId INT, ADD DetailsJson JSON;
+        CREATE TABLE employee_it0008_basic_pay(EmployeeId INT,ClientId INT,EffectiveFrom DATE,Status VARCHAR(30),SalaryStructureId VARCHAR(80));
+        CREATE TABLE employee_payroll_location_assignments(client_id INT,employee_id INT,work_location_id INT,status VARCHAR(30),salary_structure_id VARCHAR(80));
+        CREATE TABLE excel_payroll_setup_imports(id VARCHAR(80),client_id INT,status VARCHAR(30),request_json JSON,result_json JSON);
+        CREATE TABLE payruns(Id INT PRIMARY KEY,ClientId INT);
+        CREATE TABLE payroll_calculation_traces(PayRunId INT,InputJson JSON);
+        """);
+
+    [LocalWorkflowScopeDatabaseFact]
+    public async Task Salary_template_deletion_rechecks_mappings_and_content_before_removing_only_owned_header_and_lines()
+    {
+        await using var f = await Fixture.CreateAsync();
+        await PrepareDeletionFixture(f);
+        await f.Db.ExecuteAsync("INSERT INTO salarystructures(Id,ClientId,ClientRef,Name) VALUES(4000000000000,10,'10','Future imported ID')");
+        var before = await f.SnapshotAsync();
+        var id = (await f.Repository.CreateClientSalaryTemplateAsync(20, Request()))["id"]!.GetValue<long>();
+        var staleGlobal = await f.Repository.GetAsync();
+        var staleClient = await f.Repository.GetForSelectedClientAsync(20);
+        var preview = (await f.ReviewDeletionAsync(20, id)).Preview!;
+        Assert.Empty(preview.Mappings);
+        Assert.Null((await f.ReviewDeletionAsync(10, id, preview.Version)).Preview);
+        await f.Db.ExecuteAsync("INSERT INTO employees VALUES(42,20,'T42','Sample','Employee',@id)", new { id });
+        var blocked = await f.ReviewDeletionAsync(20, id, preview.Version);
+        Assert.False(blocked.Deleted);
+        Assert.Contains("T42", Assert.Single(Assert.Single(blocked.Preview!.Mappings).Examples));
+        await f.Db.ExecuteAsync("UPDATE employees SET SalaryStructureId='' WHERE Id=42; UPDATE salarystructurelines SET ValueText='42' WHERE StructureId=@id AND ComponentId='1'", new { id });
+        var changed = await f.ReviewDeletionAsync(20, id, preview.Version);
+        Assert.False(changed.Deleted);
+        Assert.NotEqual(preview.Version, changed.Preview!.Version);
+        Assert.True((await f.ReviewDeletionAsync(20, id, changed.Preview.Version)).Deleted);
+        var marker = "deleted-salary-template:" + id;
+        Assert.Equal(1, await f.Db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM modulesettings WHERE client_id=20 AND ModuleCode=@marker AND JSON_LENGTH(SettingsJson)=0", new { marker }));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Repository.SaveAsync(staleGlobal));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Repository.SaveForSelectedClientAsync(20, staleClient));
+        Assert.Equal(before, await f.SnapshotAsync(ignoredMarker: marker));
+        Assert.Null((await f.ReviewDeletionAsync(20, id)).Preview);
+        var recreated = (await f.Repository.CreateClientSalaryTemplateAsync(20, Request()))["id"]!.GetValue<long>();
+        Assert.Equal(id + 1, recreated);
+        await f.Db.ExecuteAsync("UPDATE salarystructures SET ClientRef='10,20' WHERE Id=31");
+        var shared = Assert.Single((await f.ReviewDeletionAsync(20, 31)).Preview!.Mappings);
+        Assert.Equal("Shared template", shared.Type);
+        Assert.Equal(2, shared.Count);
+    }
+
+    [LocalWorkflowScopeDatabaseFact]
+    public async Task Salary_template_deletion_reports_historical_policy_location_design_and_import_dependencies()
+    {
+        await using var f = await Fixture.CreateAsync();
+        await PrepareDeletionFixture(f);
+        await f.Db.ExecuteAsync("""
+            INSERT INTO employee_it0008_basic_pay VALUES(42,10,'2026-09-01','Historical','31');
+            INSERT INTO employee_payroll_location_assignments VALUES(10,42,5,'Active','31');
+            UPDATE excel_payslip_batches SET client_id=10,batch_json='{"month":"2026-09","salaryTemplateId":"31"}';
+            UPDATE payrunemployees SET ClientId=10,PayRunId=98,DetailsJson='[{"locationParts":[{"SalaryStructureId":"31"}]}]';
+            INSERT INTO excel_payroll_setup_imports VALUES('request-only',10,'Draft','{"templateDecisions":[{"existingTemplateId":"31"}]}','{}'),
+                ('result-only',10,'Applied','{}','{"templateIds":["31"]}'),('other',10,'Applied','{}','{"templateId":"131"}');
+            INSERT INTO payruns VALUES(98,10);
+            INSERT INTO payroll_calculation_traces VALUES(98,'{"nativeCurrencyContext":{"templateId":"31"}}');
+            INSERT INTO modulesettings VALUES(10,'payroll',TRUE,'{"pfPolicyVersions":[{"salaryStructureId":"31","name":"Example","versionNumber":1,"status":"Published"}]}'),
+                (10,'excel_payslip_profile:10',TRUE,'{"abc":{"salaryTemplateId":"31"}}');
+            """);
+        var before = await f.SnapshotAsync();
+        var preview = (await f.ReviewDeletionAsync(10, 31)).Preview!;
+        var types = preview.Mappings.ToDictionary(m => m.Type, m => m.Count);
+        Assert.Equal(2, types["Excel payroll setup records"]);
+        foreach (var type in new[] { "Employee salary history", "Location salary assignments", "Managed formula input declarations", "PF policy versions",
+                     "Excel payslip header mappings", "Saved Excel payslip batches", "Saved payroll", "Saved payroll calculation traces", "Payslip templates requiring an active salary template" })
+            Assert.Equal(1, types[type]);
+        Assert.False((await f.ReviewDeletionAsync(10, 31, preview.Version)).Deleted);
+        Assert.Equal(before, await f.SnapshotAsync());
+    }
+
     [LocalWorkflowScopeDatabaseFact]
     public async Task Create_saves_only_one_template_and_preserves_every_existing_record()
     {
@@ -348,6 +423,8 @@ public sealed class SalaryTemplateCreateTests
         internal MySqlConnection Db { get; } = db;
         internal IConfiguration Configuration { get; } = configuration;
         internal SettingsRepository Repository => new(Configuration);
+        internal Task<(SalaryTemplateDeletionPreview? Preview, bool Deleted)> ReviewDeletionAsync(int clientId, long templateId, string? version = null) =>
+            Repository.ReviewSalaryTemplateDeletionAsync(clientId, templateId, new PayslipDesignRepository(Configuration, NamedFormulaInputStore.Protector(Configuration), new()), version);
         internal static async Task<Fixture> CreateAsync()
         {
             var target = new MySqlConnectionStringBuilder(Environment.GetEnvironmentVariable("FREVO_WORKFLOW_SCOPE_TEST_DB") ?? throw new InvalidOperationException("Owned loopback fixture required."));
@@ -383,13 +460,13 @@ INSERT INTO paysliptemplates(Id,ClientId,ClientRef,Name,Theme) VALUES(88,10,'10'
             var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:Default"] = target.ConnectionString }).Build();
             return new(root, db, name, config);
         }
-        internal async Task<string> SnapshotAsync(long newId = 0, long newComponentId = 0)
+        internal async Task<string> SnapshotAsync(long newId = 0, long newComponentId = 0, string ignoredMarker = "")
         {
             var data = new Dictionary<string, object>();
             data["salarycomponents"] = (await Db.QueryAsync("SELECT * FROM salarycomponents WHERE Id<>@newComponentId ORDER BY Id", new { newComponentId })).ToArray();
             foreach (var table in new[] { "employeesalarycomponents", "payrunemployees", "excel_payslip_batches", "paysliptemplates", "payrollsetups", "professionaltaxslabs", "clientpayschedules" })
                 data[table] = (await Db.QueryAsync($"SELECT * FROM {table} ORDER BY 1")).ToArray();
-            data["modulesettings"] = (await Db.QueryAsync("SELECT * FROM modulesettings ORDER BY client_id,ModuleCode")).ToArray();
+            data["modulesettings"] = (await Db.QueryAsync("SELECT * FROM modulesettings WHERE ModuleCode<>@ignoredMarker ORDER BY client_id,ModuleCode", new { ignoredMarker })).ToArray();
             data["salarystructures"] = (await Db.QueryAsync("SELECT * FROM salarystructures WHERE Id<>@newId ORDER BY Id", new { newId })).ToArray();
             data["salarystructurelines"] = (await Db.QueryAsync("SELECT * FROM salarystructurelines WHERE StructureId<>@newId ORDER BY Id", new { newId })).ToArray();
             return JsonSerializer.Serialize(data);

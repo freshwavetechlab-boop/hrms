@@ -394,7 +394,9 @@ WHERE l.client_id=@ClientId AND l.batch_id=@Id",new{ClientId=clientId,existing.I
         var error = ValidateProfile(profile); if (error is not null) return (false, error);
         if (!ValidSignature(signature) || !signature.Equals(profile.GetProperty("headerSignature").GetString(), StringComparison.OrdinalIgnoreCase)) return (false, "The mapping profile must match its SHA-256 header signature.");
         await using var db = Db(); await db.OpenAsync(); await using var tx = await db.BeginTransactionAsync();
-        if (!await SupportedAsync(db, clientId, tx)) return (false, "Select an active client.");
+        // Serialize template selection with a reviewed delete before establishing a mapping snapshot.
+        var client = await db.QueryFirstOrDefaultAsync<Client>("SELECT Id,Name,Code,IsActive FROM clients WHERE Id=@clientId LOCK IN SHARE MODE", new { clientId }, tx);
+        if (client is null || !IsSupportedClient(client)) return (false, "Select an active client.");
         var saveError = await SaveProfileInTransactionAsync(db, tx, clientId, profile);
         if (saveError is not null) return (false, saveError);
         await tx.CommitAsync();

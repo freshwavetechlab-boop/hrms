@@ -1,5 +1,5 @@
-const payrollReports=new Set(['salary-register','payslip-register','excel-payslips','payroll-summary','component-ledger','monthly-advice-report','headcount','location-cost','net-pay-estimate','bank-transfer-report'])
-const complianceReports=new Set(['pf-register','pf-ecr-report','esi-register','pt-register','statutory-summary','tds-register','form16-register'])
+const payrollReports=new Set(['salary-register','employee-payroll-history','payslip-register','excel-payslips','payroll-summary','component-ledger','monthly-advice-report','headcount','location-cost','net-pay-estimate','bank-transfer-report'])
+const complianceReports=new Set(['pf-register','pf-ecr-report','esi-register','pt-register','statutory-summary','tds-register','tax-computation-history','form16-register'])
 const billingReports=new Set(['client-billing-report','payroll-cost-report'])
 export const hasReportWorkspace=(permissions:string[])=>permissions.some(code=>['reports.view','reports.payroll.view','reports.compliance.view','reports.billing.view'].includes(code))
 export function canOpenReport(permissions:string[],menu:string,code?:string,unrestrictedAdmin=false){

@@ -33,19 +33,20 @@ public sealed class PfPolicyRepository(IConfiguration configuration)
         var error = PfPolicyCalculator.ValidateDefinition(request);
         if (error is not null) return (null, error);
         await using var db = Db(); await db.OpenAsync(); await using var tx = await db.BeginTransactionAsync();
-        if (await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM clients WHERE Id=@ClientId AND IsActive=TRUE", new { ClientId = clientId }, tx) != 1) return (null, "Select an active client.");
+        if (await db.ExecuteScalarAsync<int?>("SELECT Id FROM clients WHERE Id=@ClientId AND IsActive=TRUE LOCK IN SHARE MODE", new { ClientId = clientId }, tx) is null) return (null, "Select an active client.");
         await db.ExecuteAsync("INSERT INTO modulesettings(client_id,ModuleCode,IsEnabled,SettingsJson) VALUES(@ClientId,'payroll',FALSE,JSON_OBJECT()) ON DUPLICATE KEY UPDATE ModuleCode=VALUES(ModuleCode)", new { ClientId = clientId }, tx);
         var versions = await ReadVersionsAsync(db, tx, clientId, true);
         var old = string.IsNullOrWhiteSpace(request.Id) ? null : versions.SingleOrDefault(v => v.Id == request.Id);
         if (!string.IsNullOrWhiteSpace(request.Id) && old is null) return (null, "PF policy draft was not found for this client.");
         if (old is not null && old.Status != "Draft") return (null, "Published PF policy versions are immutable. Create a new draft.");
-        if (old is not null && old.SalaryStructureId != request.SalaryStructureId) return (null, "A draft cannot be moved to a different salary template.");
+        if (!string.IsNullOrEmpty(old?.SalaryStructureId) && old.SalaryStructureId != request.SalaryStructureId) return (null, "A draft cannot be moved to a different salary template.");
         var setup = await PayrollDataTableStore.GetSetupJsonAsync(db, tx);
         var (rules, templateError) = ValidateTemplate(setup, clientId, request);
         if (templateError is not null) return (null, templateError);
         var version = new PfPolicyVersion
         {
-            Id = old?.Id ?? Guid.NewGuid().ToString("N"), VersionNumber = old?.VersionNumber ?? versions.Where(v => v.SalaryStructureId == request.SalaryStructureId).Select(v => v.VersionNumber).DefaultIfEmpty(0).Max() + 1,
+            Id = old?.Id ?? Guid.NewGuid().ToString("N"), VersionNumber = old?.SalaryStructureId == request.SalaryStructureId
+                ? old.VersionNumber : versions.Where(v => v.SalaryStructureId == request.SalaryStructureId).Select(v => v.VersionNumber).DefaultIfEmpty(0).Max() + 1,
             ClientId = clientId, SalaryStructureId = request.SalaryStructureId.Trim(), Name = request.Name.Trim(), EffectiveFrom = request.EffectiveFrom,
             Reason = request.Reason.Trim(), BaseComponentCode = request.BaseComponentCode.Trim().ToUpperInvariant(), CeilingBasis = request.CeilingBasis,
             Contributions = rules!, EdliMonthlyWageCeiling = request.EdliMonthlyWageCeiling, Status = "Draft",

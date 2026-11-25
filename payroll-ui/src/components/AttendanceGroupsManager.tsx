@@ -60,7 +60,7 @@ const clampCycleForMonth = (month: string, form: AttendancePolicyForm) => {
   return { form: { ...normalized, attendanceCycleEndDay: maxEnd.getDate() }, changed: true }
 }
 
-export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { onMessage: (message: string) => void; fixedClientId?: number }) {
+export default function AttendanceGroupsManager({ onMessage, fixedClientId, linkedEmployeeId = 0 }: { onMessage: (message: string) => void; fixedClientId?: number; linkedEmployeeId?: number }) {
   const [ready, setReady] = useState(false)
   const [clients, setClients] = useState<Client[]>([])
   const [locations, setLocations] = useState<WorkLocation[]>([])
@@ -155,8 +155,8 @@ export default function AttendanceGroupsManager({ onMessage, fixedClientId }: { 
       locationCount: row.locationSet.size,
       departmentCount: row.departmentSet.size,
       designationCount: row.designationSet.size
-    }))
-  }, [groups, fixedClientId])
+    })).filter(row => !linkedEmployeeId || row.employeeIds.some(id => Number(id) === linkedEmployeeId))
+  }, [groups, fixedClientId, linkedEmployeeId])
 
   const reset = () => { setErrors([]); setEmployeeQuery(''); setForm(defaultFor()) }
   const openNew = () => { reset(); setDrawerOpen(true) }

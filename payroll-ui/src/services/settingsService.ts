@@ -77,6 +77,30 @@ export const createClientSalaryTemplate = (clientId: number, template: Structure
       calculationType: line.calculationType || '', formula: line.formula || '', baseComponent: line.baseComponent || '',
       proRataOverride: line.proRataOverride || '', roundingMode: line.roundingMode || '' }))
   }, template, options)
+export type SalaryTemplateDeletionPreview = {
+  templateId: number
+  name: string
+  mappings: { type: string; count: number; examples: string[]; payslipDesigns?: import('./payslipService').SalaryTemplatePayslipDependency[] | null }[]
+  version: string
+}
+export type EditableSalaryTemplateMapping = {
+  kind: string
+  key: string
+  label: string
+  type: string
+  impact: string
+  version: string
+}
+export type EditableSalaryTemplateMappingsPage = { items: EditableSalaryTemplateMapping[]; total: number }
+const salaryTemplatePath = (clientId: number, templateId: number) => `/api/clients/${clientId}/salary-templates/${templateId}`
+export const getSalaryTemplateDeletionPreview = (clientId: number, templateId: number, signal: AbortSignal) =>
+  getJsonResult<SalaryTemplateDeletionPreview | null>(`${salaryTemplatePath(clientId, templateId)}/deletion-preview`, null, { signal, loader: false, cache: 'no-store' })
+export const deleteClientSalaryTemplate = (clientId: number, templateId: number, version: string) =>
+  deleteJson(`${salaryTemplatePath(clientId, templateId)}?version=${encodeURIComponent(version)}`, null, { toast: false, loader: false })
+export const getEditableSalaryTemplateMappings = (clientId: number, templateId: number, offset: number, limit: number, signal: AbortSignal) =>
+  getJsonResult<EditableSalaryTemplateMappingsPage | null>(`${salaryTemplatePath(clientId, templateId)}/editable-mappings?offset=${offset}&limit=${limit}`, null, { signal, loader: false, cache: 'no-store' })
+export const unlinkSalaryTemplateMapping = (clientId: number, templateId: number, { kind, key, version }: EditableSalaryTemplateMapping) =>
+  postJson(`${salaryTemplatePath(clientId, templateId)}/unlink`, { kind, key, version }, null, { toast: false, loader: false })
 export const getClientBillingModule = () => getJson<ClientBillingModule>('/api/client-billing/module', { isEnabled: false, advancedCostingEnabled: false })
 export const saveClientBillingModule = (module: ClientBillingModule) => postJson('/api/client-billing/module', module, module, { toast: false })
 export const getClientBillingConfigurations = () => getJson<ClientBillingConfiguration[]>('/api/client-billing/configurations', [])

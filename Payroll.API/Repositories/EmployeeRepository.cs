@@ -195,7 +195,9 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
             catch (InvalidOperationException issue) { return (null, issue.Message); }
         }
         await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db);
-        var before = await LoadEmployeeAsync(db, request.EmployeeId);
+        await using var tx = await db.BeginTransactionAsync();
+        await db.ExecuteScalarAsync<int?>("SELECT Id FROM employees WHERE Id=@EmployeeId FOR UPDATE", new { request.EmployeeId }, tx);
+        var before = await LoadEmployeeAsync(db, request.EmployeeId, tx);
         if (before is null) return (null, "Employee not found.");
         var next = CloneEmployee(before);
         if (request.ActionType is "Promotion" or "Demotion" or "Transfer")
@@ -214,13 +216,14 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         if (request.ActionType is "Retire" or "Terminate" or "Resign") next.IsActive = false;
         if (request.ActionType == "Rehire") next.IsActive = true;
 
-        try { await ValidateSalaryTemplateAssignmentAsync(db, next, before); }
+        try { await ValidateSalaryTemplateAssignmentAsync(db, next, before, tx); }
         catch (InvalidOperationException issue) { return (null, issue.Message); }
-        await db.ExecuteAsync(@"UPDATE employees SET Department=@Department,Designation=@Designation,Grade=@Grade,WorkLocationId=@WorkLocationId,SalaryStructureId=@SalaryStructureId,AnnualCtc=@AnnualCtc,SalaryJson=@SalaryJson,IsActive=@IsActive WHERE Id=@Id", next);
-        await PayrollDataTableStore.SyncEmployeeTablesAsync(db, next);
-        var after = await LoadEmployeeAsync(db, request.EmployeeId) ?? next;
-        await WriteCurrentInfotypesAsync(db, after, request.ActionType, request.EffectiveDate, request.Reason, changedBy, before, ActionInfotypeCodes(request.ActionType));
-        await SyncAttendancePolicyMappingsAsync(db, after, before);
+        await db.ExecuteAsync(@"UPDATE employees SET Department=@Department,Designation=@Designation,Grade=@Grade,WorkLocationId=@WorkLocationId,SalaryStructureId=@SalaryStructureId,AnnualCtc=@AnnualCtc,SalaryJson=@SalaryJson,IsActive=@IsActive WHERE Id=@Id", next, tx);
+        await PayrollDataTableStore.SyncEmployeeTablesAsync(db, next, tx);
+        var after = await LoadEmployeeAsync(db, request.EmployeeId, tx) ?? next;
+        await WriteCurrentInfotypesAsync(db, after, request.ActionType, request.EffectiveDate, request.Reason, changedBy, before, ActionInfotypeCodes(request.ActionType), tx);
+        await SyncAttendancePolicyMappingsAsync(db, after, before, tx);
+        await tx.CommitAsync();
         return (after, null);
     }
 

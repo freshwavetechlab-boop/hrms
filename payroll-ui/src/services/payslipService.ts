@@ -23,9 +23,17 @@ export type PayslipDesignTemplate = { id: number; clientId: number; name: string
 export type PayslipDesignSource = { id: string; month: string; name: string }
 export type PayslipDesignCode = { code: string; name: string; category: string }
 export type PayslipDesignSourceKind = 'ExcelSource' | 'CorePayroll'
+export type SalaryTemplatePayslipDependency = {
+  templateId: number
+  name: string
+  profileHash: string
+  hasApprovedPayroll: boolean
+  canRemoveField: boolean
+  fields: { sourceColumn: number; label: string; code: string; replacements: string[] }[]
+}
 export type PayslipDesignCatalog = { clientId: number; sourceBatchId: string; sourceHash: string; sourceKind?: PayslipDesignSourceKind; simpleLayout: boolean; keepMappedZeroRows?: boolean; fields: PayslipDesignField[]; nativeCodes: PayslipDesignCode[]; infoTokens: string[]; supportsPayrollMonthScope?: boolean }
 export type SavedPayslipDesign = { template: PayslipDesignTemplate; sourceBatchId: string; sourceHash: string; sourceKind?: PayslipDesignSourceKind; simpleLayout?: boolean; keepMappedZeroRows?: boolean; profileHash: string; amountDecimalPlaces: 0 | 2; payPeriods?: string[] | null; fields: PayslipDesignField[] }
-export type SavePayslipDesignRequest = { requestId: string; template: PayslipDesignTemplate; sourceBatchId: string; sourceHash: string; sourceKind?: PayslipDesignSourceKind; simpleLayout?: boolean; keepMappedZeroRows?: boolean; existingProfileHash?: string; amountDecimalPlaces: 0 | 2; payPeriods?: string[] | null; allPayPeriods?: boolean; fields: PayslipDesignField[]; reviewed: boolean }
+export type SavePayslipDesignRequest = { requestId: string; template: PayslipDesignTemplate; sourceBatchId: string; sourceHash: string; sourceKind?: PayslipDesignSourceKind; simpleLayout?: boolean; keepMappedZeroRows?: boolean; existingProfileHash?: string; amountDecimalPlaces: 0 | 2; payPeriods?: string[] | null; allPayPeriods?: boolean; protectApprovedPresentation?: boolean; fields: PayslipDesignField[]; reviewed: boolean }
 export type PayslipPdf = { blob: Blob; fileName: string }
 
 export const getPayslipDesignSources = (clientId: number, options: ApiOptions = {}) => getJsonResult<PayslipDesignSource[]>(`/api/payslip-designs/sources?clientId=${clientId}`, [], { toast: false, loader: false, ...options })

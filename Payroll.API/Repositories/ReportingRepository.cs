@@ -203,6 +203,25 @@ ORDER BY x.`Pay Period` DESC,x.`Employee Code`,x.`Statutory Group`,x.`Component 
         string? sql = code switch
         {
             "salary-register" => @"SELECT r.Id AS `Pay Run Id`, r.PayPeriod AS `Pay Period`, p.EmployeeCode AS `Employee Code`, p.EmployeeName AS Employee, p.Department, p.PresentDays AS `Present Days`, p.PayableDays AS `Payable Days`, p.GrossPay AS `Gross Pay`, p.StatutoryDeductions AS `Statutory Deductions`, p.OneTimeDeductions AS `Other Deductions`, p.NetPay AS `Net Pay`, p.PaymentStatus AS `Payment Status` FROM payrunemployees p JOIN payruns r ON r.Id=p.PayRunId WHERE p.ClientId=@ClientId AND (@PayRunId IS NULL OR r.Id=@PayRunId) AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month) AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId) AND p.IsSkipped=FALSE ORDER BY r.PayPeriod DESC,p.EmployeeCode",
+            // Reference history deliberately includes skipped rows and all run
+            // statuses; the normal salary/payslip registers stay unchanged.
+            "employee-payroll-history" => @"SELECT r.Id AS `Pay Run Id`,r.PayPeriod AS `Pay Period`,r.Status AS `Run Status`,
+p.EmployeeCode AS `Employee Code`,p.EmployeeName AS Employee,p.Department,
+CASE WHEN p.IsSkipped=TRUE THEN 'Yes' ELSE 'No' END AS Skipped,
+p.PresentDays AS `Present Days`,p.PayableDays AS `Payable Days`,p.GrossPay AS `Gross Pay`,
+p.OneTimeEarnings AS `One-time Earnings`,p.StatutoryDeductions AS `Statutory Deductions`,
+p.OneTimeDeductions AS `Other Deductions`,p.NetPay AS `Net Pay`,p.PaymentStatus AS `Payment Status`
+FROM payrunemployees p JOIN payruns r ON r.Id=p.PayRunId AND r.ClientId=p.ClientId
+WHERE p.ClientId=@ClientId AND (@EmployeeId IS NULL OR p.EmployeeId=@EmployeeId)
+AND (@PayRunId IS NULL OR r.Id=@PayRunId) AND (@PayRunId IS NOT NULL OR r.PayPeriod=@Month)
+ORDER BY r.PayPeriod DESC,r.Id DESC,p.EmployeeCode,p.Id",
+            "tax-computation-history" => @"SELECT t.pay_run_id AS `Pay Run Id`,t.pay_period AS `Pay Period`,
+e.EmployeeCode AS `Employee Code`,CONCAT(e.FirstName,' ',e.LastName) AS Employee,
+t.financial_year AS `Financial Year`,t.regime AS Regime,t.gross_salary AS `Gross Salary`,
+t.taxable_income AS `Taxable Income`,t.annual_tax AS `Annual Tax`,t.monthly_tds AS `Monthly TDS`,t.created_at AS `Computed At`
+FROM tax_computation_snapshots t JOIN employees e ON e.Id=t.employee_id
+WHERE t.client_id=@ClientId AND (@EmployeeId IS NULL OR t.employee_id=@EmployeeId) AND t.pay_period=@Month
+ORDER BY t.pay_period DESC,t.created_at DESC,t.id DESC",
             "component-ledger" => @"SELECT r.PayPeriod AS `Pay Period`,
 r.Id AS `Pay Run Id`,
 p.EmployeeCode AS `Employee Code`,
@@ -295,14 +314,23 @@ ORDER BY e.FirstName,e.LastName",
 FROM employee_daily_attendance a
 JOIN employees e ON e.Id=a.employee_id
 WHERE a.client_id=@ClientId AND a.attendance_date BETWEEN @FromDate AND @ToDate
+AND (@EmployeeId IS NULL OR a.employee_id=@EmployeeId)
 AND (@Department IS NULL OR e.Department=@Department) AND (@WorkLocationId IS NULL OR e.WorkLocationId=@WorkLocationId)
 ORDER BY a.attendance_date,e.EmployeeCode",
             "monthly-attendance" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, e.Department, a.attendance_month AS Month, a.working_days AS `Working Days`, a.present_days AS `Present Days`, CASE WHEN a.present_days IS NULL THEN 'Not supplied' ELSE 'Recorded' END AS `Actual Presence`, a.payable_days AS `Payable Days`, a.lop_days AS `LOP Days`, a.source_type AS Source, COALESCE(a.remarks,'') AS Remarks
 FROM employee_monthly_attendance a
 JOIN employees e ON e.Id=a.employee_id
 WHERE a.client_id=@ClientId AND a.attendance_month=@Month
+AND (@EmployeeId IS NULL OR a.employee_id=@EmployeeId)
 AND (@Department IS NULL OR e.Department=@Department) AND (@WorkLocationId IS NULL OR e.WorkLocationId=@WorkLocationId)
 ORDER BY e.EmployeeCode",
+            "attendance-punches" => @"SELECT e.EmployeeCode AS `Employee Code`,CONCAT(e.FirstName,' ',e.LastName) AS Employee,
+p.captured_at AS `Captured At`,p.action AS Action,p.validation_status AS `Validation Status`,p.decision AS Decision,
+p.accuracy_meters AS `Accuracy (m)`,COALESCE(p.reason,'') AS Reason
+FROM employee_attendance_punches p JOIN employees e ON e.Id=p.employee_id AND e.ClientId=p.client_id
+WHERE p.client_id=@ClientId AND (@EmployeeId IS NULL OR p.employee_id=@EmployeeId)
+AND p.captured_at>=@FromDate AND p.captured_at<DATE_ADD(@ToDate,INTERVAL 1 DAY)
+ORDER BY p.captured_at DESC,p.id DESC",
             "attendance-exception" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, e.Department, @Month AS Month,
 CASE
     WHEN a.employee_id IS NULL THEN 'Missing monthly attendance'
@@ -326,8 +354,8 @@ WHERE a.client_id=@ClientId AND a.attendance_date BETWEEN @FromDate AND @ToDate
 AND (@Department IS NULL OR e.Department=@Department) AND (@WorkLocationId IS NULL OR e.WorkLocationId=@WorkLocationId)
 GROUP BY a.attendance_date,a.status
 ORDER BY a.attendance_date, a.status",
-            "leave-balance" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, lt.Name AS `Leave Type`, b.BalanceDate AS Date, b.BalanceCount AS Balance FROM employee_leave_balances b JOIN employees e ON e.Id=b.employee_id JOIN leave_types lt ON lt.Id=b.leave_type_id WHERE b.client_id=@ClientId ORDER BY e.EmployeeCode,lt.Name,b.BalanceDate",
-            "lwp-balance" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, b.BalanceDate AS Date, b.BalanceCount AS `LWP Balance` FROM employee_leave_balances b JOIN employees e ON e.Id=b.employee_id JOIN leave_types lt ON lt.Id=b.leave_type_id WHERE b.client_id=@ClientId AND lt.Code='LWP' ORDER BY e.EmployeeCode",
+            "leave-balance" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, lt.Name AS `Leave Type`, b.balance_date AS Date, b.balance_count AS Balance FROM employee_leave_balances b JOIN employees e ON e.Id=b.employee_id JOIN leave_types lt ON lt.Id=b.leave_type_id WHERE lt.client_id=@ClientId AND (@EmployeeId IS NULL OR b.employee_id=@EmployeeId) ORDER BY e.EmployeeCode,lt.Name,b.balance_date",
+            "lwp-balance" => @"SELECT e.EmployeeCode AS `Employee Code`, CONCAT(e.FirstName,' ',e.LastName) AS Employee, b.balance_date AS Date, b.balance_count AS `LWP Balance` FROM employee_leave_balances b JOIN employees e ON e.Id=b.employee_id JOIN leave_types lt ON lt.Id=b.leave_type_id WHERE lt.client_id=@ClientId AND (@EmployeeId IS NULL OR b.employee_id=@EmployeeId) AND lt.Code='LWP' ORDER BY e.EmployeeCode",
             "leave-accrual" => @"SELECT lt.Code AS `Leave Code`, lt.Name AS `Leave Type`, lt.Type, p.entitlement AS Entitlement, p.entitlement_period AS `Entitlement Period`, p.pro_rate_for_new_joinees AS `Pro-rate New Joiners`, p.reset_enabled AS `Reset Enabled`, p.reset_frequency AS `Reset Frequency`, p.carry_forward_unused_leaves AS `Carry Forward`, p.max_carry_forward_limit AS `Carry Forward Limit`, p.encash_unused_leaves AS Encashment, COALESCE(p.allow_half_day,TRUE) AS `Half Day Allowed`, p.effective_from AS `Effective From`, p.expires_on AS `Expires On`, a.applicability_mode AS Applicability, a.department AS Department, a.designation AS Designation, a.work_location AS `Work Location`
 FROM leave_types lt
 JOIN leave_type_policies p ON p.leave_type_id=lt.id
@@ -338,6 +366,7 @@ ORDER BY lt.Name",
 FROM employee_daily_attendance a
 JOIN employees e ON e.Id=a.employee_id
 WHERE a.client_id=@ClientId AND a.attendance_date BETWEEN @FromDate AND @ToDate AND a.status IN ('Paid Leave','Absent','Half Day')
+AND (@EmployeeId IS NULL OR a.employee_id=@EmployeeId)
 AND (@Department IS NULL OR e.Department=@Department) AND (@WorkLocationId IS NULL OR e.WorkLocationId=@WorkLocationId)
 GROUP BY e.EmployeeCode, Employee, e.Department, DATE_FORMAT(a.attendance_date,'%Y-%m'), a.status
 ORDER BY e.EmployeeCode, Month, `Leave/Absence Type`",
@@ -346,6 +375,7 @@ FROM essleaverequests r
 JOIN employees e ON e.Id=r.EmployeeId
 JOIN leave_types lt ON lt.Id=r.LeaveTypeId
 WHERE r.ClientId=@ClientId AND r.FromDate <= @ToDate AND r.ToDate >= @FromDate
+AND (@EmployeeId IS NULL OR r.EmployeeId=@EmployeeId)
 AND (@Department IS NULL OR e.Department=@Department) AND (@WorkLocationId IS NULL OR e.WorkLocationId=@WorkLocationId)
 ORDER BY r.CreatedAt DESC",
             "payroll-summary" => @"SELECT p.PayPeriod AS `Pay Period`, p.Status, COUNT(e.Id) AS Employees, p.PayrollCost AS `Payroll Cost`, p.NetPay AS `Net Pay` FROM payruns p LEFT JOIN payrunemployees e ON e.PayRunId=p.Id AND e.IsSkipped=FALSE WHERE p.ClientId=@ClientId GROUP BY p.Id,p.PayPeriod,p.Status,p.PayrollCost,p.NetPay ORDER BY p.PayPeriod DESC",

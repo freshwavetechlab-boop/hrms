@@ -87,6 +87,7 @@ VALUES(@Id,@Code,'Excel reviewed',@ComponentRole,@StatutoryType,@Category,@Name,
         }
         var allVariants = plan.Rows.Where(r => r.TemplateId.Length > 0).GroupBy(r => r.TemplateId).ToList();
         var variants = allVariants.Where(g => !plan.ReusedTemplateIds.Contains(g.Key)).ToList();
+        await PayrollDataTableStore.RequireAvailableTemplateIdsAsync(db, tx, variants.Select(g => long.Parse(g.Key, CultureInfo.InvariantCulture)));
         for (var v = 0; v < variants.Count; v++)
         {
             var variant = variants[v];

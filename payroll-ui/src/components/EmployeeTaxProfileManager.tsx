@@ -1,5 +1,7 @@
 import { clientChoice } from './ClientOption'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { Alert, Button } from 'antd'
 import DataTable from './DataTable'
 import { Card, F, Sel } from './FormPrimitives'
 import { useToast } from './ToastProvider'
@@ -15,6 +17,12 @@ const fy = `${new Date().getFullYear()}-${String(new Date().getFullYear() + 1).s
 export default function EmployeeTaxProfileManager() {
   const notify = useToast()
   const session = useAuthSession()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const linkedEmployeeId = searchParams.get('source') === 'employee-links' ? Number(searchParams.get('employeeId')) || 0 : 0
+  const linkedClientId = linkedEmployeeId ? Number(searchParams.get('clientId')) || 0 : 0
+  const linkedYear = linkedEmployeeId && /^\d{4}-\d{2,4}$/.test(searchParams.get('financialYear') || '') ? searchParams.get('financialYear')! : ''
+  const openedReference = useRef('')
+  const profileRequest = useRef(0)
   const scopedClientId = String(session?.user.clientId || '')
   const clientScoped = Boolean(scopedClientId && !session?.user.permissions.includes('security.manage'))
   const [clients, setClients] = useState<Client[]>([])
@@ -27,7 +35,7 @@ export default function EmployeeTaxProfileManager() {
   const [department, setDepartment] = useState('')
   const [designation, setDesignation] = useState('')
   const [employeeSearch, setEmployeeSearch] = useState('')
-  const [financialYear, setFinancialYear] = useState(fy)
+  const [financialYear, setFinancialYear] = useState(linkedYear || fy)
   const [searched, setSearched] = useState(false)
   const [resultRows, setResultRows] = useState<Employee[]>([])
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null)
@@ -46,14 +54,14 @@ export default function EmployeeTaxProfileManager() {
     const directory = getClients(true).then(rows => { if (active) setClients(rows) })
     void Promise.all([directory, getEmployees(), getWorkLocations(), getTaxEngineSetup(), getSetup(setup0)]).then(([, employeeRows, locationRows, setup, payrollSetup]) => {
       if (!active) return
-      setEmployees(employeeRows.filter(row => row.isActive))
+      setEmployees(employeeRows.filter(row => row.isActive || row.id === linkedEmployeeId))
       setLocations(locationRows.filter(row => row.isActive))
       setTaxSetup(setup)
       setSalaryStructures(payrollSetup.salaryStructures ?? [])
       setSearchReady(true)
     })
     return () => { active = false }
-  }, [clientScoped, scopedClientId])
+  }, [clientScoped, scopedClientId, linkedEmployeeId])
 
   const filteredEmployees = useMemo(() => employees.filter(employee => {
     const location = locations.find(row => row.id === employee.workLocationId)
@@ -84,6 +92,12 @@ export default function EmployeeTaxProfileManager() {
   }
 
   const clearFilters = () => {
+    profileRequest.current++
+    if (linkedEmployeeId) {
+      const next = new URLSearchParams(searchParams)
+      ;['source', 'employeeLink', 'employeeId', 'financialYear'].forEach(key => next.delete(key))
+      setSearchParams(next, { replace: true })
+    }
     setClientId('')
     setWorkLocationId('')
     setDepartment('')
@@ -98,11 +112,13 @@ export default function EmployeeTaxProfileManager() {
   }
 
   const openProfile = async (employee: Employee) => {
+    const request = ++profileRequest.current
     setSelectedEmployee(employee)
     setDrawerOpen(true)
     setLoadingProfile(true)
     setProfileMessage('Preparing employee tax profile...')
     const row = await getEmployeeTaxProfile(employee.id, financialYear)
+    if (request !== profileRequest.current) return
     const nextProfile = row ?? createBlankProfile(employee, financialYear, taxSetup)
     setProfile(nextProfile)
     const nextMessage = row ? 'Tax profile loaded.' : 'Default New regime profile is ready. Enter declaration values only if required.'
@@ -111,7 +127,22 @@ export default function EmployeeTaxProfileManager() {
     setLoadingProfile(false)
   }
 
+  useEffect(() => {
+    if (!linkedEmployeeId) { openedReference.current = ''; return }
+    if (!searchReady || clientScoped && linkedClientId !== Number(scopedClientId)) return
+    const employee = employees.find(row => row.id === linkedEmployeeId && row.clientId === linkedClientId)
+    if (!employee || !clients.some(row => row.id === linkedClientId)) return
+    const key = `${linkedClientId}:${linkedEmployeeId}:${linkedYear}`
+    if (openedReference.current === key) return
+    if (linkedYear && financialYear !== linkedYear) { setFinancialYear(linkedYear); return }
+    openedReference.current = key
+    setClientId(String(linkedClientId)); setWorkLocationId(''); setDepartment(''); setDesignation(''); setEmployeeSearch(employee.employeeCode)
+    setResultRows([employee]); setSearched(true)
+    void openProfile(employee)
+  }, [linkedEmployeeId, linkedClientId, linkedYear, financialYear, searchReady, employees, clients, clientScoped, scopedClientId]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const closeDrawer = () => {
+    profileRequest.current++
     setDrawerOpen(false)
     setSelectedEmployee(null)
     setProfile(null)
@@ -160,6 +191,7 @@ export default function EmployeeTaxProfileManager() {
   }
 
   return <Card t="Employee Tax Profile">
+    {linkedEmployeeId > 0 && <Alert type="info" showIcon message={`Employee Master reference: ${employees.find(row => row.id === linkedEmployeeId)?.employeeCode || `Employee #${linkedEmployeeId}`}`} description={searchReady && !employees.some(row => row.id === linkedEmployeeId && row.clientId === linkedClientId) ? 'This employee is unavailable within your permitted client scope.' : 'The linked employee and financial year open automatically.'} action={<Button size="small" onClick={clearFilters}>Clear reference</Button>} />}
     <div className="component-guide tax-guide"><b>Employee tax profile</b><span>Search employees first, then open one employee to maintain regime, planned declaration, and approved POI values.</span></div>
     <section className="tax-rule-card"><h3>Search criteria</h3><div className="grid">
       {!clientScoped && <F l="Client"><Sel v={clientId} set={value => resetScope({ clientId: value })} a={clients.map(clientChoice)} /></F>}

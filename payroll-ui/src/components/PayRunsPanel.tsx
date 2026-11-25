@@ -1,8 +1,8 @@
 import { clientChoice } from './ClientOption'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { MoreOutlined, RocketOutlined, WarningOutlined, ReloadOutlined } from '@ant-design/icons'
-import { Button, Checkbox, Dropdown, Select } from 'antd'
-import { Link } from 'react-router-dom'
+import { Alert, Button, Checkbox, Dropdown, Select } from 'antd'
+import { Link, useSearchParams } from 'react-router-dom'
 import { getAttendanceGroups, getMonthlyAttendance } from '../services/leaveAttendanceService'
 import { cancelPayrollAdjustment, createPayRun, createSelectedPayRunDraft, deletePayRun, exportPayRunUrl, getClients, getPayrollEmployeeOptions, getPayRun, getPayRunDiagnostics, getPayrollAdjustments, getPayRuns, runPayRunAction, savePayrollAdjustment } from '../services/payrollService'
 import { getSetup, getWorkLocations } from '../services/settingsService'
@@ -103,6 +103,11 @@ const buildPolicyBatches = (groups: AttendanceGroup[]): AttendancePolicyBatch[] 
 const adjustment0: PayrollAdjustment = { id: 0, clientId: 0, employeeId: 0, employeeName: '', employeeCode: '', componentId: 0, componentCode: '', componentName: '', adjustmentType: 'Earning', amount: 0, payPeriod: currentPeriod, payRunType: 'Regular', reasonCode: 'Overtime', notes: '', taxable: true, status: 'Approved', payRunId: null }
 
 export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regular Run' }: { mode?: 'payrun' | 'adjustments'; initialRunType?: Exclude<PayrollTab, 'Adjustments'> }) {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const linkedEmployeeId = mode === 'adjustments' && searchParams.get('source') === 'employee-links' ? Number(searchParams.get('employeeId')) || 0 : 0
+  const linkedClientId = linkedEmployeeId ? Number(searchParams.get('clientId')) || 0 : 0
+  const linkedMonth = linkedEmployeeId && /^\d{4}-\d{2}$/.test(searchParams.get('month') || '') ? searchParams.get('month')! : ''
+  const appliedLinkedRoute = useRef('')
   const [formulaBusy, setFormulaBusy] = useState(false)
   const formulaScope = useRef('')
   const session = useAuthSession()
@@ -116,7 +121,7 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   const [period, setPeriod] = useSessionPreference(`payroll.context.period:${session?.user.id}:${mode}:${initialRunType}`, currentPeriod)
   const [workingDays] = useState(30)
   const [includedIds, setIncludedIds] = useState<number[]>([]), [attendancePolicyBatchId, setAttendancePolicyBatchId] = useState(''), [offcycleEmployeeIds, setOffcycleEmployeeIds] = useState<number[]>([]), [offcycleAdjustmentIds, setOffcycleAdjustmentIds] = useState<number[]>([])
-  const scopeChoice = useRef({ clientId: clientScoped ? scopedClientId : clientId, policyBatchId: '' })
+  const scopeChoice = useRef({ clientId: clientScoped ? scopedClientId : linkedClientId || clientId, policyBatchId: '' })
   const loadSequence = useRef(0)
   const [workspaceReady, setWorkspaceReady] = useState(false)
   const [adjustments, setAdjustments] = useState<PayrollAdjustment[]>([]), [adjustment, setAdjustment] = useState<PayrollAdjustment>(adjustment0)
@@ -130,6 +135,19 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
   const canCreateSelectedDraft = canCreateSelectedPayRunDraft(session?.user)
   const [adjustmentStage, setAdjustmentStage] = useState<AdjustmentStage>('Entry')
   const [attendanceRows, setAttendanceRows] = useState<EmployeeMonthlyAttendance[]>([]), [offcycleName, setOffcycleName] = useState('Off-cycle payment'), [offcycleReason, setOffcycleReason] = useState('Missed employee / reimbursement payment')
+  const linkedAdjustment = linkedEmployeeId > 0 && clientId === linkedClientId
+  useEffect(() => {
+    if (!linkedEmployeeId) { appliedLinkedRoute.current = ''; return }
+    if (!workspaceReady || !clients.some(row => row.id === linkedClientId) || clientScoped && linkedClientId !== scopedClientId) return
+    const key = `${linkedClientId}:${linkedEmployeeId}:${linkedMonth}`
+    if (appliedLinkedRoute.current === key) return
+    appliedLinkedRoute.current = key
+    setClientId(linkedClientId)
+    scopeChoice.current = { clientId: linkedClientId, policyBatchId: '' }
+    if (linkedMonth) setPeriod(linkedMonth)
+    setAdjustmentStage('Entry')
+    setAdjustment({ ...adjustment0, clientId: linkedClientId, employeeId: linkedEmployeeId, payPeriod: linkedMonth || period })
+  }, [linkedEmployeeId, linkedClientId, linkedMonth, workspaceReady, clients, clientScoped, scopedClientId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const clientEmployees = useMemo(() => employees.filter(employee => employee.clientId === clientId && employee.isActive), [clientId, employees])
   const clientAttendanceGroups = useMemo(() => attendanceGroups.filter(group => group.clientId === clientId && group.isActive), [attendanceGroups, clientId])
@@ -574,7 +592,8 @@ export default function PayRunsPanel({ mode = 'payrun', initialRunType = 'Regula
     <section className="payroll-command-grid">
       {tab === 'Regular Run' && stage === 'Employees' && <RosterCard key={JSON.stringify([clientId, period, attendancePolicyBatchId])} selectionScope={{ clientId, period, policyBatchId: attendancePolicyBatchId }} disabled={busy} employees={regularEmployees} includedIds={includedIds} setIncludedIds={ids => { if (!selectedDraftPending.current) { setIncludedIds(ids); setSelectedAdjustmentReview({ key: '', ids: [] }) } }} adjustments={regularAdjustments}
         selectedDraftAdjustmentReview={canCreateSelectedDraft ? <SelectedDraftAdjustmentSelection rows={applicableSelectedAdjustments} selectedIds={selectedDraftAdjustmentIds} disabled={busy || selectedDraftUncertain} onSelect={ids => { if (!selectedDraftPending.current) setSelectedAdjustmentReview({ key: adjustmentReviewKey, ids }) }} sourceRequest={selectedDraftBase.request} sourceRequestKey={sourceReviewKey} onSourceReviewChange={choice => { if (!selectedDraftPending.current) setSelectedAdjustmentReview(current => current.key === adjustmentReviewKey ? { ...current, sourceReview: choice } : current) }} /> : undefined} />}
-      {tab === 'Adjustments' && adjustmentStage === 'Entry' && <AdjustmentCard adjustment={adjustment} setAdjustment={setAdjustment} employees={clientEmployees} components={variableComponents} adjustments={adjustments.filter(item => item.clientId === clientId && item.payPeriod === period)} chooseComponent={chooseComponent} saveAdjustment={saveAdjustment} edit={row => setAdjustment({ ...row, amount: Number(row.amount) })} cancel={async id => { await cancelPayrollAdjustment(id); await load() }} />}
+      {tab === 'Adjustments' && linkedAdjustment && <Alert type="info" showIcon message={`Employee Master reference: ${employees.find(row => row.id === linkedEmployeeId)?.employeeCode || `Employee #${linkedEmployeeId}`}`} description="Showing this employee's saved adjustments for the selected pay period." action={<Button size="small" onClick={() => { const next = new URLSearchParams(searchParams); ['source', 'employeeLink', 'employeeId', 'month'].forEach(key => next.delete(key)); setSearchParams(next, { replace: true }) }}>Clear reference</Button>} />}
+      {tab === 'Adjustments' && adjustmentStage === 'Entry' && <AdjustmentCard adjustment={adjustment} setAdjustment={setAdjustment} employees={linkedAdjustment ? employees.filter(row => row.clientId === clientId && (row.isActive || row.id === linkedEmployeeId)) : clientEmployees} components={variableComponents} adjustments={adjustments.filter(item => item.clientId === clientId && item.payPeriod === period && (!linkedAdjustment || item.employeeId === linkedEmployeeId))} chooseComponent={chooseComponent} saveAdjustment={saveAdjustment} edit={row => setAdjustment({ ...row, amount: Number(row.amount) })} cancel={async id => { await cancelPayrollAdjustment(id); await load() }} />}
       {tab === 'Adjustments' && adjustmentStage === 'Import' && <AdjustmentImportPanel importScheduled={file => void importAdjustments(file, 'scheduled')} importArrears={file => void importAdjustments(file, 'arrears')} />}
       {tab === 'Off-cycle Run' && stage === 'Employees' && <OffcycleCard employees={clientEmployees} selectedIds={offcycleEmployeeIds} setSelectedIds={setOffcycleEmployeeIds} adjustments={offcycleAdjustments} selectedAdjustmentIds={offcycleAdjustmentIds} setSelectedAdjustmentIds={setOffcycleAdjustmentIds} name={offcycleName} setName={setOffcycleName} reason={offcycleReason} setReason={setOffcycleReason} />}
       {mode !== 'adjustments' && stage === 'Review' && reviewPanel}

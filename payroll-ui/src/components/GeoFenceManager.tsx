@@ -11,7 +11,7 @@ import type { Client, GeoFenceEmployeeOption, GeoFenceRule, WorkLocation } from 
 
 const strictness = ['Block outside fence', 'Allow with reason', 'Allow with approval'] as const
 
-export default function GeoFenceManager({ clients, clientId, fixedClientId, onClientChange, onMessage }: { clients: Client[]; clientId: number; fixedClientId?: number; onClientChange: (clientId: number) => void; onMessage: (message: string) => void }) {
+export default function GeoFenceManager({ clients, clientId, fixedClientId, onClientChange, onMessage, linkedEmployeeId = 0 }: { clients: Client[]; clientId: number; fixedClientId?: number; onClientChange: (clientId: number) => void; onMessage: (message: string) => void; linkedEmployeeId?: number }) {
   const [rules, setRules] = useState<GeoFenceRule[]>([])
   const [locations, setLocations] = useState<WorkLocation[]>([])
   const [employees, setEmployees] = useState<GeoFenceEmployeeOption[]>([])
@@ -23,7 +23,7 @@ export default function GeoFenceManager({ clients, clientId, fixedClientId, onCl
   const selectedLocation = useMemo(() => locations.find(location => location.id === form.workLocationId) ?? null, [form.workLocationId, locations])
 
   const load = async () => {
-    const [nextRules, nextLocations] = await Promise.all([getGeoFenceRules(clientId, 'Work Location'), getWorkLocations()])
+    const [nextRules, nextLocations] = await Promise.all([getGeoFenceRules(clientId, linkedEmployeeId ? undefined : 'Work Location'), getWorkLocations()])
     setRules(nextRules)
     setLocations(nextLocations.filter(location => location.isActive && Number(location.clientId) === Number(clientId)))
     setForm(current => current.id ? current : { ...geoFenceFallback, clientId, scopeType: 'Work Location' })
@@ -31,7 +31,7 @@ export default function GeoFenceManager({ clients, clientId, fixedClientId, onCl
 
   useEffect(() => {
     let active = true
-    void Promise.all([getGeoFenceRules(clientId, 'Work Location'), getWorkLocations()]).then(([nextRules, nextLocations]) => {
+    void Promise.all([getGeoFenceRules(clientId, linkedEmployeeId ? undefined : 'Work Location'), getWorkLocations()]).then(([nextRules, nextLocations]) => {
       if (!active) return
       setRules(nextRules)
       setLocations(nextLocations.filter(location => location.isActive && Number(location.clientId) === Number(clientId)))
@@ -39,7 +39,7 @@ export default function GeoFenceManager({ clients, clientId, fixedClientId, onCl
       setForm(current => current.id ? current : { ...geoFenceFallback, clientId, scopeType: 'Work Location' })
     })
     return () => { active = false }
-  }, [clientId])
+  }, [clientId, linkedEmployeeId])
 
   const set = <K extends keyof GeoFenceRule>(key: K, value: GeoFenceRule[K]) => {
     setErrors([])
@@ -113,13 +113,13 @@ export default function GeoFenceManager({ clients, clientId, fixedClientId, onCl
         <div><b>Geo-fence rule master</b><span>Select a work location, choose its employees if required, and pin one or more permitted offices on the map.</span></div>
         <PageHeaderPortal slot="attendance-settings-page-controls"><Button type="primary" onClick={add}>Add rule</Button></PageHeaderPortal>
       </div>
-      <RecruitmentRecordList rows={rules} title={row => row.name} subtitle={row => row.workLocationName} filters={[{ key: 'location', label: 'Location', value: row => row.workLocationName }, { key: 'mode', label: 'Mode', value: row => row.strictness }, { key: 'status', label: 'Status', value: row => row.isActive ? 'Active' : 'Inactive' }]} emptyText="No geo-fence rules configured." exportFileName="geo-fence-rules" columns={[
+      <RecruitmentRecordList rows={linkedEmployeeId ? rules.filter(rule => rule.employeeIds.some(id => Number(id) === linkedEmployeeId)) : rules} title={row => row.name} subtitle={row => row.workLocationName} filters={[{ key: 'location', label: 'Location', value: row => row.workLocationName }, { key: 'mode', label: 'Mode', value: row => row.strictness }, { key: 'status', label: 'Status', value: row => row.isActive ? 'Active' : 'Inactive' }]} emptyText="No geo-fence rules configured." exportFileName="geo-fence-rules" columns={[
         { key: 'name', label: 'Rule' },
         { key: 'target', label: 'Work location / employees', value: row => `${row.workLocationName || 'Work location'} - ${row.employeeIds.length ? `${row.employeeIds.length} selected employees` : 'All location employees'}` },
         { key: 'radiusMeters', label: 'Radius', value: row => `${row.radiusMeters}m + ${row.gpsToleranceMeters}m` },
         { key: 'strictness', label: 'Mode' },
         { key: 'isActive', label: 'Status', value: row => row.isActive ? 'Active' : 'Inactive', render: row => <Tag color={row.isActive ? 'green' : 'default'}>{row.isActive ? 'Active' : 'Inactive'}</Tag> }
-      ]} actions={row => <Space size={6}><Button size="small" type="primary" onClick={() => void edit(row)}>Edit</Button><Button size="small" danger onClick={() => void remove(row)}>Delete</Button></Space>} />
+      ]} actions={row => <Space size={6}><Button size="small" type="primary" disabled={row.scopeType !== 'Work Location'} title={row.scopeType !== 'Work Location' ? `${row.scopeType} rule is shown for reference; this editor manages work-location rules.` : undefined} onClick={() => void edit(row)}>Edit</Button><Button size="small" danger onClick={() => void remove(row)}>Delete</Button></Space>} />
     </AntCard>
 
     <Drawer className="settings-master-drawer geo-fence-ant-drawer" title={form.id ? 'Edit geo-fence rule' : 'Add geo-fence rule'} open={drawerOpen} width={960} onClose={closeDrawer} destroyOnClose footer={<Space><Button onClick={closeDrawer}>Cancel</Button><Button type="primary" loading={saving} onClick={() => void save()}>{form.id ? 'Update rule' : 'Save rule'}</Button></Space>}>

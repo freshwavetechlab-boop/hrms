@@ -49,6 +49,8 @@ public sealed class PayslipDesignSaveRequest
     public List<string>? PayPeriods { get; set; }
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool AllPayPeriods { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ProtectApprovedPresentation { get; set; }
     public List<PayslipDesignField> Fields { get; set; } = [];
     public bool Reviewed { get; set; }
 }

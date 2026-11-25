@@ -9,6 +9,7 @@ import PayrollScopeSelect from './PayrollScopeSelect'
 import { useAuthSession } from './AuthGate'
 import { RecruitmentViewContext, useSessionPreference } from '../hooks/useRecruitmentPreferences'
 import SalaryTemplateComponents from './SalaryTemplateComponents'
+import SalaryTemplateDeleteDialog from './SalaryTemplateDeleteDialog'
 import SalaryFormulaInput from './SalaryFormulaInput'
 import { salaryFormulaSuggestions } from '../utils/salaryFormulaSuggestions'
 import { salaryComponentLibraryScope } from '../utils/salaryComponentLibraryScope'
@@ -47,6 +48,7 @@ type SalaryTemplateDesignerProps = {
   structure: Structure
   setStructure: (s: Structure) => void
   templates: Structure[]
+  onTemplateDeleted: (id: number) => void
   saveTemplate: (newComponents?: Component[]) => void | boolean | Promise<void | boolean>
   saving?: boolean
   templateDownloaded?: boolean
@@ -54,7 +56,7 @@ type SalaryTemplateDesignerProps = {
   onUploadTemplate?: (file: File | null) => void | Promise<void>
 }
 
-export default function SalaryTemplateDesigner({ fixedClientId, clients, employees = [], locations = [], canCreateComponentMasters = false, components: savedComponents, structure, setStructure, templates, saveTemplate, saving = false, templateDownloaded = false, onDownloadTemplate, onUploadTemplate }: SalaryTemplateDesignerProps) {
+export default function SalaryTemplateDesigner({ fixedClientId, clients, employees = [], locations = [], canCreateComponentMasters = false, components: savedComponents, structure, setStructure, templates, onTemplateDeleted, saveTemplate, saving = false, templateDownloaded = false, onDownloadTemplate, onUploadTemplate }: SalaryTemplateDesignerProps) {
   const session = useAuthSession()
   const templateNameId = useId()
   const [draftComponents, setDraftComponents] = useState<Component[]>([])
@@ -66,6 +68,9 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
   const idsFor = salaryTemplateClientIds
   const [chosenClientId, setChosenClientId] = useSessionPreference(`salary-templates.client:${session?.user.id}`, fixedClientId || idsFor(structure.clientId)[0] || 0)
   const clientId = fixedClientId || (clients.some(client => client.id === chosenClientId) ? chosenClientId : 0)
+  const canDeleteTemplate = session && (!session.user.clientId || session.user.clientId === clientId)
+    && (session.user.permissions.includes('settings.manage') || session.user.clientId === clientId && session.user.permissions.includes('client.settings.manage'))
+  const [deletion, setDeletion] = useState<{ clientId: number; template: Structure } | null>(null)
   const [view, setView] = useState<'Templates' | 'Designer'>('Templates')
   const [listView, setListView] = useSessionPreference<'Cards' | 'Table'>(`salary-templates.view:${session?.user.id}`, 'Cards')
   const [search, setSearch] = useSessionPreference(`salary-templates.search:${session?.user.id}:${clientId}`, '')
@@ -179,8 +184,28 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
   const newDraft = (id: number): Structure => ({ id: 0, clientId: String(id || ''), name: '', annualCtc: '', active: true, lines: [] })
   const hasUnsavedChanges = (editorIntent === 'new' || !!openedTemplateId) && JSON.stringify(structure) !== editorBaseline.current
   const canLeaveEditor = () => !saving && (!hasUnsavedChanges || window.confirm('Discard unsaved template changes?'))
-  const resetDialogs = () => { setBuilderOpen(false); setSimulationOpen(false); setSimulationTemplate(null); setSimulationSourceScenario(undefined); setSelectedLineId(''); setExtractOpen(false); setFormulaDownloadOpen(false) }
+  const resetDialogs = () => { setBuilderOpen(false); setSimulationOpen(false); setSimulationTemplate(null); setSimulationSourceScenario(undefined); setSelectedLineId(''); setExtractOpen(false); setFormulaDownloadOpen(false); setDeletion(null) }
   const clearExtractedDraft = () => { setDraftComponents([]); setExtractedScenario(null) }
+  const finishDeletion = (id: number) => {
+    setDeletion(null)
+    onTemplateDeleted(id)
+    if (contextClient.current !== clientId) return
+    if (rememberedTemplateId === String(id)) setRememberedTemplateId('')
+    if (openedTemplateId !== String(id)) return
+    const blank = newDraft(clientId)
+    editorBaseline.current = JSON.stringify(blank)
+    setOpenedTemplateId('')
+    resetDialogs()
+    if (hasUnsavedChanges) {
+      setStructure({ ...structure, id: 0 })
+      setEditorIntent('new')
+      setView('Designer')
+    } else {
+      clearExtractedDraft()
+      setStructure(blank)
+      setEditorIntent('existing')
+    }
+  }
   const editTemplate = (row: Structure) => {
     if (saving) return
     if (openedTemplateId === String(row.id) && editorReady) { setView('Designer'); return }
@@ -272,8 +297,12 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
             ]}
             filters={[{ key: 'configuration', label: 'Configuration', value: row => readinessFor(row).status, options: ['Configured', 'Draft', 'Inactive'] }]}
             cardExtra={row => readinessFor(row).status === 'Draft' ? <p className="salary-template-draft-reason">{readinessFor(row).reason}</p> : null}
-            actionsWidth={240}
-            actions={row => <><Button size="small" disabled={saving} onClick={() => editTemplate(row)}>{idsFor(row.clientId).length === 1 ? 'Edit formulas' : 'Use for client'}</Button><Button size="small" type="primary" disabled={saving || !row.lines.length} onClick={() => openSimulation(row, true)}>Simulate</Button></>}
+            actionsWidth={canDeleteTemplate ? 285 : 240}
+            actions={row => <>
+              <Button size="small" disabled={saving} onClick={() => editTemplate(row)}>{idsFor(row.clientId).length === 1 ? 'Edit formulas' : 'Use for client'}</Button>
+              <Button size="small" type="primary" disabled={saving || !row.lines.length} onClick={() => openSimulation(row, true)}>Simulate</Button>
+              {canDeleteTemplate && <Button size="small" danger disabled={saving} aria-label={`Delete ${row.name}`} onClick={() => setDeletion({ clientId, template: row })}>Delete</Button>}
+            </>}
             emptyText={scopeTemplates.length ? 'No salary templates match your search or filters.' : 'No saved templates for this client. Select Create template to add components and formulas.'}
           />
         </RecruitmentViewContext.Provider>
@@ -296,6 +325,9 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
         {structure.excelSource && <details className="salary-workspace-advanced"><summary>Imported Excel source · {structure.excelSource.sheetName}</summary><p>{structure.excelSource.fileName} · Header row {structure.excelSource.headerRow} · {structure.excelSource.payPeriod}{structure.excelSource.workLocationLabel ? ` · ${structure.excelSource.workLocationLabel}` : ''}. Sample employee amounts are used only in the temporary simulation. Employee salary inputs and location assignments remain in their existing Master flows.</p><div className="salary-template-source-formulas">{structure.excelSource.columns.filter(column => column.originalFormula).map(column => <div key={column.columnIndex}><strong>{column.sourceHeader}</strong><code>Excel: {column.originalFormula}</code><code>Native: {column.nativeFormula || 'Control / source input'}</code></div>)}</div></details>}
         </>}
       </div>}
+      {deletion?.clientId === clientId && canDeleteTemplate && <SalaryTemplateDeleteDialog key={`${clientId}:${deletion.template.id}`} clientId={clientId} user={session.originalUser} template={deletion.template}
+        hasDraft={openedTemplateId === String(deletion.template.id) && hasUnsavedChanges} onClose={() => setDeletion(null)}
+        onCreateReplacement={createTemplate} onDeleted={() => finishDeletion(deletion.template.id)} />}
       {extractOpen && clientId > 0 && <SalaryTemplateExcelExtractor clientId={clientId} clientName={clientName(clientId)} components={savedComponents} locations={locations.filter(location => location.clientId === clientId && location.isActive)} canCreateComponentMasters={canCreateComponentMasters} onClose={() => setExtractOpen(false)} onUseDraft={useExtractedDraft} />}
       {formulaDownloadOpen && clientId > 0 && <SalaryTemplateExcelDownload key={`download:${clientId}`} clientId={clientId} clientName={clientName(clientId)} templates={templates} components={savedComponents} locations={locations} preferredTemplateId={openedTemplateId} onClose={() => setFormulaDownloadOpen(false)} />}
       {simulationOpen && <PayrollSimulation template={playerTemplate} components={components} clients={clients} fixedClientId={clientId || fixedClientId} clientEmployeeCounts={Object.fromEntries(clientOptions.map(option => [option.value, option.count]))} sourceScenario={simulationSourceScenario} preferEmployeeSalary={simulationFromMaster} onClose={() => setSimulationOpen(false)} />}

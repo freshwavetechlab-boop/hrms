@@ -5,6 +5,20 @@ namespace Payroll.API.Tests.Services;
 
 public sealed class SelectedClientOwnershipCatalogTests
 {
+    [Fact]
+    public void Salary_template_deletion_checks_both_client_and_template_and_allows_shared_read_only()
+    {
+        const string route = "/api/clients/20/salary-templates/20";
+        Assert.True(SelectedClientOwnershipCatalog.IsAllowedScopedRequest("DELETE", route));
+        Assert.Contains(new ScopeOwnershipReference("client", "20"), SelectedClientOwnershipCatalog.RouteReferences(route));
+        Assert.Contains(new ScopeOwnershipReference("salary-structure", "20"), SelectedClientOwnershipCatalog.RouteReferences(route));
+        Assert.True(SelectedClientOwnershipCatalog.IsAllowedScopedRequest("GET", route + "/deletion-preview"));
+        Assert.Contains(new ScopeOwnershipReference("salary-structure", "20", true), SelectedClientOwnershipCatalog.RouteReferences(route + "/deletion-preview"));
+        Assert.True(SelectedClientOwnershipCatalog.IsAllowedScopedRequest("GET", route + "/editable-mappings"));
+        Assert.True(SelectedClientOwnershipCatalog.IsAllowedScopedRequest("POST", route + "/unlink"));
+        Assert.Contains(new ScopeOwnershipReference("salary-structure", "20"), SelectedClientOwnershipCatalog.RouteReferences(route + "/unlink"));
+    }
+
     [Theory]
     [InlineData("/api/employees/81", "employee", "81")]
     [InlineData("/api/pay-runs/12/export", "payrun", "12")]

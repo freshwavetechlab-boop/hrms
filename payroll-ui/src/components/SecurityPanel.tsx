@@ -1,6 +1,6 @@
 import { clientChoice, clientSelectProps } from './ClientOption'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Alert, Button, Card as AntCard, Checkbox as AntCheckbox, Input, Modal, Select, Space, Tag } from 'antd'
 import { CopyOutlined, DownloadOutlined, ImportOutlined, KeyOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons'
 import BulkUploadPreviewModal, { emptyBulkUploadPreview, type BulkUploadPreviewState } from './BulkUploadPreviewModal'
@@ -169,6 +169,8 @@ const InfoField = ({ label, help, children, className = '' }: { label: string; h
 export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: SecurityTab }) {
   const session = useAuthSession()
   const [searchParams, setSearchParams] = useSearchParams()
+  const linkedEmployeeId = Number(searchParams.get('employeeId')) > 0 ? Number(searchParams.get('employeeId')) : 0
+  const linkedUserRoute = useRef('')
   const provisionRoute = useRef('')
   const clientScopeId = session?.user.clientId
   const clientScopedAdmin = Boolean(clientScopeId && !session?.user.permissions.includes('security.manage'))
@@ -215,8 +217,17 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     return Object.entries(groups).sort(([left], [right]) => left.localeCompare(right))
   }, [permissions])
   const employeeOptions = employees.filter(employee => (!user.clientId || employee.clientId === Number(user.clientId)) && (String(employee.id) === user.employeeId || (!usedEmployeeIds.has(employee.id) && !usedEmails.has(normalizeEmail(employee.workEmail)))))
-  const unlinkedEmployees = employees.filter(employee => employee.isActive && employee.workEmail && !allUsedEmployeeIds.has(employee.id) && !allUsedEmails.has(normalizeEmail(employee.workEmail)) && (!directoryClientId || employee.clientId === Number(directoryClientId)))
-  const visibleUsers = users.filter(item => (!item.clientId || activeClientIds.has(item.clientId)) && (!directoryClientId || item.clientId === Number(directoryClientId) || item.clientAccessMode === 'Selected' && item.assignedClientIds?.includes(Number(directoryClientId))))
+  const linkedEmployee = employees.find(employee => Number(employee.id) === linkedEmployeeId)
+  const unlinkedEmployees = employees.filter(employee => (!linkedEmployeeId || Number(employee.id) === linkedEmployeeId) && employee.isActive && employee.workEmail && !allUsedEmployeeIds.has(employee.id) && !allUsedEmails.has(normalizeEmail(employee.workEmail)) && (!directoryClientId || employee.clientId === Number(directoryClientId)))
+  const visibleUsers = users.filter(item => (!linkedEmployeeId || Number(item.employeeId) === linkedEmployeeId)
+    && (!item.clientId || activeClientIds.has(item.clientId))
+    && (!directoryClientId || item.clientId === Number(directoryClientId) || item.clientAccessMode === 'Selected' && item.assignedClientIds?.includes(Number(directoryClientId))
+      || linkedEmployeeId > 0 && linkedEmployee?.clientId === Number(directoryClientId)))
+  const clearEmployeeReference = () => {
+    const next = new URLSearchParams(searchParams)
+    ;['employeeId', 'employeeLink', 'managerUserIds', 'userId', 'source'].forEach(key => next.delete(key))
+    setSearchParams(next, { replace: true })
+  }
   const rolePermissions = rolePermissionCodes
   const clientName = (clientId?: number | null) => clientId ? clients.find(client => client.id === clientId)?.name || `Client #${clientId}` : 'All clients'
   const selectDirectoryClient = (value: string) => {
@@ -224,6 +235,7 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     const next = new URLSearchParams(searchParams)
     if (value) next.set('clientId', value); else next.delete('clientId')
     next.delete('provision')
+    ;['employeeId', 'employeeLink', 'managerUserIds', 'userId', 'source'].forEach(key => next.delete(key))
     setSearchParams(next, { replace: true })
   }
   const userClientNames = (item: AuthUser) => item.clientAccessMode === 'Selected' ? `Selected: ${(item.assignedClientIds || []).map(id => clientName(id)).join(', ') || 'No active clients'}` : clientName(item.clientId)
@@ -352,6 +364,16 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
     setUser({ id: selected.id, email: selected.email, displayName: selected.displayName, mobile: selected.mobile || '', password: '', clientId: selected.clientId ? String(selected.clientId) : '', clientScopeChoice: selected.clientAccessMode === 'Selected' ? 'Selected' : selected.clientId ? 'Single' : 'All', assignedClientIds: [...(selected.assignedClientIds || [])], employeeId: selected.employeeId ? String(selected.employeeId) : '', recruitmentScopeMode: selected.recruitmentScopeMode || 'Client', recruitmentLocationIds: selected.recruitmentLocationIds || [], isActive: selected.isActive, mustChangePassword: selected.mustChangePassword, roles: selected.roles })
     setUserDrawerOpen(true)
   }
+  useEffect(() => {
+    const requestedUser = Number(searchParams.get('userId'))
+    const routeKey = `${requestedUser}:${linkedEmployeeId}:${directoryClientId}`
+    if (!requestedUser) { linkedUserRoute.current = ''; return }
+    if (linkedUserRoute.current === routeKey) return
+    const selected = visibleUsers.find(item => Number(item.id) === requestedUser)
+    if (!selected) return
+    linkedUserRoute.current = routeKey
+    editUser(selected)
+  }, [searchParams, users, employees, directoryClientId])
   const openNewRole = () => { setRole(role0); setRoleDrawerOpen(true) }
   const editRole = (selected: AuthRole) => {
     setRole({ id: selected.id, code: selected.code, name: selected.name, description: selected.description || '', permissions: rolePermissions(selected), isSystem: selected.isSystem })
@@ -811,10 +833,12 @@ export default function SecurityPanel({ initialTab = 'Users' }: { initialTab?: S
 
   const renderUsers = () => <section className="security-page-stack">
     {msg && <Alert className="security-message-alert" type={/unable|required|failed|cannot/i.test(msg) ? 'warning' : 'info'} showIcon message={msg} closable onClose={() => setMsg('')} />}
+    {!!linkedEmployeeId && <Alert showIcon type="info" message={`Linked logins: ${linkedEmployee ? `${linkedEmployee.firstName} ${linkedEmployee.lastName} / ${linkedEmployee.employeeCode}` : `Employee #${linkedEmployeeId}`}`}
+      action={<Space wrap><Link to={`/employees/master?clientId=${linkedEmployee?.clientId || directoryClientId || ''}&employeeId=${linkedEmployeeId}&source=employee-links`}>Back to employee</Link><Button size="small" onClick={clearEmployeeReference}>Show all users</Button></Space>} />}
     <AntCard size="small" className="settings-panel settings-table-panel security-table-panel security-user-directory-panel">
       <div className="component-table-head security-table-head security-directory-head"><div><b>User directory</b><span>{directoryClientId ? clientName(Number(directoryClientId)) : 'All clients'} · {visibleUsers.length} users · {unlinkedEmployees.length} awaiting login</span></div><div className="settings-master-actions security-directory-actions">{!clientScopedAdmin && <label className="security-filter-field"><span>Client</span><SearchSelect value={directoryClientId} onChange={selectDirectoryClient} options={[{ value: '', label: 'All clients' }, ...clients.map(clientChoice)]} /></label>}<Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} disabled={!directoryClientId} title={directoryClientId ? 'Download client-wise template' : 'Select a client first'} onClick={downloadUserTemplate}>Template</Button><label className={`settings-upload-action ${!userTemplateDownloaded || !directoryClientId ? 'disabled' : ''}`} title={!directoryClientId ? 'Select a client first' : userTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!userTemplateDownloaded || !directoryClientId} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadUserImport(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button className="settings-toolbar-secondary" icon={<ImportOutlined />} onClick={() => void openProvisionModal()}>Import Employees</Button><Button type="primary" icon={<PlusOutlined />} onClick={openNewUser}>New user</Button></div></div>
       {createdCredentials && <Alert className="security-message-alert" type="success" showIcon message="Login created" description={`Temporary password for ${createdCredentials.email}: ${createdCredentials.password}`} closable onClose={() => setCreatedCredentials(null)} />}
-      <DataTable rows={visibleUsers} getRowId={row => row.id} exportFileName="security-users" actionsWidth={350} actions={row => <Space size={6} wrap><Button size="small" icon={<CopyOutlined />} onClick={() => openRoleCopy(row)}>Copy / transfer roles</Button><Button size="small" type="primary" onClick={() => editUser(row)}>Edit</Button><Button size="small" danger onClick={() => void removeUser(row)}>Delete</Button></Space>} columns={[
+      <DataTable key={linkedEmployeeId || 'all'} rows={visibleUsers} getRowId={row => row.id} emptyText={linkedEmployeeId ? 'No linked login remains for this employee.' : 'No records'} exportFileName="security-users" actionsWidth={350} actions={row => <Space size={6} wrap><Button size="small" icon={<CopyOutlined />} onClick={() => openRoleCopy(row)}>Copy / transfer roles</Button><Button size="small" type="primary" onClick={() => editUser(row)}>Edit</Button><Button size="small" danger onClick={() => void removeUser(row)}>Delete</Button></Space>} columns={[
       { key: 'displayName', label: 'User', width: '190px' },
       { key: 'email', label: 'Email / Login ID', width: '220px' },
       { key: 'mobile', label: 'Mobile', value: row => row.mobile || '-' },

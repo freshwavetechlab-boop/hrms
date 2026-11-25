@@ -27,8 +27,10 @@ import ExcelPayslipClientOption from './ExcelPayslipClientOption'
 export default function PayslipRegister() {
   const session = useAuthSession()
   const toast = useToast()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const requestedClientId = Number(searchParams.get('clientId')) || 0
+  const linkedEmployeeId = searchParams.get('source') === 'employee-links' ? Number(searchParams.get('employeeId')) || 0 : 0
+  const requestedRunId = linkedEmployeeId ? Number(searchParams.get('payRunId')) || 0 : 0
   const scopedClientId = Number(session?.user.clientId || 0)
   const clientScoped = scopedClientId > 0 && !session?.user.permissions.includes('security.manage')
   const canSend = session?.user.permissions.some(permission => ['payroll.run', 'payroll.approve', 'payroll.payments'].includes(permission)) ?? false
@@ -60,6 +62,7 @@ export default function PayslipRegister() {
   const [jobId, setJobId] = useState('')
   const previewAbort = useRef<AbortController | null>(null)
   const sendInFlight = useRef(false)
+  const appliedReferenceRun = useRef('')
 
   useEffect(() => {
     let active = true
@@ -81,11 +84,12 @@ export default function PayslipRegister() {
   const approvedRuns = useMemo(() => runs.filter(item => ['Approved', 'Partially Paid', 'Paid'].includes(item.status)), [runs])
   const clientsWithPayslips = useMemo(() => new Set(approvedRuns.map(item => item.clientId)), [approvedRuns])
   const clientRuns = useMemo(() => approvedRuns.filter(item => item.clientId === clientId), [approvedRuns, clientId])
-  const rows = useMemo(() => run?.clientId === clientId && run.id === runId ? run.employees.filter(employee => !employee.isSkipped) : [], [run, clientId, runId])
+  const linkedReference = linkedEmployeeId > 0 && requestedClientId === clientId
+  const rows = useMemo(() => run?.clientId === clientId && run.id === runId ? run.employees.filter(employee => !employee.isSkipped && (!linkedReference || employee.employeeId === linkedEmployeeId)) : [], [run, clientId, runId, linkedReference, linkedEmployeeId])
   const validSelection = selectedIds.filter(id => rows.some(row => row.employeeId === id))
   const mail = usePayslipRegisterMail(clientId, run?.clientId === clientId && run.id === runId ? runId : 0)
   const mailStatuses = new Map(mail.data?.items.map(item => [item.employeeId, item]) ?? [])
-  const visibleRows = rows.filter(row => registerMailFilter(mailStatuses.get(row.employeeId)?.status || 'Checking', mailFilter))
+  const visibleRows = rows.filter(row => linkedReference || registerMailFilter(mailStatuses.get(row.employeeId)?.status || 'Checking', mailFilter))
   const sendIds = validSelection.filter(id => mailStatuses.get(id)?.canSend)
   const selectedResendIds = validSelection.filter(id => mailStatuses.get(id)?.canResend)
   const withEmail = visibleRows.filter(row => mailFilter === 'Sent' || mailFilter === 'Needs attention'
@@ -96,7 +100,10 @@ export default function PayslipRegister() {
     if (!runsReady) return
     let active = true
     const controller = new AbortController()
-    const available = clientRuns.some(item => item.id === runId) ? runId : clientRuns[0]?.id ?? 0
+    const referenceKey = `${clientId}:${requestedRunId}:${linkedEmployeeId}`
+    const useRequestedRun = linkedReference && appliedReferenceRun.current !== referenceKey
+    appliedReferenceRun.current = linkedReference ? referenceKey : ''
+    const available = useRequestedRun && clientRuns.some(item => item.id === requestedRunId) ? requestedRunId : clientRuns.some(item => item.id === runId) ? runId : clientRuns[0]?.id ?? 0
     previewAbort.current?.abort(); previewLease.clear()
     // Clear a scoped document immediately; a late request must never keep it visible.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -114,7 +121,7 @@ export default function PayslipRegister() {
     })
     return () => { active = false; controller.abort() }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- The request scope is keyed by clientRuns/runId.
-  }, [clientRuns, clientId, runId, runsReady, runLoadRevision, previewLease])
+  }, [clientRuns, clientId, runId, runsReady, runLoadRevision, previewLease, linkedReference, requestedRunId])
 
   useEffect(() => () => { previewAbort.current?.abort(); previewLease.clear() }, [previewLease])
 
@@ -203,6 +210,7 @@ export default function PayslipRegister() {
   const deliveryRows: Array<{ employeeId: number; employeeCode: string; email?: string; status: string; message: string }> = deliveryItems.length ? deliveryItems : mail.data?.items ?? []
 
   return <section className="payslip-register recruitment-viewport">
+    {linkedReference && <Alert type="info" showIcon message={`Employee Master reference: ${rows[0]?.employeeCode || `Employee #${linkedEmployeeId}`}`} description="Showing the linked employee in this approved pay run, regardless of the saved email-status filter." action={<Button size="small" onClick={() => { const next = new URLSearchParams(searchParams); ['source', 'employeeLink', 'employeeId', 'payRunId'].forEach(key => next.delete(key)); setSearchParams(next, { replace: true }) }}>Clear reference</Button>} />}
     {!clientScoped && <PageHeaderPortal slot="payslips-client-controls"><Select aria-label="Payslip register client" className="app-search-select" showSearch optionFilterProp="searchText" optionLabelProp="label" value={clientId || undefined} loading={!runsReady} disabled={sending || pdfBusy} placeholder="Select client" onChange={value => { closePreview(); setClientId(Number(value)) }} style={{ width: 260, maxWidth: '100%' }}>{clients.map(client => <Select.Option key={client.id} value={client.id} label={client.name} searchText={clientSearchText(client.name, client.code)} className={clientsWithPayslips.has(client.id) ? 'excel-payslip-client-has-batches' : 'excel-payslip-client-no-batches'}><ExcelPayslipClientOption name={client.name} code={client.code} hasSavedBatch={clientsWithPayslips.has(client.id)} badgeLabel="Approved payroll" /></Select.Option>)}</Select></PageHeaderPortal>}
     <PageHeaderPortal slot="payslips-page-controls"><Space wrap className="payslip-toolbar">
       <label className="payslip-period-control"><span>Pay period</span><SearchSelect value={runId} disabled={sending || pdfBusy} onChange={value => { closePreview(); setRunId(Number(value)) }} options={selectOptions(clientRuns.map(item => ({ value: item.id, label: `${item.payPeriod} - ${item.status}` })), 'Select approved pay run', 0)} /></label>

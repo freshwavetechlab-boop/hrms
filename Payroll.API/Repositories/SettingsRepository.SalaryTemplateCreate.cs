@@ -37,9 +37,7 @@ public partial class SettingsRepository
             throw new InvalidOperationException("A salary template with this name already exists for this client. Choose another name; the saved template has not been overwritten.");
         ValidateNewTemplateLines(request.Lines, before["salaryComponents"] as JsonArray ?? []);
         var lastId = oldRows.Select(ReadRowId).DefaultIfEmpty(0).Max();
-        if (lastId >= 9007199254740991L) throw new InvalidOperationException("A new salary template ID is unavailable.");
-        var id = Math.Max(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), lastId + 1);
-        if (id <= 0 || id > 9007199254740991L) throw new InvalidOperationException("A new salary template ID is unavailable.");
+        var id = await PayrollDataTableStore.NextSalaryTemplateIdAsync(db, tx, lastId);
         var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         var template = JsonSerializer.SerializeToNode(new
         {

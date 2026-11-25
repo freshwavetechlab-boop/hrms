@@ -23,19 +23,30 @@ public sealed partial class PayslipDesignRepository
         if (clientId <= 0 || structures.Length == 0)
             throw new InvalidOperationException("Create and save an active salary template for this client before configuring its payslip.");
 
+        var configured = ConfiguredSalaryCodes(setup.RootElement, structures);
+        if (templateOnly) return configured.OrderBy(component => component.Category, StringComparer.Ordinal)
+            .ThenBy(component => component.Name, StringComparer.Ordinal).ThenBy(component => component.Code, StringComparer.Ordinal).ToArray();
+        return await WithClientPayrollOutputsAsync(db, tx, clientId, setup.RootElement, configured);
+    }
+
+    private static PayslipDesignCode[] ConfiguredSalaryCodes(JsonElement setup, IEnumerable<JsonElement> structures)
+    {
         // Reuse the setup projection: it resolves ClientRef/ClientId and the
         // normalized structure/line tables exactly as the salary designer does.
         // Compare complete component IDs; never match another client's codes by
         // substring, name, formula dependency or a shared component default.
         var componentIds = structures.SelectMany(structure => ClientSalaryArray(structure, "lines"))
             .Select(line => ClientSalaryText(line, "componentId")).ToHashSet(StringComparer.Ordinal);
-        var configured = ClientSalaryArray(setup.RootElement, "salaryComponents")
+        return ClientSalaryArray(setup, "salaryComponents")
             .Where(component => ClientSalaryActive(component) && componentIds.Contains(ClientSalaryText(component, "id")))
             .Select(component => new PayslipDesignCode(ClientSalaryText(component, "code"),
                 ClientSalaryText(component, "name"), ClientSalaryText(component, "category")))
             .ToArray();
-        if (templateOnly) return configured.OrderBy(component => component.Category, StringComparer.Ordinal)
-            .ThenBy(component => component.Name, StringComparer.Ordinal).ThenBy(component => component.Code, StringComparer.Ordinal).ToArray();
+    }
+
+    private static async Task<IReadOnlyList<PayslipDesignCode>> WithClientPayrollOutputsAsync(
+        MySqlConnection db, MySqlTransaction tx, int clientId, JsonElement setup, IEnumerable<PayslipDesignCode> configured)
+    {
         var codes = new Dictionary<(string Code, string Kind), PayslipDesignCode>();
         void Add(PayslipDesignCode component)
         {
@@ -99,7 +110,7 @@ FROM employees e JOIN employeepersonaldetails pd ON pd.EmployeeId=e.Id WHERE e.C
         if (personal.Pt) Add(new("PT", "Professional Tax", "Deduction"));
         if (personal.Tds) Add(new("TDS", "Income Tax (TDS)", "Deduction"));
         if (personal.Recovery) Add(new("RECOVERY", "Recovery", "Deduction"));
-        var ptEnabled = setup.RootElement.TryGetProperty("statutory", out var statutory)
+        var ptEnabled = setup.TryGetProperty("statutory", out var statutory)
             && statutory.ValueKind == JsonValueKind.Object
             && (statutory.TryGetProperty("pt", out var pt) && pt.ValueKind == JsonValueKind.True
                 || ClientSalaryArray(statutory, "ptStateSlabs").Any(slab => decimal.TryParse(ClientSalaryText(slab,"deductionAmount"),NumberStyles.Number,CultureInfo.InvariantCulture,out var amount) && amount>0));

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Alert, Button, Segmented, Space, Tag } from 'antd'
 import { CheckOutlined, ImportOutlined, ReloadOutlined } from '@ant-design/icons'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuthSession } from './AuthGate'
 import { releasedForEmployeeMaster, saveOnboardingSelection } from '../utils/employeeOnboardingSelection'
 import DataTable, { type Column } from './DataTable'
@@ -30,6 +30,14 @@ const columns: Column<JoiningRecord>[] = [
 
 export default function RecruitmentOfferJoiningWorkspace({ clientId, offers, offerCount = 0, onChanged, canAccept }: { clientId: number; offers: ReactNode | ((records: JoiningRecord[], loading: boolean) => ReactNode); offerCount?: number; onChanged: () => Promise<void>; canAccept: boolean }) {
   const session = useAuthSession(), navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedEmployeeId = Number(searchParams.get('employeeId'))
+  const linkedEmployeeId = searchParams.get('source') === 'employee-links' && Number.isSafeInteger(requestedEmployeeId) && requestedEmployeeId > 0 && Number(searchParams.get('clientId')) === clientId ? requestedEmployeeId : 0
+  const clearEmployeeLink = () => {
+    const next = new URLSearchParams(searchParams)
+    next.delete('employeeId'); next.delete('employeeLink'); next.delete('source')
+    setSearchParams(next, { replace: true })
+  }
   const canHardDelete = canHardDeleteRecruitmentOffers(session?.user)
   const canImport = session?.user.permissions.some(permission => ['employees.manage', 'settings.manage'].includes(permission)) || false
   const [pane, setPane] = useRecruitmentPreference('offerJoiningPane', 'offers')
@@ -57,12 +65,12 @@ export default function RecruitmentOfferJoiningWorkspace({ clientId, offers, off
     window.addEventListener('focus', changed)
     return () => { window.removeEventListener('recruitment:roster-changed', changed); window.removeEventListener('employees:changed', changed); window.removeEventListener('focus', changed) }
   }, [refresh])
-  const records = useMemo(() => joiningRecords(rows, clientId), [rows, clientId])
+  const records = useMemo(() => joiningRecords(rows, clientId).filter(row => !linkedEmployeeId || Number(row.employeeId) === linkedEmployeeId), [rows, clientId, linkedEmployeeId])
   const released = useMemo(() => releasedJoiningRecords(records), [records])
-  const joining = useMemo(() => records.filter(row => row.acceptanceRecorded || row.importStatus === 'Imported'), [records])
+  const joining = useMemo(() => linkedEmployeeId ? records : records.filter(row => row.acceptanceRecorded || row.importStatus === 'Imported'), [records, linkedEmployeeId])
   const selection = useMemo(() => joiningAcceptanceSelection(records, selected, visible, clientId), [records, selected, visible, clientId])
   const selectedCount = selection.offerIds.length + selection.rosterRowIds.length
-  const paneRecords = pane === 'joining' ? joining : released
+  const paneRecords = linkedEmployeeId || pane === 'joining' ? joining : released
   const importSelection = paneRecords.filter(row => selected.includes(row.id) && visible.includes(row.id) && releasedForEmployeeMaster(row, clientId))
   const importIntoMaster = () => {
     if (!clientId || !canImport || !importSelection.length) return
@@ -92,7 +100,7 @@ export default function RecruitmentOfferJoiningWorkspace({ clientId, offers, off
     } catch { setError('Unable to record the selected acceptances. Refresh to check their latest status before retrying.') }
     finally { accepting.current = false; setBusy(false) }
   }
-  const currentPane = ['offers', 'released', 'joining'].includes(pane) ? pane : 'offers'
+  const currentPane = linkedEmployeeId ? 'joining' : ['offers', 'released', 'joining'].includes(pane) ? pane : 'offers'
   return <section className="recruitment-offer-joining-workspace">
     <PageHeaderPortal slot="recruitment-page-controls"><Space wrap>
       {currentPane !== 'offers' && canImport && <Button type="primary" icon={<ImportOutlined />} disabled={!importSelection.length || loading || busy} onClick={importIntoMaster}>Import selected into Employee Master ({importSelection.length})</Button>}
@@ -101,7 +109,8 @@ export default function RecruitmentOfferJoiningWorkspace({ clientId, offers, off
     </Space></PageHeaderPortal>
     <Segmented className="recruitment-offer-joining-tabs" aria-label="Offer and joining lists" value={currentPane} disabled={busy} options={[
       { value: 'offers', label: `All offers (${offerCount + new Set(records.filter(row => row.sourceType === 'Roster').map(row => row.id)).size})` }, { value: 'released', label: `Released letters (${released.length})` }, { value: 'joining', label: `Selected for joining (${joining.length})` },
-    ]} onChange={value => { setPane(String(value)); setVisible([]) }} />
+    ]} onChange={value => { if (linkedEmployeeId) clearEmployeeLink(); setPane(String(value)); setVisible([]) }} />
+    {!!linkedEmployeeId && <Alert type="info" showIcon message={`Linked offers for employee #${linkedEmployeeId}`} action={<Button size="small" onClick={clearEmployeeLink}>Show all offers</Button>} />}
     {error && <Alert type="error" showIcon message={error} />}
     {!clientId && currentPane !== 'offers' && <Alert type="info" showIcon message="Select a client to review released letters and joining candidates." />}
     {!clientId && currentPane === 'offers' && <Alert type="info" showIcon message="Select a client to include Employee List offer letters alongside pipeline offers." />}
@@ -112,7 +121,7 @@ export default function RecruitmentOfferJoiningWorkspace({ clientId, offers, off
         <DataTable key={`released:${clientId}`} rows={released} columns={columns} actions={canHardDelete ? deleteAction : undefined} title="Released offer letters" rowLabel="offers" fillHeight loading={loading} onVisibleRowsChange={visibleChanged} exportFileName="released-offer-letters" rowSelection={{ selectedRowKeys: selected, onChange: keys => setSelected(keys.map(String)), getCheckboxProps: () => ({ disabled: busy || !(canAccept || canImport) }) }} emptyText="No released offers are waiting for acceptance." />
       </> : <>
         <div className="recruitment-offer-joining-toolbar"><span>Select joining candidates to import into Employee Master. Already imported employees stay linked.</span><Button size="small" disabled={busy || loading || !canImport || !visible.length} onClick={() => setSelected(current => [...new Set([...current, ...visible.filter(id => joining.some(row => row.id === id && releasedForEmployeeMaster(row, clientId)))])])}>Select all shown</Button><Button size="small" disabled={busy || !selected.length} onClick={() => setSelected([])}>Clear selection</Button></div>
-        <DataTable key={`joining:${clientId}`} rows={joining} columns={columns} actions={canHardDelete ? deleteAction : undefined} title="Selected for joining" rowLabel="candidates" fillHeight loading={loading} onVisibleRowsChange={visibleChanged} exportFileName="selected-for-joining" rowSelection={canImport ? { selectedRowKeys: selected, onChange: keys => setSelected(keys.map(String)), getCheckboxProps: row => ({ disabled: busy || !releasedForEmployeeMaster(row, clientId) }) } : undefined} emptyText="Accepted candidates will appear here after their offers are confirmed." />
+        <DataTable key={`joining:${clientId}:${linkedEmployeeId}`} rows={joining} columns={columns} actions={canHardDelete ? deleteAction : undefined} title={linkedEmployeeId ? 'Linked offer letters' : 'Selected for joining'} rowLabel="candidates" fillHeight loading={loading} onVisibleRowsChange={visibleChanged} exportFileName="selected-for-joining" rowSelection={canImport ? { selectedRowKeys: selected, onChange: keys => setSelected(keys.map(String)), getCheckboxProps: row => ({ disabled: busy || !releasedForEmployeeMaster(row, clientId) }) } : undefined} emptyText={linkedEmployeeId ? 'No visible linked offer was found for this employee. Refresh to check the latest links.' : 'Accepted candidates will appear here after their offers are confirmed.'} />
       </>}
     </>}
   </section>

@@ -203,7 +203,7 @@ public sealed partial class ExcelPayrollSetupRepository
         }
         if(profile is null)
         {
-            var next=Math.Max(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),1+(await db.ExecuteScalarAsync<long?>("SELECT MAX(Id) FROM salarystructures",transaction:tx)??0));
+            var next=await PayrollDataTableStore.NextSalaryTemplateIdAsync(db,tx,await db.ExecuteScalarAsync<long?>("SELECT MAX(Id) FROM salarystructures",transaction:tx)??0);
             var id=next.ToString(CultureInfo.InvariantCulture); plan.Template["id"]=next;
             await db.ExecuteAsync("INSERT INTO salarystructures(Id,ClientId,ClientRef,Name,AnnualCtc,Active) VALUES(@Id,@Client,@Ref,@Name,@Annual,TRUE)",
                 new { Id=next,Client=request.ClientId,Ref=request.ClientId.ToString(CultureInfo.InvariantCulture),Name=request.Name.Trim(),Annual=decimal.TryParse(Text(plan.Template,"annualCtc"),NumberStyles.Number,CultureInfo.InvariantCulture,out var annual)?annual:0m },tx);

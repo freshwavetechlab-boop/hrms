@@ -222,15 +222,12 @@ CREATE TABLE IF NOT EXISTS payrunemployeelines (
         var namedReservations=await ReadNamedTemplateReservationsAsync(connection,transaction);
         var oldStructures = (before["salaryStructures"] as JsonArray ?? []).OfType<JsonObject>().Where(row => SettingsRepository.IsPureClientRow(row, clientId)).ToDictionary(SettingsRepository.ReadRowId);
         var structures = (after["salaryStructures"] as JsonArray ?? []).OfType<JsonObject>().Where(row => SettingsRepository.IsPureClientRow(row, clientId)).ToArray();
+        await RequireAvailableTemplateIdsAsync(connection, transaction, structures.Select(SettingsRepository.ReadRowId).Except(oldStructures.Keys));
         foreach(var row in structures)
             if(RetainNamedTemplate(namedReservations,SettingsRepository.ReadRowId(row),row["clientId"]?.ToString()??"")&&singleStructureAppendOnly&&!oldStructures.ContainsKey(SettingsRepository.ReadRowId(row)))
                 throw new InvalidOperationException("The proposed new salary template ID is reserved by an existing managed declaration.");
         var removedStructures = oldStructures.Keys.Except(structures.Select(SettingsRepository.ReadRowId)).Where(id => id > 0&&!namedReservations.ContainsKey(id)).ToArray();
-        if (removedStructures.Length > 0)
-        {
-            await connection.ExecuteAsync("DELETE FROM salarystructurelines WHERE StructureId IN @Ids", new { Ids = removedStructures }, transaction);
-            await connection.ExecuteAsync("DELETE FROM salarystructures WHERE Id IN @Ids", new { Ids = removedStructures }, transaction);
-        }
+        if (removedStructures.Length > 0) throw new InvalidOperationException(SalaryTemplateDeleteInstruction);
         foreach (var node in structures.Where(node => !oldStructures.TryGetValue(SettingsRepository.ReadRowId(node), out var old) || !JsonNode.DeepEquals(old, node)))
         {
             if(RetainNamedTemplate(namedReservations,SettingsRepository.ReadRowId(node),node["clientId"]?.ToString()??""))continue;
@@ -265,9 +262,12 @@ VALUES (@StructureId,@ComponentId,@ValueText,@CalculationType,@Formula,@BaseComp
         var root = ParseRoot(json);
         await PayrollFormulaStorage.RequireAsync(connection,null,PayrollFormulaStorage.SetupJsonFormulas(root));
 
+        bool hasStructures = TryRead(root["salaryStructures"], out List<StructureDto>? structures);
+        if (hasStructures)
+            await RequireExistingStructuresAsync(connection, structures ?? [], null);
         if (TryRead(root["salaryComponents"], out List<ComponentDto>? components))
             await SaveComponentsAsync(connection, components ?? []);
-        if (TryRead(root["salaryStructures"], out List<StructureDto>? structures))
+        if (hasStructures)
             await SaveStructuresAsync(connection, structures ?? []);
         if (TryRead(root["payslipTemplates"], out List<PayslipTemplateDto>? templates))
             await SavePayslipTemplatesAsync(connection, templates ?? []);
@@ -531,15 +531,24 @@ WHERE table_schema = DATABASE() AND table_name = @TableName AND column_name = @C
 VALUES (@Id,@Code,@ComponentType,@ComponentRole,@StatutoryType,@Category,@Name,@PayType,@CalculationType,@Value,@Formula,@BaseComponent,@Taxable,@Ctc,@ProRata,@Fbp,@RestrictFbp,@Epf,@Esi,@Recurring,@Scheduled,@InvestmentType,@CorrectionOf,@Active,@PriorityNumber)
 ON DUPLICATE KEY UPDATE Code=@Code,ComponentType=@ComponentType,ComponentRole=@ComponentRole,StatutoryType=@StatutoryType,Category=@Category,Name=@Name,PayType=@PayType,CalculationType=@CalculationType,ValueText=@Value,Formula=@Formula,BaseComponent=@BaseComponent,Taxable=@Taxable,Ctc=@Ctc,ProRata=@ProRata,Fbp=@Fbp,RestrictFbp=@RestrictFbp,Epf=@Epf,Esi=@Esi,Recurring=@Recurring,Scheduled=@Scheduled,InvestmentType=@InvestmentType,CorrectionOf=@CorrectionOf,Active=@Active,Priority=@PriorityNumber", new { row.Id, Code = Clean(row.Code).ToUpperInvariant(), row.ComponentType, ComponentRole = Clean(row.ComponentRole, DefaultComponentRole(row.Category)), StatutoryType = Clean(row.StatutoryType, "None"), row.Category, row.Name, row.PayType, row.CalculationType, row.Value, row.Formula, row.BaseComponent, row.Taxable, row.Ctc, row.ProRata, row.Fbp, row.RestrictFbp, row.Epf, row.Esi, row.Recurring, row.Scheduled, row.InvestmentType, row.CorrectionOf, row.Active, PriorityNumber = ToInt(row.Priority, 999) }, transaction);
 
+    private const string SalaryTemplateDeleteInstruction = "Refresh Salary Templates. Use the Delete action on the saved template to review its mappings before removal.";
+
+    private static async Task<Dictionary<long,int>> RequireExistingStructuresAsync(MySqlConnection connection,
+        List<StructureDto> rows, MySqlTransaction? tx)
+    {
+        var existing = await connection.QueryAsync<long>("SELECT Id FROM salarystructures ORDER BY Id" + (tx is null ? "" : " FOR UPDATE"), transaction: tx);
+        var reserved = await ReadNamedTemplateReservationsAsync(connection, tx);
+        if (existing.Except(rows.Select(row => row.Id)).Except(reserved.Keys).Any())
+            throw new InvalidOperationException(SalaryTemplateDeleteInstruction);
+        await RequireAvailableTemplateIdsAsync(connection, tx, rows.Select(row => row.Id).Except(existing));
+        return reserved;
+    }
+
     private static async Task SaveStructuresAsync(MySqlConnection connection, List<StructureDto> rows)
     {
         await using var tx=await connection.BeginTransactionAsync();
-        await connection.QueryAsync<long>("SELECT Id FROM salarystructures ORDER BY Id FOR UPDATE",transaction:tx);
-        var protectedIds=await ReadNamedTemplateReservationsAsync(connection,tx);
+        var protectedIds=await RequireExistingStructuresAsync(connection,rows,tx);
         foreach(var row in rows)RetainNamedTemplate(protectedIds,row.Id,row.ClientId??"");
-        var ids = rows.Where(x => x.Id > 0).Select(x => x.Id).Concat(protectedIds.Keys).Distinct().ToArray();
-        if (ids.Length > 0) await connection.ExecuteAsync("DELETE FROM salarystructures WHERE Id NOT IN @ids", new { ids },tx); else await connection.ExecuteAsync("DELETE FROM salarystructures",transaction:tx);
-        await connection.ExecuteAsync("DELETE FROM salarystructurelines WHERE StructureId NOT IN (SELECT Id FROM salarystructures)",transaction:tx);
         foreach (var row in rows.Where(x => x.Id > 0 && !protectedIds.ContainsKey(x.Id)))
         {
             await connection.ExecuteAsync(@"INSERT INTO salarystructures (Id,ClientId,ClientRef,Name,AnnualCtc,Active)

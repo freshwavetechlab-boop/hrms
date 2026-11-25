@@ -97,9 +97,13 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const [searchParams, setSearchParams] = useSearchParams()
   const route = useLocation()
   const fromDashboard = searchParams.get('source') === 'workforce'
+  const linkedEmployeeId = Number(searchParams.get('employeeId')) > 0 ? Number(searchParams.get('employeeId')) : 0
+  const fromEmployeeLinks = linkedEmployeeId > 0 && !fromDashboard
+  const linkedRelation = searchParams.get('employeeLink') || ''
+  const linkedManagerUserIds = new Set((searchParams.get('managerUserIds') || '').split(',').map(Number).filter(id => id > 0))
   const [savedClient, setClientFilter] = useSessionPreference('employees.ui:' + session?.user.id + ':client', 0)
   useEffect(() => { const id = Number(searchParams.get('clientId')); if (!fromDashboard && clients.some(client => client.id === id) && (!clientScoped || id === scopedClientId)) setClientFilter(id) }, [searchParams, clients, clientScoped, scopedClientId, fromDashboard])
-  const clientFilter = clientScoped ? scopedClientId : fromDashboard ? Number(searchParams.get('clientId') || 0) : savedClient
+  const clientFilter = clientScoped ? scopedClientId : fromDashboard || fromEmployeeLinks ? Number(searchParams.get('clientId') || 0) : savedClient
   const currentClientFilter = useRef(clientFilter); currentClientFilter.current = clientFilter
   useEffect(() => { setDeleteTarget(null); setResignTarget(null) }, [dataScope, clientFilter])
   useEffect(() => {
@@ -174,7 +178,7 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     const current = readers(); void current?.load()
     return () => { current?.dispose(); if (pageReads.current?.loader === current) pageReads.current = null }
   }, [dataScope])
-  const changeClientFilter = (id: number) => { setClientFilter(id); if (fromDashboard) setSearchParams({}) }
+  const changeClientFilter = (id: number) => { setClientFilter(id); if (fromDashboard || fromEmployeeLinks) setSearchParams(id ? { clientId: String(id) } : {}) }
   const calcSalary = (ctc: number, salaryStructure = chosenStructure, overrides: Record<string, string | number> = {}, sourceSetup = setup) => calculateSalaryJson(ctc, sourceSetup.salaryComponents, salaryStructure, overrides)
   const withSalary = (row: Employee, salaryJson: string): Employee => ({ ...row, salaryJson, salaryComponents: numberRecord(salaryJson) })
   const inferSalaryOverrides = (row: Employee, salaryStructure?: Structure, sourceSetup = setup) => {
@@ -399,12 +403,17 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     setPreviewConfirm(() => async (draft: BulkUploadPreviewState) => reviewEmployeeImportIdentity(employeePreviewFile(draft, data.sourceSheets, resolvedFile.name), employeePreviewSource.clientId, employeePreviewSource.operation))
     setEmployeePreviewSource({ sheets: data.sourceSheets, clientId: employeePreviewSource.clientId, fileName: resolvedFile.name, operation: employeePreviewSource.operation })
   }
-  const visibleEmployees = useMemo(() => employees.filter(row => (row.isActive || !fromDashboard && !!row.lastWorkingDate) && (!clientFilter || row.clientId === clientFilter) && (!fromDashboard || matchesWorkforce(row, searchParams, locations))), [employees, clientFilter, fromDashboard, searchParams, locations])
+  const visibleEmployees = useMemo(() => employees.filter(row => (fromEmployeeLinks ? Number(row.id) === linkedEmployeeId : row.isActive || !fromDashboard && !!row.lastWorkingDate) && (!clientFilter || row.clientId === clientFilter) && (!fromDashboard || matchesWorkforce(row, searchParams, locations))), [employees, clientFilter, fromDashboard, fromEmployeeLinks, linkedEmployeeId, searchParams, locations])
+  const linkedEmployee = employees.find(row => Number(row.id) === linkedEmployeeId)
+  const linkedEmployeeLabel = linkedEmployee ? `${linkedEmployee.firstName} ${linkedEmployee.lastName} / ${linkedEmployee.employeeCode}` : `Employee #${linkedEmployeeId}`
+  const linkedOrgEmployees = fromEmployeeLinks ? employees.filter(row => row.isActive && (!clientFilter || row.clientId === clientFilter)
+    && (linkedRelation === 'manager-users' ? linkedManagerUserIds.has(Number(row.reportingManagerUserId)) : Number(row.reportingManagerId) === linkedEmployeeId)) : employees.filter(row => row.isActive)
   const clientScopeOptions = useMemo(() => employeeClientOptions(clients, employees, !directoryLoaded), [clients, employees, directoryLoaded])
 
   return <section className={`employee-master${view === 'master' ? ' employee-record-page' : ''}`}>
     {fieldError && <Alert type="error" showIcon message={fieldError} action={<Button onClick={() => setDocumentRevision(value => value + 1)}>Retry</Button>} />}
-    {view === 'master' ? <EmployeeDirectory onEmployeesChanged={load} fieldExchange={fieldExchange} configureFields={setFieldClient} onExcelExport={exportEmployees} documentRevision={documentRevision} clientScoped={clientScoped} clients={clients} clientScopeOptions={clientScopeOptions} locations={locations} employees={visibleEmployees} clientFilter={clientFilter} setClientFilter={changeClientFilter} dashboardKey={fromDashboard ? route.key : ''} dashboardFilters={fromDashboard ? workforceFields.filter(key => searchParams.has(key)).map(key => searchParams.get(key)!).join(' / ') || 'All active employees' : ''} clearDashboard={() => { setClientFilter(clientFilter); setSearchParams({}) }} onNew={newEmployee} onEdit={editEmployee} onDelete={deleteEmployee} onResign={setResignTarget} onDownloadTemplate={downloadTemplate} onBulkUpload={openEmployeeBulkUpload} /> : <EmployeeOrgStructure clientScoped={clientScoped} clients={clients} locations={locations} employees={employees.filter(row => row.isActive)} clientFilter={clientFilter} setClientFilter={changeClientFilter} />}
+    {fromEmployeeLinks && view === 'org' && <div className="employee-dashboard-scope"><Tag color="blue">Linked reporting records: {linkedEmployeeLabel}</Tag><Button size="small" onClick={() => changeClientFilter(clientFilter)}>Show full organization</Button></div>}
+    {view === 'master' ? <EmployeeDirectory onEmployeesChanged={load} fieldExchange={fieldExchange} configureFields={setFieldClient} onExcelExport={exportEmployees} documentRevision={documentRevision} clientScoped={clientScoped} clients={clients} clientScopeOptions={clientScopeOptions} locations={locations} employees={visibleEmployees} clientFilter={clientFilter} setClientFilter={changeClientFilter} dashboardKey={fromDashboard || fromEmployeeLinks ? route.key : ''} referenceContext={fromEmployeeLinks} dashboardFilters={fromEmployeeLinks ? linkedEmployeeLabel : fromDashboard ? workforceFields.filter(key => searchParams.has(key)).map(key => searchParams.get(key)!).join(' / ') || 'All active employees' : ''} clearDashboard={() => { setClientFilter(clientFilter); setSearchParams({}) }} onNew={newEmployee} onEdit={editEmployee} onDelete={deleteEmployee} onResign={setResignTarget} onDownloadTemplate={downloadTemplate} onBulkUpload={openEmployeeBulkUpload} /> : <EmployeeOrgStructure clientScoped={clientScoped} clients={clients} locations={locations} employees={linkedOrgEmployees} lookupEmployees={employees} reference={fromEmployeeLinks ? linkedEmployeeLabel : undefined} clientFilter={clientFilter} setClientFilter={changeClientFilter} />}
     {deleteTarget && <EmployeeLifecycleDialog key={deleteTarget.id} employee={deleteTarget} onClose={() => setDeleteTarget(null)} onChanged={load} onResign={row => { setDeleteTarget(null); setResignTarget(row) }} />}
     {resignTarget && <EmployeeResignationAction key={resignTarget.id} clientId={resignTarget.clientId} employees={[{ id: resignTarget.id, employeeCode: resignTarget.employeeCode, name: `${resignTarget.firstName} ${resignTarget.lastName}`.trim() }]} open hideTrigger onOpenChange={open => { if (!open) setResignTarget(null) }} onSaved={async () => { await load(); notify('Resignation saved. Employment and linked ESS access follow the last working date.', 'success') }} />}
     {modalOpen && <div className="employee-modal-backdrop" onClick={closeModal}>
@@ -503,7 +512,7 @@ function sensitiveEmployeeImportField(value: string) {
   return ['mobile', 'phone', 'aadhaar', 'aadhar', 'pan', 'bank', 'ifsc', 'salary', 'ctc', 'payment', 'portalaccess', 'active', 'workemail'].some(field => key.includes(field))
 }
 
-function EmployeeOrgStructure(p: { clientScoped: boolean; clients: Client[]; locations: WorkLocation[]; employees: Employee[]; clientFilter: number; setClientFilter: (id: number) => void }) {
+function EmployeeOrgStructure(p: { clientScoped: boolean; clients: Client[]; locations: WorkLocation[]; employees: Employee[]; clientFilter: number; setClientFilter: (id: number) => void; reference?: string; lookupEmployees?: Employee[] }) {
   const [orientation, setOrientation] = useState<'vertical' | 'horizontal'>('vertical')
   const [zoom, setZoom] = useState(1)
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null)
@@ -513,15 +522,21 @@ function EmployeeOrgStructure(p: { clientScoped: boolean; clients: Client[]; loc
   const changeZoom = (delta: number) => setZoom(current => Math.min(1.6, Math.max(.55, Number((current + delta).toFixed(2)))))
   const resetZoom = () => setZoom(1)
   return <section className="card employee-org-page">
-    <header><i className="blue"><ApartmentOutlined /></i><div><h3>Organization chart</h3><p>Teams-style reporting hierarchy built from each active employee's reporting manager.</p></div></header>
+    <header><i className="blue"><ApartmentOutlined /></i><div><h3>{p.reference ? 'Linked reporting employees' : 'Organization chart'}</h3><p>{p.reference || 'Teams-style reporting hierarchy built from each active employee\'s reporting manager.'}</p></div></header>
     <div className="employee-org-toolbar">
       {!p.clientScoped && <label><span>Client</span><PayrollScopeSelect ariaLabel="Organization chart client" value={p.clientFilter} onChange={value => p.setClientFilter(Number(value))} options={employeeClientOptions(p.clients, p.employees)} /></label>}
       <div><span>Total employees</span><b>{employeeCount}</b></div>
-      <div className="employee-org-view-toggle"><span>Layout</span><div><button type="button" aria-pressed={orientation === 'vertical'} className={orientation === 'vertical' ? 'active' : ''} onClick={() => setOrientation('vertical')}><ApartmentOutlined /> Vertical</button><button type="button" aria-pressed={orientation === 'horizontal'} className={orientation === 'horizontal' ? 'active' : ''} onClick={() => setOrientation('horizontal')}><NodeIndexOutlined /> Horizontal</button></div></div>
-      <div className="employee-org-zoom"><span>Canvas</span><div><button type="button" title="Zoom out" aria-label="Zoom out" onClick={() => changeZoom(-.1)}><ZoomOutOutlined /></button><b>{Math.round(zoom * 100)}%</b><button type="button" title="Zoom in" aria-label="Zoom in" onClick={() => changeZoom(.1)}><ZoomInOutlined /></button><button type="button" title="Fit to default scale" onClick={resetZoom}><AimOutlined /> Fit</button></div></div>
+      {!p.reference && <><div className="employee-org-view-toggle"><span>Layout</span><div><button type="button" aria-pressed={orientation === 'vertical'} className={orientation === 'vertical' ? 'active' : ''} onClick={() => setOrientation('vertical')}><ApartmentOutlined /> Vertical</button><button type="button" aria-pressed={orientation === 'horizontal'} className={orientation === 'horizontal' ? 'active' : ''} onClick={() => setOrientation('horizontal')}><NodeIndexOutlined /> Horizontal</button></div></div>
+      <div className="employee-org-zoom"><span>Canvas</span><div><button type="button" title="Zoom out" aria-label="Zoom out" onClick={() => changeZoom(-.1)}><ZoomOutOutlined /></button><b>{Math.round(zoom * 100)}%</b><button type="button" title="Zoom in" aria-label="Zoom in" onClick={() => changeZoom(.1)}><ZoomInOutlined /></button><button type="button" title="Fit to default scale" onClick={resetZoom}><AimOutlined /> Fit</button></div></div></>}
     </div>
     <div className="employee-org-client-list">
-      {!p.clientFilter ? <div className="employee-org-overview" aria-label="Client organization overview">
+      {p.reference ? <DataTable rows={p.employees} getRowId={row => row.id} title="Reporting links" emptyText="No active reporting employees remain for this reference." exportFileName="employee-reporting-links" actions={row => <Button size="small" onClick={() => setSelectedEmployee(row)}>View details</Button>} columns={[
+        { key: 'employeeCode', label: 'Employee code' },
+        { key: 'name', label: 'Employee', value: row => `${row.firstName} ${row.lastName}`.trim() },
+        { key: 'department', label: 'Department' }, { key: 'designation', label: 'Designation' },
+        { key: 'location', label: 'Work location', value: row => workLocationName(p.locations, row.workLocationId) },
+        { key: 'reportingManagerUserId', label: 'Manager login reference' }
+      ]} /> : !p.clientFilter ? <div className="employee-org-overview" aria-label="Client organization overview">
         <div className="employee-org-overview-copy"><b>Choose a client hierarchy</b><span>All-client mode stays lightweight. Open one client at a time to explore every reporting root without a multi-thousand-card canvas.</span></div>
         <div className="employee-org-overview-grid">
           {clientSummaries.map(({ client, count }) => <button type="button" key={client.id} data-employee-count={count} aria-label={`Open ${client.name} hierarchy, ${count} employees`} onClick={() => p.setClientFilter(client.id)}>
@@ -531,7 +546,7 @@ function EmployeeOrgStructure(p: { clientScoped: boolean; clients: Client[]; loc
       </div> : clientRows.map(client => <ClientOrgChart key={client.id} client={client} employees={p.employees.filter(employee => employee.clientId === client.id)} locations={p.locations} orientation={orientation} zoom={zoom} onZoom={changeZoom} onSelectEmployee={setSelectedEmployee} />)}
       {!clientRows.length && <p className="empty">No client found for org structure.</p>}
     </div>
-    {selectedEmployee && <EmployeeOrgDetails employee={selectedEmployee} clients={p.clients} locations={p.locations} employees={p.employees} onClose={() => setSelectedEmployee(null)} />}
+    {selectedEmployee && <EmployeeOrgDetails employee={selectedEmployee} clients={p.clients} locations={p.locations} employees={p.lookupEmployees || p.employees} onClose={() => setSelectedEmployee(null)} />}
   </section>
 }
 
@@ -590,7 +605,7 @@ function EmployeeOrgTile(p: { employee: Employee; initials: string; locationName
 function EmployeeOrgDetails(p: { employee: Employee; clients: Client[]; locations: WorkLocation[]; employees: Employee[]; onClose: () => void }) {
   const name = `${p.employee.firstName} ${p.employee.lastName}`.trim() || p.employee.employeeCode
   const manager = p.employees.find(employee => employee.id === p.employee.reportingManagerId)
-  const managerName = manager ? `${manager.firstName} ${manager.lastName}`.trim() || manager.employeeCode : 'Not assigned'
+  const managerName = manager ? `${manager.firstName} ${manager.lastName}`.trim() || manager.employeeCode : p.employee.reportingManagerUserId ? `Login user #${p.employee.reportingManagerUserId}` : 'Not assigned'
   const rows = [
     ['Employee code', p.employee.employeeCode],
     ['Client', p.clients.find(client => client.id === p.employee.clientId)?.name || '-'],
@@ -747,7 +762,7 @@ function previewDate(value: string) {
   return normalizeEmployeeImportDate(value) ?? value
 }
 
-function EmployeeDirectory(p: { onEmployeesChanged: () => Promise<void>; fieldExchange: EmployeeFieldExchange; configureFields: (clientId: number) => void; onExcelExport: (rows: Employee[]) => void; documentRevision: number; clientScoped: boolean; clients: Client[]; clientScopeOptions: PayrollScopeOption[]; locations: WorkLocation[]; employees: Employee[]; clientFilter: number; setClientFilter: (id: number) => void; dashboardKey: string; dashboardFilters: string; clearDashboard: () => void; onNew: () => void; onEdit: (employee: Employee, infotype?: EmployeeInfotypeCode) => void; onDelete: (employee: Employee) => void; onResign: (employee: Employee) => void; onDownloadTemplate: () => void; onBulkUpload: () => void }) {
+function EmployeeDirectory(p: { onEmployeesChanged: () => Promise<void>; fieldExchange: EmployeeFieldExchange; configureFields: (clientId: number) => void; onExcelExport: (rows: Employee[]) => void; documentRevision: number; clientScoped: boolean; clients: Client[]; clientScopeOptions: PayrollScopeOption[]; locations: WorkLocation[]; employees: Employee[]; clientFilter: number; setClientFilter: (id: number) => void; dashboardKey: string; referenceContext?: boolean; dashboardFilters: string; clearDashboard: () => void; onNew: () => void; onEdit: (employee: Employee, infotype?: EmployeeInfotypeCode) => void; onDelete: (employee: Employee) => void; onResign: (employee: Employee) => void; onDownloadTemplate: () => void; onBulkUpload: () => void }) {
   const session = useAuthSession()
   const completion = useEmployeeProfileCompletion(p.employees, p.clients, p.clientFilter, p.documentRevision, p.configureFields, p.clientScopeOptions)
   const scope = session?.user.id + ':' + p.clientFilter
@@ -803,7 +818,7 @@ function EmployeeDirectory(p: { onEmployeesChanged: () => Promise<void>; fieldEx
     <PageHeaderPortal slot="employees-page-controls">{completion.bulkAction}{canManage && <><Button disabled={!p.clientFilter} onClick={() => { setSelectForExit(value => !value); setExitIds([]) }}>{selectForExit ? 'Finish selection' : 'Select employees'}</Button>{selectForExit && <EmployeeResignationAction clientId={p.clientFilter} employees={exitEmployees.map(row => ({ id: row.id, employeeCode: row.employeeCode, name: (row.firstName + ' ' + row.lastName).trim() }))} onSaved={async () => { setExitIds([]); await p.onEmployeesChanged() }} />}</>}<Button disabled={!p.clientFilter} onClick={p.onDownloadTemplate}>Excel template</Button>{canManage && <><TalentAcquisitionEmployeeImport clientId={p.clientFilter} clientName={clientName(p.clientFilter)} onImported={p.onEmployeesChanged} /><Button data-testid="employee-bulk-upload-open" disabled={!p.clientFilter} onClick={p.onBulkUpload}>Bulk upload</Button><Button type="primary" onClick={p.onNew}>New employee</Button></>}</PageHeaderPortal>
     <section className="recruitment-monitor-page recruitment-experience recruitment-viewport employee-record-workspace">
       {completion.statusNotice}
-      {p.dashboardFilters && <div className="employee-dashboard-scope"><Tag color="blue">Dashboard: {p.dashboardFilters}</Tag><Button size="small" onClick={p.clearDashboard}>Clear dashboard filter</Button></div>}
+      {p.dashboardFilters && <div className="employee-dashboard-scope"><Tag color="blue">{p.referenceContext ? 'Employee' : 'Dashboard'}: {p.dashboardFilters}</Tag><Button size="small" onClick={p.clearDashboard}>{p.referenceContext ? 'Show all employees' : 'Clear dashboard filter'}</Button></div>}
       <div className="recruitment-workspace-surface"><div className="recruitment-workspace-content">
         <RecruitmentRecordList rowSelection={selectForExit ? exitSelection : completion.rowSelection} selection={selectForExit ? row => <Checkbox checked={selectedExitIds.has(Number(row.id))} disabled={!canSelectExit(row)} onChange={event => toggleExitEmployee(row, event.target.checked)}>Select</Checkbox> : completion.selection} rowClassName={row => row.lastWorkingDate ? 'employee-exit-record' : ''} selectAllDescription={selectForExit ? "Select eligible employees for a dated resignation" : "Select all matching employees with missing information, email and ESS access"} cardExtra={row => row.lastWorkingDate ? <Space><Tag color="red">{row.employmentStatus}</Tag><span>Last working: {row.lastWorkingDate}</span></Space> : <EmployeeMissingInformation additionalIssues={[...completion.additionalMissing(row), ...p.fieldExchange.fields.filter(field => field.field.isRequired && !p.fieldExchange.values[row.id]?.[field.code]).map(field => ({ infotype: field.infotypeCode, label: field.field.label }))]} employee={row} checkDocuments={checkDocuments} onOpen={infotype => p.onEdit(row, infotype)} />} key={scope + ':' + p.dashboardKey} rows={p.employees} columns={columns} title={row => (row.firstName + ' ' + row.lastName).trim() || row.employeeCode} subtitle={row => row.employeeCode + ' / ' + (row.designation || 'Designation not mapped')} exportFileName="employees" onExcelExport={p.onExcelExport} searchPlaceholder="Search by employee name, code, department or email" searchValue={p.dashboardKey ? dashboardSearch : savedSearch} onSearchChange={p.dashboardKey ? setDashboardSearch : setSearch} hiddenCardColumns={['employeeName', 'employeeCode', 'designation']} cardSummaryColumns={['workLocationName', 'department', 'employmentType', 'skillCategory']}
           filters={['location', 'department', 'designation', 'employmentType', 'skillCategory'].map(key => ({ key, label: ({ location: 'Work location', department: 'Department', designation: 'Designation', employmentType: 'Employee type', skillCategory: 'Employee category' } as Record<string, string>)[key], value: (row: Employee) => workforceValue(row, key as typeof workforceFields[number], p.locations) }))}

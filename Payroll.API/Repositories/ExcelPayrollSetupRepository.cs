@@ -102,6 +102,11 @@ FROM excel_payroll_setup_imports WHERE client_id=@ClientId AND batch_id=@BatchId
         if (!await HasReceiptTableAsync(db)) throw new InvalidOperationException("Complete the explicit Excel payroll setup migration before saving a setup draft.");
         await using var tx = await db.BeginTransactionAsync();
         if (await db.ExecuteScalarAsync<int?>("SELECT Id FROM clients WHERE Id=@ClientId AND IsActive=TRUE FOR UPDATE", new { ClientId = clientId }, tx) is null) throw new InvalidOperationException("Select an active client.");
+        var selectedTemplateIds = draft.Request.TemplateDecisions.Select(d => d.ExistingTemplateId)
+            .Concat(draft.Request.LocationAllocations?.Groups.SelectMany(g => g.Parts).Select(p => p.TemplateId) ?? [])
+            .Select(id => long.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) ? parsed : 0)
+            .Where(id => id > 0);
+        await PayrollDataTableStore.RequireAvailableTemplateIdsAsync(db, tx, selectedTemplateIds);
         await ExcelPayslipRepository.RequireCurrentConsolidationSourceAsync(db,tx,clientId,draft.Request.BatchId);
         var (batch, _) = await ReadSourceAsync(db, tx, clientId, draft.Request.BatchId);
         if (draft.Request.RowIds.Any(id => !batch.Rows.Any(r => r.Id == id))) throw new InvalidOperationException("The draft includes rows outside the selected client batch.");

@@ -135,6 +135,9 @@ WHERE b.client_id=@ClientId AND b.id=@Id"+(locked?" FOR UPDATE":""),new{ClientId
             if((existingProfile?.RequestHash??"")!=request.ExistingProfileHash)
                 throw new InvalidOperationException("This payslip design changed after you opened it. Reload and review the current design before saving.");
             if(existingProfile is not null)NativePayslipDesignService.ValidateProfile(existingProfile,originalTemplate);
+            if(request.ProtectApprovedPresentation && originalTemplate.Active && existingProfile is not null
+                && await HasApprovedDesignPayrollAsync(db,tx,template.ClientId,existingProfile,true))
+                throw new InvalidOperationException("This design applies to approved payroll. Keep its mapped component in another active salary template before deleting this salary template.");
             if(existingProfile is not null && existingProfile.SourceKind!=designSourceKind)
                 throw new InvalidOperationException("Create a separate template to change its design source. The existing template and payroll presentation stay unchanged.");
         }

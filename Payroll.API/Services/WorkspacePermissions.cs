@@ -7,9 +7,9 @@ public static class WorkspacePermissions
 {
     private static bool Has(AuthUser user,params string[] codes)=>user.Permissions.Any(permission=>codes.Contains(permission,StringComparer.OrdinalIgnoreCase));
     private static readonly HashSet<string> PayrollReports=new(StringComparer.OrdinalIgnoreCase)
-    {"salary-register","payslip-register","excel-payslips","payroll-summary","component-ledger","monthly-advice-report","headcount","location-cost","net-pay-estimate","bank-transfer-report"};
+    {"salary-register","employee-payroll-history","payslip-register","excel-payslips","payroll-summary","component-ledger","monthly-advice-report","headcount","location-cost","net-pay-estimate","bank-transfer-report"};
     private static readonly HashSet<string> ComplianceReports=new(StringComparer.OrdinalIgnoreCase)
-    {"pf-register","pf-ecr-report","esi-register","pt-register","statutory-summary","tds-register","form16-register"};
+    {"pf-register","pf-ecr-report","esi-register","pt-register","statutory-summary","tds-register","tax-computation-history","form16-register"};
     private static readonly HashSet<string> BillingReports=new(StringComparer.OrdinalIgnoreCase)
     {"client-billing-report","payroll-cost-report"};
 
