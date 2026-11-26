@@ -6,12 +6,12 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
-# Copies the contents of hrms/Payroll.API into /src
+COPY Payroll.API.csproj ./
+RUN dotnet restore Payroll.API.csproj -p:Configuration=Release --verbosity normal
+# The pinned model and vocabulary are publish inputs defined in the project.
+RUN dotnet msbuild Payroll.API.csproj -p:Configuration=Release -t:AcquireLocalEmbeddingsModel,AcquireLocalEmbeddingsVocab
 COPY . .
-
-# Look for the project file directly in the current directory
-RUN dotnet restore "Payroll.API.csproj"
-RUN dotnet publish "Payroll.API.csproj" -c Release -o /app/publish
+RUN dotnet publish Payroll.API.csproj -c Release --no-restore -o /app/publish
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
