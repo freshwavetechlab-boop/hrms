@@ -12,6 +12,51 @@ const employee = {
   dateOfJoining: '2026-10-01', salaryStructureId: '', salaryJson: '{"1":12000}', annualCtc: 144000,
   salaryComponents: { 1: 12000 }, personalJson: '{}', paymentJson: '{}', workLocationId: 0, isActive: true,
 }
+const additionalForm = {
+  id: 1, status: 'Published', sections: [{ id: 1, sectionLabel: 'Personal details',
+    fields: Array.from({ length: 8 }, (_, index) => ({ id: index + 1, displayOrder: index,
+      label: index ? `Office field ${index}` : 'Deployment Office Type', fieldTypeCode: 'TEXT', widthColumns: 12 })) }],
+}
+
+async function checkEditFooter(page, dialog) {
+  const additional = dialog.getByTestId('employee-dynamic-fields-save')
+  const primary = dialog.getByRole('button', { name: /^(Save infotype|Update)$/ })
+  const cancel = dialog.getByRole('button', { name: 'Cancel', exact: true })
+  await expect(additional).toBeVisible()
+  const scroller = await additional.evaluateHandle(button => {
+    for (let element = button.parentElement; element; element = element.parentElement) {
+      if (/^(auto|scroll)$/.test(getComputedStyle(element).overflowY) && element.scrollHeight > element.clientHeight) return element
+    }
+    throw new Error('The employee form should overflow its scroll area')
+  })
+  const unobstructed = button => {
+    const bounds = button.getBoundingClientRect()
+    return [0.1, 0.5, 0.9].every(fraction => button.contains(document.elementFromPoint(
+      bounds.left + bounds.width / 2, bounds.top + bounds.height * fraction)))
+  }
+  for (const viewport of [{ width: 1366, height: 768 }, { width: 768, height: 1024 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport)
+    await scroller.evaluate(element => { element.scrollTop = 0 })
+    const initial = await primary.boundingBox()
+    for (const fraction of [0, 0.5, 1]) {
+      const top = await scroller.evaluate((element, offset) => {
+        element.scrollTop = Math.round(offset * (element.scrollHeight - element.clientHeight))
+        return element.scrollTop
+      }, fraction)
+      const position = `${viewport.width}×${viewport.height}, scroll ${fraction * 100}%`
+      assert.ok(fraction === 0 || top > 0, `Employee form did not scroll at ${position}`)
+      assert.ok(Math.abs((await primary.boundingBox()).y - initial.y) < 1, `Primary action moved at ${position}`)
+      for (const button of [cancel, primary]) {
+        assert.ok(await button.evaluate(unobstructed), `${await button.innerText()} is covered at ${position}`)
+      }
+    }
+    await additional.scrollIntoViewIfNeeded()
+    assert.ok(await additional.evaluate(unobstructed), 'Save additional fields is covered')
+    await additional.click({ trial: true })
+  }
+  await scroller.dispose()
+}
+
 const browser = await chromium.launch({ ...(process.env.HRMS_TEST_CHROME ? { executablePath: process.env.HRMS_TEST_CHROME } : {}) })
 const context = await browser.newContext({ viewport: { width: 1400, height: 900 }, serviceWorkers: 'block' })
 const posts = [], browserErrors = []
@@ -49,6 +94,7 @@ try {
       return reply({ id: employee.id, employeeCode: employee.employeeCode })
     }
     if (path === '/api/employees/field-configuration/catalog') return reply({ fields: [], forms: [], values: {} })
+    if (path === `/api/employees/${employee.id}/dynamic-fields`) return reply({ forms: [additionalForm], values: [] })
     if (path === '/api/organization') return reply({ id: 1, name: 'Synthetic organization' })
     if (path === '/api/setup') return reply({ salaryComponents: [], salaryStructures: [] })
     return reply([])
@@ -95,7 +141,9 @@ try {
   await edit.click()
   await expect(input).toHaveValue('SYN-101A')
   await expect(dialog.getByRole('button', { name: 'Save infotype' })).toBeVisible()
+  await checkEditFooter(page, dialog)
   assert.deepEqual(browserErrors, [])
+  console.log('Employee editor footer and additional-fields action passed desktop, tablet and mobile scroll checks.')
   console.log('Employee Master code edit passed: dirty/undo, conflict, guarded retry, payload, confirmed receipt and roster refresh.')
 } finally {
   saving.resolve()

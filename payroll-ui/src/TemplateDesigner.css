@@ -163,14 +163,15 @@
 .employee-directory-table small{margin-top:2px;color:#7b8496;font-size:.66rem}
 .employee-directory-table button{min-height:30px;border:1px solid #dfe2ea;border-radius:7px;background:#fff;padding:0 10px;font-weight:800}
 .employee-modal-backdrop{position:fixed;inset:0;z-index:90;display:grid;place-items:center;padding:18px;background:#17213680;backdrop-filter:blur(2px)}
-.employee-modal{width:min(1180px,100%);max-height:calc(100vh - 36px);overflow:auto;border-radius:12px;background:#fff;box-shadow:0 24px 70px #11182755}
-.employee-modal .employee-card{display:grid;gap:12px;padding:16px}
-.employee-modal .employee-card>header{position:sticky;top:0;z-index:2;display:flex;align-items:start;justify-content:space-between;gap:12px;margin:-16px -16px 0;padding:14px 16px 12px;border-bottom:1px solid #eef0f4;background:#fff}
+.employee-modal{display:flex;flex-direction:column;width:min(1180px,100%);min-width:0;max-height:calc(100vh - 36px);overflow:hidden;border-radius:12px;background:#fff;box-shadow:0 24px 70px #11182755}
+.employee-modal .employee-card{display:grid;grid-template: auto minmax(0,1fr) auto / minmax(0,1fr);min-height:0;max-width:none;padding:0}
+.employee-editor-body{display:grid;grid-template-columns:minmax(0,1fr);align-content:start;gap:12px;min-height:0;overflow:auto;overscroll-behavior:contain;padding:16px}
+.employee-modal .employee-card>header{display:flex;align-items:start;justify-content:space-between;gap:12px;padding:14px 16px 12px;border-bottom:1px solid #eef0f4;background:#fff}
 .employee-modal .employee-card h3{margin:2px 0;font-size:1.05rem}
 .employee-modal .employee-card p{margin:0;color:#7b8496;font-size:.72rem}
 .employee-modal-close{width:32px;height:32px;border:1px solid #dfe2ea;border-radius:8px;background:#fff;font-size:1.2rem}
 .employee-modal .grid{grid-template-columns:repeat(3,minmax(160px,1fr))}
-.employee-modal .actions{position:sticky;bottom:0;margin:0 -16px -16px;padding:10px 16px;border-top:1px solid #eef0f4;background:#fff}
+.employee-modal .employee-card>.actions{padding:10px 16px;border-top:1px solid #eef0f4;background:#fff}
 .employee-modal .actions .secondary{background:#fff;color:#5133cc;border:1px solid #cfc6f5;box-shadow:none}
 .employee-basic-strip{display:grid;grid-template-columns:repeat(5,minmax(110px,1fr));gap:8px}
 .employee-basic-strip article{padding:8px 10px;border:1px solid #e7eaf2;border-radius:8px;background:#f8fafc}

@@ -897,6 +897,7 @@ function EmployeePanel(p: { dirty: boolean; saving: boolean; saveError: string; 
   const selectedInfotype = employeeInfotypes.find(item => item.code === p.employeeInfotype) ?? employeeInfotypes[1]
   const managerOptions = [{ value: '', label: 'No reporting manager' }, ...p.managerUsers.filter(user => !p.employee.clientId || !user.clientId || user.clientId === p.employee.clientId).map(user => ({ value: user.id, label: `${user.displayName || user.email} / ${user.email}${user.clientName ? ` / ${user.clientName}` : ''}` }))]
   return <section className="employee-card"><header><div><span className="eyebrow purple">{p.employee.id ? 'Edit employee' : 'New employee'}</span><h3>{p.employee.id ? `${p.employee.firstName} ${p.employee.lastName}`.trim() || p.employee.employeeCode : 'Employee details'}</h3><p>{p.employee.employeeCode || 'New code'} / {clientNameFor(p.clients, p.employee.clientId)} / {p.employee.isActive ? 'Active' : 'Inactive'}</p></div><button type="button" className="employee-modal-close" onClick={p.closeModal}>x</button></header>
+    <div className="employee-editor-body">
     <section className="employee-basic-strip"><article><span>Code</span><b>{p.employee.employeeCode || '-'}</b></article><article><span>DOJ</span><b>{dateText(p.employee.dateOfJoining) || '-'}</b></article><article><span>Grade</span><b>{p.employee.grade || '-'}</b></article><article><span>Location</span><b>{workLocationName(p.locations, p.employee.workLocationId)}</b></article><article><span>Annual CTC</span><b>{money(p.employee.annualCtc || 0)}</b></article></section>
     <Tabs className="employee-infotype-tabs" activeKey={p.employeeInfotype} onChange={p.setEmployeeInfotype} items={employeeInfotypes.map(item => ({ key: item.code, label: `${item.code} - ${item.name}` }))} />
     <section className="employee-infotype-editor"><h4>{selectedInfotype.code} - {selectedInfotype.name}</h4>
@@ -928,6 +929,7 @@ function EmployeePanel(p: { dirty: boolean; saving: boolean; saveError: string; 
     {p.employeeInfotype === '0008' && p.employee.id > 0 && <EmptySalarySetupCleanup employeeId={p.employee.id} clientId={p.employee.clientId} employeeCode={p.employee.employeeCode} onApplied={p.closeModal} />}
     <InfotypeHistory employee={p.employee} infotypeCode={p.employeeInfotype} infotypes={p.infotypes} clients={p.clients} locations={p.locations} managerUsers={p.managerUsers} templates={p.templates} />
     {p.saveError && <Alert type="error" showIcon role="alert" message={p.saveError} />}
+    </div>
     <div className="actions">
       <button type="button" className="secondary" onClick={p.closeModal}>{p.employeeInfotype === 'DOCS' || p.employeeInfotype === '360' ? 'Close' : 'Cancel'}</button>
       {p.employeeInfotype === 'DOCS' && !p.employee.id && <button type="button" onClick={() => p.setEmployeeInfotype('0001')}>Enter employee details</button>}

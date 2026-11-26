@@ -1,0 +1,80 @@
+name: Publish Payroll API image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: payroll-api-image-main
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/freshwavetechlab-boop/hrms-api
+
+jobs:
+  publish:
+    if: github.repository == 'freshwavetechlab-boop/hrms' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check package visibility before uploading API assets or cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=$(curl --silent --show-error --output "$RUNNER_TEMP/package.json" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/users/$GITHUB_REPOSITORY_OWNER/packages/container/hrms-api")
+          case "$status" in
+            200) jq -e '.visibility == "private"' "$RUNNER_TEMP/package.json" > /dev/null || {
+              echo "::error::The hrms-api package must be private before publishing."
+              exit 1
+            } ;;
+            404) ;; # New personal GHCR packages start private. A private package can also return 404 here.
+            *) echo "::error::Could not check GHCR package visibility (HTTP $status)."; exit 1 ;;
+          esac
+
+      - name: Check out API build context
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: Payroll.API
+          persist-credentials: false
+
+      - name: Sign in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build and publish the API for this commit
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./Payroll.API
+          file: ./Payroll.API/DockerFile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
+
+      - name: Update the main image tag if this commit is still current
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          main_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          if [[ "$GITHUB_SHA" == "$main_sha" ]]; then
+            docker buildx imagetools create --tag "$IMAGE:main" "$IMAGE@$DIGEST"
+          fi
+          echo "Published \`$IMAGE:sha-$GITHUB_SHA\` (\`$DIGEST\`)." >> "$GITHUB_STEP_SUMMARY"
