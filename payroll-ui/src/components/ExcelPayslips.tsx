@@ -53,6 +53,7 @@ import './EmployeeResignation.css'
 import { PageHeaderPortal } from './layout/AppPageHeader'
 import './ExcelPayslips.css'
 import { currentPayslip, mergePayslipMasterDetails, payslipDesignation } from '../utils/excelPayslipPresentation'
+import { onEmployeeMasterSaved } from '../services/employeeMasterChanges'
 import { fillMissingPayslipLocations, workLocationColumns } from '../utils/excelPayslipLocation'
 import { savedPayslipHistoryScope, savedPayslipLocationKey, savedPayslipMonthLabel } from '../utils/excelPayslipHistoryScope'
 
@@ -193,11 +194,15 @@ export default function ExcelPayslips() {
     } finally { masterRefreshPending.current = false; setMasterRefreshing(false) }
   }, [clientId, batch, busy, loading, importOpen, setupRows, action, correction, monthTools, bulkUpdateBatch])
   useEffect(() => {
+    const unsubscribe = clientId && onEmployeeMasterSaved(clientId, () => void refreshMasterDetails())
     const refresh = () => { if (document.visibilityState === 'visible') void refreshMasterDetails() }
     window.addEventListener('focus', refresh); document.addEventListener('visibilitychange', refresh)
     const interval=window.setInterval(refresh,30000)
-    return () => { window.clearInterval(interval);window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh) }
-  }, [refreshMasterDetails])
+    return () => {
+      if (unsubscribe) unsubscribe()
+      window.clearInterval(interval);window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh)
+    }
+  }, [clientId, refreshMasterDetails])
   const chooseClient = (value: number | undefined) => {
     if (busy) return
     const nextClientId = clients.find(client => client.id === value)?.id || 0

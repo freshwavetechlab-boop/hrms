@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Payroll.API.Models;
 using Payroll.API.Repositories;
+using Payroll.API.Services;
 
 namespace Payroll.API.Tests.Services;
 
@@ -84,6 +85,7 @@ public sealed class ExcelPayslipEmploymentResolutionTests
         if(!duplicatePan) other.Pan="FGHIJ5678K";
         ExcelPayslipRepository.AnnotateEmployment(batch,source,[Master(),other],[receipt]);
         Assert.Null(batch.Rows[0].Employment?.EmployeeId);
+        Assert.Same(batch.Rows[0], ExcelPayslipPresentation.Current(batch.Rows[0]));
     }
 
     [Fact]
@@ -100,6 +102,56 @@ public sealed class ExcelPayslipEmploymentResolutionTests
         var batch=Batch(); var source=Source(); source.Rows[0].Cells[1]!.Value="North Office";
         ExcelPayslipRepository.AnnotateEmployment(batch,source,[Master()],[]);
         Assert.Equal(7,batch.Rows[0].Employment?.EmployeeId);
+    }
+
+    [Fact]
+    public void VerifiedLegacyRowUsesTheRenamedMasterCodeWithoutLinkingSalaryOrDelivery()
+    {
+        var batch = Batch();
+        var row = Assert.Single(batch.Rows);
+        row.Information = [
+            new() { Label = "Employee Code", Value = row.EmployeeCode },
+            new() { Label = "Emp. Code (B)", Value = row.EmployeeCode },
+            new() { Label = "Employee No.", Value = row.EmployeeCode },
+            new() { Label = "Source employee code", Value = "source-history" },
+            new() { Label = "Original employee code", Value = "original-history" },
+            new() { Label = "ID No", Value = "badge-123" },
+            new() { Label = "Employee Code (old)", Value = "previous-assignment" }
+        ];
+        row.Email = "source@example.test";
+        row.NetPay = 1234.56m;
+        row.WarningReviewToken = "source-review";
+        var master = Master();
+        master.WorkEmail = "master@example.test";
+        var source = Source();
+        source.Rows[0].Cells[1]!.Value = "North Office";
+        ExcelPayslipRepository.AnnotateEmployment(batch, source, [master], []);
+
+        var snapshot = JsonSerializer.Serialize(row);
+        var current = ExcelPayslipPresentation.Current(row);
+        Assert.False(ExcelPayslipPresentation.Linked(current));
+        Assert.Equal(master.EmployeeCode, current.EmployeeCode);
+        Assert.Equal(new[] { master.EmployeeCode, master.EmployeeCode, master.EmployeeCode, "source-history", "original-history", "badge-123", "previous-assignment" },
+            current.Information.Take(7).Select(field => field.Value));
+        Assert.Equal(row.Email, current.Email);
+        Assert.Equal(row.NetPay, current.NetPay);
+        Assert.Same(row.Earnings, current.Earnings);
+        Assert.Same(row.Employment, current.Employment);
+        Assert.Equal(row.WarningReviewToken, current.WarningReviewToken);
+        Assert.Equal(snapshot, JsonSerializer.Serialize(row));
+    }
+
+    [Theory]
+    [InlineData(7, 8, false)]
+    [InlineData(7, 7, true)]
+    [InlineData(0, 0, false)]
+    public void UnverifiedAnnotationsKeepAllSourceFields(int resolvedId, int detailsId, bool needsReview)
+    {
+        var row = Assert.Single(Batch().Rows);
+        row.Employment = new(resolvedId, "OTHER", "Active", null, false, needsReview);
+        row.MasterDetails = new(detailsId, "Officer") { Linked = true, EmployeeCode = "OTHER", Email = "other@example.test" };
+        Assert.Same(row, ExcelPayslipPresentation.Current(row));
+        Assert.Same(row.Information, ExcelPayslipPresentation.Information(row));
     }
 
     [Fact]

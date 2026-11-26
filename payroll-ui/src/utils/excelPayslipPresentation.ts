@@ -4,21 +4,39 @@ const designationKey = (label: string) => label.trim().replace(/\s*\([a-z]{1,3}\
 const isDesignation = (label: string) => ['designation', 'designationmanpowercategory', 'manpowercategory'].includes(designationKey(label))
 const aliases:Record<string,string>={designationmanpowercategory:'designation',manpowercategory:'designation',mobileno:'phone',mobilenumber:'phone',mobile:'phone',phoneno:'phone',phonenumber:'phone',contactno:'phone',contactnumber:'phone',universalaccountnumber:'uan',universalaccountnumberuan:'uan',esino:'esic',esinumber:'esic',emailid:'email',workemail:'email',emailaddress:'email',uanno:'uan',uannumber:'uan',panno:'pan',pannumber:'pan',aadhar:'aadhaar',aadhaarno:'aadhaar',aadhaarnumber:'aadhaar',esicno:'esic',esicnumber:'esic',bank:'bankname',accountnumber:'accountno',bankaccountno:'accountno',bankaccountnumber:'accountno',acno:'accountno',ifsccode:'ifsc',location:'worklocation',locationnametehsilsubtehsil:'worklocation',placeofposting:'worklocation',posting:'worklocation',doj:'joiningdate',dateofjoining:'joiningdate',dob:'birthdate',dateofbirth:'birthdate',ctc:'annualctc',annualsalary:'annualctc',employeeno:'employeecode',idno:'employeecode',name:'employeename',conductorname:'employeename'}
 const canonical=(label:string)=>aliases[designationKey(label)]||designationKey(label)
-export const payslipMasterLinked=(row:ExcelPayslipRow)=>!!row.masterDetails?.linked && row.employment?.employeeId===row.masterDetails.employeeId&&!row.employment.identityReviewRequired
+function verifiedEmployment(row: ExcelPayslipRow) {
+  const employment = row.employment
+  return employment?.identityReviewRequired === false && employment.employeeId != null && employment.employeeId > 0
+    && employment.employeeId === row.masterDetails?.employeeId ? employment : undefined
+}
+export const payslipMasterLinked=(row:ExcelPayslipRow)=>!!row.masterDetails?.linked && !!verifiedEmployment(row)
+const codeKey = (label: string) => /\(old\)\s*$/i.test(label) ? label.replace(/[^a-z0-9]/gi, '').toLowerCase() : designationKey(label)
+const employeeCodeField = (label: string) => /^(?:employee|emp)(?:code|no|number)$/.test(codeKey(label))
+const sourceCodeField = (label: string) => /^(?:sourceemployeecode|sourcenewemployeecode|originalemployeecode|(?:employee|emp)(?:code|no|number)old)$/.test(codeKey(label))
+const verifiedEmploymentCode = (row: ExcelPayslipRow) => verifiedEmployment(row)?.employeeCode?.trim() || ''
+function informationWithEmployeeCode(row: ExcelPayslipRow, code: string) {
+  if (!code || !row.information.some(field => field.value !== code && employeeCodeField(field.label))) return row.information
+  return row.information.map(field => employeeCodeField(field.label) ? { ...field, value: code } : field)
+}
 export function payslipDisplayInformation(row: ExcelPayslipRow) {
   const detail = row.masterDetails
   if(payslipMasterLinked(row)&&detail){
     const hasPeriodLocation=row.information.some(field=>canonical(field.label)==='worklocation'&&field.value.trim())
     const profileFields=detail.profileOnly?Object.fromEntries(Object.entries(detail.fields||{}).filter(([key,value])=>value.trim()&&!['annualctc','monthlyctc'].includes(key)&&!key.startsWith('source:')&&!(key==='worklocation'&&hasPeriodLocation))):detail.fields
     const fields={...profileFields,employeecode:detail.employeeCode||'',employeename:detail.employeeName||''} as Record<string,string>
-    const information=row.information.map(field=>({...field,value:fields[`source:${field.label.replace(/[^a-z0-9]/gi,'').toLowerCase()}`]??fields[canonical(field.label)]??field.value}))
+    const information=row.information.map(field=>{
+      if (sourceCodeField(field.label)) return field
+      if (employeeCodeField(field.label) || designationKey(field.label) === 'idno') return { ...field, value: fields.employeecode || field.value }
+      return { ...field, value: fields[`source:${field.label.replace(/[^a-z0-9]/gi,'').toLowerCase()}`] ?? fields[canonical(field.label)] ?? field.value }
+    })
     for(const [label,key] of [['Designation','designation'],['Department','department'],['Grade','grade'],['Work Location','worklocation'],['Email','email'],['Phone','phone'],['Annual CTC','annualctc']])
       if(!information.some(field=>canonical(field.label)===key)&&fields[key])information.push({label,value:fields[key]})
     return information
   }
   const designation = detail && row.employment?.employeeId === detail.employeeId && !row.employment.identityReviewRequired ? detail.designation.trim() : ''
-  if (!designation || designation.toLowerCase() === 'unassigned') return row.information
-  const information = row.information.map(field => ({ ...field, value: isDesignation(field.label) ? designation : field.value }))
+  const codeInformation = informationWithEmployeeCode(row, verifiedEmploymentCode(row))
+  if (!designation || designation.toLowerCase() === 'unassigned') return codeInformation
+  const information = codeInformation.map(field => ({ ...field, value: isDesignation(field.label) ? designation : field.value }))
   if (!information.some(field => isDesignation(field.label))) information.push({label:'Designation',value:designation})
   return information
 }
@@ -33,7 +51,12 @@ export function payslipCurrentMasterFields(row:ExcelPayslipRow){
     .filter(([key])=>Object.hasOwn(fields,key)).map(([key,label])=>({label,value:fields[key]||'Not set'}))
 }
 export function currentPayslip(row:ExcelPayslipRow):ExcelPayslipRow {
-  if(!payslipMasterLinked(row))return row
+  if(!payslipMasterLinked(row)){
+    const code = verifiedEmploymentCode(row)
+    if (!code) return row
+    const information = informationWithEmployeeCode(row, code)
+    return row.employeeCode === code && information === row.information ? row : { ...row, employeeCode: code, information }
+  }
   const d=row.masterDetails!,salary=!d.profileOnly&&d.salary?.status==='Updated'&&d.salary.netPay!=null?d.salary:null
   return {...row,employeeCode:d.profileOnly?(d.employeeCode?.trim()?d.employeeCode:row.employeeCode):d.employeeCode??row.employeeCode,employeeName:d.profileOnly?(d.employeeName?.trim()?d.employeeName:row.employeeName):d.employeeName??row.employeeName,email:d.profileOnly?(d.email?.trim()?d.email:row.email):d.email??row.email,information:payslipDisplayInformation(row),
     earnings:salary?.earnings??row.earnings,deductions:salary?.deductions??row.deductions,employerContributions:salary?.employerContributions??row.employerContributions,

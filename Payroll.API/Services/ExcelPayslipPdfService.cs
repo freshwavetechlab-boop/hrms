@@ -139,7 +139,8 @@ public sealed partial class ExcelPayslipPdfService
             info.Add(new("Client", batch.ClientName));
         info.AddRange(displayInformation.Where(x => !string.IsNullOrWhiteSpace(x.Label)
             && !x.Label.Equals("Employee Name", StringComparison.OrdinalIgnoreCase)
-            && !(!string.IsNullOrWhiteSpace(row.EmployeeCode) && x.Label.Equals("Employee Code", StringComparison.OrdinalIgnoreCase)))
+            && !(!string.IsNullOrWhiteSpace(row.EmployeeCode) && (x.Label.Equals("Employee Code", StringComparison.OrdinalIgnoreCase)
+                || ExcelPayslipPresentation.IsEmployeeCodeLabel(x.Label) && x.Value == row.EmployeeCode)))
             .Select(x => new Cell(x.Label, InformationValue(x, row, amountDecimalPlaces))));
         for (var size = 9d; size >= 6.5; size -= .5)
         {

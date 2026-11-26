@@ -26,7 +26,8 @@ import { employeeClientOptions } from '../utils/employeeClientOptions'
 import { useToast } from '../components/ToastProvider'
 import { employee0, setup0 } from '../data/payrollDefaults'
 import { getEmployeeDirectoryClients, getEmployees } from '../services/payrollService'
-import { getDropdowns, getEmployeeImportJob, getEmployeeInfotypes, getEmployeeManagerUsers, getSetup, getWorkLocations, preflightEmployeeImport, processEmployeeAction, saveEmployee as persistEmployee, startEmployeeImport, type EmployeeImportDecision, type EmployeeImportPreflight } from '../services/settingsService'
+import { notifyEmployeeMasterSaved } from '../services/employeeMasterChanges'
+import { getDropdowns, getEmployeeImportJob, getEmployeeInfotypes, getEmployeeManagerUsers, getSetup, getWorkLocations, preflightEmployeeImport, processEmployeeAction, saveEmployee as persistEmployee, updateEmployeeCode, startEmployeeImport, type EmployeeImportDecision, type EmployeeImportPreflight } from '../services/settingsService'
 import type { Client, Component, Drop, Employee, EmployeeActionRequest, EmployeeInfotypeRecord, EmployeePaymentDetails, EmployeePersonalDetails, Setup, Structure, WorkLocation, WorkflowApprover } from '../types/payroll'
 import { calculateSalaryDetails, calculateSalaryJson, calculateSalaryTotals, canOverrideSalaryComponent, hasDailyRateComponents, money } from '../utils/salary'
 import SalaryFieldHelp from '../components/SalaryFieldHelp'
@@ -84,6 +85,16 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const [clients, setClients] = useState<Client[]>([]), [locations, setLocations] = useState<WorkLocation[]>([]), [drops, setDrops] = useState<Drop[]>([]), [setup, setSetup] = useState<Setup>(setup0), [managerUsers, setManagerUsers] = useState<WorkflowApprover[]>([])
   const [employees, setEmployees] = useState<Employee[]>([]), [employee, setEmployee] = useState(employee0), [employeeInfotype, setEmployeeInfotype] = useState<EmployeeInfotypeCode>('0001')
   const [directoryLoaded, setDirectoryLoaded] = useState(false)
+  const [savedEmployee, setSavedEmployee] = useState<Employee | null>(null)
+  const [savingEmployee, setSavingEmployee] = useState(false)
+  const [saveError, setSaveError] = useState('')
+  const saveInFlight = useRef(false)
+  const editedCode = !!savedEmployee && savedEmployee.employeeCode !== employee.employeeCode
+  const editKind = useMemo(() => {
+    if (!savedEmployee || savedEmployee === employee) return 'none'
+    if (JSON.stringify({ ...employee, employeeCode: savedEmployee.employeeCode }) !== JSON.stringify(savedEmployee)) return 'details'
+    return editedCode ? 'code' : 'none'
+  }, [employee, savedEmployee, editedCode])
   const [salaryOverrides, setSalaryOverrides] = useState<Record<string, string>>({})
   const [infotypes, setInfotypes] = useState<EmployeeInfotypeRecord[]>([])
   const [changeReason, setChangeReason] = useState('')
@@ -232,6 +243,7 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     const refs = await editorReferences()
     if (!refs || token !== editorGeneration.current || currentClientFilter.current !== clientFilter) return
     setSalaryOverrides({})
+    setSavedEmployee(null); setSaveError('')
     setEmployee({ ...employee0, clientId: clientFilter || 0, salaryStructureId: '' })
     setEmployeeInfotype('0001'); setChangeReason(''); setModalOpen(true)
   }
@@ -247,27 +259,55 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     const normalized = normalizeEmployeeDetails(row)
     const salaryStructure = assignedEmployeeSalaryTemplate(refs.setup.salaryStructures, normalized.clientId, normalized.salaryStructureId)
     const overrides = inferSalaryOverrides(normalized, salaryStructure, refs.setup)
-    setSalaryOverrides(overrides); setEmployee(normalizeEmployeeSalary(normalized, overrides, refs.setup)); setEmployeeInfotype(infotype); setChangeReason(''); setModalOpen(true); void loadEmployeeHistory(row.id)
+    const draft = normalizeEmployeeSalary(normalized, overrides, refs.setup)
+    setSalaryOverrides(overrides); setEmployee(draft); setSavedEmployee(draft); setSaveError(''); setEmployeeInfotype(infotype); setChangeReason(''); setModalOpen(true); void loadEmployeeHistory(row.id)
   }
   const closeModal = () => { editorGeneration.current++; setDocumentRevision(value => value + 1); setModalOpen(false); setEmployee(employee0); setSalaryOverrides({}); setEmployeeInfotype('0001'); setChangeReason(''); setInfotypes([]) }
   const saveEmployee = async () => {
-    if (chosenStructure && (employee.annualCtc || dailyRateSalary)) {
-      const invalid = calculateSalaryDetails(employee.annualCtc, setup.salaryComponents, chosenStructure, salaryOverrides).find(row => row.error || !Number.isFinite(row.monthly))
-      if (invalid) { notify(`Salary calculation needs correction: ${invalid.component.code}: ${invalid.error || 'Invalid amount'}`, 'error'); return }
-    }
-    const isNew = !employee.id
-    const response = await persistEmployee(toEmployeePayload(normalizeEmployeeSalary(employee, salaryOverrides)), employeeInfotype, changeReason)
-    if (!response.ok) { notify(response.error || 'Unable to save employee.', 'error'); return }
-    if (isNew) {
-      const saved = { ...employee, id: response.data.id }
-      setEmployee(saved)
-      setEmployeeInfotype('DOCS')
-      await load()
-      await loadEmployeeHistory(saved.id)
-      notify('Employee created. Add the configured documents now.', 'success')
+    if (saveInFlight.current) return
+    setSaveError('')
+    if (editedCode && employeeInfotype !== '0001') {
+      setSaveError('Open 0001 - Organizational Assignment to save the employee code change.')
       return
     }
-    closeModal(); await load(); notify('Employee saved successfully.', 'success')
+    if (editKind !== 'code' && chosenStructure && (employee.annualCtc || dailyRateSalary)) {
+      const invalid = calculateSalaryDetails(employee.annualCtc, setup.salaryComponents, chosenStructure, salaryOverrides).find(row => row.error || !Number.isFinite(row.monthly))
+      if (invalid) { setSaveError(`Salary calculation needs correction: ${invalid.component.code}: ${invalid.error || 'Invalid amount'}`); return }
+    }
+    const isNew = !employee.id
+    const token = editorGeneration.current
+    const code = employee.employeeCode.trim()
+    saveInFlight.current = true
+    setSavingEmployee(true)
+    try {
+      const response = editKind === 'code' && savedEmployee
+        ? await updateEmployeeCode(employee.id, { clientId: employee.clientId, expectedEmployeeCode: savedEmployee.employeeCode, employeeCode: code, changeReason })
+        : await persistEmployee(toEmployeePayload(normalizeEmployeeSalary(editedCode ? { ...employee, employeeCode: code } : employee, salaryOverrides)), employeeInfotype, changeReason)
+      if (currentDataScope.current !== dataScope || token !== editorGeneration.current) return
+      if (!response.ok) { setSaveError(response.error || 'Unable to save employee.'); return }
+      if (!response.data.id || (!isNew && response.data.id !== employee.id) || (editedCode && response.data.employeeCode !== code)) {
+        setSaveError('The API did not confirm the change. Reopen this employee to check the saved code before retrying.')
+        void load()
+        return
+      }
+      notifyEmployeeMasterSaved(employee.clientId)
+      if (isNew) {
+        const saved = { ...employee, id: response.data.id, employeeCode: response.data.employeeCode ?? code }
+        setEmployee(saved); setSavedEmployee(saved); setChangeReason(''); setEmployeeInfotype('DOCS')
+        notify('Employee created. Add the configured documents now.', 'success')
+        void loadEmployeeHistory(saved.id)
+      } else {
+        if (editedCode) setEmployees(rows => rows.map(row => row.id === employee.id && row.clientId === employee.clientId ? { ...row, employeeCode: code } : row))
+        closeModal()
+        notify(editedCode ? `Employee code updated to ${code}.` : 'Employee updated successfully.', 'success')
+      }
+      void load()
+    } catch (error) {
+      if (currentDataScope.current === dataScope && token === editorGeneration.current) setSaveError(error instanceof Error ? error.message : 'Unable to confirm the employee update.')
+    } finally {
+      saveInFlight.current = false
+      setSavingEmployee(false)
+    }
   }
   const runEmployeeAction = async (request: EmployeeActionRequest) => {
     const response = await processEmployeeAction(request)
@@ -276,7 +316,7 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     const salaryStructure = assignedEmployeeSalaryTemplate(setup.salaryStructures, normalizedDetails.clientId, normalizedDetails.salaryStructureId)
     const overrides = inferSalaryOverrides(normalizedDetails, salaryStructure)
     const normalized = normalizeEmployeeSalary(normalizedDetails, overrides)
-    setSalaryOverrides(overrides); setEmployee(normalized); await loadEmployeeHistory(normalized.id); await load(); notify(`${request.actionType} saved with history.`, 'success')
+    setSalaryOverrides(overrides); setEmployee(normalized); setSavedEmployee(normalized); setSaveError(''); await loadEmployeeHistory(normalized.id); await load(); notify(`${request.actionType} saved with history.`, 'success')
   }
   const deleteEmployee = (row: Employee) => setDeleteTarget(row)
   const downloadTemplate = async (operation?: BulkImportOperation, selectedFieldCodes?: string[]) => {
@@ -416,9 +456,9 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     {view === 'master' ? <EmployeeDirectory onEmployeesChanged={load} fieldExchange={fieldExchange} configureFields={setFieldClient} onExcelExport={exportEmployees} documentRevision={documentRevision} clientScoped={clientScoped} clients={clients} clientScopeOptions={clientScopeOptions} locations={locations} employees={visibleEmployees} clientFilter={clientFilter} setClientFilter={changeClientFilter} dashboardKey={fromDashboard || fromEmployeeLinks ? route.key : ''} referenceContext={fromEmployeeLinks} dashboardFilters={fromEmployeeLinks ? linkedEmployeeLabel : fromDashboard ? workforceFields.filter(key => searchParams.has(key)).map(key => searchParams.get(key)!).join(' / ') || 'All active employees' : ''} clearDashboard={() => { setClientFilter(clientFilter); setSearchParams({}) }} onNew={newEmployee} onEdit={editEmployee} onDelete={deleteEmployee} onResign={setResignTarget} onDownloadTemplate={downloadTemplate} onBulkUpload={openEmployeeBulkUpload} /> : <EmployeeOrgStructure clientScoped={clientScoped} clients={clients} locations={locations} employees={linkedOrgEmployees} lookupEmployees={employees} reference={fromEmployeeLinks ? linkedEmployeeLabel : undefined} clientFilter={clientFilter} setClientFilter={changeClientFilter} />}
     {deleteTarget && <EmployeeLifecycleDialog key={deleteTarget.id} employee={deleteTarget} onClose={() => setDeleteTarget(null)} onChanged={load} onResign={row => { setDeleteTarget(null); setResignTarget(row) }} />}
     {resignTarget && <EmployeeResignationAction key={resignTarget.id} clientId={resignTarget.clientId} employees={[{ id: resignTarget.id, employeeCode: resignTarget.employeeCode, name: `${resignTarget.firstName} ${resignTarget.lastName}`.trim() }]} open hideTrigger onOpenChange={open => { if (!open) setResignTarget(null) }} onSaved={async () => { await load(); notify('Resignation saved. Employment and linked ESS access follow the last working date.', 'success') }} />}
-    {modalOpen && <div className="employee-modal-backdrop" onClick={closeModal}>
-      <section className="employee-modal" role="dialog" aria-modal="true" aria-label="Employee details" onClick={event => event.stopPropagation()}>
-        <EmployeePanel clientScoped={clientScoped} employee={employee} setEmployee={row => setEmployee(normalizeEmployeeSalary(row, salaryOverrides))} employeeInfotype={employeeInfotype} setEmployeeInfotype={value => { setEmployeeInfotype(value as EmployeeInfotypeCode); setChangeReason('') }} changeReason={changeReason} setChangeReason={setChangeReason} clients={clients} locations={locations} managerUsers={managerUsers} templates={setup.salaryStructures} salaryComponents={setup.salaryComponents} deps={deps} desigs={desigs} grades={grades} skillCategories={skillCategories} employmentTypes={employmentTypes} applyClient={applyClient} applyStructure={applyStructure} applyCtc={applyCtc} structureComponents={structureComponents} employeeSalary={employeeSalary} salaryOverrides={salaryOverrides} empLine={empLine} empMonthly={empMonthly} saveEmployee={saveEmployee} closeModal={closeModal} infotypes={infotypes} runEmployeeAction={runEmployeeAction} />
+    {modalOpen && <div className="employee-modal-backdrop" onClick={() => { if (!saveInFlight.current) closeModal() }}>
+      <section className="employee-modal" role="dialog" aria-modal="true" aria-label="Employee details" aria-busy={savingEmployee} inert={savingEmployee} onClick={event => event.stopPropagation()}>
+        <EmployeePanel dirty={editKind !== 'none'} saving={savingEmployee} saveError={saveError} clientScoped={clientScoped} employee={employee} setEmployeeCode={code => setEmployee(current => ({ ...current, employeeCode: code }))} setEmployee={row => setEmployee(normalizeEmployeeSalary(row, salaryOverrides))} employeeInfotype={employeeInfotype} setEmployeeInfotype={value => { setEmployeeInfotype(value as EmployeeInfotypeCode); setChangeReason('') }} changeReason={changeReason} setChangeReason={setChangeReason} clients={clients} locations={locations} managerUsers={managerUsers} templates={setup.salaryStructures} salaryComponents={setup.salaryComponents} deps={deps} desigs={desigs} grades={grades} skillCategories={skillCategories} employmentTypes={employmentTypes} applyClient={applyClient} applyStructure={applyStructure} applyCtc={applyCtc} structureComponents={structureComponents} employeeSalary={employeeSalary} salaryOverrides={salaryOverrides} empLine={empLine} empMonthly={empMonthly} saveEmployee={saveEmployee} closeModal={closeModal} infotypes={infotypes} runEmployeeAction={runEmployeeAction} />
       </section>
     </div>}
     <SmartBulkUploadMapper open={bulkMapperOpen} definition={bulkDefinition} clientCode={clients.find(client => client.id === clientFilter)?.code ?? ''} existingEmployeeCodes={employees.filter(row => row.clientId === clientFilter).map(row => row.employeeCode)} onCancel={() => setBulkMapperOpen(false)} onPrepared={reviewMappedEmployeeUpload} onTemplateFile={reviewTemplateEmployeeUpload} onDownloadTemplate={downloadTemplate} />
@@ -841,7 +881,7 @@ function AnnualCtcInput(p: { value: number; onChange: (value: number) => void })
   }} />
 }
 
-function EmployeePanel(p: { clientScoped: boolean; employee: Employee; setEmployee: (employee: Employee) => void; employeeInfotype: EmployeeInfotypeCode; setEmployeeInfotype: (code: string) => void; changeReason: string; setChangeReason: (value: string) => void; clients: Client[]; locations: WorkLocation[]; managerUsers: WorkflowApprover[]; templates: Structure[]; salaryComponents: Component[]; deps: string[]; desigs: string[]; grades: string[]; skillCategories: string[]; employmentTypes: string[]; applyClient: (value: string) => void; applyStructure: (value: string) => void; applyCtc: (value: number) => void; structureComponents: Component[]; employeeSalary: Record<string, string>; salaryOverrides: Record<string, string>; empLine: (id: string, value: string) => void; empMonthly: (component: Component) => number; saveEmployee: () => void; closeModal: () => void; infotypes: EmployeeInfotypeRecord[]; runEmployeeAction: (request: EmployeeActionRequest) => Promise<void> }) {
+function EmployeePanel(p: { dirty: boolean; saving: boolean; saveError: string; clientScoped: boolean; employee: Employee; setEmployeeCode: (code: string) => void; setEmployee: (employee: Employee) => void; employeeInfotype: EmployeeInfotypeCode; setEmployeeInfotype: (code: string) => void; changeReason: string; setChangeReason: (value: string) => void; clients: Client[]; locations: WorkLocation[]; managerUsers: WorkflowApprover[]; templates: Structure[]; salaryComponents: Component[]; deps: string[]; desigs: string[]; grades: string[]; skillCategories: string[]; employmentTypes: string[]; applyClient: (value: string) => void; applyStructure: (value: string) => void; applyCtc: (value: number) => void; structureComponents: Component[]; employeeSalary: Record<string, string>; salaryOverrides: Record<string, string>; empLine: (id: string, value: string) => void; empMonthly: (component: Component) => number; saveEmployee: () => void; closeModal: () => void; infotypes: EmployeeInfotypeRecord[]; runEmployeeAction: (request: EmployeeActionRequest) => Promise<void> }) {
   const salaryTemplates = templatesForClient(p.templates, p.employee.clientId)
   const salaryAssignment = refId(p.employee.salaryStructureId).trim()
   const assignedTemplate = assignedEmployeeSalaryTemplate(p.templates, p.employee.clientId, salaryAssignment)
@@ -861,7 +901,7 @@ function EmployeePanel(p: { clientScoped: boolean; employee: Employee; setEmploy
     <Tabs className="employee-infotype-tabs" activeKey={p.employeeInfotype} onChange={p.setEmployeeInfotype} items={employeeInfotypes.map(item => ({ key: item.code, label: `${item.code} - ${item.name}` }))} />
     <section className="employee-infotype-editor"><h4>{selectedInfotype.code} - {selectedInfotype.name}</h4>
     {p.employeeInfotype === '0000' && <EmployeeActionEditor employee={p.employee} locations={p.locations} deps={p.deps} desigs={p.desigs} grades={p.grades} runEmployeeAction={p.runEmployeeAction} />}
-    {p.employeeInfotype === '0001' && <div className="grid">{!p.clientScoped && <F l="Client"><Sel v={String(p.employee.clientId || '')} set={p.applyClient} a={p.clients.map(clientChoice)} /></F>}<F l="Employee code"><input value={p.employee.employeeCode} onChange={event => p.setEmployee({ ...p.employee, employeeCode: event.target.value })} /></F><F l="Work email"><input value={p.employee.workEmail} onChange={event => p.setEmployee({ ...p.employee, workEmail: event.target.value })} /></F><F l="Department"><Sel v={p.employee.department} set={value => p.setEmployee({ ...p.employee, department: value })} a={p.deps} /></F><F l="Designation"><Sel v={p.employee.designation} set={value => p.setEmployee({ ...p.employee, designation: value })} a={p.desigs} /></F><F l="Employee Grade"><Sel v={p.employee.grade} set={value => p.setEmployee({ ...p.employee, grade: value })} a={p.grades} /></F><F l="Employee type"><Sel v={personal.employmentType || ''} set={value => setPersonal('employmentType', value)} a={p.employmentTypes} /></F><F l="Employee category"><Sel v={personal.skillCategory || ''} set={value => setPersonal('skillCategory', value)} a={p.skillCategories} /></F><F l="Work location"><Sel v={String(p.employee.workLocationId || '')} set={value => p.setEmployee({ ...p.employee, workLocationId: Number(value.split(':')[0] || 0) })} a={p.locations.filter(item => item.isActive && item.clientId === p.employee.clientId).map(item => `${item.id}:${item.name}`)} /></F><F l="Reporting manager"><SearchSelect value={p.employee.reportingManagerUserId ?? ''} onChange={value => p.setEmployee({ ...p.employee, reportingManagerUserId: value ? Number(value) : null })} options={managerOptions} /></F><Chk l="Portal access" v={p.employee.portalAccess} set={value => p.setEmployee({ ...p.employee, portalAccess: value })} /><Chk l="Active" v={p.employee.isActive} set={value => p.setEmployee({ ...p.employee, isActive: value })} /></div>}
+    {p.employeeInfotype === '0001' && <div className="grid">{!p.clientScoped && <F l="Client"><Sel v={String(p.employee.clientId || '')} set={p.applyClient} a={p.clients.map(clientChoice)} /></F>}<F l="Employee code"><input value={p.employee.employeeCode} onChange={event => p.setEmployeeCode(event.target.value)} /></F><F l="Work email"><input value={p.employee.workEmail} onChange={event => p.setEmployee({ ...p.employee, workEmail: event.target.value })} /></F><F l="Department"><Sel v={p.employee.department} set={value => p.setEmployee({ ...p.employee, department: value })} a={p.deps} /></F><F l="Designation"><Sel v={p.employee.designation} set={value => p.setEmployee({ ...p.employee, designation: value })} a={p.desigs} /></F><F l="Employee Grade"><Sel v={p.employee.grade} set={value => p.setEmployee({ ...p.employee, grade: value })} a={p.grades} /></F><F l="Employee type"><Sel v={personal.employmentType || ''} set={value => setPersonal('employmentType', value)} a={p.employmentTypes} /></F><F l="Employee category"><Sel v={personal.skillCategory || ''} set={value => setPersonal('skillCategory', value)} a={p.skillCategories} /></F><F l="Work location"><Sel v={String(p.employee.workLocationId || '')} set={value => p.setEmployee({ ...p.employee, workLocationId: Number(value.split(':')[0] || 0) })} a={p.locations.filter(item => item.isActive && item.clientId === p.employee.clientId).map(item => `${item.id}:${item.name}`)} /></F><F l="Reporting manager"><SearchSelect value={p.employee.reportingManagerUserId ?? ''} onChange={value => p.setEmployee({ ...p.employee, reportingManagerUserId: value ? Number(value) : null })} options={managerOptions} /></F><Chk l="Portal access" v={p.employee.portalAccess} set={value => p.setEmployee({ ...p.employee, portalAccess: value })} /><Chk l="Active" v={p.employee.isActive} set={value => p.setEmployee({ ...p.employee, isActive: value })} /></div>}
     {p.employeeInfotype === '0002' && <div className="grid"><F l="First name"><input value={p.employee.firstName} onChange={event => p.setEmployee({ ...p.employee, firstName: event.target.value })} /></F><F l="Last name"><input value={p.employee.lastName} onChange={event => p.setEmployee({ ...p.employee, lastName: event.target.value })} /></F><F l="Gender"><Sel v={p.employee.gender} set={value => p.setEmployee({ ...p.employee, gender: value })} a={['Male', 'Female', 'Other']} /></F><F l="Date of joining"><input type="date" value={p.employee.dateOfJoining} onChange={event => p.setEmployee({ ...p.employee, dateOfJoining: event.target.value })} /></F><F l="Date of birth"><input type="date" value={personal.dateOfBirth || ''} onChange={event => setPersonal('dateOfBirth', event.target.value)} /></F><F l="PAN"><input value={personal.panNumber || ''} onChange={event => setPersonal('panNumber', event.target.value)} /></F><F l="Aadhaar"><input value={personal.aadhaarNumber || ''} onChange={event => setPersonal('aadhaarNumber', event.target.value)} /></F><F l="UAN Number"><input value={personal.uanNumber || ''} onChange={event => setPersonal('uanNumber', event.target.value)} /></F><F l="Mobile"><input value={personal.mobile || ''} onChange={event => setPersonal('mobile', event.target.value)} /></F></div>}
     {p.employeeInfotype === '0006' && <div className="grid"><F l="Address" w><input value={personal.address || ''} onChange={event => setPersonal('address', event.target.value)} /></F><F l="Correspondence Address" w><input value={personal.correspondenceAddress || ''} onChange={event => setPersonal('correspondenceAddress', event.target.value)} /></F><label className="employee-same-address"><input type="checkbox" checked={!!personal.correspondenceAddress && personal.permanentAddress === personal.correspondenceAddress} onChange={event => copyCorrespondence(event.target.checked)} />Same as correspondence address</label><F l="Permanent Address" w><input value={personal.permanentAddress || ''} onChange={event => setPersonal('permanentAddress', event.target.value)} /></F></div>}
     {p.employeeInfotype === '0008' && <div className="employee-salary-panel">
@@ -887,10 +927,11 @@ function EmployeePanel(p: { clientScoped: boolean; employee: Employee; setEmploy
     {p.employee.id > 0 && p.employee.clientId > 0 && !['0000', 'DOCS', '360'].includes(p.employeeInfotype) && <EmployeeDynamicFields employeeId={p.employee.id} clientId={p.employee.clientId} infotypeCode={p.employeeInfotype} changeReason={p.changeReason} />}
     {p.employeeInfotype === '0008' && p.employee.id > 0 && <EmptySalarySetupCleanup employeeId={p.employee.id} clientId={p.employee.clientId} employeeCode={p.employee.employeeCode} onApplied={p.closeModal} />}
     <InfotypeHistory employee={p.employee} infotypeCode={p.employeeInfotype} infotypes={p.infotypes} clients={p.clients} locations={p.locations} managerUsers={p.managerUsers} templates={p.templates} />
+    {p.saveError && <Alert type="error" showIcon role="alert" message={p.saveError} />}
     <div className="actions">
       <button type="button" className="secondary" onClick={p.closeModal}>{p.employeeInfotype === 'DOCS' || p.employeeInfotype === '360' ? 'Close' : 'Cancel'}</button>
       {p.employeeInfotype === 'DOCS' && !p.employee.id && <button type="button" onClick={() => p.setEmployeeInfotype('0001')}>Enter employee details</button>}
-      {p.employeeInfotype !== 'DOCS' && p.employeeInfotype !== '360' && <button type="button" disabled={p.employeeInfotype === '0000'} onClick={p.saveEmployee}>Save infotype</button>}
+      {p.employeeInfotype !== 'DOCS' && p.employeeInfotype !== '360' && <button id="employee-infotype-save" type="button" className={p.dirty ? 'employee-update' : undefined} disabled={p.saving || p.employeeInfotype === '0000'} onClick={p.saveEmployee}>{p.saving ? (p.employee.id ? 'Updating…' : 'Saving…') : p.dirty ? 'Update' : 'Save infotype'}</button>}
     </div></section>
 }
 

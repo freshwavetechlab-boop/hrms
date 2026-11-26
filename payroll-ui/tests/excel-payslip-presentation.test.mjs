@@ -9,6 +9,55 @@ const {currentPayslip,payslipCurrentMasterFields}=exports
 const row=()=>({id:'row',employeeCode:'SYN-1',employeeName:'Synthetic employee',information:[{label:'Designation_Manpower Category',value:'Operator'}],netPay:1200.123,
   earnings:[{label:'Basic',amount:1200.123}],employment:{employeeId:7,identityReviewRequired:false},masterDetails:{employeeId:7,designation:'Supervisor'}})
 
+test('verified legacy employment refreshes displayed codes without changing source, profile or pay', () => {
+  const captured = row()
+  captured.email = 'original@example.test'
+  const currentLabels = ['Employee Code', 'Emp Code (J)', 'Employee No.', 'Emp No.', 'Employee Number', 'Emp Number']
+  const sourceLabels = ['ID No.', 'Source Employee Code', 'Source New Employee Code', 'Original Employee Code', 'Employee Code (old)', 'Department Code', 'Unit']
+  captured.information = [...currentLabels, ...sourceLabels].map(label => ({ label, value: 'SYN-1' }))
+  const fresh = structuredClone(captured)
+  fresh.employment.employeeCode = 'SYN-1A'
+  Object.assign(fresh.masterDetails, { employeeName: 'Unlinked name', email: 'unlinked@example.test', fields: { accountno: 'unlinked' }, salary: { status: 'Updated', netPay: 999 } })
+  const batch = { id: 'batch', clientId: 9, rows: [captured] }
+  const merged = mergePayslipMasterDetails(batch, { ...batch, rows: [fresh] })
+  const current = currentPayslip(merged.rows[0])
+  assert.equal(current.employeeCode, 'SYN-1A')
+  assert.deepEqual(current.information.map(field => field.value), [...currentLabels.map(() => 'SYN-1A'), ...sourceLabels.map(() => 'SYN-1')])
+  assert.deepEqual(current.earnings, captured.earnings)
+  assert.equal(current.netPay, captured.netPay)
+  assert.equal(current.employeeName, captured.employeeName)
+  assert.equal(current.email, captured.email)
+  assert.equal(captured.employeeCode, 'SYN-1')
+  assert.equal(merged.rows[0].employeeCode, 'SYN-1')
+  for (const employment of [{ ...fresh.employment, employeeId: 8 }, { ...fresh.employment, identityReviewRequired: true }, { ...fresh.employment, employeeCode: '  ' }])
+    assert.equal(currentPayslip({ ...fresh, employment }).employeeCode, 'SYN-1')
+  const linked = structuredClone(fresh)
+  Object.assign(linked.masterDetails, { linked: true, employeeCode: 'SYN-1A', fields: { 'source:originalemployeecode': 'wrong', 'source:employeecode': 'old source' } })
+  const info = payslipDisplayInformation(linked)
+  assert.equal(info.find(field => field.label === 'Employee Code').value, 'SYN-1A')
+  assert.equal(info.find(field => field.label === 'Original Employee Code').value, 'SYN-1')
+})
+
+test('Employee Master save notifies matching clients in this window and another tab once', { timeout: 3000 }, async () => {
+  const js = ts.transpileModule(readFileSync(new URL('../src/services/employeeMasterChanges.ts',import.meta.url),'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
+  const loadTab = () => {
+    const module = {}
+    new Function('exports', 'window', js)(module, new EventTarget())
+    return module
+  }
+  const first = loadTab(), second = loadTab(), received = [], subscriptions = []
+  const heard = (tab, label) => new Promise(resolve => {
+    subscriptions.push(tab.onEmployeeMasterSaved(9, () => { received.push(label); resolve() }))
+  })
+  try {
+    const updates = Promise.all([heard(first, 'first'), heard(second, 'second')])
+    subscriptions.push(second.onEmployeeMasterSaved(11, () => received.push('wrong client')))
+    first.notifyEmployeeMasterSaved(9)
+    await updates
+    assert.deepEqual(received.sort(), ['first', 'second'])
+  } finally { subscriptions.forEach(unsubscribe => unsubscribe()) }
+})
+
 test('current verified Master designation is displayed while captured source and salary stay unchanged',()=>{
  const item=row(),before=JSON.stringify(item)
  assert.equal(payslipDesignation(item),'Supervisor')

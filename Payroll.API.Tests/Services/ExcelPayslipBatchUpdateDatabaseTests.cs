@@ -22,6 +22,38 @@ public sealed class ExcelPayslipBatchUpdateDatabaseTests
         public IsolatedTheoryAttribute() { if (Environment.GetEnvironmentVariable("FREVO_EXCEL_BATCH_UPDATE_TEST_DB") is null) Skip = "Explicit isolated batch-update database required."; }
     }
     private static AuthUser Actor(int id = 9907) => new() { Id = id, IsActive = true, Email = "update-test@example.invalid", DisplayName = "Synthetic update reviewer", ClientAccessMode = "All", Roles = ["admin"], Permissions = ["employees.manage", "reports.payroll.view", "payroll.run"] };
+    [IsolatedFact]
+    public async Task EmployeeMasterCodeCorrectionReachesSavedPayslipWithoutRewritingSourceOrOtherMasterData()
+    {
+        var fixture = await FixtureAsync(second: true);
+        var employees = new EmployeeRepository(fixture.Config, null!, null!);
+        const string oldCode = "PROFILE-107", newCode = "PROFILE-107A";
+        const string actor = "identity-test@example.invalid";
+        await using var db = await fixture.OpenAsync();
+        async Task<string> ProtectedState() => await db.QuerySingleAsync<string>("""
+            SELECT CAST(JSON_ARRAY(e.FirstName,e.WorkEmail,e.PersonalJson,e.PaymentJson,e.SalaryJson,e.AnnualCtc,
+                b.batch_json,s.source_json) AS CHAR)
+            FROM employees e JOIN excel_payslip_batches b ON b.client_id=e.ClientId
+            JOIN excel_payslip_calculation_sources s ON s.client_id=b.client_id AND s.batch_id=b.id
+            WHERE e.Id=107 AND b.id=@batch
+            """, new {batch = ExcelPayslipBatchUpdateFixture.BatchId});
+        var before = await ProtectedState();
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => employees.SaveEmployeeCodeAsync(107, 908, oldCode, newCode, actor, null));
+        await Assert.ThrowsAsync<System.Data.DBConcurrencyException>(() => employees.SaveEmployeeCodeAsync(107, 907, oldCode, "PROFILE-108", actor, null));
+        var saved = await employees.SaveEmployeeCodeAsync(107, 907, oldCode, newCode, actor, null);
+        Assert.Equal(new EmployeeSaveResult(107, newCode), saved);
+        Assert.Equal(saved, await employees.SaveEmployeeCodeAsync(107, 907, oldCode, newCode, actor, null));
+        await Assert.ThrowsAsync<System.Data.DBConcurrencyException>(() => employees.SaveEmployeeCodeAsync(107, 907, oldCode, "PROFILE-107B", actor, null));
+        Assert.Equal(newCode, await db.QuerySingleAsync<string>("SELECT EmployeeCode FROM employees WHERE Id=107"));
+        Assert.Equal(1, await db.ExecuteScalarAsync<int>("""
+            SELECT COUNT(*) FROM employee_audit_trail WHERE EmployeeId=107 AND FieldName='EmployeeCode' AND InfotypeCode='0001'
+                AND OldValue=@oldCode AND NewValue=@newCode AND ChangedBy=@actor
+            """, new {oldCode, newCode, actor}));
+        var batch = await fixture.Repository.GetAsync(907, ExcelPayslipBatchUpdateFixture.BatchId);
+        var row = batch!.Rows.Single(row => row.EmployeeCode == oldCode);
+        Assert.Equal(newCode, ExcelPayslipPresentation.Current(row).EmployeeCode);
+        Assert.Equal(before, await ProtectedState());
+    }
     private static async Task<ExcelPayslipBatchUpdateFixture> FixtureAsync(bool second = false)
     {
         var fixture = new ExcelPayslipBatchUpdateFixture(Environment.GetEnvironmentVariable("FREVO_EXCEL_BATCH_UPDATE_TEST_DB")!);

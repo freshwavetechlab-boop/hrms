@@ -43,7 +43,7 @@ WHERE u.IsActive=TRUE
   AND (@ClientId IS NULL OR u.ClientId=@ClientId)
 ORDER BY u.DisplayName,u.Email", new { ClientId = clientId });
     }
-    public async Task<int> SaveAsync(Employee employee, string changedBy = "System", string? infotypeCode = null, string? changeReason = null)
+    public async Task<EmployeeSaveResult> SaveAsync(Employee employee, string changedBy = "System", string? infotypeCode = null, string? changeReason = null)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db);
         await EnsureDefaultTaxProfileTableAsync(db);
@@ -65,8 +65,9 @@ ORDER BY u.DisplayName,u.Email", new { ClientId = clientId });
             throw new InvalidOperationException($"This person matches employee {identity.MatchedEmployeeCode}. Edit the existing employee instead of creating a duplicate.");
         var id = await SaveWithOpenConnectionAsync(db, employee, changedBy, infotypeCode, changeReason, tx,
             synchronizeAttendancePolicies: !personalOnly && !bankOnly, personalOnly: personalOnly, bankOnly: bankOnly);
+        var saved = await ReadSavedEmployeeCodeAsync(db, tx, id, employee.ClientId);
         await tx.CommitAsync();
-        return id;
+        return saved;
     }
 
     private static async Task<int> SaveWithOpenConnectionAsync(MySqlConnection db, Employee employee, string changedBy = "System", string? infotypeCode = null, string? changeReason = null, MySqlTransaction? tx = null, DateTime? effectiveDate = null, bool synchronizeAttendancePolicies = true, bool salaryOnly = false, bool personalOnly = false, bool bankOnly = false)
@@ -1782,6 +1783,7 @@ VALUES (@Id,@EmployeeCode,@ActionType,@InfotypeCode,@FieldName,@OldValue,@NewVal
     static Dictionary<string, string> AuditValues(Employee employee) => new()
     {
         ["0000:IsActive"] = employee.IsActive.ToString(),
+        ["0001:EmployeeCode"] = employee.EmployeeCode,
         ["0001:EmploymentType"] = employee.PersonalDetails.EmploymentType,
         ["0001:SkillCategory"] = employee.PersonalDetails.SkillCategory,
         ["0001:Department"] = employee.Department ?? "",

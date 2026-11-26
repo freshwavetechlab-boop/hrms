@@ -196,11 +196,20 @@ export const startSalaryTemplateImport = (file: File) => {
   return postForm<BulkImportStatus>('/api/salary-templates/import-jobs', body, { jobId: '', state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: [] }, { toast: false })
 }
 export const getSalaryTemplateImportJob = (jobId: string) => getJson<BulkImportStatus>(`/api/salary-templates/import-jobs/${jobId}`, { jobId, state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: ['Import job not found.'] })
+type EmployeeSaveReceipt = { id: number; employeeCode?: string }
+
+export const updateEmployeeCode = (id: number, change: { clientId: number; expectedEmployeeCode: string; employeeCode: string; changeReason: string }) => {
+  const query = new URLSearchParams({ infotypeCode: '0001', employeeCodeOnly: 'true', expectedEmployeeCode: change.expectedEmployeeCode })
+  if (change.changeReason.trim()) query.set('changeReason', change.changeReason.trim())
+  const body = { id, clientId: change.clientId, employeeCode: change.employeeCode }
+  return postJson<typeof body, EmployeeSaveReceipt>(`/api/employees?${query}`, body, { id: 0 }, { toast: false })
+}
+
 export const saveEmployee = (employee: Employee, infotypeCode?: string, changeReason = '') => {
   const query = new URLSearchParams()
   if (infotypeCode) query.set('infotypeCode', infotypeCode)
   if (changeReason.trim()) query.set('changeReason', changeReason.trim())
-  return postJson(`/api/employees${query.size ? `?${query}` : ''}`, employee, { id: employee.id })
+  return postJson<Employee, EmployeeSaveReceipt>(`/api/employees${query.size ? `?${query}` : ''}`, employee, { id: 0 })
 }
 export const getEmployeeManagerUsers = () => getJson<WorkflowApprover[]>('/api/employees/manager-users', [])
 export const getEmployeeInfotypes = (id: number, activeOnly = false) => getJson<EmployeeInfotypeRecord[]>(`/api/employees/${id}/infotypes?activeOnly=${activeOnly}`, [])

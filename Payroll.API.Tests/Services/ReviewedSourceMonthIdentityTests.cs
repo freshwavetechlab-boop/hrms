@@ -15,7 +15,7 @@ public sealed class ReviewedSourceMonthIdentityTests
         var text=File.ReadAllText(Path.Combine(AppContext.BaseDirectory,"FrevoPilot","docs","excel-payroll-mapping.md"));
         var lesson=Assert.Single(ExcelPayslipMappingService.Retrieve(columns,text,[]),reference=>reference.Title.StartsWith("Bio Metric ID AADHAR NO PAN Employee code:"));
         Assert.True(lesson.Content.Length<2600);Assert.Contains("generated display code",lesson.Content);
-        Assert.Contains("physical presence stays unknown",lesson.Content);Assert.Equal("excel-payroll-mapping-v79",ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Contains("physical presence stays unknown",lesson.Content);Assert.Equal("excel-payroll-mapping-v80",ExcelPayslipMappingService.KnowledgeVersion);
     }
     private static ExcelPayslipBatch Batch()=>new(){Id=new('a',32),ClientId=11,Month="2026-10",
         Rows=[new(){Id="row-7",SourceRow=7,EmployeeCode="DISPLAY008",EmployeeName="Example Employee"}]};

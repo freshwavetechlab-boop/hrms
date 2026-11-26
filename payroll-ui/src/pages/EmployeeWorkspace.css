@@ -15,6 +15,8 @@
 .employee-card .employee-infotype-tabs .ant-tabs-content-holder { display: none; }
 .employee-card .employee-infotype-tabs .ant-tabs-tab { padding: 10px 0; }
 .employee-modal { overscroll-behavior: contain; }
+#employee-infotype-save.employee-update { background: #facc15 !important; border-color: #ca8a04 !important; color: #422006 !important; }
+#employee-infotype-save.employee-update:hover { background: #eab308 !important; }
 .employee-missing-information { background: #fff7e6; border: 1px solid #ffd591; border-radius: 10px; padding: 9px 11px; margin-top: 6px; min-width: 0; color: #874d00; }
 .employee-missing-information summary { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .employee-missing-information summary > span:last-child { background: #ad6800; color: #fff; border-radius: 12px; padding: 0 7px; font-size: 11px; }

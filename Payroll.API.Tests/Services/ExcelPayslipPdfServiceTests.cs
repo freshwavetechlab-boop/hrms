@@ -136,6 +136,25 @@ public class ExcelPayslipPdfServiceTests
     }
 
     [Fact]
+    public void StandardPdfPrintsVerifiedCurrentCodeOnceAndRetainsAnExplicitHistoricalCode()
+    {
+        var row = Sample();
+        row.EmployeeCode = "PREVIOUS001";
+        row.Employment = new(7, "CURRENT001", "Active", null, false, false);
+        row.MasterDetails = new(7, "");
+        row.Information = [
+            new() { Label = "Emp Code", Value = row.EmployeeCode },
+            new() { Label = "Employee No.", Value = row.EmployeeCode },
+            new() { Label = "Source employee code", Value = "HISTORICAL001" }
+        ];
+        using var pdf = PdfReader.Open(new MemoryStream(new ExcelPayslipPdfService().Create(Batch(row), [row])), PdfDocumentOpenMode.Import);
+        var content = Encoding.Latin1.GetString(pdf.Pages[0].Contents.CreateSingleContent().Stream.UnfilteredValue);
+        Assert.Equal(2, content.Split("CURRENT001").Length);
+        Assert.DoesNotContain("PREVIOUS001", content);
+        Assert.Contains("HISTORICAL001", content);
+    }
+
+    [Fact]
     public void EmptySelectionCannotProduceAnInvalidEmptyPdf() => Assert.Throws<InvalidOperationException>(
         () => new ExcelPayslipPdfService().Create(Batch(), [], false));
 

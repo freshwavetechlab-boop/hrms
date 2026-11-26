@@ -4641,10 +4641,22 @@ app.MapGet("/api/employees/manager-users", async (EmployeeRepository repository,
 .WithName("GetEmployeeManagerUsers")
 .WithOpenApi();
 
-app.MapPost("/api/employees", async (EmployeeRepository repository, Employee employee, HttpContext context, string? infotypeCode, string? changeReason) =>
+app.MapPost("/api/employees", async (EmployeeRepository repository, Employee employee, HttpContext context, string? infotypeCode, string? changeReason, bool? employeeCodeOnly, string? expectedEmployeeCode) =>
 {
     if (!HasPermission(context, "employees.manage")) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (!CanAccessClient(context, employee.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (employeeCodeOnly == true)
+    {
+        if (infotypeCode != "0001") return Results.BadRequest(new { error = "Edit the employee code under Organizational Assignment (0001)." });
+        try
+        {
+            return Results.Ok(await repository.SaveEmployeeCodeAsync(employee.Id, employee.ClientId, expectedEmployeeCode,
+                employee.EmployeeCode, CurrentUser(context).Email, changeReason));
+        }
+        catch (KeyNotFoundException error) { return Results.NotFound(new { error = error.Message }); }
+        catch (System.Data.DBConcurrencyException error) { return Results.Conflict(new { error = error.Message }); }
+        catch (InvalidOperationException error) { return Results.BadRequest(new { error = error.Message }); }
+    }
     if (employee.ClientId == 0 || string.IsNullOrWhiteSpace(employee.EmployeeCode) || string.IsNullOrWhiteSpace(employee.FirstName))
         return Results.BadRequest(new { error = "Client, employee code and first name are required." });
     employee.SalaryJson = string.IsNullOrWhiteSpace(employee.SalaryJson) ? "{}" : employee.SalaryJson;
@@ -4652,8 +4664,7 @@ app.MapPost("/api/employees", async (EmployeeRepository repository, Employee emp
     employee.PaymentJson = string.IsNullOrWhiteSpace(employee.PaymentJson) ? "{}" : employee.PaymentJson;
     try
     {
-        var id = await repository.SaveAsync(employee, CurrentUser(context).Email, infotypeCode, changeReason);
-        return Results.Ok(new { id });
+        return Results.Ok(await repository.SaveAsync(employee, CurrentUser(context).Email, infotypeCode, changeReason));
     }
     catch (InvalidOperationException exception) { return Results.BadRequest(new { error = exception.Message }); }
 })
