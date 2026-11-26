@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Button, Checkbox, Select, Space, Spin, Tag } from 'antd'
 import { EyeOutlined, ReloadOutlined } from '@ant-design/icons'
 import { getCorePayslipDesign, getCopiedPayslipDesign, getPayslipDesign, getPayslipDesignSources, previewPayslipDesign, previewPayslipDesignPdf, savePayslipDesign, type PayslipDesignCatalog, type PayslipDesignField, type PayslipDesignSource, type PayslipDesignTemplate, type SavedPayslipDesign, type SavePayslipDesignRequest } from '../services/payslipService'
-import { PayslipPreviewLease, payslipDesignIssues, payslipDesignPeriodIssues, payslipDesignPeriodLabel, payslipDesignPeriodRequest, payslipDesignPreviewIssues, payslipDesignScopeCapabilityIssues } from '../utils/payslipDesign'
+import { PayslipPreviewLease, payslipDesignIssues, payslipDesignPeriodIssues, payslipDesignPeriodLabel, payslipDesignPeriodRequest, payslipDesignPreviewIssues, payslipDesignScopeCapabilityIssues, payslipSalaryTemplateNames } from '../utils/payslipDesign'
 import SearchSelect from './SearchSelect'
 import PdfCanvasPreview from './PdfCanvasPreview'
 import PayslipFieldPicker from './PayslipFieldPicker'
@@ -44,6 +44,13 @@ export default function ExcelPayslipDesignEditor({ template, copySeed, salaryTem
   const periodIssues = payslipDesignPeriodIssues(payPeriods)
   const reviewKey = JSON.stringify({ template, sourceId, sourceHash: catalog?.sourceHash, fields, decimals, payPeriods, periodScopeChanged })
   const mappingIssues = payslipDesignIssues(catalog, fields, template.clientId)
+  const salaryTemplateNames = useMemo(() => copySeed ? payslipSalaryTemplateNames(salaryTemplates, components) : new Map<string, string[]>(), [copySeed, salaryTemplates, components])
+  const target = clients.find(client => client.id === template.clientId)
+  const copyReview = copySeed ? {
+    sourceName: copySeed.template.name,
+    targetName: target?.code || target?.name || `Client #${template.clientId}`,
+    salaryTemplateNames,
+  } : undefined
   const scopeCapabilityIssues = payslipDesignScopeCapabilityIssues(catalog, payPeriods)
   const issues = [...mappingIssues, ...periodIssues, ...scopeCapabilityIssues]
   const previewIssues = [...payslipDesignPreviewIssues(catalog, fields, template.clientId), ...periodIssues]
@@ -200,7 +207,9 @@ export default function ExcelPayslipDesignEditor({ template, copySeed, salaryTem
   if (template.clientId <= 0) return <Alert type="info" showIcon message="Choose a client to configure its Excel Payslip design." />
   return <section className="excel-payslip-design-editor" aria-label="Excel Payslip design">
     <Alert type="info" showIcon message={corePayrollOnly ? 'Design only · amounts from this client’s core payroll' : 'Use saved Excel labels with approved payroll amounts'} description={corePayrollOnly ? 'Labels, field mappings, order and visibility belong to this independent template. Final slips read this client’s approved payroll and employee details. No Excel upload is required.' : 'Choose this client’s source, map each label to a saved payroll component or employee field, then save the template and design together. Hiding a field changes its display only.'} />
-    {copySeed && catalog && <Alert type="success" showIcon message={`Independent copy of ${copySeed.template.name}`} description="Layout, mappings, order, visibility and amount display are ready. Save this copy as it is or edit it first; the original template is unchanged." />}
+    {copyReview && catalog && <Alert type={mappingIssues.length ? 'warning' : 'info'} showIcon
+      message={`Copying ${copyReview.sourceName} to ${copyReview.targetName}`}
+      description={`The left column shows the copied label and original code. On the right, choose the field that supplies its value from ${copyReview.targetName}. Use Add salary fields for components missing from this design.`} />}
     <div className="excel-payslip-design-controls">
       {template.id === 0 && !copySeed && <label><span>Design fields</span><Select aria-label="Payslip design fields source" value={newDesignSource} disabled={loading || locked} options={[{ value: 'CorePayroll', label: 'Salary template components' }, { value: 'ExcelSource', label: 'Saved Excel labels (optional)' }]} onChange={value => { setNewDesignSource(value); setCorePayrollOnly(value === 'CorePayroll'); setCatalog(null); setFields([]); setSourceId(''); setProfileHash(''); setAcknowledgedKey(''); setError(''); setStale(false); setSaved(false); setLoading(true) }} /></label>}
       {!corePayrollOnly && <label><span>Saved source</span><SearchSelect value={sourceId} disabled={loading || locked} placeholder="Select this client’s saved batch" options={sources.map(source => ({ value: source.id, label: source.month + ' · ' + source.name }))} onChange={value => void loadSource(value)} /></label>}
@@ -228,7 +237,7 @@ export default function ExcelPayslipDesignEditor({ template, copySeed, salaryTem
     </section>}
     {catalog && !loading && <>
       <Space wrap><Tag color="blue">{'Shown: ' + fields.filter(field => field.visible).length + ' of ' + fields.length + ' fields'}</Tag><Tag>{catalog.simpleLayout ? 'Layout: Simple' : 'Layout: Standard'}</Tag><span>{corePayrollOnly ? 'Independent design with core payroll and Employee Master mappings.' : 'Saved source and available Master fields; this count is not a fixed limit.'}</span></Space>
-      <PayslipFieldPicker catalog={catalog} fields={fields} disabled={locked} portable={corePayrollOnly} onChange={next => { setFields(next); setSaved(false) }} />
+      <PayslipFieldPicker catalog={catalog} fields={fields} disabled={locked} portable={corePayrollOnly} copyReview={copyReview} onChange={next => { setFields(next); setSaved(false) }} />
       {mappingIssues.length > 0 && <Alert type="warning" showIcon message={mappingIssues.length + ' mapping ' + (mappingIssues.length === 1 ? 'item needs' : 'items need') + ' review'} description={<ul>{mappingIssues.slice(0, 8).map(issue => <li key={issue}>{issue}</li>)}{mappingIssues.length > 8 && <li>Review the remaining fields above.</li>}</ul>} />}
       <div className="excel-payslip-design-save-bar">
         <Checkbox disabled={locked || !!issues.length || stale || !template.name.trim()} checked={acknowledgedKey === reviewKey} onChange={event => setAcknowledgedKey(event.target.checked ? reviewKey : '')}>I reviewed this client’s labels, mappings, order, visibility and payroll months.</Checkbox>

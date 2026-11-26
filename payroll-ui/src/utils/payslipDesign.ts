@@ -1,4 +1,5 @@
 import type { PayslipDesignCatalog, PayslipDesignCode, PayslipDesignField, PayslipDesignKind, SavePayslipDesignRequest } from '../services/payslipService'
+import type { Component, Structure } from '../types/payroll'
 
 export const excelPayslipTheme = 'Excel Payslip'
 function existingMonthlyInformationCode(token: string, codes: readonly PayslipDesignCode[]): string | null {
@@ -56,6 +57,34 @@ export const nativePayslipKind = (category: string): PayslipDesignKind | '' => {
     default: return ''
   }
 }
+export function matchingPayslipComponent(codes: readonly PayslipDesignCode[], field: Pick<PayslipDesignField, 'kind' | 'nativeCode'>): PayslipDesignCode | undefined {
+  return codes.find(component => component.code === field.nativeCode && nativePayslipKind(component.category) === field.kind)
+}
+
+// The caller supplies the selected client's templates. Payroll-only outputs can
+// be present in the catalogue without belonging to any of these templates.
+export function payslipSalaryTemplateNames(
+  salaryTemplates: readonly Pick<Structure, 'id' | 'name' | 'active' | 'lines'>[],
+  components: readonly Pick<Component, 'id' | 'code' | 'active' | 'category'>[],
+): Map<string, string[]> {
+  const masters = new Map(components.filter(component => component.active).map(component => [String(component.id), component]))
+  const names = new Map<string, string[]>()
+  for (const template of salaryTemplates) {
+    if (!template.active || !template.id) continue
+    const name = template.name.trim() || `Template #${template.id}`
+    for (const line of template.lines) {
+      const component = masters.get(String(line.componentId))
+      if (!component) continue
+      const kind = nativePayslipKind(component.category)
+      if (!kind) continue
+      const key = `${kind}:${component.code}`
+      const existing = names.get(key)
+      if (!existing) names.set(key, [name])
+      else if (!existing.includes(name)) existing.push(name)
+    }
+  }
+  return names
+}
 export function payslipDesignIssues(catalog: PayslipDesignCatalog | null, fields: PayslipDesignField[], clientId: number): string[] {
   if (!catalog || catalog.clientId !== clientId || clientId <= 0) return ['Choose a saved source for this client.']
   const issues: string[] = []
@@ -71,7 +100,7 @@ export function payslipDesignIssues(catalog: PayslipDesignCatalog | null, fields
     if (field.kind === 'info') {
       if (field.nativeCode || (field.visible || field.infoToken) && !catalog.infoTokens.includes(field.infoToken)) issues.push(`${field.label}: select a supported information field or hide it.`)
     } else {
-      if (field.infoToken || !catalog.nativeCodes.some(value => value.code === field.nativeCode && nativePayslipKind(value.category) === field.kind)) issues.push(`${field.label}: map the matching saved payroll component.`)
+      if (field.infoToken || !matchingPayslipComponent(catalog.nativeCodes, field)) issues.push(`${field.label}: map the matching saved payroll component.`)
       const key = `${field.kind}:${field.nativeCode}`
       if (field.nativeCode && mapped.has(key)) issues.push(`${field.label}: this payroll component is already mapped.`)
       mapped.add(key)
@@ -94,7 +123,7 @@ export function payslipDesignPreviewIssues(catalog: PayslipDesignCatalog | null,
     if (field.sourceColumn >= 1500 && (!original || field.label !== original.label || field.infoToken !== original.infoToken || field.kind !== 'info')) issues.push('Retain the verified Master information field.')
     if (field.kind === 'info') {
       if (field.nativeCode || field.infoToken && !catalog.infoTokens.includes(field.infoToken) && !existingMonthlyInformationCode(field.infoToken, catalog.nativeCodes)) issues.push('Choose a supported information field.')
-    } else if (field.infoToken || field.nativeCode && !catalog.nativeCodes.some(code => code.code === field.nativeCode && nativePayslipKind(code.category) === field.kind)) issues.push('Choose a supported payroll component.')
+    } else if (field.infoToken || field.nativeCode && !matchingPayslipComponent(catalog.nativeCodes, field)) issues.push('Choose a supported payroll component.')
   }
   return [...new Set(issues)]
 }

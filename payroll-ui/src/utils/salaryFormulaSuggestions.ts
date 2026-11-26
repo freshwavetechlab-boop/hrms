@@ -13,6 +13,27 @@ const identifier = /^[A-Z_][A-Z0-9_]*$/
 const normalize = (value: string) => value.trim().toUpperCase()
 const unavailable = (value: PayrollValue) => /^(missing from|inactive|unavailable|not available)\b/i.test(value.availability.trim())
 
+// Names and argument counts follow the native payroll evaluator. The signature
+// is help text only; selection inserts parentheses without sample pay values.
+const payrollFunctions = [
+  { name: 'IF', signature: 'IF(condition, amount if true, amount if false)', description: 'Choose an amount based on a condition.' },
+  { name: 'IFERROR', signature: 'IFERROR(calculation, fallback)', description: 'Use the fallback amount for an arithmetic error.' },
+  { name: 'MIN', signature: 'MIN(value, …)', description: 'Return the smallest value.' },
+  { name: 'MAX', signature: 'MAX(value, …)', description: 'Return the largest value.' },
+  { name: 'SUM', signature: 'SUM(value, …)', description: 'Add the values together.' },
+  { name: 'ROUND', signature: 'ROUND(value, digits)', description: 'Round to the nearest value at the given precision.' },
+  { name: 'ROUNDUP', signature: 'ROUNDUP(value, digits)', description: 'Round away from zero at the given precision.' },
+  { name: 'ROUNDDOWN', signature: 'ROUNDDOWN(value, digits)', description: 'Round toward zero at the given precision.' },
+  { name: 'ABS', signature: 'ABS(value)', description: 'Return the absolute value.' },
+  { name: 'AND', signature: 'AND(condition, …)', description: 'Check whether every condition is true.' },
+  { name: 'OR', signature: 'OR(condition, …)', description: 'Check whether any condition is true.' },
+]
+
+export function salaryFormulaFunctionSuggestions(query: string) {
+  const prefix = normalize(query)
+  return prefix ? payrollFunctions.filter(fn => fn.name.startsWith(prefix)) : []
+}
+
 /** Suggestions never add a component or translate a display name into a code. */
 export function salaryFormulaSuggestions(values: readonly PayrollValue[], query: string, scope: SalaryFormulaSuggestionScope): SalaryFormulaSuggestion[] {
   const included = new Set(scope.includedComponentIds.map(String))
@@ -68,4 +89,14 @@ export function replaceSalaryFormulaToken(value: string, token: string, selectio
   if (!identifier.test(code)) throw new Error('Select a valid payroll token code.')
   const bounds = getSalaryFormulaTokenContext(value, selectionStart, selectionEnd) ?? selection(value, selectionStart, selectionEnd)
   return { value: value.slice(0, bounds.start) + code + value.slice(bounds.end), caret: bounds.start + code.length }
+}
+
+export function replaceSalaryFormulaFunction(value: string, name: string, selectionStart?: number | null, selectionEnd?: number | null): { value: string; caret: number } {
+  const functionName = normalize(name)
+  if (!payrollFunctions.some(fn => fn.name === functionName)) throw new Error('Select a supported payroll function.')
+  const replacement = replaceSalaryFormulaToken(value, functionName, selectionStart, selectionEnd)
+  const suffix = replacement.value.slice(replacement.caret)
+  const existingOpening = /^\s*\(/.exec(suffix)
+  if (existingOpening) return { value: replacement.value, caret: replacement.caret + existingOpening[0].length }
+  return { value: replacement.value.slice(0, replacement.caret) + '()' + suffix, caret: replacement.caret + 1 }
 }

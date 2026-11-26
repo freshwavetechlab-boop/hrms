@@ -1,8 +1,20 @@
-.salary-formula-input { width: 100%; min-width: 0; }
-.salary-template-components .salary-formula-input .ant-input { height: 32px; min-height: 32px; width: 100%; min-width: 0; padding: 5px 8px; border: 1px solid #d7dbe8; border-radius: 5px; background: #fcfcfe; color: #33415e; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; }
-.salary-template-components .salary-formula-input .ant-input:focus { border-color: #957af4; box-shadow: 0 0 0 2px #ede7ff; }
-.salary-formula-input.is-multiline textarea.ant-input { width: 100%; min-width: 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; }
+.salary-formula-box { display: flex; align-items: stretch; min-width: 0; border: 1px solid #8390a5; border-radius: 6px; background: #fff; color: #20304a; cursor: text; }
+.salary-formula-box:focus-within { border-color: #7156be; outline: 2px solid #e4def6; }
+.salary-formula-box[data-invalid] { border-color: #ad6918; }
+.salary-formula-box[data-disabled] { opacity: .65; }
+.salary-formula-box .salary-formula-fx { display: flex; align-items: flex-start; flex: none; margin: 0; padding: 7px 8px; border-inline-end: 1px solid #d6dae3; border-radius: 5px 0 0 5px; background: #f4f2f9; color: #59457b; font: italic 600 14px/20px Georgia, serif; cursor: text; }
+.salary-formula-input { flex: 1; width: 100%; min-width: 0; }
+.salary-formula-box .salary-formula-input .ant-select-selector { border: 0; box-shadow: none; background: transparent; }
+.salary-formula-box .salary-formula-input .ant-input { width: 100%; min-width: 0; padding: 7px 9px; border: 0; outline: 0; box-shadow: none; background: transparent; color: inherit; font: 12px/20px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.salary-formula-box .salary-formula-input input.ant-input { height: 34px; }
+.salary-formula-box .salary-formula-input textarea.ant-input { min-height: 76px; font-size: 13px; }
+.salary-formula-box .ant-input::placeholder { color: #64748b; opacity: 1; }
 .salary-formula-suggestions { max-width: calc(100vw - 24px); z-index: 1900; }
 .salary-formula-suggestion { display: grid; gap: 3px; white-space: normal; padding-block: 3px; }
 .salary-formula-suggestion > strong { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: #5934af; overflow-wrap: anywhere; }
 .salary-formula-suggestion > span { font-size: 11px; color: #475467; line-height: 1.5; }
+.salary-formula-field { display: grid; min-width: 0; gap: 4px; }
+.salary-formula-correction { display: grid; justify-items: start; gap: 5px; min-width: 0; padding: 6px 8px; border-inline-start: 2px solid #d18a24; background: #fff8ed; color: #714209; font-size: 12px; font-weight: 500; line-height: 1.45; overflow-wrap: anywhere; }
+.salary-formula-correction [role="status"] { display: grid; gap: 3px; min-width: 0; }
+.salary-formula-correction code { color: #38445a; white-space: pre-wrap; }
+.salary-formula-correction button { border: 0; padding: 2px 0; background: transparent; color: #5333a6; text-decoration: underline; font: inherit; font-weight: 600; cursor: pointer; }

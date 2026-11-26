@@ -3,9 +3,15 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 
-const exports = {}
-new Function('exports', ts.transpileModule(readFileSync(new URL('../src/utils/salaryFormulaSuggestions.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText)(exports)
-const { salaryFormulaSuggestions: suggest, getSalaryFormulaTokenContext: context, replaceSalaryFormulaToken: replace } = exports
+function loadUtility(name) {
+  const exports = {}
+  const source = readFileSync(new URL('../src/utils/' + name + '.ts', import.meta.url), 'utf8')
+  new Function('exports', ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText)(exports)
+  return exports
+}
+const { salaryFormulaSuggestions: suggest, getSalaryFormulaTokenContext: context, replaceSalaryFormulaToken: replace,
+  salaryFormulaFunctionSuggestions: functions, replaceSalaryFormulaFunction: insertFunction } = loadUtility('salaryFormulaSuggestions')
+const { inspectPayrollFormula } = loadUtility('payrollFormula')
 const item = (token, componentId, meaning = token, availability = componentId ? 'Included in this template' : 'Required payroll input') => ({ token, componentId, meaning, availability, source: componentId ? 'Calculated component / employee salary assignment' : 'Attendance result', unit: 'Amount', example: '', legacy: false })
 const values = [
   item('PAYROLL_DAYS'),
@@ -69,4 +75,29 @@ test('insertion at a blank caret or whole selected expression preserves other te
   assert.deepEqual(replace('BASIC+HRA', 'BASIC_MONTHLY', 0, 9), { value: 'BASIC_MONTHLY', caret: 13 })
   assert.deepEqual(replace('', 'BASIC'), { value: 'BASIC', caret: 5 })
   assert.throws(() => replace('BAS', 'Basic salary'), /valid payroll token code/)
+})
+
+test('partial function names offer supported call signatures without needing a component catalogue', () => {
+  assert.deepEqual(functions(' if ').map(fn => fn.name), ['IF', 'IFERROR'])
+  assert.deepEqual(functions('round').map(fn => fn.name), ['ROUND', 'ROUNDUP', 'ROUNDDOWN'])
+  assert.deepEqual(functions('M').map(fn => fn.name).sort(), ['MAX', 'MIN'])
+  assert.deepEqual(functions(''), [])
+  assert.deepEqual(functions('VLOOKUP'), [])
+  const args = { IF: '1,2,3', IFERROR: '1,2', MIN: '1,2', MAX: '1,2', SUM: '1,2', ROUND: '1,0', ROUNDUP: '1,0',
+    ROUNDDOWN: '1,0', ABS: '-1', AND: '1,1', OR: '1,0' }
+  for (const [name, parameters] of Object.entries(args)) {
+    const fn = functions(name)[0]
+    assert.equal(fn.name, name)
+    assert.ok(fn.signature.startsWith(name + '(') && fn.description.length > 0)
+    assert.doesNotThrow(() => inspectPayrollFormula(name + '(' + parameters + ')'))
+  }
+})
+
+test('inserting a function preserves surrounding expressions and places the caret inside its brackets', () => {
+  assert.deepEqual(insertFunction('mi', 'min', 2), { value: 'MIN()', caret: 4 })
+  assert.deepEqual(insertFunction('=basic + ma*0.5%', 'MAX', 11), { value: '=basic + MAX()*0.5%', caret: 13 })
+  assert.deepEqual(insertFunction('IF(BASIC>0,mi,0)', 'MIN', 13), { value: 'IF(BASIC>0,MIN(),0)', caret: 15 })
+  assert.deepEqual(insertFunction('mAx (basic, VdA) + 1', 'MIN', 1, 3), { value: 'MIN (basic, VdA) + 1', caret: 5 })
+  assert.deepEqual(insertFunction('IF(BASIC, 2, 0)', 'IF', 2), { value: 'IF(BASIC, 2, 0)', caret: 3 })
+  assert.throws(() => insertFunction('mat', 'Math.max', 3), /supported payroll function/)
 })

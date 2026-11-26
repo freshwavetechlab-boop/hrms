@@ -24,3 +24,10 @@ public sealed class SalaryTemplateCreateLine
     public string ProRataOverride { get; set; } = "";
     public string RoundingMode { get; set; } = "";
 }
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed class SalaryTemplateUpdateRequest
+{
+    public required SalaryTemplateCreateRequest Expected { get; init; }
+    public required SalaryTemplateCreateRequest Template { get; init; }
+}

@@ -87,7 +87,7 @@ export default function PayslipTemplateCopyDialog(props: Props) {
       <Form.Item label="Create for client" required><Select aria-label="Target payslip client" disabled={loading || !!fixedTargetClientId} value={targetId} placeholder="Select client" {...clientSelectProps(clients.map(client => ({ ...clientChoice(client), disabled: !!targetClientIds && !targetClientIds.includes(client.id) })))} onChange={id => { setTargetId(id); setError('') }} /></Form.Item>
       <Form.Item label="New template name" required><Input aria-label="Copied payslip template name" disabled={loading} value={name} onChange={event => setName(event.target.value)} onPressEnter={event => { event.preventDefault(); void useTemplate() }} /></Form.Item>
     </Form>
-    <p>Copy the design and field mappings into an editable draft, then change it or save it as it is. No Excel upload is required for the new client. Amounts and employee details come from that client’s core payroll.</p>
+    <p>Copy the layout into a new draft. Review the field mappings for the selected client before saving. Payslip amounts come from that client’s core payroll.</p>
     {!sources.length && <Alert type="info" showIcon message="No saved templates are available to copy." />}
     {error && <Alert type="error" showIcon message={error} />}
   </Modal>

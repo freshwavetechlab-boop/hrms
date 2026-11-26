@@ -31,6 +31,31 @@ function browser() {
   return () => Object.assign(globalThis, original)
 }
 
+test('an existing salary template edit sends the opened and edited formulas to its own endpoint and preserves a conflict', async () => {
+  const restore = browser()
+  const { updateClientSalaryTemplate } = load('services/settingsService', { './apiClient': api })
+  const line = { componentId: '3', value: '', calculationType: 'Formula', formula: 'BASIC * 5%' }
+  const opened = { id: 17, clientId: '4', name: 'Monthly', annualCtc: '0', active: true, lines: [line] }
+  const edited = { ...opened, lines: [{ ...line, formula: '(BASIC + DA) * 5%' }] }
+  const requests = []
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url, method: options.method, body: JSON.parse(options.body) })
+    return Response.json({ error: 'Template changed since opening.' }, { status: 409 })
+  }
+  try {
+    const result = await updateClientSalaryTemplate(4, edited, opened, { toast: false })
+    assert.equal(result.status, 409)
+    assert.equal(result.error, 'Template changed since opening.')
+    assert.equal(requests.length, 1)
+    const [{ url, method, body }] = requests
+    assert.equal(new URL(url).pathname, '/api/clients/4/salary-templates/17')
+    assert.equal(method, 'PUT')
+    assert.deepEqual(Object.keys(body).sort(), ['expected', 'template'])
+    assert.equal(body.expected.lines[0].formula, 'BASIC * 5%')
+    assert.equal(body.template.lines[0].formula, '(BASIC + DA) * 5%')
+  } finally { restore() }
+})
+
 test('network failure never claims a mutation failed or blindly retries, and read failures are actionable', async () => {
   const restore = browser()
   let calls = 0

@@ -108,7 +108,7 @@ AND table_name IN ('employee_it0008_basic_pay','employee_payroll_location_assign
             """);
         if (tables.Contains("excel_payslip_batches"))
             await Add("Saved Excel payslip batches", """
-                SELECT CONCAT(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.month')),''),' · ',id) Label
+                SELECT CONCAT(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.month')),''),' · ',CONVERT(id USING utf8mb4)) Label
                 FROM excel_payslip_batches WHERE client_id=@clientId AND JSON_UNQUOTE(JSON_EXTRACT(batch_json,'$.salaryTemplateId'))=@key
                 """);
         if (tables.Contains("excel_payroll_setup_imports"))

@@ -5,7 +5,7 @@ import ts from 'typescript'
 
 const source = fs.readFileSync(new URL('../src/utils/payslipDesign.ts', import.meta.url), 'utf8')
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
-const { payslipDesignIssues, payslipDesignPeriodIssues, payslipDesignPeriodLabel, payslipDesignPeriodRequest, payslipDesignPreviewIssues, payslipDesignScopeCapabilityIssues, newestClientExcelPayslip, movePayslipDesignField, nativePayslipKind, PayslipPreviewLease } = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'))
+const { payslipDesignIssues, payslipDesignPeriodIssues, payslipDesignPeriodLabel, payslipDesignPeriodRequest, payslipDesignPreviewIssues, payslipDesignScopeCapabilityIssues, newestClientExcelPayslip, movePayslipDesignField, nativePayslipKind, matchingPayslipComponent, payslipSalaryTemplateNames, PayslipPreviewLease } = await import('data:text/javascript;base64,' + Buffer.from(compiled).toString('base64'))
 const info = { sourceColumn: 1, label: 'Designation', kind: 'info', nativeCode: '', infoToken: 'DESIGNATION', visible: true }
 const earning = { sourceColumn: 2, label: 'Basic Pay', kind: 'earning', nativeCode: 'BASIC', infoToken: '', visible: true }
 const employer = { sourceColumn: 3, label: 'EPF employer', kind: 'employer', nativeCode: 'EPFER', infoToken: '', visible: true }
@@ -66,6 +66,49 @@ test('client, source fingerprint and immutable label metadata fail closed', () =
   assert.ok(payslipDesignIssues(data, [{ ...info, label: 'Changed' }, earning, employer], 907).length)
   assert.ok(payslipDesignIssues(data, [info, info, employer], 907).length)
   assert.ok(payslipDesignIssues(data, [info, earning], 907).length)
+})
+
+test('salary template labels distinguish the same code in different payslip sections', () => {
+  const components = [
+    { id: 1, name: 'Basic', code: 'BASIC', category: 'Earning', active: true },
+    { id: 2, name: 'Employee contribution', code: 'SOCIAL', category: 'Deduction', active: true },
+    { id: 3, name: 'Employer contribution', code: 'SOCIAL', category: 'Benefit', active: true },
+    { id: 4, name: 'Catalogue only', code: 'EXTRA', category: 'Earning', active: true },
+  ]
+  const makeTemplate = (id, name, ids, active = true) => ({ id, name, clientId: '70', active, lines: ids.map(componentId => ({ componentId })) })
+  const templates = [makeTemplate(1, 'Delhi', ['1', '2']), makeTemplate(2, 'Pune', ['1', '3']),
+    makeTemplate(0, 'Draft', ['4']), makeTemplate(3, 'Retired', ['4'], false)]
+  const names = payslipSalaryTemplateNames(templates, components)
+  assert.deepEqual(new Set(names.get('earning:BASIC')), new Set(['Delhi', 'Pune']))
+  assert.deepEqual(names.get('deduction:SOCIAL'), ['Delhi'])
+  assert.deepEqual(names.get('employer:SOCIAL'), ['Pune'])
+  assert.equal(names.has('earning:EXTRA'), false)
+  assert.equal(matchingPayslipComponent(components, { ...employer, nativeCode: 'SOCIAL' }), components[2])
+  assert.equal(matchingPayslipComponent(components, { ...earning, nativeCode: 'SOCIAL' }), undefined)
+})
+
+test('copied Bonus and both ESI rows block save until remapped or removed from the target design', () => {
+  const rows = [
+    earning,
+    { ...earning, sourceColumn: 4, label: 'Bonus', nativeCode: 'STAT_BONUS' },
+    { ...earning, sourceColumn: 5, label: 'ESI deduction @0.75%', kind: 'deduction', nativeCode: 'ESIC' },
+    { ...employer, sourceColumn: 6, label: 'Employer ESI @3.25%', nativeCode: 'ESIC_ER' },
+  ]
+  const data = { ...catalog(), sourceKind: 'CorePayroll', sourceBatchId: '', keepMappedZeroRows: false, fields: rows }
+  data.nativeCodes.push({ code: 'CLIENT_BONUS', name: 'Client bonus', category: 'Earning' })
+  const before = structuredClone(data)
+  const unresolved = rows.slice(1)
+  for (const visible of [true, false]) {
+    const fields = [earning, ...unresolved.map(field => ({ ...field, visible }))]
+    const issues = payslipDesignIssues(data, fields, data.clientId)
+    assert.equal(issues.length, unresolved.length)
+    for (const field of unresolved) assert.ok(issues.some(issue => issue.includes(field.label)))
+  }
+  const bonus = { ...rows[1], nativeCode: 'CLIENT_BONUS' }
+  assert.equal(matchingPayslipComponent(data.nativeCodes, bonus)?.code, 'CLIENT_BONUS')
+  assert.deepEqual(payslipDesignIssues(data, [earning, bonus], data.clientId), [])
+  assert.deepEqual(payslipDesignIssues(data, [earning], data.clientId), [])
+  assert.deepEqual(data, before)
 })
 test('hidden information may stay unmapped; visible information and every financial field require valid mapping', () => {
   const data = catalog()

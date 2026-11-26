@@ -42,7 +42,7 @@ import { getClientBillingAdvanced, getClientBillingConfigurations, getClientBill
 import type { AttendanceGroup, Client, ClientBillingConfiguration, ClientBillingCostRuleHeader, ClientBillingCostRuleLine, ClientBillingRateCardType, ClientBillingRateType, Component, Drop, Org, ProfessionalTaxSlab, Setup, Structure, WorkLocation } from '../types/payroll'
 import { mergeSalaryTemplateDraftComponents } from '../utils/salaryTemplateDraftComponents'
 import { salaryTemplatesForVisibleClients } from '../utils/employeeSalaryTemplate'
-import { createClientSalaryTemplate, saveSalaryComponent } from '../services/settingsService'
+import { createClientSalaryTemplate, saveSalaryComponent, updateClientSalaryTemplate } from '../services/settingsService'
 import { isSelectedClientUser } from '../utils/clientAccess'
 import { parseImportPreviewFile, parseImportPreviewSheets, validateImportPreview, type ImportPreviewData, type ImportPreviewIssue, type ImportPreviewRules } from '../utils/importPreview'
 import { downloadXlsx } from '../utils/xlsx'
@@ -829,7 +829,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     notify(response.ok ? billingAdvancedLine.id ? 'Advanced rule line updated.' : 'Advanced rule line saved.' : response.error || 'Unable to save advanced rule line.', response.ok ? 'success' : 'error')
     if (response.ok) { setBillingAdvancedLineDrawerOpen(false); setBillingAdvancedLine(billingAdvancedLine0); const setup = await getClientBillingAdvanced(); setBillingAdvancedHeaders(setup.headers); setBillingAdvancedLines(setup.lines) }
   }
-  const saveStructure = async (draftComponents: Component[] = []) => {
+  const saveStructure = async (draftComponents: Component[] = [], openedTemplate?: Structure) => {
     if (draftComponents.length && (!session?.user.permissions.includes('settings.manage') || isSelectedClientUser(session.originalUser))) { notify('An unrestricted Settings administrator must create the new shared salary components. Existing components can still be reused.', 'error'); return false }
     if (!structure.name.trim()) return notify('Template name is required.', 'error')
     const templateName = structure.name.trim()
@@ -839,16 +839,24 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
       notify('A saved template already uses this name for the client. Give the extracted draft a different name; the saved template has not been replaced.', 'error')
       return false
     }
-    // A new single-client template reuses masters by reference. Do not submit
-    // the complete setup or rewrite any other client's saved configuration.
-    if (!structure.id && !draftComponents.length && targetClientIds.length === 1 && Number(targetClientIds[0]) > 0) {
+    const clientId = Number(targetClientIds[0])
+    if (!draftComponents.length && targetClientIds.length === 1 && clientId > 0) {
+      if (structure.id && (!openedTemplate || openedTemplate.id !== structure.id || openedTemplate.clientId !== structure.clientId)) {
+        notify('Reopen the saved template for this client before saving changes.', 'error')
+        return false
+      }
       setTemplateSaving(true)
       try {
-        const response = await createClientSalaryTemplate(Number(targetClientIds[0]), { ...structure, name: templateName }, { toast: false })
+        const draft = { ...structure, name: templateName }
+        const response = structure.id && openedTemplate
+          ? await updateClientSalaryTemplate(clientId, draft, openedTemplate, { toast: false })
+          : await createClientSalaryTemplate(clientId, draft, { toast: false })
         if (!response.ok) { notify(response.error || 'Unable to save salary template.', 'error'); return false }
-        setSetup({ ...setup, salaryStructures: [...setup.salaryStructures, response.data] })
+        setSetup(current => ({ ...current, salaryStructures: current.salaryStructures.some(item => item.id === response.data.id)
+          ? current.salaryStructures.map(item => item.id === response.data.id ? response.data : item)
+          : [...current.salaryStructures, response.data] }))
         setStructure(clientScopedAdmin ? { ...structure0, clientId: String(session?.user.clientId || '') } : structure0)
-        notify('Salary template saved.')
+        notify(structure.id ? 'Salary template updated.' : 'Salary template saved.')
         return true
       } finally { setTemplateSaving(false) }
     }

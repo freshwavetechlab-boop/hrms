@@ -87,6 +87,8 @@ public sealed partial class SalaryTemplateCreateTests
         var preview = (await f.ReviewDeletionAsync(10, 31)).Preview!;
         var types = preview.Mappings.ToDictionary(m => m.Type, m => m.Count);
         Assert.Equal(2, types["Excel payroll setup records"]);
+        var batchMapping = Assert.Single(preview.Mappings, m => m.Type == "Saved Excel payslip batches");
+        Assert.Equal("2026-09 · september-fixture", Assert.Single(batchMapping.Examples));
         foreach (var type in new[] { "Employee salary history", "Location salary assignments", "Managed formula input declarations", "PF policy versions",
                      "Excel payslip header mappings", "Saved Excel payslip batches", "Saved payroll", "Saved payroll calculation traces", "Payslip templates requiring an active salary template" })
             Assert.Equal(1, types[type]);
@@ -440,7 +442,7 @@ INSERT INTO payrollsetups(SetupJson) VALUES('{"tax":{"clientSettings":[]},"sched
 CREATE TABLE clients(Id INT PRIMARY KEY,IsActive BOOLEAN); INSERT INTO clients VALUES(10,TRUE),(20,TRUE),(30,FALSE);
 CREATE TABLE modulesettings(client_id INT,ModuleCode VARCHAR(120),IsEnabled BOOLEAN,SettingsJson JSON,PRIMARY KEY(client_id,ModuleCode));
 INSERT INTO modulesettings VALUES(10,'named-input-t:31',TRUE,JSON_OBJECT('fixture','protected declaration'));
-CREATE TABLE excel_payslip_batches(Id VARCHAR(80) PRIMARY KEY,SourceJson JSON); INSERT INTO excel_payslip_batches VALUES('september-fixture',JSON_OBJECT('unchanged','source salary'));
+CREATE TABLE excel_payslip_batches(Id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,SourceJson JSON); INSERT INTO excel_payslip_batches VALUES('september-fixture',JSON_OBJECT('unchanged','source salary'));
 CREATE TABLE payrunemployees(Id INT PRIMARY KEY,NetPay DECIMAL(18,2)); INSERT INTO payrunemployees VALUES(1,12345.67);
 INSERT INTO employeesalarycomponents(EmployeeId,ComponentId,ComponentCode,Amount) VALUES(1,'2','LEGACY_DAILY',700);
 INSERT INTO salarycomponents(Id,Code,Name,Category,CalculationType,ValueText,Formula,ProRata) VALUES

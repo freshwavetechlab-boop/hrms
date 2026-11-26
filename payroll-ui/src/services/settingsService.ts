@@ -1,5 +1,5 @@
 import type { Client, ClientBillingAdvancedSetup, ClientBillingConfiguration, ClientBillingCostRuleHeader, ClientBillingCostRuleLine, ClientBillingModule, Drop, Employee, EmployeeActionRequest, EmployeeAuditTrail, EmployeeInfotypeRecord, EssClientSetting, Org, PayTravelAdvanceRequest, RecoverTravelAdvanceRequest, RecruitmentAdminSetup, RecruitmentApprovalMapping, RecruitmentAssignmentRule, RecruitmentDocumentChecklist, RecruitmentMasterValue, RecruitmentPartner, RecruitmentSetting, RecruitmentSlaRule, RecruitmentTemplate, ScheduledJob, ScheduledJobAction, ScheduledJobHandlerOption, ScheduledJobRun, SettleTravelAdvanceRequest, Setup, TravelAdvance, TravelExpenseCategory, TravelExpenseClientSetting, TravelExpenseSetup, TravelPolicy, TravelPolicyAssignment, TravelPolicyRule, WorkLocation, WorkflowApprover } from '../types/payroll'
-import { apiRequest, deleteJson, getBlob, getJson, getJsonResult, postForm, postJson, type ApiOptions, type ApiResult } from './apiClient'
+import { apiRequest, deleteJson, getBlob, getJson, getJsonResult, postForm, postJson, putJson, type ApiOptions, type ApiResult } from './apiClient'
 import type { Component, Structure } from '../types/payroll'
 
 export type BulkImportStatus = { jobId: string; state: 'Queued' | 'Processing' | 'NeedsConfirmation' | 'Completed' | 'Failed'; totalRows: number; completedRows: number; inserted: number; updated: number; errors: string[] }
@@ -70,12 +70,18 @@ export const getSetup = (fallback: Setup) => getJson<Setup>('/api/setup', fallba
 export const saveSetup = (setup: Setup, options: ApiOptions = {}) => postJson('/api/setup', setup, setup, options)
 export const saveSalaryComponent = (component: Component, expected?: Component, options: ApiOptions = {}) =>
   postJson('/api/salary-components', { component, expected: expected ?? null }, component, options)
+const salaryTemplatePayload = (template: Structure) => ({
+  name: template.name, annualCtc: template.annualCtc, active: template.active,
+  lines: template.lines.map(line => ({ componentId: line.componentId, value: line.value,
+    calculationType: line.calculationType || '', formula: line.formula || '', baseComponent: line.baseComponent || '',
+    proRataOverride: line.proRataOverride || '', roundingMode: line.roundingMode || '' }))
+})
 export const createClientSalaryTemplate = (clientId: number, template: Structure, options: ApiOptions = {}) =>
-  postJson(`/api/clients/${clientId}/salary-templates`, {
-    name: template.name, annualCtc: template.annualCtc, active: template.active,
-    lines: template.lines.map(line => ({ componentId: line.componentId, value: line.value,
-      calculationType: line.calculationType || '', formula: line.formula || '', baseComponent: line.baseComponent || '',
-      proRataOverride: line.proRataOverride || '', roundingMode: line.roundingMode || '' }))
+  postJson(`/api/clients/${clientId}/salary-templates`, salaryTemplatePayload(template), template, options)
+export const updateClientSalaryTemplate = (clientId: number, template: Structure, expected: Structure, options: ApiOptions = {}) =>
+  putJson(salaryTemplatePath(clientId, template.id), {
+    expected: salaryTemplatePayload(expected),
+    template: salaryTemplatePayload(template),
   }, template, options)
 export type SalaryTemplateDeletionPreview = {
   templateId: number

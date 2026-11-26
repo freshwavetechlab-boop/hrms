@@ -11,7 +11,7 @@ function load(name) {
   return exports
 }
 const { evaluatePayrollFormula: evaluate, inspectPayrollFormula, payrollFormulaErrorKind } = load('payrollFormula')
-const { validateSalaryTemplateFormula: validate } = load('salaryTemplateFormulaValidation')
+const { validateSalaryTemplateFormula: validate, suggestSalaryTemplateFormula: suggest } = load('salaryTemplateFormulaValidation')
 const { calculateSalaryDetails } = load('salary')
 const cases = JSON.parse(readFileSync(new URL('./fixtures/salary-formula-parity.json', import.meta.url), 'utf8'))
 for (const fixture of cases) test(`native payroll parity: ${fixture.name}`, () => {
@@ -37,9 +37,83 @@ test('syntax analysis is non-evaluating and retains all branch dependencies', ()
 test('real invalid conditional syntax and wrong function arity remain blocking', () => {
   for (const text of ['IF(BASIC>1,2,3', 'IF(1,2,3,4)', 'IF(1,,3)', 'MIN()', 'ROUND(1,2,3)', 'IF(1==1,2,3)', 'BASIC!A1', 'Math.random()', '1;2', 'IF(1,2,UNSUPPORTED(3))']) assert.ok(validate(text, new Set(['BASIC'])).length > 0, text)
 })
+test('a premature IF bracket can be reviewed without changing the threshold, rates or operands', () => {
+  const known = new Set(['BASIC', 'VDA'])
+  for (const operator of ['*', '\\*']) {
+    const entered = `If(BASIC + VDA)>=25000,125,(BASIC+VDA)${operator}0.5%`
+    assert.ok(validate(entered, known).length, 'the typed formula must still be blocked')
+    const hint = suggest(entered, known)
+    assert.ok(hint?.message.trim())
+    const corrected = hint.formula
+    assert.ok(corrected, 'offer a validated correction for the typed formula')
+    assert.deepEqual(validate(corrected, known), [])
+    assert.deepEqual(inspectPayrollFormula(corrected).variables, ['BASIC', 'VDA'])
+    for (const [basic, vda, expected] of [[10000, 10000, 100], [24000, 1000, 125], [27000, 3000, 125]]) {
+      assert.equal(evaluate(corrected, { BASIC: basic, VDA: vda }), expected)
+    }
+  }
+})
+test('a valid nested IF is kept as typed, and ambiguous IF input never gets a guessed branch', () => {
+  const known = new Set(['BASIC', 'VDA'])
+  const valid = 'IF(BASIC>=25000,125,IF(VDA>0,(BASIC+VDA)*0.5%,0))'
+  assert.deepEqual(validate(valid, known), [])
+  assert.equal(suggest(valid, known), undefined)
+  for (const entered of ['IF(BASIC + VDA)>=25000,125,', 'IF(BASIC + VDA)>=25000,125,0,7',
+    'IF(BASIC + UNKNOWN)>=25000,125,0', 'IF(BASIC + VDA)>=25000,125,NOT_SUPPORTED(0)']) {
+    assert.ok(validate(entered, known).length, entered)
+    assert.ok(!suggest(entered, known)?.formula, entered)
+  }
+})
+test('common pasted operators and IF separators offer parser-checked equivalents', () => {
+  const known = new Set(['BASIC'])
+  for (const [entered, expected] of [
+    [String.raw`BASIC\*0.5%`, [100, 125]],
+    ['IF(BASIC==25000,125,0)', [0, 125]],
+    ['IF(BASIC>=25000;125;0)', [0, 125]],
+  ]) {
+    assert.ok(validate(entered, known).length)
+    const corrected = suggest(entered, known)?.formula
+    assert.ok(corrected, entered)
+    assert.deepEqual(validate(corrected, known), [])
+    assert.deepEqual([20000, 25000].map(BASIC => evaluate(corrected, { BASIC })), expected)
+  }
+})
 test('top-level booleans are not silently returned as monetary output', () => {
   for (const text of ['TRUE', 'FALSE', '1=1', 'AND(TRUE,FALSE)', 'IF(FALSE,1)']) assert.throws(() => evaluate(text, {}), /must be numeric/)
   assert.equal(evaluate('IF(AND(TRUE,FALSE),1,0)', {}), 0)
+})
+
+test('missing or extra brackets give one-based positions and explicit, validated fixes for simple typos', () => {
+  const known = new Set(['BASIC', 'VDA'])
+  for (const [typed, corrected, position] of [
+    ['MIN(BASIC,25000', 'MIN(BASIC,25000)', 4],
+    ['=MAX(BASIC,VDA))', '=MAX(BASIC,VDA)', 16],
+    ['IF(BASIC>0,125,0', 'IF(BASIC>0,125,0)', 3],
+  ]) {
+    const hint = suggest(typed, known)
+    assert.match(hint.message, new RegExp('position ' + position + '\\b'))
+    assert.equal(hint.formula, corrected)
+    assert.deepEqual(validate(corrected, known), [])
+    assert.equal(suggest(corrected, known), undefined)
+  }
+})
+test('ambiguous bracket placement or incompletely typed arguments offer a diagnostic without rewriting amounts', () => {
+  const known = new Set(['BASIC', 'VDA'])
+  for (const typed of [
+    'MIN(BASIC,25000*0.5%', 'BASIC+VDA)*5', 'BASIC-VDA+5)', 'MAX(BASIC,SUM(1,2,3)',
+    'IF(BASIC>0,125', 'MAX(', 'IF(BASIC>0,125,', 'ROUND(MAX(BASIC,125',
+    'MAX(OUTSIDE_THIS_TEMPLATE,125',
+  ]) {
+    const hint = suggest(typed, known)
+    assert.match(hint.message, /bracket.*position|position.*bracket/i, typed)
+    assert.equal(hint.formula, undefined, typed)
+  }
+})
+test('bracket and parser diagnostics still work before the token catalogue arrives', () => {
+  assert.equal(suggest('MAX(BASIC,VDA)'), undefined)
+  assert.match(suggest('MAX(BASIC,VDA').message, /position 4/)
+  assert.equal(suggest('MAX(BASIC,VDA').formula, undefined)
+  assert.match(suggest('BASIC VDA').message, /syntax/i)
 })
 test('native formula size/depth/argument limits are retained in preview', () => {
   for (const text of ['1'.repeat(4097), '('.repeat(65) + '1' + ')'.repeat(65), 'SUM(' + Array(257).fill('1').join(',') + ')', Array(513).fill('1').join('+')]) assert.throws(() => inspectPayrollFormula(text))
