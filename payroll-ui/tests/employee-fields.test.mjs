@@ -18,6 +18,7 @@ const definitions = load('../src/config/bulkImportDefinitions.ts', {})
 const ctc = load('../src/utils/employeeCtc.ts', {})
 const fields = load('../src/utils/employeeFields.ts', { '../config/bulkImportDefinitions': definitions, './xlsx': xlsx, '../services/apiClient': {}, './employeeCtc': ctc })
 const mapping = load('../src/utils/smartBulkImport.ts', { './xlsx': xlsx, './employeeCtc': ctc })
+const codePreview = load('../src/utils/employeePreviewCodes.ts', { './smartBulkImport': mapping })
 const column = (code = 'CASTE', label = 'Caste', form = 'PERSONAL') => ({ code: `CUSTOM:0002:${form}:${code}`, header: `${label} [CUSTOM:0002:${form}:${code}]`, infotypeCode: '0002', formDefinitionId: 1, field: { stableFieldCode: code, label, fieldTypeCode: 'TEXT', isRequired: true, options: [] } })
 
 test('renamed custom column still maps by its stable marker and Employee ID is distinct from Employee Code', () => {
@@ -168,11 +169,13 @@ test('edited salary cells are validated using dated input and decimal storage ru
   const row = { [salary]: '0', 'Annual CTC': '9999999999999999.99', 'Salary Template Id': '81', 'Salary Effective From': '2028-02-29' }
   const errors = patch => employeeSalaryImportIssues(Object.keys(row), { ...row, ...patch }, 5).map(issue => issue.column)
   assert.deepEqual(errors({}), [])
-  for (const value of ['-1', '0.00001', '1e5', '2,000', '1000000000.0001']) assert.deepEqual(errors({ [salary]: value }), [salary])
+  for (const value of ['-1', '1e5', '2,000', '1000000000.0001']) assert.deepEqual(errors({ [salary]: value }), [salary])
+  assert.deepEqual(errors({ [salary]: '0.00001' }), [])
   assert.deepEqual(errors({ [salary]: '1000000000.00000' }), [])
   const rate = 'Rate · Daily rate [SALARY_INPUT:4]'
   const rateErrors = value => employeeSalaryImportIssues([rate, ...Object.keys(row)], { ...row, [rate]: value }, 5).map(issue => issue.column)
-  for (const value of ['-1', '0.00001']) assert.deepEqual(rateErrors(value), [rate])
+  assert.deepEqual(rateErrors('-1'), [rate])
+  assert.deepEqual(rateErrors('0.00001'), [])
   for (const value of ['', '0', '-0', '+0.0000', '0.0001', '1000000000']) assert.deepEqual(rateErrors(value), [])
   assert.deepEqual(employeeSalaryImportIssues(Object.keys(row), { ...row, [salary]: '', 'Annual CTC': '' }, 5, true), [])
   assert.deepEqual(errors({ 'Annual CTC': '10000000000000000.00' }), ['Annual CTC'])
@@ -185,4 +188,97 @@ test('edited salary cells are validated using dated input and decimal storage ru
   assert.deepEqual(errors({ [salary]: '', 'Annual CTC': '', 'Salary Template Id': '', 'Salary Effective From': '' }), [])
   assert.deepEqual(errors({ 'Salary Json': '{}' }), ['Salary Json'])
   assert.deepEqual(employeeSalaryImportIssues(['Annual CTC'], { 'Annual CTC': '2345' }, 5), [])
+})
+
+test('recurring employee salary inputs round decimal tails once and reject invalid original amounts', () => {
+  const pairs = [
+    ['12345.678900000017', '12345.6789'], ['9543.210000000011', '9543.21'],
+    ['8765.432100000011', '8765.4321'], ['624.1234567', '624.1235'],
+    ['0.00005', '0.0001'], ['999999999.99999', '1000000000'],
+    ['100.2300', '100.2300'], ['0', '0'], ['', ''],
+  ]
+  for (const [input, expected] of pairs) {
+    assert.equal(ctc.normalizeEmployeeSalaryAmount(input), expected)
+    assert.equal(ctc.normalizeEmployeeSalaryAmount(expected), expected)
+  }
+  for (const invalid of ['-0.000000000000001', '1000000000.000000000001', '-1', '1e5', '2,000', 'bad']) {
+    assert.equal(ctc.parseSalaryUnits(invalid, 4, 10000000000000n, false, true), null)
+    assert.equal(ctc.normalizeEmployeeSalaryAmount(invalid), invalid)
+  }
+  const definition = { ...definitions.employeeBulkImportDefinition, fields: [
+    definitions.employeeBulkImportDefinition.fields.find(field => field.code === 'EmployeeCode'),
+    { code: 'SALARY_INPUT:81', header: 'Allowance [SALARY_INPUT:81]', label: 'Allowance', type: 'number' },
+  ] }
+  const source = { name: 'Source', headers: ['Employee Code', 'Allowance'], rows: pairs.map(([input], index) => [`SYN-${index}`, input]) }
+  const before = structuredClone(source)
+  mapping.prepareMappedBulkImport(new File(['source'], 'source.xlsx'), source, definition,
+    { EmployeeCode: 0, 'SALARY_INPUT:81': 1 }, { operation: 'update', employeeSalaryContext: { templateId: '81', effectiveFrom: '2026-10-01' } })
+  assert.deepEqual(workbook[0].rows.slice(1).map(row => row[1]), pairs.map(([, expected]) => expected))
+  assert.deepEqual(source, before)
+})
+
+
+test('preview fills only uniquely matched blanks in update and generates only explicitly reviewed new rows in upsert', () => {
+  const sheet = { headers: ['Employee Code', 'Name'], rows: [['GADNHI1003', 'Supplied'], ['', 'Known'], ['', 'New'], ['', 'Conflict'], ['', 'Duplicate'], ['', 'No evidence']] }
+  const original = structuredClone(sheet)
+  const existing = { rowNumber: 3, matchStatus: 'MatchedByIdentifiers', matchedEmployeeId: 2, matchedEmployeeCode: 'GADNHI1001', blockingReasons: [] }
+  const review = [existing, { rowNumber: 4, canGenerateEmployeeCode: true }, { ...existing, rowNumber: 5, matchStatus: 'IdentityConflict', matchedEmployeeCode: 'GADNHI1002' },
+    { ...existing, rowNumber: 6, matchedEmployeeId: 3, matchedEmployeeCode: 'GADNHI1003' }]
+  const prefix = codePreview.employeeDraftPrefix(sheet.rows.map(row => row[0]), 'NHIDCL')
+  assert.equal(prefix, 'GADNHI')
+  const resolved = codePreview.resolveDraftEmployeeCodes(sheet, review, 'update', prefix, ['GADNHI1009'])
+  assert.equal(resolved.newCount, 1)
+  assert.equal(resolved.generated, 0)
+  assert.deepEqual(resolved.rows.map(row => row[0]), ['GADNHI1003', 'GADNHI1001', '', '', '', ''])
+  const generated = codePreview.resolveDraftEmployeeCodes(sheet, review, 'upsert', prefix, ['GADNHI1009'])
+  assert.deepEqual(generated.rows.map(row => row[0]), ['GADNHI1003', 'GADNHI1001', 'GADNHI1010', '', '', ''])
+  assert.deepEqual(generated.unresolved, [5, 6, 7])
+  assert.deepEqual(sheet, original)
+})
+
+test('preview resolves all blank rows across pages and reserves manually supplied and recovered codes', () => {
+  const rows = Array.from({ length: 117 }, (_, i) => [i < 103 ? 'S' + (1000 + i) : '', 'Source ' + i])
+  const sheet = { headers: ['Employee Code', 'First Name'], rows }
+  const reviewed = rows.slice(103).map((_, i) => ({ rowNumber: 105 + i, canGenerateEmployeeCode: true }))
+  const plan = codePreview.resolveDraftEmployeeCodes(sheet, reviewed, 'upsert', 'S', ['S2000'])
+  assert.equal(plan.generated, 14)
+  assert.equal(plan.rows[103][0], 'S2001')
+  assert.equal(plan.rows[116][0], 'S2014')
+  assert.deepEqual(plan.rows.slice(0, 103), rows.slice(0, 103))
+})
+
+test('multiple employee code columns use the strongest distinct client master matches and preserve the mapped blanks', () => {
+  const definition = fields.employeeImportDefinition({ fields: [] })
+  const sheet = { name: 'Staff', headers: ['Employee ID', 'Employee Code', 'New Employee Code', 'First Name'], rows: [
+    ['10', 'OLD009', 'CUR1001', 'First'], ['11', 'OLD009', '', 'Second'],
+    ['12', 'OLD009', ' cur1002 ', 'Third'], ['13', 'OLD009', 'CUR1002', 'Third']
+  ] }
+  const before = structuredClone(sheet)
+  const result = mapping.autoMapBulkImportColumns(sheet, definition, ['OLD009', 'CUR1001', 'CUR1002'])
+  assert.deepEqual(result, { EmployeeId: 0, EmployeeCode: 2, FirstName: 3 })
+  mapping.prepareMappedBulkImport(new File([''], 'input.xlsx'), sheet, definition, result, { operation: 'update' })
+  const values = workbook[0].rows
+  assert.equal(values[2][values[0].indexOf('Employee Code')], '')
+  assert.equal(values[2][values[0].indexOf('Employee ID')], '11')
+  assert.deepEqual(sheet, before)
+  // 'New' is a header designation. Existing client codes may still be in the older column.
+  assert.equal(mapping.autoMapBulkImportColumns(sheet, definition, ['OLD009']).EmployeeCode, 1)
+  const renamed = { ...sheet, headers: ['Employee ID', 'Employee Code', 'Current Employee Code', 'First Name'] }
+  assert.equal(mapping.autoMapBulkImportColumns(renamed, definition, ['CUR1001', 'CUR1002']).EmployeeCode, 2)
+})
+
+test('tied or unknown employee code columns require a manual choice, including when generating blank codes', () => {
+  const definition = fields.employeeImportDefinition({ fields: [] })
+  const sheet = { name: 'Employees', headers: ['Employee Code', 'Current Employee Code', 'First Name'],
+    rows: [['OLD100', 'NEW100', 'One'], ['OLD100', '', 'Two']] }
+  for (const registry of [[], ['UNRELATED'], ['old100', 'new100']]) {
+    const mappingResult = mapping.autoMapBulkImportColumns(sheet, definition, registry)
+    assert.deepEqual(mappingResult, { FirstName: 2 })
+    assert.throws(() => mapping.prepareMappedBulkImport(new File([''], 'source.xlsx'), sheet, definition, mappingResult, {
+      operation: 'upsert', employeeCodeGeneration: { enabled: true, prefix: 'NEW', digits: 3 }
+    }), /Select the Employee Code source column/)
+    assert.deepEqual(mapping.mapBulkImportColumn(mappingResult, 'EmployeeCode', 1), { FirstName: 2, EmployeeCode: 1 })
+  }
+  const oneColumn = { ...sheet, headers: ['New Employee Code'], rows: [['']] }
+  assert.equal(mapping.autoMapBulkImportColumns(oneColumn, definition, []).EmployeeCode, 0)
 })

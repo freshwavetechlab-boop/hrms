@@ -1,6 +1,6 @@
 import type { ImportPreviewSheet } from './importPreview'
 import { buildXlsxBlob } from './xlsx'
-import { resolveEmployeeCtc } from './employeeCtc'
+import { normalizeEmployeeSalaryAmount, resolveEmployeeCtc } from './employeeCtc'
 
 export type BulkImportFieldType = 'text' | 'email' | 'number' | 'date' | 'boolean' | 'lookup'
 
@@ -86,7 +86,26 @@ export function normalizeBulkImportHeader(value: string) {
   return value.trim().toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '')
 }
 
-export function autoMapBulkImportColumns(sheet: ImportPreviewSheet, definition: BulkImportDefinition): BulkImportMapping {
+export function employeeCodeSourceColumns(headers: string[], definition: BulkImportDefinition) {
+  if (definition.moduleCode !== 'EMPLOYEE') return []
+  const field = definition.fields.find(item => item.code === 'EmployeeCode')
+  if (!field) return []
+  const names = new Set([field.code, field.header, field.label, ...(field.aliases ?? [])].map(normalizeBulkImportHeader))
+  return headers.flatMap((name, index) => names.has(normalizeBulkImportHeader(name)) ? [index] : [])
+}
+
+function bestEmployeeCodeColumn(rows: string[][], indices: number[], existingCodes: readonly string[]) {
+  if (indices.length < 2) return indices[0]
+  const master = new Set(existingCodes.map(code => code.trim().toUpperCase()).filter(Boolean))
+  if (!master.size) return undefined
+  const scores = indices.map(index => {
+    const codes = new Set(rows.map(row => (row[index] ?? '').trim().toUpperCase()))
+    return { index, count: [...codes].filter(code => master.has(code)).length }
+  }).sort((left, right) => right.count - left.count)
+  return scores[0].count > scores[1].count ? scores[0].index : undefined
+}
+
+export function autoMapBulkImportColumns(sheet: ImportPreviewSheet, definition: BulkImportDefinition, existingEmployeeCodes: readonly string[] = []): BulkImportMapping {
   const source = sheet.headers.map((header, index) => ({ index, normalized: normalizeBulkImportHeader(header.match(/\[(CUSTOM:[A-Z0-9_]+:[A-Z0-9_]+:[A-Z0-9_]+|SALARY_INPUT:\d+)\]\s*$/i)?.[1] || header) }))
   const used = new Set<number>()
   const result: BulkImportMapping = {}
@@ -95,6 +114,12 @@ export function autoMapBulkImportColumns(sheet: ImportPreviewSheet, definition: 
     for (const alias of new Set(field.aliases?.map(normalizeBulkImportHeader))) salaryAliases.set(alias, (salaryAliases.get(alias) ?? 0) + 1)
   }
   for (const field of definition.fields) {
+    if (definition.moduleCode === 'EMPLOYEE' && field.code === 'EmployeeCode') {
+      const indices = employeeCodeSourceColumns(sheet.headers, definition).filter(index => !used.has(index))
+      const index = bestEmployeeCodeColumn(sheet.rows, indices, existingEmployeeCodes)
+      if (index !== undefined) { result[field.code] = index; used.add(index) }
+      continue
+    }
     const candidates = [field.header, ...(!field.code.startsWith('CUSTOM:') ? [field.label] : []), field.code, ...(field.aliases ?? [])].map(normalizeBulkImportHeader).filter(Boolean)
     const isSalary = field.code.startsWith('SALARY_INPUT:')
     const matches = source.filter(column => !(definition.moduleCode === 'EMPLOYEE' && column.normalized === 'ctc')
@@ -124,6 +149,9 @@ export function mapBulkImportColumn(current: BulkImportMapping, targetCode: stri
 export function prepareMappedBulkImport(file: File, sheet: ImportPreviewSheet, definition: BulkImportDefinition, mappings: BulkImportMapping, options: BulkImportTransformOptions = {}): PreparedBulkImport {
   const operation = options.operation ?? 'upsert'
   const codeGeneration = options.employeeCodeGeneration?.enabled && operation !== 'update' ? options.employeeCodeGeneration : undefined
+  if (codeGeneration && mappings.EmployeeCode === undefined && employeeCodeSourceColumns(sheet.headers, definition).length > 1) {
+    throw new Error('Select the Employee Code source column before generating blank employee codes.')
+  }
   const split = options.nameSplit
   const firstNameCode = split?.firstNameFieldCode ?? 'FirstName'
   const lastNameCode = split?.lastNameFieldCode ?? 'LastName'
@@ -163,6 +191,7 @@ export function prepareMappedBulkImport(file: File, sheet: ImportPreviewSheet, d
       const sourceIndex = mappings[field.code]
       if (sourceIndex !== undefined) {
         const direct = row[sourceIndex] ?? ''
+        if (definition.moduleCode === 'EMPLOYEE' && field.code.startsWith('SALARY_INPUT:')) return normalizeEmployeeSalaryAmount(direct)
         if (field.code !== 'EmployeeCode' || direct.trim() || !codeGeneration) return direct
       }
       if (field.code === 'EmployeeCode' && codeGeneration) return generatedCodes[rowIndex] ?? ''
@@ -282,7 +311,7 @@ export function materializeBulkImportNameSplit(sheet: ImportPreviewSheet, source
   }
 }
 
-function buildEmployeeCodes(rows: string[][], sourceIndex: number | undefined, configuration?: NonNullable<BulkImportTransformOptions['employeeCodeGeneration']>) {
+export function buildEmployeeCodes(rows: string[][], sourceIndex: number | undefined, configuration?: NonNullable<BulkImportTransformOptions['employeeCodeGeneration']>) {
   if (!configuration) return rows.map(() => '')
   const prefix = configuration.prefix.trim().toUpperCase()
   const digits = clampDigits(configuration.digits)

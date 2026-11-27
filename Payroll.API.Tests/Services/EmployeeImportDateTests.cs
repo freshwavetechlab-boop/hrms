@@ -16,7 +16,7 @@ public sealed class EmployeeImportDateTests
         var lesson = Assert.Single(ExcelPayslipMappingService.Retrieve(columns, knowledge, []), row => row.Title.StartsWith("Date Of Joining Date Of Birth:"));
         Assert.True(lesson.Content.Length < 2600); Assert.Contains("not a salary classification", lesson.Content);
         Assert.Contains("Preserve every employee code", lesson.Content); Assert.Contains("1930–2029", lesson.Content);
-        Assert.Equal("excel-payroll-mapping-v81", ExcelPayslipMappingService.KnowledgeVersion);
+        Assert.Equal("excel-payroll-mapping-v84", ExcelPayslipMappingService.KnowledgeVersion);
     }
 
     [Theory]

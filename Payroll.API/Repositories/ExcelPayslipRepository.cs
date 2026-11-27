@@ -418,7 +418,6 @@ WHERE l.client_id=@ClientId AND l.batch_id=@Id",new{ClientId=clientId,existing.I
         if (string.IsNullOrWhiteSpace(json)) return "The client mapping record could not be prepared. Retry after checking database configuration.";
         var profiles = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json, JsonOptions) ?? [];
         var key = profile.GetProperty("headerSignature").GetString()!.ToLowerInvariant();
-        if (profiles.Count >= 50 && !profiles.ContainsKey(key)) return "This client already has 50 mapping formats. Reuse an existing format.";
         profiles[key] = profile.Clone();
         await db.ExecuteAsync("UPDATE modulesettings SET SettingsJson=CAST(@Json AS JSON) WHERE client_id=@ClientId AND ModuleCode=@Code", new { ClientId = clientId, Code = code, Json = JsonSerializer.Serialize(profiles, JsonOptions) }, tx);
         return null;

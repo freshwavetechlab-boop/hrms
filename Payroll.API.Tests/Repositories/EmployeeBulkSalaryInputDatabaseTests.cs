@@ -25,6 +25,34 @@ public sealed class EmployeeBulkSalaryInputDatabaseTests
     public Task Reviewed_workbook_updates_only_selected_inputs_and_effective_pay_period() => WithDatabaseAsync(CheckReviewedWorkbookAsync);
 
     [SyntheticMySqlFact]
+    public Task Rounded_salary_component_is_the_value_reviewed_saved_and_reimported() => WithDatabaseAsync(async connection =>
+    {
+        await using var db = new MySqlConnection(connection);
+        await db.OpenAsync();
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:Default"] = connection }).Build();
+        var repository = await InitializeRepositoryAsync(db, config);
+        var file = Workbook(["Employee Code","Salary Template Id","Salary Effective From","Basic [SALARY_INPUT:10]","Telephone [SALARY_INPUT:11]"],
+            ["TEST-2","101","2026-10-01","12345.678900000017","8765.430000000017"]);
+        var review = await repository.PreflightImportCsvAsync(42, file, "update");
+        var row = Assert.Single(review.Rows);
+        Assert.Empty(row.BlockingReasons);
+        Assert.Equal("12345.6789", row.Changes.Single(change => change.Field == "salaryInput:10").NewValue);
+        Assert.Equal("8765.43", row.Changes.Single(change => change.Field == "salaryInput:11").NewValue);
+        var choices = JsonSerializer.Serialize(new[] { new { row.RowNumber, row.Sheet, action = "update", employeeId = row.MatchedEmployeeId,
+            fieldChoices = row.Changes.ToDictionary(change => change.Field, _ => "useImported") } });
+        var result = await repository.ImportCsvAsync(42, file, "update", review.ReviewToken, choices);
+        Assert.True(result.Errors.Count == 0, string.Join(" | ", result.Errors));
+        Assert.Equal(1, result.Updated);
+        var saved = await db.QuerySingleAsync<(decimal Basic,decimal Telephone)>("""
+            SELECT SalaryJson->>'$."10"',SalaryJson->>'$."11"' FROM employee_it0008_basic_pay
+            WHERE EmployeeId=202 AND EffectiveFrom='2026-10-01'
+            """);
+        Assert.Equal((12345.6789m,8765.43m), saved);
+        var repeat = await repository.PreflightImportCsvAsync(42, file, "update");
+        Assert.Empty(Assert.Single(repeat.Rows).Changes);
+    });
+
+    [SyntheticMySqlFact]
     public Task Monthly_ctc_is_reviewed_and_persisted_as_one_annual_amount() => WithDatabaseAsync(async connection =>
     {
         await using var db = new MySqlConnection(connection);

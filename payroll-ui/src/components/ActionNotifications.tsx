@@ -12,10 +12,13 @@ import { isUnrestrictedClientAdmin } from '../utils/clientAccess'
 import { dismissOfferMailJob, getOfferMailJobs, validOfferMailJobs, type OfferMailJob } from '../services/recruitmentOfferMailService'
 import type { BulkMailJob } from './BulkMailProgress'
 import { dismissEmployeeImportJob, employeeJobIsRunning, employeeJobTitle, listEmployeeImportJobs, type EmployeeImportJob } from '../services/employeeImportJobs'
-import { notifyEmployeeMasterSaved } from '../services/employeeMasterChanges'
+import { notifyEmployeeMasterSaved, onEmployeeMasterSaved } from '../services/employeeMasterChanges'
+import { employeeEmailReminderKey, getEmployeeEmailReminders, type EmployeeEmailReminderPage } from '../services/employeeEmailReminders'
 
 type ActionItem = { key: string; title: string; detail: string; route: string; mailJob?: ExcelPayslipMailJob; offerJob?: OfferMailJob; employeeJob?: EmployeeImportJob }
 type PendingTask = { id: number; stageName: string; resourceType: string; resourceId: string }
+type EmailReminderFeed = EmployeeEmailReminderPage & { scope: string }
+const emptyEmailReminders = (scope: string): EmailReminderFeed => ({ scope, items: [], total: 0, offset: 0, limit: 100 })
 
 // Add future action providers here using authorized, recipient-scoped APIs.
 // Tasks disappear when completed. Mail jobs retain their outcome until the sender dismisses them.
@@ -28,6 +31,10 @@ export default function ActionNotifications() {
   const [offerFeed, setOfferFeed] = useState<{ scope: string; items: OfferMailJob[] }>({ scope: '', items: [] })
   const [employeeFeed, setEmployeeFeed] = useState<{ scope: string; items: EmployeeImportJob[] }>({ scope: '', items: [] })
   const lastEmployeeFeed = useRef(employeeFeed)
+  const [emailReminders, setEmailReminders] = useState<EmailReminderFeed>(() => emptyEmailReminders(''))
+  const lastEmailReminders = useRef(emailReminders)
+  const [loadingMoreEmails, setLoadingMoreEmails] = useState(false)
+  const emailPageRequest = useRef(false)
   const [dismissing, setDismissing] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -46,10 +53,13 @@ export default function ActionNotifications() {
   currentEmployeeScope.current = employeeScope
   const refresh = useCallback(async () => {
     const attempt = ++generation.current
-    if (!session) { setItems([]); setJobFeed({ scope: jobScope, items: [] }); setOfferFeed({ scope: offerScope, items: [] }); setLoading(false); return }
+    emailPageRequest.current = false
+    setLoadingMoreEmails(false)
+    if (!session) { setItems([]); setJobFeed({ scope: jobScope, items: [] }); setOfferFeed({ scope: offerScope, items: [] }); lastEmailReminders.current = emptyEmailReminders(employeeScope); setEmailReminders(lastEmailReminders.current); setLoading(false); return }
     setLoading(true)
     const canConfigure = session.user.permissions.some(p => ['settings.manage', 'client.settings.manage', 'attendance.manage', 'workflow.manage', 'employees.manage'].includes(p))
-    const [tasks, interviews, configuration, mailJobs, momPings, offerJobs, employeeJobs] = await Promise.all([
+    const emailPages = lastEmailReminders.current.scope === employeeScope ? Math.max(1, Math.ceil(lastEmailReminders.current.items.length / 100)) : 1
+    const [tasks, interviews, configuration, mailJobs, momPings, offerJobs, employeeJobs, reminderPages] = await Promise.all([
       getJsonResult<PendingTask[]>('/api/workflows/tasks/pending', [], { loader: false, toast: false }),
       getJsonResult<RecruitmentInterview[]>('/api/recruitment/interviews', [], { loader: false, toast: false }),
       canConfigure ? getAttendanceGaps(session.user.clientId || undefined) : Promise.resolve(null),
@@ -57,8 +67,9 @@ export default function ActionNotifications() {
       getRecruitmentMomPings(),
       canSeeOfferJobs ? getOfferMailJobs() : Promise.resolve(null),
       canSeeEmployeeJobs ? listEmployeeImportJobs() : Promise.resolve(null),
+      canSeeEmployeeJobs ? Promise.all(Array.from({ length: emailPages }, (_, page) => getEmployeeEmailReminders(page * 100))) : Promise.resolve(null),
     ])
-    if (attempt !== generation.current) return
+    if (attempt !== generation.current || currentEmployeeScope.current !== employeeScope) return
     const next: ActionItem[] = (tasks.data || []).map(task => ({ key: `approval:${task.id}`, title: task.stageName || 'Approval required', detail: `${task.resourceType} · ${task.resourceId}`, route: '/tasks' }))
     for (const ping of momPings.data || []) next.push({ key: `mom-ping:${ping.id}`, title: ping.title, detail: ping.detail, route: ping.route })
     const gaps = (configuration?.data || []).filter(gap => (!session.user.clientId || gap.clientId === session.user.clientId) && gap.requiredPermissions?.some(p => session.user.permissions.includes(p)))
@@ -100,11 +111,26 @@ export default function ActionNotifications() {
       lastEmployeeFeed.current = { scope: '', items: [] }
       setEmployeeFeed(lastEmployeeFeed.current)
     }
-    setError(!tasks.ok || !momPings.ok || (interviews && !interviews.ok) || (configuration && !configuration.ok) || (mailJobs && !jobsValid) || (offerJobs && !offersValid) || (employeeJobs && !employeeJobsValid) ? 'Some notifications could not be refreshed. Retry to see the latest progress.' : '')
+    const firstReminderPage = reminderPages?.[0]
+    const mergedReminders = reminderPages?.flatMap(page => page.data.items) ?? []
+    const remindersValid = Boolean(firstReminderPage?.ok && reminderPages?.every(page => page.ok && page.data.total === firstReminderPage.data.total)
+      && new Set(mergedReminders.map(employeeEmailReminderKey)).size === mergedReminders.length)
+    // A changing result set or failed later page falls back to the fresh first page.
+    // Never retain reminders from a failed request or an earlier access scope.
+    lastEmailReminders.current = firstReminderPage?.ok
+      ? { ...firstReminderPage.data, scope: employeeScope, items: remindersValid ? mergedReminders : firstReminderPage.data.items }
+      : emptyEmailReminders(employeeScope)
+    setEmailReminders(lastEmailReminders.current)
+    setError(!tasks.ok || !momPings.ok || (interviews && !interviews.ok) || (configuration && !configuration.ok) || (mailJobs && !jobsValid) || (offerJobs && !offersValid) || (employeeJobs && !employeeJobsValid) || (reminderPages && !remindersValid) ? 'Some notifications could not be refreshed. Retry to see the latest progress.' : '')
     setLoading(false)
   }, [session?.user.id, session?.user.clientId, session?.user.permissions.join('|'), offerScope, employeeScope])
 
-  const notifications: ActionItem[] = [...(canSeeEmployeeJobs && employeeFeed.scope === employeeScope ? employeeFeed.items : []).map(job => ({
+  const visibleEmailReminders = canSeeEmployeeJobs && emailReminders.scope === employeeScope ? emailReminders : emptyEmailReminders(employeeScope)
+  const notifications: ActionItem[] = [...visibleEmailReminders.items.map(reminder => ({
+    key: `employee-email:${employeeEmailReminderKey(reminder)}`, title: reminder.emailIssue === 'Missing' ? 'Email missing — please update email' : 'Email invalid — please update email',
+    detail: `${reminder.employeeName || 'Employee'} · ${reminder.employeeCode || `#${reminder.employeeId}`} · ${reminder.clientName || `Client #${reminder.clientId}`}`,
+    route: `/employees/master?clientId=${reminder.clientId}&employeeId=${reminder.employeeId}&edit=0001`,
+  })), ...(canSeeEmployeeJobs && employeeFeed.scope === employeeScope ? employeeFeed.items : []).map(job => ({
     key: `employee-import:${job.jobId}`, title: employeeJobTitle(job),
     detail: `${job.clientName} · ${job.state} · ${job.completedRows}/${job.totalRows} processed · ${job.inserted + job.updated} saved`,
     route: `/employees/master?clientId=${job.clientId}&importJobId=${encodeURIComponent(job.jobId)}`, employeeJob: job
@@ -112,6 +138,28 @@ export default function ActionNotifications() {
     .filter(job => !job.dismissedAtUtc && (!session?.user.clientId || job.clientId === session.user.clientId))
     .map(job => ({ key: `excel-mail:${job.id}`, title: job.status === 'Completed' ? 'Excel payslip email complete' : job.status === 'Needs attention' ? 'Excel payslip email needs attention' : 'Excel payslip email in progress', detail: `${job.clientName} · ${job.month}`, route: `/reports/payroll-reports?report=excel-payslips&clientId=${job.clientId}&batchId=${encodeURIComponent(job.batchId)}&mailJobId=${encodeURIComponent(job.id)}`, mailJob: job })),
     ...(canSeeOfferJobs && offerFeed.scope === offerScope ? offerFeed.items : []).filter(job => !job.dismissedAtUtc).map(job => ({ key: `offer-mail:${job.id}`, title: job.status === 'Completed' ? 'Offer email complete' : job.status === 'Needs attention' ? 'Offer email needs attention' : 'Offer email in progress', detail: `${job.clientName} · ${job.total} offer letters`, route: `/recruitment/offers-and-pre-onboarding?clientId=${job.clientId}&mailJobId=${encodeURIComponent(job.id)}`, offerJob: job }))]
+  const notificationCount = notifications.length + Math.max(0, visibleEmailReminders.total - visibleEmailReminders.items.length)
+
+  const loadMoreEmailReminders = async () => {
+    if (!canSeeEmployeeJobs || loading || emailPageRequest.current || visibleEmailReminders.items.length >= visibleEmailReminders.total) return
+    const requestedScope = employeeScope, attempt = generation.current, previous = visibleEmailReminders
+    emailPageRequest.current = true
+    setLoadingMoreEmails(true)
+    const result = await getEmployeeEmailReminders(previous.items.length)
+    if (attempt !== generation.current || currentEmployeeScope.current !== requestedScope) return
+    emailPageRequest.current = false
+    setLoadingMoreEmails(false)
+    if (!result.ok) {
+      lastEmailReminders.current = emptyEmailReminders(requestedScope)
+      setEmailReminders(lastEmailReminders.current)
+      setError(result.error || 'Email reminders could not be refreshed.')
+      return
+    }
+    const keys = new Set(previous.items.map(employeeEmailReminderKey))
+    if (result.data.total !== previous.total || result.data.items.some(item => keys.has(employeeEmailReminderKey(item)))) { void refresh(); return }
+    lastEmailReminders.current = { ...previous, items: [...previous.items, ...result.data.items] }
+    setEmailReminders(lastEmailReminders.current)
+  }
 
   const dismissJob = async (job: ExcelPayslipMailJob) => {
     if (!canSeeMailJobs || !job.isComplete || dismissing) return
@@ -153,7 +201,8 @@ export default function ActionNotifications() {
     const timer = window.setInterval(tick, 30000)
     window.addEventListener('focus', tick)
     window.addEventListener('hrms:actions-changed', tick)
-    return () => { generation.current++; window.clearInterval(timer); window.removeEventListener('focus', tick); window.removeEventListener('hrms:actions-changed', tick) }
+    const stopEmployeeRefresh = onEmployeeMasterSaved(0, tick)
+    return () => { generation.current++; stopEmployeeRefresh(); window.clearInterval(timer); window.removeEventListener('focus', tick); window.removeEventListener('hrms:actions-changed', tick) }
   }, [refresh])
 
   return <Popover trigger="click" placement="bottomRight" open={open} onOpenChange={value => { setOpen(value); if (value) void refresh() }} title={<Space><span>Notifications</span><Button size="small" type="text" aria-label="Refresh pending actions" icon={<ReloadOutlined />} onClick={() => void refresh()} /></Space>} content={
@@ -170,8 +219,12 @@ export default function ActionNotifications() {
         {item.offerJob?.isComplete && <Button type="link" size="small" loading={dismissing === item.offerJob.id} disabled={Boolean(dismissing)} aria-label="Dismiss offer email notification" onClick={() => void dismissOfferJob(item.offerJob!)}>Dismiss</Button>}
         {item.employeeJob && !employeeJobIsRunning(item.employeeJob) && <Button type="link" size="small" loading={dismissing === item.employeeJob.jobId} disabled={Boolean(dismissing)} aria-label={`Dismiss ${item.title} notification`} onClick={() => void dismissEmployeeJob(item.employeeJob!)}>Dismiss</Button>}
       </List.Item>} />}
+      {visibleEmailReminders.total > 0 && <div style={{ paddingTop: 8 }}>
+        <Typography.Text type="secondary">Email reminders · {visibleEmailReminders.items.length} of {visibleEmailReminders.total}</Typography.Text>
+        {visibleEmailReminders.items.length < visibleEmailReminders.total && <Button data-testid="load-more-email-reminders" type="link" loading={loadingMoreEmails} disabled={loading || loadingMoreEmails} onClick={() => void loadMoreEmailReminders()}>Load more email reminders</Button>}
+      </div>}
     </div>
-  }><Badge count={notifications.length} overflowCount={99}><Button className="topbar-icon-btn" icon={<BellOutlined />} aria-label="Notifications" /></Badge></Popover>
+  }><Badge count={notificationCount} overflowCount={99}><Button className="topbar-icon-btn" icon={<BellOutlined />} aria-label="Notifications" /></Badge></Popover>
 }
 
 function validMailJobs(value: unknown): value is ExcelPayslipMailJob[] {

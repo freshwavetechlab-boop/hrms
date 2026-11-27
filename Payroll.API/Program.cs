@@ -4851,6 +4851,18 @@ app.MapPost("/api/employees/import-jobs", async (EmployeeRepository repository, 
 .WithName("StartEmployeeImportJob")
 .WithOpenApi();
 
+app.MapGet("/api/employees/email-reminders", async (EmployeeRepository repository, HttpContext context, int? offset, int? limit, int? clientId) =>
+{
+    var user = CurrentUser(context);
+    if (!EmployeeRepository.CanSeeEmployeeEmailReminders(user)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (EmployeeRepository.EmployeeEmailReminderPagingError(offset ?? 0, limit ?? 100) is { } error)
+        return Results.BadRequest(new { error });
+    if (clientId is <= 0) return Results.BadRequest(new { error = "Select a valid client." });
+    if (clientId.HasValue && (!SelectedClientAccess.Allows(user, clientId.Value)
+        || user.ClientId.HasValue && user.ClientId != clientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return Results.Ok(await repository.EmployeeEmailRemindersAsync(user, offset ?? 0, limit ?? 100, clientId));
+}).WithName("GetEmployeeEmailReminders").WithOpenApi();
+
 app.MapGet("/api/employees/import-jobs", async (EmployeeRepository repository, HttpContext context) =>
 {
     var user = CurrentUser(context);

@@ -19,6 +19,14 @@ export type EmployeeImportCandidateEmployee = {
   matchReasons: string[]
   changes: EmployeeImportReviewChange[]
 }
+export type EmployeeImportCodeSuggestion = {
+  employeeId: number
+  employeeCode: string
+  employeeName: string
+  mobile: string
+  bankAccountNo: string
+  matchReasons: string[]
+}
 export type EmployeeImportIdentityEvidenceCandidate = {
   employeeId: number
   employeeCode: string
@@ -44,9 +52,11 @@ export type EmployeeImportReviewRow = {
   blockingReasons: string[]
   changes: EmployeeImportReviewChange[]
   candidateEmployees?: EmployeeImportCandidateEmployee[]
+  codeSuggestions?: EmployeeImportCodeSuggestion[]
   identityEvidence?: EmployeeImportIdentityEvidence[]
   canResolveConflict?: boolean
   canForceSalaryAssignment?: boolean
+  canGenerateEmployeeCode?: boolean
   testPayslips?: { runId: number; payPeriod: string; paid: boolean; legacy: boolean }[] | null
 }
 export type EmployeeImportPreflight = {

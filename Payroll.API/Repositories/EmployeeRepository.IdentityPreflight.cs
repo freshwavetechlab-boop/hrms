@@ -24,6 +24,7 @@ public partial class EmployeeRepository
         var byAadhaar = BuildIdentityMap(existing, employee => NormalizeAadhaar(employee.PersonalDetails?.AadhaarNumber));
         var byPan = BuildIdentityMap(existing, employee => NormalizePan(employee.PersonalDetails?.PanNumber));
         var byBank = BuildIdentityMap(existing, employee => NormalizeBankAccount(employee.PaymentDetails?.BankAccountNo));
+        var byName = BuildIdentityMap(existing, employee => NormalizeWords($"{employee.FirstName} {employee.LastName}"));
 
         var rows = GetEmployeeDataSheet(workbook);
         var sheetName = GetEmployeeDataSheetName(workbook);
@@ -149,6 +150,8 @@ public partial class EmployeeRepository
                 }
             }
 
+            var needsNewCode = importMode != UpdateImportMode && stableMatch is null && reviewCandidates.Count == 0
+                && string.IsNullOrWhiteSpace(code) && blocking.Count == 0;
             if (importMode == InsertImportMode && stableMatch is not null && matchStatus != "ProbableDuplicate")
             {
                 blocking.Add($"Employee {stableMatch.EmployeeCode} already exists. Insert mode accepts new employees only.");
@@ -196,7 +199,12 @@ public partial class EmployeeRepository
                 changes,
                 candidateEmployees,
                 identityEvidence,
-                canResolveConflict));
+                canResolveConflict) {
+                    CanGenerateEmployeeCode = needsNewCode && blocking.Count == 1,
+                    CodeSuggestions = includeFieldChanges && string.IsNullOrWhiteSpace(code)
+                        ? BuildCodeSuggestions(reviewCandidates, LookupIdentity(byName, NormalizeWords($"{Cell(source, map, "First Name")} {Cell(source, map, "Last Name")}")))
+                        : null
+                });
             TrackWorkbookIdentifier(workbookIdentifiers, "Mobile", NormalizeMobile(Cell(source, map, "Mobile")), resultRows.Count - 1);
             TrackWorkbookIdentifier(workbookIdentifiers, "Work email", Cell(source, map, "Work Email").Trim().ToLowerInvariant(), resultRows.Count - 1);
             TrackWorkbookIdentifier(workbookIdentifiers, "Aadhaar", NormalizeAadhaar(Cell(source, map, "Aadhaar")), resultRows.Count - 1);
@@ -216,10 +224,34 @@ public partial class EmployeeRepository
                     .Append($"{label} is also supplied on workbook row(s) {string.Join(", ", otherRows)}. One person must not be inserted or updated twice.")
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
-                resultRows[rowIndex] = row with { MatchStatus = "Blocked", BlockingReasons = blockingReasons, CanResolveConflict = false };
+                resultRows[rowIndex] = row with { MatchStatus = "Blocked", BlockingReasons = blockingReasons, CanResolveConflict = false, CanGenerateEmployeeCode = false };
             }
         }
 
         return resultRows;
+    }
+
+    // Display-only hints must never enter reviewCandidates: a name match is not
+    // evidence that can select an employee or authorize an import update.
+    private static List<EmployeeImportCodeSuggestion> BuildCodeSuggestions(
+        Dictionary<int, (Employee Employee, List<string> Reasons)> identityCandidates, List<Employee> sameName)
+    {
+        var suggestions = identityCandidates.ToDictionary(item => item.Key,
+            item => (item.Value.Employee, Reasons: new List<string>(item.Value.Reasons)));
+        foreach (var employee in sameName) AddReviewCandidate(suggestions, employee, "Same normalized name · verify details");
+        return suggestions.Values
+            .OrderByDescending(candidate => identityCandidates.ContainsKey(candidate.Employee.Id))
+            .ThenByDescending(candidate => candidate.Reasons.Count(reason => reason.StartsWith("Exact ", StringComparison.Ordinal)))
+            .ThenBy(candidate => candidate.Employee.EmployeeCode, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(candidate => candidate.Employee.Id)
+            .Take(3)
+            .Select(candidate => new EmployeeImportCodeSuggestion(
+                candidate.Employee.Id,
+                candidate.Employee.EmployeeCode,
+                $"{candidate.Employee.FirstName} {candidate.Employee.LastName}".Trim(),
+                MaskIdentityValue("mobile", NormalizeMobile(candidate.Employee.PersonalDetails?.Mobile)),
+                MaskIdentityValue("bankAccountNo", NormalizeBankAccount(candidate.Employee.PaymentDetails?.BankAccountNo)),
+                candidate.Reasons.Distinct(StringComparer.OrdinalIgnoreCase).ToList()))
+            .ToList();
     }
 }

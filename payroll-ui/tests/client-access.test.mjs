@@ -78,6 +78,17 @@ test('recruitment All reads and authoritative configuration commands avoid stale
   assert.equal(requests.setActiveClientRequestScope(55), true)
 })
 
+test('the email reminder bell aggregates assigned clients without changing explicit reads or writes', () => {
+  const requests = {}
+  new Function('exports', 'require', 'sessionStorage', compile('../src/services/clientRequestScope.ts'))(requests, () => access, { getItem: () => null, setItem() {} })
+  requests.configureClientRequestScope(selected, 20)
+  for (const path of ['/api/employees/email-reminders', '/api/employees/email-reminders?offset=100&limit=100']) assert.equal(requests.activeClientHeader(path), undefined)
+  for (const path of ['/api/employees/email-reminders?clientId=55', '/api/employees/email-reminders?clientId=0', '/api/employees/email-reminders?client_id=55', '/api/employees/email-reminders?clientIds=55']) assert.equal(requests.activeClientHeader(path), '20')
+  assert.equal(requests.activeClientHeader('/api/employees/email-reminders', 'POST'), '20')
+  assert.equal(requests.activeClientHeader('/api/employees/email-reminders/1'), '20')
+  assert.equal(requests.activeClientHeader('/api/employees'), '20')
+})
+
 test('deleting a pipeline from All uses its explicit owning client and retains ordinary write scoping', () => {
   const requests = {}
   const sessionStorage = { getItem: () => null, setItem: () => {} }

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { Alert, Button, Drawer, Pagination, Space, Tag } from 'antd'
 import { hasCellIssue, type ImportPreviewData, type ImportPreviewIssue } from '../utils/importPreview'
-import { resolveEmployeeCtc } from '../utils/employeeCtc'
+import { normalizeEmployeeSalaryAmount, resolveEmployeeCtc } from '../utils/employeeCtc'
 
 export type BulkUploadPreviewSheet = {
   name: string
@@ -27,7 +27,7 @@ export const emptyBulkUploadPreview: BulkUploadPreviewState = { open: false, tit
 
 type SheetValidator = (data: ImportPreviewData) => ImportPreviewIssue[]
 
-export default function BulkUploadPreviewModal(p: { preview: BulkUploadPreviewState; importing?: boolean; syncEmployeeCtc?: boolean; onCancel: () => void; onConfirm: (preview: BulkUploadPreviewState) => void; onResolveDuplicates?: (mode: 'skip' | 'replace' | 'replaceAll', sheetName: string) => void; uniqueFields?: string[][]; validateSheet?: SheetValidator }) {
+export default function BulkUploadPreviewModal(p: { preview: BulkUploadPreviewState; importing?: boolean; syncEmployeeCtc?: boolean; onCancel: () => void; onConfirm: (preview: BulkUploadPreviewState) => void; onResolveDuplicates?: (mode: 'skip' | 'replace' | 'replaceAll', sheetName: string, draft: BulkUploadPreviewState) => void; renderSheetTools?: (sheet: BulkUploadPreviewSheet, applyRows: (rows: string[][], validate?: SheetValidator) => void, sheets: BulkUploadPreviewSheet[]) => ReactNode; renderCellExtra?: (sheet: BulkUploadPreviewSheet, rowIndex: number, colIndex: number, change: (value: string) => void, sheets: BulkUploadPreviewSheet[]) => ReactNode; uniqueFields?: string[][]; validateSheet?: SheetValidator }) {
   const [activeSheet, setActiveSheet] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(100)
@@ -48,6 +48,10 @@ export default function BulkUploadPreviewModal(p: { preview: BulkUploadPreviewSt
     if (p.preview.open) { setActiveSheet(0); setPage(1) }
   }, [p.preview])
   const applyDraft = (next: BulkUploadPreviewState) => setDraft(rebuildIssues(next, p.uniqueFields ?? [], p.validateSheet, activeSheet))
+  const replaceSheetRows = (rows: string[][], validate?: SheetValidator) => {
+    const nextSheets = sheets.map((sheet, index) => index === activeSheet ? { ...sheet, rows } : sheet)
+    setDraft(rebuildIssues({ ...draft, sheets: nextSheets, rows: nextSheets.flatMap(sheet => sheet.rows) }, p.uniqueFields ?? [], validate ?? p.validateSheet, validate ? -1 : activeSheet))
+  }
   const updateCell = (rowIndex: number, colIndex: number, value: string) => {
     const editRow = (row: string[]) => {
       const next = [...row]
@@ -84,14 +88,15 @@ export default function BulkUploadPreviewModal(p: { preview: BulkUploadPreviewSt
         <Tag color="blue">{totalRows} rows</Tag>
         <Tag color={hasErrors ? 'red' : 'green'}>{hasErrors ? `${draft.issues.length} issue(s)` : 'Ready to import'}</Tag>
       </Space>
+      {current && p.renderSheetTools?.(current, replaceSheetRows, sheets)}
       {hasErrors && <Alert type="error" showIcon message="Review highlighted cells before import." description={draft.issues.slice(0, 8).map(issue => <div key={`${issue.rowNumber}-${issue.column}-${issue.message}`}>Row {issue.rowNumber}{issue.column ? `, ${issue.column}` : ''}: {issue.message}</div>)} />}
       {!hasErrors && <Alert type="info" showIcon message="Preview looks okay. Click Import to start upload." />}
       {hasDuplicateIssues && p.onResolveDuplicates && <div className="bulk-preview-resolve">
-        <span>Duplicate rows found.</span>
+        <span>Repeated employee codes found. Choose which row supplies the Employee Master values.</span>
         <Space wrap size={8}>
-          <Button size="small" onClick={() => p.onResolveDuplicates?.('skip', current?.name ?? '')}>Skip</Button>
-          <Button size="small" onClick={() => p.onResolveDuplicates?.('replace', current?.name ?? '')}>Replace</Button>
-          <Button size="small" type="primary" onClick={() => p.onResolveDuplicates?.('replaceAll', current?.name ?? '')}>Replace all</Button>
+          <Button size="small" onClick={() => p.onResolveDuplicates?.('skip', current?.name ?? '', draft)}>Keep first per code</Button>
+          <Button size="small" onClick={() => p.onResolveDuplicates?.('replace', current?.name ?? '', draft)}>Keep last per code</Button>
+          <Button size="small" type="primary" onClick={() => p.onResolveDuplicates?.('replaceAll', current?.name ?? '', draft)}>Keep last in all sheets</Button>
         </Space>
       </div>}
       <div className="bulk-preview-grid-shell">
@@ -108,7 +113,12 @@ export default function BulkUploadPreviewModal(p: { preview: BulkUploadPreviewSt
               return <tr key={rowIndex} className={rowIssue ? 'has-error' : ''}><td>{rowNumber}</td><td><button type="button" className="bulk-preview-row-delete" onClick={() => deleteRow(rowIndex)}>Skip</button></td>{(current?.headers ?? []).map((header, colIndex) => {
                 const meta = draft.columnMeta?.[header]
                 const issue = hasCellIssue(currentIssues, rowNumber, header)
-                return <td key={header} className={`${issue ? 'cell-error' : ''}${meta ? ' mapped-preview-column' : ''}`} style={meta ? { '--preview-map-color': meta.color } as CSSProperties : undefined}><input value={row[colIndex] || ''} onChange={event => updateCell(rowIndex, colIndex, event.target.value)} aria-label={`${header} row ${rowNumber}`} /></td>
+                return <td key={header} className={`${issue ? 'cell-error' : ''}${meta ? ' mapped-preview-column' : ''}`} style={meta ? { '--preview-map-color': meta.color } as CSSProperties : undefined}><input value={row[colIndex] || ''} onChange={event => updateCell(rowIndex, colIndex, event.target.value)} onBlur={event => {
+                  if (p.syncEmployeeCtc && /\[SALARY_INPUT:\d+\]$/i.test(header)) {
+                    const value = normalizeEmployeeSalaryAmount(event.target.value)
+                    if (value !== event.target.value) updateCell(rowIndex, colIndex, value)
+                  }
+                }} aria-label={`${header} row ${rowNumber}`} />{p.renderCellExtra?.(current, rowIndex, colIndex, value => updateCell(rowIndex, colIndex, value), sheets)}</td>
               })}</tr>
             })}</tbody>
           </table>
@@ -126,7 +136,7 @@ function rebuildIssues(preview: BulkUploadPreviewState, uniqueFields: string[][]
   if (preview.sheets?.length) {
     const globalOnly = baseIssues.filter(issue => issue.column === 'Client')
     const sheets = preview.sheets.map((sheet, index) => {
-      if (index !== activeSheet) return sheet
+      if (activeSheet >= 0 && index !== activeSheet) return sheet
       const issues = validateSheet ? validateSheet(sheet) : [...(sheet.issues ?? []).filter(issue => !issue.message.toLowerCase().includes('duplicates row')), ...uniqueIssues(sheet.headers, sheet.rows, uniqueFields)]
       return { ...sheet, issues }
     })

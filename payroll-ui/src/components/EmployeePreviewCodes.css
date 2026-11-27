@@ -1,0 +1,61 @@
+.employee-preview-code-candidates {
+  display: grid;
+  gap: 6px;
+  width: 280px;
+  max-width: 65vw;
+  margin-top: 9px;
+  white-space: normal;
+}
+
+.employee-preview-code-candidates > small {
+  color: #64748b;
+  font-size: .64rem;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.employee-preview-code-candidates > article {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #253149;
+}
+
+.employee-preview-code-candidates header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.employee-preview-code-candidates header b {
+  overflow-wrap: anywhere;
+  color: #075985;
+}
+
+.employee-preview-code-candidates strong {
+  font-size: .72rem;
+  overflow-wrap: anywhere;
+}
+
+.employee-preview-code-details {
+  display: grid;
+  gap: 2px;
+  color: #475569;
+  font-size: .66rem;
+  overflow-wrap: anywhere;
+}
+
+.employee-preview-code-reason {
+  color: #047857;
+  font-size: .64rem;
+  line-height: 1.4;
+}
+
+.employee-preview-code-used {
+  color: #b45309;
+  font-size: .64rem;
+}

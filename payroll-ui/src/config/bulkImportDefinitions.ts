@@ -15,7 +15,7 @@ export const employeeBulkImportDefinition: BulkImportDefinition = {
   moduleLabel: 'Employee master',
   targetSheetName: 'Employees',
   fields: [
-    field('EmployeeCode', 'Employee Code', 'Identity', 'text', ['Employee ID', 'Employee No', 'Employee Number', 'Emp Code', 'Emp ID', 'Staff ID', 'Staff No', 'Staff Number', 'Staff Ref', 'Personnel Number'], { required: true, description: 'Unique employee identifier. Existing codes update the employee.' }),
+    field('EmployeeCode', 'Employee Code', 'Identity', 'text', ['New Employee Code', 'Current Employee Code', 'Employee ID', 'Employee No', 'Employee Number', 'Emp Code', 'Emp ID', 'Staff ID', 'Staff No', 'Staff Number', 'Staff Ref', 'Personnel Number'], { required: true, description: 'Unique employee identifier. Existing codes update the employee.' }),
     field('FirstName', 'First Name', 'Identity', 'text', ['Given Name', 'Forename']),
     field('LastName', 'Last Name', 'Identity', 'text', ['Surname', 'Family Name']),
     field('Gender', 'Gender', 'Identity', 'lookup', ['Sex']),

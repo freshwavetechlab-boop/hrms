@@ -40,6 +40,7 @@ function mount(overrides = {}, initial = {}) {
     if (name === '../services/employeeProfileCompletionService') return services
     if (name === '../services/apiClient') return api
     if (name === './PayrollScopeSelect') return { __esModule: true, default: ScopeSelect }
+    if (name === './ClientOption') return { clientChoice: client => ({ value: client.id, label: client.name, code: client.code ?? '' }), clientSelectProps: options => ({ options }) }
     if (name === './CommunicationRichEditor') return { __esModule: true, default: node(name) }
     throw Error('Unexpected dependency: ' + name)
   })

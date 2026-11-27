@@ -41,6 +41,8 @@ import EmployeeAttachmentPanel from '../components/EmployeeAttachmentPanel'
 import EmployeeDynamicFields from '../components/EmployeeDynamicFields'
 import EntityAttachmentPanel from '../components/EntityAttachmentPanel'
 import SmartBulkUploadMapper from '../components/SmartBulkUploadMapper'
+import { employeeCodeColumn, employeeCodeHintsForRow, employeeCodeSuggestionUsed, type EmployeeCodeHintSnapshot } from '../utils/employeePreviewCodes'
+import EmployeePreviewCodes, { EmployeePreviewCodeCandidates } from '../components/EmployeePreviewCodes'
 import EmployeeImportReviewModal from '../components/EmployeeImportReviewModal'
 import EmployeeBulkSalaryAssignmentModal, { type SalaryAssignmentRequest, type SalaryAssignmentReview } from '../components/EmployeeBulkSalaryAssignmentModal'
 import RecruitmentFormBuilder from '../components/RecruitmentFormBuilder'
@@ -53,9 +55,10 @@ import '../TemplateDesigner.css'
 import './EmployeeWorkspace.css'
 import { useAuthSession } from '../components/AuthGate'
 import { createEmployeePageLoader } from '../utils/employeePageLoading'
+import { consumeEmployeeEmailEditLink, employeeEmailEditTarget } from '../utils/employeeEmailEditLink'
 import { assignedEmployeeSalaryTemplate, currentSalaryTemplateId, currentSalaryTemplateLabel, employeeSalaryAssignmentKey, employeeSalaryTemplates, reviewedSalaryAssignment, usesEmployeeTemplateInputs } from '../utils/employeeSalaryTemplate'
 import { employeeSalaryImportIssues, employeeSalaryInputFields } from '../utils/employeeSalaryImport'
-import { resolveEmployeeCtc } from '../utils/employeeCtc'
+import { normalizeEmployeeSalaryAmount, resolveEmployeeCtc } from '../utils/employeeCtc'
 
 const employeeInfotypes = [
   { code: '0000', name: 'Actions' },
@@ -108,6 +111,7 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
   const [infotypes, setInfotypes] = useState<EmployeeInfotypeRecord[]>([])
   const [changeReason, setChangeReason] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
+  const openedEmailReminder = useRef('')
   const [deleteTarget, setDeleteTarget] = useState<Employee | null>(null)
   const [resignTarget, setResignTarget] = useState<Employee | null>(null)
   const [documentRevision, setDocumentRevision] = useState(0)
@@ -175,9 +179,10 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     ? lastAssignedTemplate.id : sharedRosterTemplate
   const [preview, setPreview] = useState<BulkUploadPreviewState>(emptyBulkUploadPreview)
   const [mappedPreviewColumns, setMappedPreviewColumns] = useState<Record<string, BulkUploadPreviewColumnMeta>>({})
-  const [previewConfirm, setPreviewConfirm] = useState<null | ((draft: BulkUploadPreviewState) => Promise<void>)>(null)
   const [previewImporting, setPreviewImporting] = useState(false)
   const [employeePreviewSource, setEmployeePreviewSource] = useState<{ sheets: ImportPreviewSheet[]; clientId: number; fileName: string; operation: BulkImportOperation } | null>(null)
+  const [employeeCodeHints, setEmployeeCodeHints] = useState<EmployeeCodeHintSnapshot | null>(null)
+  useEffect(() => { setEmployeeCodeHints(null) }, [dataScope, clientFilter, preview.open, employeePreviewSource?.fileName])
   const [importReview, setImportReview] = useState<{ file: File; clientId: number; operation: BulkImportOperation; mappedSalaryImport: boolean; review: EmployeeImportPreflight } | null>(null)
   const [importReviewBusy, setImportReviewBusy] = useState(false)
   const chosenStructure = assignedEmployeeSalaryTemplate(setup.salaryStructures, employee.clientId, employee.salaryStructureId)
@@ -325,6 +330,16 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     const draft = normalizeEmployeeSalary(normalized, overrides, refs.setup)
     setSalaryOverrides(overrides); setEmployee(draft); setSavedEmployee(draft); setSaveError(''); setEmployeeInfotype(infotype); setChangeReason(''); setModalOpen(true); void loadEmployeeHistory(row.id)
   }
+  useEffect(() => {
+    if (view !== 'master' || !directoryLoaded || modalOpen) return
+    const target = employeeEmailEditTarget(searchParams, !!session?.user.permissions.includes('employees.manage'), clientFilter, employees)
+    if (!target) return
+    const requestKey = `${dataScope}:${route.key}:${target.clientId}:${target.id}`
+    if (openedEmailReminder.current === requestKey) return
+    openedEmailReminder.current = requestKey
+    setSearchParams(consumeEmployeeEmailEditLink(searchParams), { replace: true })
+    void editEmployee(target, '0001')
+  }, [view, directoryLoaded, modalOpen, searchParams, clientFilter, employees, session?.user.permissions.join('|'), dataScope, route.key])
   const rosterEmployee = modalOpen && savedEmployee ? employees.find(row => row.id === savedEmployee.id && row.clientId === savedEmployee.clientId) : undefined
   const updatedAssignment = rosterEmployee && savedEmployee && employeeSalaryAssignmentKey(rosterEmployee) !== editorRosterTemplate.current
     && employeeSalaryAssignmentKey(rosterEmployee) !== employeeSalaryAssignmentKey(savedEmployee) ? rosterEmployee : undefined
@@ -489,19 +504,18 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
       const clientIssues: ImportPreviewIssue[] = importClientId ? [] : [{ rowNumber: 1, column: 'Client', message: 'Select a client before import or upload a template with Client in References sheet.' }]
       setMappedPreviewColumns(columnMeta)
       setPreview({ open: true, title: 'Employee bulk upload preview', fileName: file.name, headers: data.headers, rows: data.rows, issues: [...clientIssues, ...data.issues], sheets: data.sheets, columnMeta })
-      setPreviewConfirm(() => async (draft: BulkUploadPreviewState) => reviewEmployeeImportIdentity(employeePreviewFile(draft, data.sourceSheets, file.name), importClientId, operation, draft.headers))
       setEmployeePreviewSource({ sheets: data.sourceSheets, clientId: importClientId, fileName: file.name, operation })
     } catch (error) {
       setUpload({ open: true, state: 'error', percent: 0, summary: { totalRows: 0, errors: [error instanceof Error ? error.message : 'Unable to preview employee import file.'] } })
     }
   }
   const confirmEmployeePreview = async (draft: BulkUploadPreviewState) => {
-    if (!previewConfirm) return
-    const action = previewConfirm
+    if (!employeePreviewSource || currentClientFilter.current !== employeePreviewSource.clientId) return
+    const { sheets, clientId, fileName, operation } = employeePreviewSource
     setPreviewImporting(true)
     setPreview(emptyBulkUploadPreview)
-    setPreviewConfirm(null)
-    try { await action(draft) } finally { setPreviewImporting(false) }
+    setEmployeePreviewSource(null)
+    try { await reviewEmployeeImportIdentity(employeePreviewFile(draft, sheets, fileName), clientId, operation, draft.headers) } finally { setPreviewImporting(false) }
   }
   const uploadEmployees = async (file: File | null) => {
     if (!file) return
@@ -573,15 +587,15 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
     setMappedPreviewColumns({})
     await previewEmployeeUpload(file, {}, operation)
   }
-  const resolveEmployeeDuplicates = async (mode: 'skip' | 'replace' | 'replaceAll', sheetName: string) => {
+  const resolveEmployeeDuplicates = async (mode: 'skip' | 'replace' | 'replaceAll', sheetName: string, draft: BulkUploadPreviewState) => {
     if (!employeePreviewSource) return
-    const resolvedSheets = resolveDuplicateEmployeeSheets(employeePreviewSource.sheets, mode, sheetName)
+    const editedSheets = employeePreviewSource.sheets.map(source => draft.sheets?.find(sheet => sheet.name === source.name) ?? source)
+    const resolvedSheets = resolveDuplicateEmployeeSheets(editedSheets, mode, sheetName)
     const fileName = employeePreviewSource.fileName.replace(/\.xlsx$/i, '-resolved.xlsx')
     const resolvedFile = new File([buildXlsxBlob(resolvedSheets.map(sheet => ({ name: sheet.name, rows: [sheet.headers, ...sheet.rows] })))], fileName, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
     const data = await parseEmployeePreviewData(resolvedFile, employeePreviewSource.operation)
     const clientIssues: ImportPreviewIssue[] = employeePreviewSource.clientId ? [] : [{ rowNumber: 1, column: 'Client', message: 'Select a client before import or upload a template with Client in References sheet.' }]
     setPreview({ open: true, title: 'Employee bulk upload preview', fileName: resolvedFile.name, headers: data.headers, rows: data.rows, issues: [...clientIssues, ...data.issues], sheets: data.sheets, columnMeta: mappedPreviewColumns })
-    setPreviewConfirm(() => async (draft: BulkUploadPreviewState) => reviewEmployeeImportIdentity(employeePreviewFile(draft, data.sourceSheets, resolvedFile.name), employeePreviewSource.clientId, employeePreviewSource.operation, draft.headers))
     setEmployeePreviewSource({ sheets: data.sourceSheets, clientId: employeePreviewSource.clientId, fileName: resolvedFile.name, operation: employeePreviewSource.operation })
   }
   const visibleEmployees = useMemo(() => employees.filter(row => (fromEmployeeLinks ? Number(row.id) === linkedEmployeeId : row.isActive || !fromDashboard && !!row.lastWorkingDate) && (!clientFilter || row.clientId === clientFilter) && (!fromDashboard || matchesWorkforce(row, searchParams, locations))), [employees, clientFilter, fromDashboard, fromEmployeeLinks, linkedEmployeeId, searchParams, locations])
@@ -622,7 +636,30 @@ export default function EmployeePage({ view = 'master' }: { view?: EmployeePageV
       successMessage={upload.assignment ? 'Salary template assignment completed' : undefined} successDescription={upload.assignment
         ? `${upload.summary.updated ?? 0} assigned · ${upload.assignment.alreadyAssigned} already assigned · ${upload.assignment.blocked.length} blocked`
         : undefined} onClose={() => setUpload(current => ({ ...current, open: false }))} />
-    <BulkUploadPreviewModal preview={preview} importing={previewImporting} syncEmployeeCtc validateSheet={data => validateEmployeePreviewSheet(data, employeePreviewSource?.operation ?? 'update')} onCancel={() => { setPreview(emptyBulkUploadPreview); setMappedPreviewColumns({}); setPreviewConfirm(null); setEmployeePreviewSource(null) }} onConfirm={draft => void confirmEmployeePreview(draft)} onResolveDuplicates={(mode, sheetName) => void resolveEmployeeDuplicates(mode, sheetName)} />
+    <BulkUploadPreviewModal preview={preview} importing={previewImporting} syncEmployeeCtc validateSheet={data => validateEmployeePreviewSheet(data, employeePreviewSource?.operation ?? 'update')} onCancel={() => { setPreview(emptyBulkUploadPreview); setMappedPreviewColumns({}); setEmployeePreviewSource(null) }} onConfirm={draft => void confirmEmployeePreview(draft)} onResolveDuplicates={(mode, sheetName, draft) => void resolveEmployeeDuplicates(mode, sheetName, draft)}
+      renderCellExtra={(sheet, rowIndex, colIndex, change, sheets) => {
+        if (employeePreviewSource?.clientId !== clientFilter || colIndex !== employeeCodeColumn(sheet.headers)) return null
+        const candidates = employeeCodeHintsForRow(employeeCodeHints, clientFilter, sheet, rowIndex)
+        if (!candidates.length) return null
+        const otherCodes = sheets.filter(other => other !== sheet).flatMap(other => {
+          const column = employeeCodeColumn(other.headers)
+          return column < 0 ? [] : other.rows.map(row => row[column] ?? '')
+        })
+        return <EmployeePreviewCodeCandidates candidates={candidates} rowNumber={rowIndex + 2} disabled={previewImporting}
+          isUsed={code => employeeCodeSuggestionUsed(code, sheet.rows, colIndex, rowIndex, otherCodes)} onSelect={change} />
+      }}
+      renderSheetTools={(sheet, applyRows, sheets) => employeePreviewSource && employeePreviewSource.clientId === clientFilter && !/^000[12689]\b/i.test(sheet.name.trim()) && <EmployeePreviewCodes
+        key={`${dataScope}:${clientFilter}:${employeePreviewSource.fileName}:${sheet.name}`} sheet={sheet} clientId={clientFilter} operation={employeePreviewSource.operation}
+        onHints={setEmployeeCodeHints}
+        clientCode={clients.find(client => client.id === clientFilter)?.code ?? ''} reserved={[...employees.filter(employee => employee.clientId === clientFilter).map(employee => employee.employeeCode),
+          ...sheets.filter(other => other !== sheet).flatMap(other => {
+            const index = employeeCodeColumn(other.headers)
+            return index < 0 ? [] : other.rows.map(row => row[index] ?? '')
+          })]}
+        onApply={(rows, operation) => {
+          applyRows(rows, data => validateEmployeePreviewSheet(data, operation))
+          if (operation !== employeePreviewSource.operation) setEmployeePreviewSource({ ...employeePreviewSource, operation })
+        }} />} />
     <EmployeeImportReviewModal key={importReview?.review.reviewToken ?? 'closed'} open={Boolean(importReview)} fileName={importReview?.file.name ?? ''} mappedSalaryImport={importReview?.mappedSalaryImport} operation={importReview?.operation ?? 'upsert'} review={importReview?.review ?? null} busy={importReviewBusy} onCancel={() => setImportReview(null)} onConfirm={decisions => void confirmEmployeeImportReview(decisions)} />
   </section>
 }
@@ -842,7 +879,10 @@ async function parseEmployeePreviewData(file: File, operation: BulkImportOperati
       for (const header of ['Annual CTC', 'Monthly CTC']) if (!headers.includes(header)) headers.push(header)
     }
     const rows = sheet.rows.map(row => {
-      const values = headers.map(header => previewCell(sheet.headers, row, header))
+      const values = headers.map(header => {
+        const value = previewCell(sheet.headers, row, header)
+        return /\[SALARY_INPUT:\d+\]$/i.test(header) ? normalizeEmployeeSalaryAmount(value) : value
+      })
       if (hasCtc) {
         const annualIndex = headers.indexOf('Annual CTC'), monthlyIndex = headers.indexOf('Monthly CTC')
         const ctc = resolveEmployeeCtc(values[annualIndex], values[monthlyIndex], !headers.includes('Salary Effective From'))

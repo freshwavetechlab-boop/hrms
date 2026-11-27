@@ -46,7 +46,7 @@ export default function EmployeeImportReviewModal(p: Props) {
 
   const pendingRows = reviewRows.filter(row => rowIsPending(row, decisions[rowKey(row)], targets[rowKey(row)], fieldChoices[rowKey(row)], p.operation))
   const skipped = reviewRows.filter(row => decisions[rowKey(row)] === 'skip').length
-  const accepted = reviewRows.filter(row => ['insert', 'update'].includes(decisions[rowKey(row)] ?? '')).length
+  const accepted = reviewRows.length - skipped - pendingRows.length
   const automaticRows = Math.max(0, Number(p.review?.totalRows || rows.length) - reviewRows.length)
   const errors = cleanStrings(p.review?.errors)
   const hasRowConflict = rows.some(isConflict)
@@ -59,13 +59,25 @@ export default function EmployeeImportReviewModal(p: Props) {
     && acknowledged
     && hasImportableRows
   const selectedReviewRows = reviewRows.filter(row => selectedRows.includes(rowKey(row)))
-  const bulkFieldRows = selectedReviewRows.filter(row => resolvedTargetId(row, targets[rowKey(row)]) > 0 && criticalChanges(row, targets[rowKey(row)]).length > 0 && decisions[rowKey(row)] !== 'skip')
-  const bulkKeepEnabled = selectedReviewRows.length > 0 && bulkFieldRows.length === selectedReviewRows.length
-  const bulkImportedEnabled = bulkKeepEnabled && selectedReviewRows.every(row => safeForBulkImportedChoice(row, targets[rowKey(row)]))
+  const bulkDisabled = Boolean(p.busy || globallyBlocked || errors.length || !p.review?.reviewToken)
+  const targetOccurrences = new Map<number, number>()
+  for (const row of rows) {
+    const targetId = resolvedTargetId(row, targets[rowKey(row)])
+    if (targetId && decisions[rowKey(row)] !== 'skip') targetOccurrences.set(targetId, (targetOccurrences.get(targetId) ?? 0) + 1)
+  }
+  const pendingKeys = new Set(pendingRows.map(rowKey))
+  const selectedPending = selectedReviewRows.filter(row => pendingKeys.has(rowKey(row)))
+  const bulkUpdates = p.operation === 'insert' ? [] : selectedPending.filter(row => {
+    const key = rowKey(row), targetId = resolvedTargetId(row, targets[key])
+    return decisions[key] !== 'insert' && targetOccurrences.get(targetId) === 1 && safeForBulkImportedChoice(row, targetId)
+  })
+  const bulkKeepRows = selectedReviewRows.filter(row => decisions[rowKey(row)] !== 'skip'
+    && resolvedTargetId(row, targets[rowKey(row)]) > 0 && criticalChanges(row, targets[rowKey(row)]).length > 0)
+  const individualReviewCount = selectedPending.length - bulkUpdates.length
   const salaryUpdateMode = p.mappedSalaryImport && p.operation === 'update'
   const matchedSalaryRows = salaryUpdateMode ? selectedReviewRows.filter(row => {
     const key = rowKey(row), targetId = resolvedTargetId(row, targets[key])
-    if (decisions[key] === 'skip' || !isExactSalaryUpdate(row, targetId)) return false
+    if (decisions[key] === 'skip' || targetOccurrences.get(targetId) !== 1 || !isExactSalaryUpdate(row, targetId)) return false
     const fields = changesFor(row, targetId)
     // Preserve an individual reviewer's decision to keep a current amount.
     return !fields.some(change => fieldChoices[key]?.[change.field] === 'keepExisting')
@@ -104,19 +116,19 @@ export default function EmployeeImportReviewModal(p: Props) {
   }
 
   const applyBulkFields = (choice: FieldChoice) => {
-    const eligible = choice === 'useImported'
-      ? selectedReviewRows.filter(row => safeForBulkImportedChoice(row, targets[rowKey(row)]))
-      : selectedReviewRows.filter(row => resolvedTargetId(row, targets[rowKey(row)]) > 0)
+    if (bulkDisabled) return
+    const eligible = choice === 'useImported' ? bulkUpdates : bulkKeepRows
     setFieldChoices(current => {
       const next = { ...current }
-      eligible.forEach(row => {
+      for (const row of eligible) {
         const key = rowKey(row)
-        const changes = criticalChanges(row, targets[key])
-        if (!changes.length || decisions[key] === 'skip') return
-        next[key] = { ...(next[key] ?? {}), ...Object.fromEntries(changes.map(change => [change.field, choice])) }
-      })
+        const defaults = Object.fromEntries(criticalChanges(row, targets[key]).map(change => [change.field, choice]))
+        next[key] = choice === 'useImported' ? { ...defaults, ...current[key] } : { ...current[key], ...defaults }
+      }
       return next
     })
+    if (choice === 'useImported') setDecisions(current => ({ ...current, ...Object.fromEntries(eligible.map(row => [rowKey(row), 'update' as const])) }))
+    setAcknowledged(false)
   }
 
   const skipSelected = () => setDecisions(current => ({
@@ -161,16 +173,39 @@ export default function EmployeeImportReviewModal(p: Props) {
     closable={!p.busy}
     maskClosable={!p.busy}
     onClose={p.onCancel}
-    title={<div className="employee-import-review-title">
-      <span>EMPLOYEE IDENTITY REVIEW</span>
-      <b>Resolve matches before bulk import</b>
-      <small>{p.fileName} / {operationLabel(p.operation)}</small>
-    </div>}
+    title={<>
+      <div className="employee-import-review-title">
+        <span>EMPLOYEE IDENTITY REVIEW</span>
+        <b>Resolve matches before bulk import</b>
+        <small>{p.fileName} / {operationLabel(p.operation)}</small>
+      </div>
+      <section className="employee-import-review-actions">
+        <div><b>{selectedReviewRows.length} selected</b><span>{bulkUpdates.length} matched updates ready to confirm{individualReviewCount > 0 ? ` · ${individualReviewCount} need individual employee or conflict review` : ''}.</span></div>
+        <Space wrap>
+          <Checkbox data-testid="employee-import-select-all"
+            checked={reviewRows.length > 0 && selectedReviewRows.length === reviewRows.length}
+            indeterminate={selectedReviewRows.length > 0 && selectedReviewRows.length < reviewRows.length}
+            disabled={!reviewRows.length || p.busy}
+            onChange={event => event.target.checked ? selectAll() : deselectAll()}>Select all</Checkbox>
+          <Button data-testid="employee-import-deselect-all" onClick={deselectAll} disabled={!selectedRows.length}>Deselect all</Button>
+          {salaryUpdateMode && reviewRows.some(row => isExactSalaryUpdate(row, resolvedTargetId(row, targets[rowKey(row)]))) && <Button data-testid="employee-import-accept-salary"
+            disabled={!matchedSalaryRows.length || !!p.busy || globallyBlocked || !!errors.length || !p.review?.reviewToken}
+            onClick={acceptSalaryUpdates}>Accept matched salary updates ({matchedSalaryRows.length})</Button>}
+          <Button data-testid="employee-import-bulk-keep" disabled={bulkDisabled || !bulkKeepRows.length} onClick={() => applyBulkFields('keepExisting')}>Keep HRMS values</Button>
+          <Button data-testid="employee-import-bulk-import" type="primary" disabled={bulkDisabled || !bulkUpdates.length} onClick={() => applyBulkFields('useImported')}>Use imported values · Confirm {bulkUpdates.length} {bulkUpdates.length === 1 ? 'update' : 'updates'}</Button>
+          <Button data-testid="employee-import-bulk-skip" danger icon={<StopOutlined />} disabled={!selectedReviewRows.length} onClick={skipSelected}>Skip selected</Button>
+        </Space>
+      </section>
+    </>}
     footer={<div className="employee-import-review-footer">
       <div>
         <b>{accepted} confirmed / {automaticRows} clear / {skipped} skipped</b>
         <span>{pendingRows.length ? `${pendingRows.length} row(s) still need a complete decision` : 'Every flagged row has an explicit decision.'}</span>
       </div>
+      <label className={`employee-import-review-ack${globallyBlocked ? ' disabled' : ''}`}>
+        <Checkbox data-testid="employee-import-review-acknowledge" checked={acknowledged} disabled={globallyBlocked || p.busy} onChange={event => setAcknowledged(event.target.checked)} />
+        <span><b>I reviewed the employee targets and field-level choices shown above.</b><small>Saved Keep HRMS choices are retained when you confirm matched updates.</small></span>
+      </label>
       <Space wrap>
         <Button disabled={p.busy} onClick={p.onCancel}>Cancel import</Button>
         <Button data-testid="employee-import-review-confirm" type="primary" loading={p.busy} disabled={!canContinue} onClick={submit}>Import reviewed rows</Button>
@@ -193,24 +228,6 @@ export default function EmployeeImportReviewModal(p: Props) {
       {!!errors.length && <Alert type="error" showIcon message="Preflight validation failed" description={errors.map(error => <div key={error}>{error}</div>)} />}
       {!p.review?.reviewToken && <Alert type="error" showIcon message="Review token is missing" description="Run employee preflight again. Import is blocked without a server-issued review token." />}
 
-      <section className="employee-import-review-actions">
-        <div><b>Selected rows: {selectedReviewRows.length}</b><span>Bulk actions never select an ambiguous employee target.</span></div>
-        <Space wrap>
-          <Checkbox data-testid="employee-import-select-all"
-            checked={reviewRows.length > 0 && selectedReviewRows.length === reviewRows.length}
-            indeterminate={selectedReviewRows.length > 0 && selectedReviewRows.length < reviewRows.length}
-            disabled={!reviewRows.length || p.busy}
-            onChange={event => event.target.checked ? selectAll() : deselectAll()}>Select all</Checkbox>
-          <Button data-testid="employee-import-deselect-all" onClick={deselectAll} disabled={!selectedRows.length}>Deselect all</Button>
-          {salaryUpdateMode && <Button data-testid="employee-import-accept-salary" type="primary"
-            disabled={!matchedSalaryRows.length || !!p.busy || globallyBlocked || !!errors.length || !p.review?.reviewToken}
-            onClick={acceptSalaryUpdates}>Accept matched salary updates ({matchedSalaryRows.length})</Button>}
-          <Button data-testid="employee-import-bulk-keep" disabled={!bulkKeepEnabled} onClick={() => applyBulkFields('keepExisting')}>Keep HRMS values</Button>
-          <Button data-testid="employee-import-bulk-import" type="primary" disabled={!bulkImportedEnabled} onClick={() => applyBulkFields('useImported')}>Use imported values</Button>
-          <Button data-testid="employee-import-bulk-skip" danger icon={<StopOutlined />} disabled={!selectedReviewRows.length} onClick={skipSelected}>Skip selected</Button>
-        </Space>
-      </section>
-
       <div className="employee-import-review-list">
         {reviewRows.length ? reviewRows.map(row => {
           const key = rowKey(row)
@@ -229,11 +246,6 @@ export default function EmployeeImportReviewModal(p: Props) {
           />
         }) : <Empty description="No identity or sensitive-field review was returned." />}
       </div>
-
-      <label className={`employee-import-review-ack${globallyBlocked ? ' disabled' : ''}`}>
-        <Checkbox data-testid="employee-import-review-acknowledge" checked={acknowledged} disabled={globallyBlocked || p.busy} onChange={event => setAcknowledged(event.target.checked)} />
-        <span><b>I reviewed the employee targets and field-level choices shown above.</b><small>Only imported values explicitly selected for critical fields will replace HRMS values. Skipped rows will not be imported.</small></span>
-      </label>
     </div>
   </Drawer>
 }
@@ -438,10 +450,8 @@ function resolvedTargetId(row: EmployeeImportReviewRow, selectedTargetId?: numbe
 }
 
 function isExactSalaryUpdate(row: EmployeeImportReviewRow, targetId: number) {
-  if (!targetId || targetId !== row.matchedEmployeeId || isConflict(row) || row.canResolveConflict) return false
+  if (!safeForBulkImportedChoice(row, targetId)) return false
   if (!['MatchedByEmployeeCode', 'MatchedByEmployeeId'].includes(row.matchStatus)) return false
-  const candidates = candidateEmployees(row)
-  if (candidates.length !== 1 || candidates[0].employeeId !== targetId) return false
   const code = identityEvidence(row).find(evidence => evidence.field === 'employeeCode')
   if (!code?.uploadedValue.trim() || code.candidates.length !== 1 || code.candidates[0].employeeId !== targetId) return false
   if (code.uploadedValue.trim().toUpperCase() !== stringValue(row.matchedEmployeeCode).toUpperCase()) return false
@@ -454,12 +464,12 @@ function canResolve(row: EmployeeImportReviewRow) {
   return Boolean(row.canResolveConflict) && candidateEmployees(row).length > 0
 }
 
-function safeForBulkImportedChoice(row: EmployeeImportReviewRow, selectedTargetId?: number) {
-  const targetId = resolvedTargetId(row, selectedTargetId)
-  if (targetId <= 0) return false
-  if (isConflict(row) && (!canResolve(row) || !positiveNumber(selectedTargetId))) return false
-  const targetIsSafe = candidateEmployees(row).length <= 1 || positiveNumber(selectedTargetId)
-  return targetIsSafe && !criticalChanges(row, targetId).some(change => importedValueOwnedByAnotherEmployee(row, change.field, targetId))
+function safeForBulkImportedChoice(row: EmployeeImportReviewRow, targetId: number) {
+  if (!targetId || targetId !== row.matchedEmployeeId || isConflict(row) || row.canResolveConflict) return false
+  if (!['MatchedByEmployeeCode', 'MatchedByEmployeeId', 'MatchedByIdentifiers'].includes(row.matchStatus)) return false
+  const candidates = candidateEmployees(row)
+  if (candidates.length !== 1 || candidates[0].employeeId !== targetId) return false
+  return !identityEvidence(row).some(evidence => evidence.candidates.some(candidate => candidate.employeeId !== targetId))
 }
 
 function importedValueOwnedByAnotherEmployee(row: EmployeeImportReviewRow, field: string, targetEmployeeId: number) {

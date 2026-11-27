@@ -38,6 +38,9 @@ export function activeClientHeader(path: string, method = 'GET') {
   if (verb === 'GET') {
     const isRecruitment = /^\/api\/recruitment(?:-orchestration|-admin)?(?:\/|$)/.test(route)
     const hasExplicitClient = [...new URLSearchParams(query).keys()].some(key => ['clientid', 'clientids', 'companyid'].includes(key.replaceAll('_', '').toLowerCase()))
+    // Bell reminders aggregate only clients authorised by the original session.
+    // Explicit client queries retain the ordinary shell validation.
+    if (route === '/api/employees/email-reminders' && !hasExplicitClient) return undefined
     // An explicit TA picker may be editing a different assigned client from the
     // shell. The API validates that query instead of receiving a conflicting header.
     if (isRecruitment && hasExplicitClient) return undefined

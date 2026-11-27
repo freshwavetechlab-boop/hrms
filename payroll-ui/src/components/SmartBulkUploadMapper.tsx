@@ -8,6 +8,7 @@ import type { Component, Structure } from '../types/payroll'
 import { employeeSalaryInputFields } from '../utils/employeeSalaryImport'
 import {
   autoMapBulkImportColumns,
+  employeeCodeSourceColumns,
   bulkImportMappingColor,
   mapBulkImportColumn,
   normalizeBulkImportHeader,
@@ -118,7 +119,8 @@ export default function SmartBulkUploadMapper(p: Props) {
   }, [p.open, reset])
 
   const mappedSourceColumns = useMemo(() => new Set(Object.values(mappings)), [mappings])
-  const missingRequired = useMemo(() => definition.fields.filter(field => field.required && !(field.requiredForNew && operation === 'update') && mappings[field.code] === undefined && !(field.code === 'EmployeeCode' && generateEmployeeCodes && operation !== 'update')), [generateEmployeeCodes, mappings, operation, definition.fields])
+  const chooseEmployeeCodeSource = activeSheet && mappings.EmployeeCode === undefined && employeeCodeSourceColumns(activeSheet.headers, definition).length > 1
+  const missingRequired = useMemo(() => definition.fields.filter(field => field.required && !(field.requiredForNew && operation === 'update') && mappings[field.code] === undefined && !(field.code === 'EmployeeCode' && generateEmployeeCodes && !chooseEmployeeCodeSource && operation !== 'update')), [generateEmployeeCodes, chooseEmployeeCodeSource, mappings, operation, definition.fields])
   const sourceColumns = useMemo(() => (activeSheet?.headers ?? []).map((header, index) => ({
     index,
     header: header.trim() || `Unnamed column ${index + 1}`,
@@ -169,7 +171,7 @@ export default function SmartBulkUploadMapper(p: Props) {
       setSheets(parsed)
       setSheetNameSplits({})
       setActiveSheetIndex(0)
-      setMappings(autoMapBulkImportColumns(parsed[0], definition))
+      setMappings(autoMapBulkImportColumns(parsed[0], definition, p.existingEmployeeCodes))
       setSelectedSource(null)
     } catch (cause) {
       setSourceFile(null); setSourceSheets([]); setSheets([]); setSheetNameSplits({}); setMappings({})
@@ -179,7 +181,7 @@ export default function SmartBulkUploadMapper(p: Props) {
 
   const changeSheet = (index: number) => {
     setActiveSheetIndex(index)
-    const nextMappings = autoMapBulkImportColumns(sheets[index], definition)
+    const nextMappings = autoMapBulkImportColumns(sheets[index], definition, p.existingEmployeeCodes)
     setMappings(nextMappings)
     setSelectedSource(null)
     setError('')
@@ -190,7 +192,7 @@ export default function SmartBulkUploadMapper(p: Props) {
     const sheet = selectImportHeader(activeSource, rowNumber)
     setSheets(current => current.map((item, index) => index === activeSheetIndex ? sheet : item))
     setSheetNameSplits(current => Object.fromEntries(Object.entries(current).filter(([index]) => Number(index) !== activeSheetIndex)))
-    setMappings(autoMapBulkImportColumns(sheet, definition))
+    setMappings(autoMapBulkImportColumns(sheet, definition, p.existingEmployeeCodes))
     setSelectedSource(null)
     setError('')
   }
@@ -213,7 +215,7 @@ export default function SmartBulkUploadMapper(p: Props) {
     const next = Object.fromEntries(Object.entries(mappings).filter(([code]) => keep.has(code)))
     if (nextTemplate && activeSheet) {
       const used = new Set(Object.values(next))
-      const suggestions = autoMapBulkImportColumns(activeSheet, nextDefinition)
+      const suggestions = autoMapBulkImportColumns(activeSheet, nextDefinition, p.existingEmployeeCodes)
       for (const [code, index] of Object.entries(suggestions)) {
         if (code.startsWith('SALARY_INPUT:') && !used.has(index)) next[code] = index
       }
@@ -383,7 +385,7 @@ export default function SmartBulkUploadMapper(p: Props) {
           </EmployeeCodeGeneration>
 
           <section className="smart-bulk-bucket" data-testid="smart-bulk-mapping-bucket">
-            <header><div><b>Mapped pairs</b><span>Matching colours show which uploaded column feeds each HRMS field.</span></div><Button size="small" icon={<ReloadOutlined />} onClick={() => setMappings(autoMapBulkImportColumns(activeSheet, definition))}>Auto-map again</Button></header>
+            <header><div><b>Mapped pairs</b><span>Matching colours show which uploaded column feeds each HRMS field.</span></div><Button size="small" icon={<ReloadOutlined />} onClick={() => setMappings(autoMapBulkImportColumns(activeSheet, definition, p.existingEmployeeCodes))}>Auto-map again</Button></header>
             <div>{Object.entries(mappings).length ? Object.entries(mappings).map(([code, sourceIndex]) => {
               const field = fieldByCode(code)
               if (!field) return null
@@ -392,7 +394,7 @@ export default function SmartBulkUploadMapper(p: Props) {
             }) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No fields mapped yet" />}</div>
           </section>
 
-          {missingRequired.length > 0 && <Alert type="warning" showIcon message="Map required fields before continuing" description={missingRequired.map(field => field.label).join(', ')} />}
+          {missingRequired.length > 0 && <Alert type="warning" showIcon message="Map required fields before continuing" description={missingRequired.map(field => field.code === 'EmployeeCode' && chooseEmployeeCodeSource ? 'Employee Code · Select the column that identifies this client’s employees.' : field.label).join(', ')} />}
 
           <section className="smart-bulk-mapper" data-testid="smart-bulk-mapper">
             <header><div><b>Column mapping workspace</b><span>Drag a source column onto a target, or click a source and then its target.</span></div><Tag color={selectedSource === null ? 'default' : 'purple'}>{selectedSource === null ? 'Select a source column' : `${sourceColumns[selectedSource]?.header} selected`}</Tag></header>

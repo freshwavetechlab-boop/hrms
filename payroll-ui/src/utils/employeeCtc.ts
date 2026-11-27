@@ -1,6 +1,6 @@
 const maximumAnnualPaise = 999999999999999999n
 
-export function parseSalaryUnits(text: string, scale: number, maximum: bigint, allowGrouping = false): bigint | null {
+export function parseSalaryUnits(text: string, scale: number, maximum: bigint, allowGrouping = false, roundExcess = false): bigint | null {
   let value = text.trim()
   if (allowGrouping) {
     if (/^[^+-]+[+-]$/.test(value)) value = value.slice(-1) + value.slice(0, -1).trimEnd()
@@ -10,9 +10,20 @@ export function parseSalaryUnits(text: string, scale: number, maximum: bigint, a
   if (!match || (!match[2] && !match[3])) return null
   const whole = match[2].replace(/^0+/, '') || '0'
   const fraction = (match[3] ?? '').replace(/0+$/, '')
-  if (whole.length > maximum.toString().length - scale || fraction.length > scale) return null
-  const units = BigInt(whole + fraction.padEnd(scale, '0'))
-  return units <= maximum && (match[1] !== '-' || units === 0n) ? units : null
+  if (whole.length > maximum.toString().length - scale || (!roundExcess && fraction.length > scale)) return null
+  if (match[1] === '-' && (whole !== '0' || /[1-9]/.test(fraction))) return null
+  const units = BigInt(whole + fraction.slice(0, scale).padEnd(scale, '0'))
+  if (units > maximum || (units === maximum && /[1-9]/.test(fraction.slice(scale)))) return null
+  return units + (roundExcess && fraction.length > scale && fraction[scale] >= '5' ? 1n : 0n)
+}
+
+export function normalizeEmployeeSalaryAmount(text: string): string {
+  const maximum = 10000000000000n
+  if (!text.trim() || parseSalaryUnits(text, 4, maximum) !== null) return text
+  const units = parseSalaryUnits(text, 4, maximum, false, true)
+  if (units === null) return text
+  const fraction = (units % 10000n).toString().padStart(4, '0').replace(/0+$/, '')
+  return (units / 10000n).toString() + (fraction ? '.' + fraction : '')
 }
 
 function displayPaise(paise: bigint) {

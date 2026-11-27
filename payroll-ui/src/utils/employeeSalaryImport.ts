@@ -53,8 +53,8 @@ export function employeeSalaryImportIssues(headers: string[], row: ImportPreview
     if (row[column]?.trim()) issue(column, 'Leave this field blank when using dated salary inputs and a selected template.')
   }
   for (const header of populated) {
-    if (parseSalaryUnits(row[header].trim(), 4, 10000000000000n) === null) {
-      issue(header, 'Enter a number from 0 to 1,000,000,000 with up to four decimal places, without currency symbols or commas.')
+    if (parseSalaryUnits(row[header].trim(), 4, 10000000000000n, false, true) === null) {
+      issue(header, 'Enter a number from 0 to 1,000,000,000, without currency symbols or commas. Extra decimal places are rounded to four places.')
     }
   }
   return issues

@@ -32,14 +32,14 @@ function drawer(rows, extras = {}) {
   render()
   effects.forEach(run => run())
   render()
-  function find(matches, node = tree) {
+  function find(matches, node) {
     if (Array.isArray(node)) return node.map(item => find(matches, item)).find(Boolean)
     if (!node?.props) return
     if (matches(node.props)) return node.props
-    return find(matches, node.props.children ?? []) || find(matches, node.props.footer ?? [])
+    return find(matches, node.props.children ?? []) || find(matches, node.props.title ?? []) || find(matches, node.props.footer ?? [])
   }
-  return { render, control: id => find(p => p['data-testid'] === `employee-import-${id}`),
-    row: number => find(p => p.row?.rowNumber === number), result: () => submitted }
+  return { render, control: id => find(p => p['data-testid'] === `employee-import-${id}`, tree),
+    row: number => find(p => p.row?.rowNumber === number, tree), result: () => submitted }
 }
 
 function matched(id, field = 'salaryInput:12') {
@@ -111,4 +111,59 @@ test('salary action excludes profile changes, secondary identity matches and con
   for (const props of [{ mappedSalaryImport: false }, { operation: 'upsert' }, { operation: 'insert' }]) {
     assert.equal(drawer(rows, props).control('accept-salary'), undefined)
   }
+})
+
+test('one explicit action confirms 46 mixed updates with two skipped rows still selected', () => {
+  const rows = Array.from({ length: 48 }, (_, i) => {
+    const row = matched(i + 2)
+    row.changes.push({ field: 'mobile', sensitive: true }, { field: 'designation', payrollImpact: false })
+    if (i >= 46) row.blockingReasons = ['Duplicate source identifier']
+    return row
+  })
+  const d = drawer(rows)
+  d.row(2).onFieldChoice('mobile', 'keepExisting')
+  d.render()
+  assert.equal(d.control('accept-salary'), undefined)
+  const action = d.control('bulk-import')
+  assert.equal(action.disabled, false)
+  assert.match(action.children.join(''), /Confirm 46 updates/)
+  action.onClick()
+  d.render()
+  assert.equal(d.result(), undefined)
+  assert.equal(d.control('review-confirm').disabled, true)
+  assert.equal(d.row(2).decision, 'update')
+  assert.deepEqual(d.row(2).fieldChoices, { mobile: 'keepExisting', 'salaryInput:12': 'useImported' })
+  assert.deepEqual(d.row(3).fieldChoices, { mobile: 'useImported', 'salaryInput:12': 'useImported' })
+  assert.equal(d.row(48).decision, 'skip')
+  assert.equal(d.control('bulk-import').disabled, true)
+  d.control('review-acknowledge').onChange({ target: { checked: true } })
+  d.render()
+  assert.equal(d.control('review-confirm').disabled, false)
+  d.control('review-confirm').onClick()
+  assert.equal(d.result().filter(row => row.action === 'update').length, 46)
+  assert.equal(d.result().filter(row => row.action === 'skip').length, 2)
+})
+
+test('bulk confirmation skips uncertain targets, other owners, unselected and insert-only decisions', () => {
+  const exact = matched(2)
+  const duplicateTarget = { ...matched(3), matchedEmployeeId: 2 }
+  const conflict = { ...matched(4), canResolveConflict: true, matchStatus: 'IdentityConflict', blockingReasons: ['Conflicting identifiers'] }
+  const otherOwner = matched(5)
+  otherOwner.identityEvidence.push({ field: 'workEmail', uploadedValue: 'synthetic@example.test', candidates: [{ employeeId: 99 }] })
+  const ambiguous = matched(6)
+  ambiguous.candidateEmployees.push({ employeeId: 90 })
+  const unselected = matched(7)
+  const probable = { ...matched(8), matchStatus: 'ProbableDuplicate' }
+  const unique = { ...matched(9), matchStatus: 'MatchedByIdentifiers' }
+  const rows = [exact, duplicateTarget, conflict, otherOwner, ambiguous, unselected, probable, unique]
+  const d = drawer(rows, { operation: 'upsert' })
+  d.row(7).onSelected(false)
+  d.render()
+  assert.match(d.control('bulk-import').children.join(''), /Confirm 1 updates?/)
+  d.control('bulk-import').onClick()
+  d.render()
+  assert.equal(d.row(9).decision, 'update')
+  for (const id of [2, 3, 4, 5, 6, 7, 8]) assert.equal(d.row(id).decision, undefined)
+  assert.equal(d.control('review-confirm').disabled, true)
+  assert.equal(drawer(rows, { operation: 'insert' }).control('bulk-import').disabled, true)
 })

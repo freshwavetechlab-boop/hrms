@@ -1,4 +1,4 @@
-# Excel payroll mapping knowledge v81
+# Excel payroll mapping knowledge v84
 
 ## Date Of Joining Date Of Birth: employee bulk calendar formats
 Recognition: an Employee Master bulk workbook mixes native Excel date cells with text dates in Date Of Joining / DOJ and Date Of Birth / DOB. Slash, dash and dot separators, one-digit day/month, English month names and two-digit years are formatting variants. Browser Date.parse and server locale can disagree, rejecting valid day-first dates or silently swapping day and month. This is a deterministic employee-import parsing issue, not a salary classification or formula error.
@@ -422,3 +422,21 @@ In an Employee Master bulk upload or update, Employee Code, Salary Template Id a
 Employee Master stores one annual CTC. A confirmed monthly input sets annual CTC to monthly × 12. For an annual input, retain the annual amount and display annual ÷ 12 to two decimal places. If both source amounts are supplied, flag a conflicting pair on that employee's row before updating it. A blank cell in a sparse update preserves the saved amount when no other CTC input is supplied. An explicit numeric zero is a supplied amount.
 
 A payroll worksheet may also have CTC beside earned gross, net pay or invoice totals. Leave the source amounts and formulas intact and review their dependencies. The Employee Master conversion applies only to a reviewed salary input and supplies no classification or conversion rule for Excel Payslips.
+
+## Employee ID, Employee Code, PAN and repeated Basic or HRA in a bulk salary update
+In Employee Master bulk import, a monthly salary column and an earned column may share the same header. One may show a long decimal tail while the other shows whole units. Use the section heading, column position and relationship to payable days to confirm which input the operator mapped. Keep that column selected through preview and save. Equal captions or a whole amount in the adjacent column do not identify the intended salary basis.
+
+The employee component amount store supports four fractional digits. Preserve values with one to four decimal places. For a valid mapped component amount with greater precision, round once to four decimal places with midpoint ties away from zero. For example, the synthetic input 12345.678900000017 becomes 12345.6789. Preserve explicit zero and sparse-update blanks. This conversion applies to employee component amounts only. CTC has its own precision rules. Excel Payslips retains its source cells, cached amounts, formulas and separate rules for accepting reviewed recurring inputs.
+
+A blank Employee Code can still belong to an existing employee. If preflight confirms one employee in the selected client by exact Employee ID or another supported unique identifier such as PAN, keep the matched employee's registered code for the update. Conflicting identifiers or multiple matches require review. Generate a client-prefix code only for a confirmed new row in insert or upsert mode when code generation is explicitly selected. Reserve existing and incoming codes and preserve supplied codes. A blank code alone never establishes a new hire.
+
+## Employee Code and New Employee Code beside Employee Name, PAN and CTC
+In Employee Master bulk import, Employee Code can contain a legacy code and New Employee Code can contain the current code. Compare distinct nonblank candidate codes in each column with registered codes for the selected client. Suggest a source column only when it has a unique best positive match. Either column may win. A tie or no matches leaves the code mapping open for review. The exact header and the word New alone cannot identify the managed code.
+
+Check the identities on each affected row. The same legacy code can occur for two different people whose names and identifiers differ. Use the confirmed managed code and independent identifiers for each person. A blank managed code needs identity preflight. Sharing a legacy code alone cannot justify merging people or generating a code.
+
+One person can also appear twice when an Employee Name includes a prior-period salary annotation. If independent identity evidence confirms the same person but earned pay or CTC differs, keep one Master employee and review the prior-period adjustment separately. Never sum both rows into recurring Master pay, create a second employee for the adjustment or discard the source adjustment. A name annotation alone cannot establish that both rows belong to one person.
+
+In a bulk review, Use imported must stage the reviewed row decisions and their corresponding field choices together before applying updates. Keep unresolved identity matches open. These Employee Master review decisions do not classify payslip components or approve an import.
+
+For an unresolved blank code, show up to three possible employees from the selected client with their registered code, name and masked mobile/bank details so the operator can compare identities. Name-only suggestions are display hints, never authoritative matches or permission to generate a new code; choosing one edits only the local draft code and still requires identity preflight and field review before import.

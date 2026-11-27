@@ -88,6 +88,22 @@ public partial class EmployeeRepository
         return columns;
     }
 
+    private static decimal ReadSalaryComponentAmount(string cell, string header)
+    {
+        const decimal maximum = 1000000000m;
+        var point = cell.IndexOf('.');
+        var fraction = point < 0 ? ReadOnlySpan<char>.Empty : cell.AsSpan(point + 1);
+        // Keeping the fifth digit is sufficient for midpoint-away rounding and avoids
+        // a second rounding when an Excel formula cache exceeds .NET decimal precision.
+        var exactForRounding = fraction.Length > 5 ? cell.AsSpan(0, point + 6) : cell.AsSpan();
+        if (fraction.IndexOfAnyExceptInRange('0', '9') >= 0
+            || !decimal.TryParse(exactForRounding, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var amount)
+            || amount < 0 || amount > maximum
+            || ((cell[0] == '-' || amount == maximum) && fraction.IndexOfAnyExcept('0') >= 0))
+            throw new InvalidOperationException($"{header} must be a plain number between 0 and 1000000000.");
+        return decimal.Round(amount, 4, MidpointRounding.AwayFromZero);
+    }
+
     private static async Task<ILookup<string, BulkSalaryRule>> ReadBulkSalaryRulesAsync(MySqlConnection db, MySqlTransaction? tx,
         int clientId, string[] templateIds, bool forUpdate = false)
     {
@@ -130,10 +146,7 @@ WHERE s.Id IN @Ids AND s.Active=TRUE AND c.Active=TRUE";
         {
             var cell = row.ElementAtOrDefault(column.Index)?.Trim();
             if (string.IsNullOrEmpty(cell)) continue;
-            if (!decimal.TryParse(cell, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var value) ||
-                value < 0 || value > 1000000000m || decimal.Round(value, 4) != value)
-                throw new InvalidOperationException($"{column.Header} must be a number between 0 and 1000000000 with up to four decimal places.");
-            inputs.Add(column.Id, value);
+            inputs.Add(column.Id, ReadSalaryComponentAmount(cell, column.Header));
         }
         var from = Cell(row, map, SalaryInputDate);
         var templateId = Cell(row, map, "Salary Template Id");
@@ -599,7 +612,7 @@ FROM employees WHERE ClientId=@clientId AND Id IN @ids" + (tx is null ? "" : " F
     }
 
     private static EmployeeImportPreflightRow BlockSalaryRow(EmployeeImportPreflightRow row, string error) =>
-        row with { MatchStatus = "Blocked", BlockingReasons = row.BlockingReasons.Append(error).Distinct().ToList(), CanResolveConflict = false };
+        row with { MatchStatus = "Blocked", BlockingReasons = row.BlockingReasons.Append(error).Distinct().ToList(), CanResolveConflict = false, CanGenerateEmployeeCode = false };
 
     private static async Task SaveBulkSalaryDraftAsync(MySqlConnection db, MySqlTransaction tx, EmployeeImportDraft draft,
         EmployeeImportWorkbook workbook, string? infotypes)

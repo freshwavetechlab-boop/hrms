@@ -15,7 +15,7 @@ function compile(file, require) {
 
 const ctc = compile('../src/utils/employeeCtc.ts', () => { throw new Error('Unexpected CTC dependency') })
 
-function previewDrawer(preview, syncEmployeeCtc = true) {
+function previewDrawer(preview, syncEmployeeCtc = true, extra = {}) {
   const state = []
   let cursor, tree, submitted
   const react = {
@@ -37,7 +37,7 @@ function previewDrawer(preview, syncEmployeeCtc = true) {
   }).default
   const render = () => {
     cursor = 0
-    tree = modal({ preview, syncEmployeeCtc, onCancel() {}, onConfirm: draft => { submitted = draft } })
+    tree = modal({ preview, syncEmployeeCtc, onCancel() {}, onConfirm: draft => { submitted = draft }, ...extra })
   }
   function find(matches, node) {
     if (Array.isArray(node)) return node.map(child => find(matches, child)).find(Boolean)
@@ -47,8 +47,14 @@ function previewDrawer(preview, syncEmployeeCtc = true) {
   }
   render()
   return {
+    control: id => find(node => node.props['data-testid'] === id, tree),
+    render,
     edit(header, value) {
       find(node => node.props['aria-label'] === `${header} row 2`, tree).onChange({ target: { value } })
+      render()
+    },
+    blur(header, value) {
+      find(node => node.props['aria-label'] === `${header} row 2`, tree).onBlur({ target: { value } })
       render()
     },
     sheet(name) {
@@ -92,4 +98,42 @@ test('other bulk previews retain their independent field editing behavior', () =
   const drawer = previewDrawer(preview(), false)
   drawer.edit('Monthly CTC', '20000')
   assert.deepEqual(drawer.save().rows, [['TEST-1', '120000', '20000', '001234']])
+})
+
+
+test('employee salary input keeps raw typing until blur then rounds the draft to four decimals', () => {
+  const amount = 'Special Allowance [SALARY_INPUT:33]'
+  const source = { ...preview(), headers: ['Employee Code', amount], rows: [['TEST-1', '0']] }
+  const drawer = previewDrawer(source)
+  drawer.edit(amount, '123.45675')
+  assert.equal(drawer.save().rows[0][1], '123.45675')
+  drawer.blur(amount, '123.45675')
+  assert.equal(drawer.save().rows[0][1], '123.4568')
+  assert.equal(source.rows[0][1], '0')
+})
+
+test('choosing an existing employee code through a cell accessory edits only that draft cell and reruns import validation', () => {
+  const required = { column: 'Employee Code', rowNumber: 2, message: 'Employee Code is required.' }
+  const first = { name: 'Employees', headers, rows: [['', '120000', '10000', '001234']], issues: [required] }
+  const second = { name: 'Other', headers, rows: [['', '240000', '20000', '004321']], issues: [required] }
+  const source = { ...preview(), sheets: [first, second], rows: [...first.rows, ...second.rows], issues: [required, required] }
+  const before = structuredClone(source)
+  const drawer = previewDrawer(source, true, {
+    validateSheet: data => data.rows.flatMap((row, index) => row[0] ? [] : [{ ...required, rowNumber: index + 2 }]),
+    renderCellExtra: (sheet, rowIndex, colIndex, change) => colIndex === 0 ? jsx.jsx('button', {
+      'data-testid': `choose-code-${sheet.name}`, onClick: () => change(sheet.name === 'Employees' ? 'CURRENT10' : 'CURRENT20'),
+    }) : null,
+  })
+  assert.equal(drawer.control('bulk-preview-import').disabled, true)
+  drawer.control('choose-code-Employees').onClick()
+  drawer.render()
+  assert.equal(drawer.control('bulk-preview-import').disabled, true, 'another worksheet still has a missing code')
+  assert.deepEqual(drawer.save().sheets[0].rows, [['CURRENT10', '120000', '10000', '001234']])
+  assert.deepEqual(drawer.save().sheets[1], second)
+  drawer.sheet('Other')
+  drawer.control('choose-code-Other').onClick()
+  drawer.render()
+  assert.equal(drawer.control('bulk-preview-import').disabled, false)
+  assert.deepEqual(drawer.save().rows, [['CURRENT10', '120000', '10000', '001234'], ['CURRENT20', '240000', '20000', '004321']])
+  assert.deepEqual(source, before, 'a candidate selection cannot mutate the uploaded source')
 })

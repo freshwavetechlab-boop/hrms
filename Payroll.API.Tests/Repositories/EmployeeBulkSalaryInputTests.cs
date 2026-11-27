@@ -85,11 +85,30 @@ public sealed class EmployeeBulkSalaryInputTests
     [InlineData("", "20", "2026-10-01", "")]
     [InlineData("1", "99", "2026-10-01", "")]
     [InlineData("-1", "20", "2026-10-01", "")]
-    [InlineData("1.00001", "20", "2026-10-01", "")]
+    [InlineData("-0.000000000000000000000000000000000000000001", "20", "2026-10-01", "")]
+    [InlineData("1000000000.00000000000000000000000000001", "20", "2026-10-01", "")]
+    [InlineData("1.23456000junk", "20", "2026-10-01", "")]
+    [InlineData("3.42E+2", "20", "2026-10-01", "")]
     [InlineData("1,23", "20", "2026-10-01", "")]
     [InlineData("", "20", "2026-10-01", "1,23")]
     public void Invalid_context_or_literal_is_blocked(string amount, string template, string date, string annual) =>
         Assert.Throws<InvalidOperationException>(() => Parse(amount, template, date, annual, Rule()));
+
+    [Theory]
+    [InlineData("12345.678900000017", "12345.6789", "Fixed Amount")]
+    [InlineData("40500.112500000011", "40500.1125", "Fixed Amount")]
+    [InlineData("8765.430000000017", "8765.43", "Fixed Amount")]
+    [InlineData("625.123456", "625.1235", "Daily Rate")]
+    [InlineData("625.12345", "625.1235", "Daily Rate")]
+    [InlineData("1.00001", "1", "Fixed Amount")]
+    [InlineData("1.2344499999999999999999999999999999999", "1.2344", "Daily Rate")]
+    [InlineData("999999999.99999", "1000000000", "Fixed Amount")]
+    [InlineData("1000000000.000000", "1000000000", "Fixed Amount")]
+    public void Component_input_preserves_four_decimals_and_rounds_longer_values(string raw, string expected, string method)
+    {
+        var patch = Parse(raw, "20", "2026-10-01", "", Rule(method));
+        Assert.Equal(decimal.Parse(expected, System.Globalization.CultureInfo.InvariantCulture), patch!.Inputs["10"]);
+    }
 
     [Fact]
     public void Daily_rate_input_accepts_zero_and_calculated_net_total_is_read_only()

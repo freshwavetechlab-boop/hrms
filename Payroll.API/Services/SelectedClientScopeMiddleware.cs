@@ -34,6 +34,12 @@ public sealed class SelectedClientScopeMiddleware(RequestDelegate next)
         if (HttpMethods.IsGet(context.Request.Method) && path.Equals("/api/employees/import-jobs", StringComparison.OrdinalIgnoreCase)
             && !context.Request.Headers.ContainsKey(Header) && !context.Request.Query.Keys.Any(IsClientKey))
         { await next(context); return; }
+        // The bell's live contact reminders are read across the permitted client
+        // list. The handler checks employee-management permission and the query
+        // filters current assigned clients; explicit client context stays scoped.
+        if (HttpMethods.IsGet(context.Request.Method) && path.Equals("/api/employees/email-reminders", StringComparison.OrdinalIgnoreCase)
+            && !context.Request.Headers.ContainsKey(Header) && !context.Request.Query.Keys.Any(IsClientKey))
+        { await next(context); return; }
         // This read-only picker summary checks assigned clients and exact work
         // locations itself. Preserve the authenticated identity so selecting a
         // client does not hide the other clients' permitted availability.

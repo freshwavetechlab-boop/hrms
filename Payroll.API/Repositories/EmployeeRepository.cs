@@ -465,7 +465,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                     foreach (var required in columns.Values.Where(column => column.Field.IsRequired))
                         if (!input.Any(value => value.Code == required.Code && !string.IsNullOrWhiteSpace(value.Value))) errors.Add(required.Field.Label + " is required.");
                 var changes = errors.Count > 0 || input.Count == 0 ? [] : await EmployeeAttributeRepository.TransferChangesAsync(db, item.MatchedEmployeeId ?? 0, clientId, forms, input.Where(value => !string.IsNullOrWhiteSpace(value.Value)).ToList(), tx);
-                resultRows[index] = item with { Changes = [..item.Changes, ..changes.Where(change => change.OldValue != change.NewValue)], BlockingReasons = [..item.BlockingReasons, ..errors], MatchStatus = errors.Count > 0 ? "Blocked" : item.MatchStatus, CanResolveConflict = errors.Count == 0 && item.CanResolveConflict };
+                resultRows[index] = item with { Changes = [..item.Changes, ..changes.Where(change => change.OldValue != change.NewValue)], BlockingReasons = [..item.BlockingReasons, ..errors], MatchStatus = errors.Count > 0 ? "Blocked" : item.MatchStatus, CanResolveConflict = errors.Count == 0 && item.CanResolveConflict, CanGenerateEmployeeCode = errors.Count == 0 && item.CanGenerateEmployeeCode };
             }
         }
 
@@ -2269,6 +2269,13 @@ public record EmployeeImportIdentityEvidence(
     string UploadedValue,
     bool Sensitive,
     List<EmployeeImportEvidenceCandidate> Candidates);
+public record EmployeeImportCodeSuggestion(
+    int EmployeeId,
+    string EmployeeCode,
+    string EmployeeName,
+    string Mobile,
+    string BankAccountNo,
+    List<string> MatchReasons);
 public record EmployeeImportPreflightRow(
     int RowNumber,
     string Sheet,
@@ -2286,6 +2293,9 @@ public record EmployeeImportPreflightRow(
     bool CanForceSalaryAssignment = false)
 {
     public IReadOnlyList<EmployeeTestPayslip>? TestPayslips { get; init; }
+    public bool CanGenerateEmployeeCode { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<EmployeeImportCodeSuggestion>? CodeSuggestions { get; init; }
 }
 public record EmployeeImportPreflightResult(
     Guid ReviewToken,
