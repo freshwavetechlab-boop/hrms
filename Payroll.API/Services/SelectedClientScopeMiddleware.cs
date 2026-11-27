@@ -29,6 +29,11 @@ public sealed class SelectedClientScopeMiddleware(RequestDelegate next)
         if (path.StartsWith("/api/auth/", StringComparison.OrdinalIgnoreCase)) { await next(context); return; }
         if (path.Equals("/api/clients", StringComparison.OrdinalIgnoreCase) && HttpMethods.IsGet(context.Request.Method))
         { await next(context); return; } // This endpoint explicitly returns assigned clients.
+        // The bell requests the user's jobs together. The feed enforces both the requester
+        // id and assigned-client list; a request selecting a particular client still goes through normal scoping.
+        if (HttpMethods.IsGet(context.Request.Method) && path.Equals("/api/employees/import-jobs", StringComparison.OrdinalIgnoreCase)
+            && !context.Request.Headers.ContainsKey(Header) && !context.Request.Query.Keys.Any(IsClientKey))
+        { await next(context); return; }
         // This read-only picker summary checks assigned clients and exact work
         // locations itself. Preserve the authenticated identity so selecting a
         // client does not hide the other clients' permitted availability.

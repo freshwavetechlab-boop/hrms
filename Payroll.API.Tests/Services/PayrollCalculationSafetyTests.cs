@@ -10,13 +10,15 @@ public class PayrollCalculationSafetyTests
     private static object Component(string id, string code, string formula, string category = "Earning", int priority = 10, bool prorata = false, bool taxable = true, string statutory = "None", string calculation = "Formula") =>
         new { id, code, name = code, formula, value = formula, category, priority, proRata = prorata, taxable, statutoryType = statutory, calculationType = calculation, active = true, payType = "Fixed Pay" };
 
-    private static PayRunEmployee Calculate(object[] components, decimal days = 30, Dictionary<string, decimal>? overrides = null, decimal tds = -1, decimal seedTds = 0, PayrollAdjustment[]? adjustments = null, string client = "11", decimal annualCtc = 360000m, int payrollDays = 30, PfPolicyPeriod? pfPeriod = null, string salaryStructureId = "1", object? statutory = null)
+    private static PayRunEmployee Calculate(object[] components, decimal days = 30, Dictionary<string, decimal>? overrides = null, decimal tds = -1, decimal seedTds = 0, PayrollAdjustment[]? adjustments = null, string client = "11", decimal annualCtc = 360000m, int payrollDays = 30, PfPolicyPeriod? pfPeriod = null, string salaryStructureId = "1", object? statutory = null, bool bulkSalaryInputs = false, string? salaryInputTemplateId = null)
     {
         var repo = typeof(PayRunRepository);
         var type = repo.GetNestedType("PayRunSourceEmployee", BindingFlags.NonPublic)!;
         var employee = Activator.CreateInstance(type)!;
         void Set(string name, object value) => type.GetProperty(name)!.SetValue(employee, value);
         Set("Id", 1); Set("ClientId", 11); Set("EmployeeCode", "TEST"); Set("FirstName", "Test"); Set("AnnualCtc", annualCtc); Set("SalaryStructureId", salaryStructureId);
+        Set("IsBulkSalaryInput", bulkSalaryInputs);
+        if (salaryInputTemplateId is not null) Set("SalaryInputTemplateId", salaryInputTemplateId);
         if (pfPeriod is not null) Set("PfPolicyPeriod", pfPeriod);
         Set("SalaryComponents", overrides ?? []); Set("HasPersonalDetails", true); Set("Tds", seedTds);
         var lines = components.Select(component => new { componentId = component.GetType().GetProperty("id")!.GetValue(component) });
@@ -29,6 +31,54 @@ public class PayrollCalculationSafetyTests
     {
         using var doc = JsonDocument.Parse(row.DetailsJson);
         return doc.RootElement.EnumerateArray().Where(line => line.GetProperty("Id").GetString() == code).Sum(line => line.GetProperty("amount").GetDecimal());
+    }
+
+    [Theory]
+    [InlineData(false, 0, 125, 25)]
+    [InlineData(true, 0, 0, 0)]
+    [InlineData(true, 2000, 2000, 400)]
+    public void Dated_bulk_inputs_respect_defaults_explicit_zero_and_derived_formulas(bool hasEmployeeAmount, decimal employeeAmount, decimal basic, decimal hra)
+    {
+        var amounts = new Dictionary<string, decimal> { ["2"] = 777 };
+        if (hasEmployeeAmount) amounts["1"] = employeeAmount;
+        var row = Calculate([Component("1", "BASIC", "125", calculation: "Fixed Amount"), Component("2", "HRA", "BASIC * 20%")],
+            overrides: amounts, annualCtc: 0, bulkSalaryInputs: true);
+        Assert.Equal(basic, Amount(row, "BASIC"));
+        Assert.Equal(hra, Amount(row, "HRA"));
+        Assert.Equal(basic + hra, row.NetPay);
+    }
+
+    [Fact]
+    public void Assigned_policy_uses_period_manual_inputs_and_explicit_zero_but_recalculates_old_formula_outputs()
+    {
+        var oldInputs = new Dictionary<string, decimal> { ["BASIC"] = 20000, ["HRA"] = 999, ["TEL"] = 0 };
+        object[] components = [Component("1", "BASIC", "0", calculation: "Fixed Amount"),
+            Component("2", "HRA", "BASIC * 5%"), Component("3", "TEL", "1000", calculation: "Fixed Amount")];
+        var row = Calculate(components, overrides: oldInputs, annualCtc: 0, salaryInputTemplateId: "october-reviewed");
+        Assert.Equal(20000, Amount(row, "BASIC"));
+        Assert.Equal(1000, Amount(row, "HRA"));
+        Assert.Equal(0, Amount(row, "TEL"));
+        Assert.Equal(21000, row.NetPay);
+        var noSalaryData = Calculate(components, annualCtc: 0, salaryInputTemplateId: "");
+        Assert.Equal(1000, noSalaryData.NetPay);
+    }
+
+    [Fact]
+    public void New_assignment_runs_zero_constant_and_formulas_without_existing_employee_amounts_or_ctc()
+    {
+        var row = Calculate([Component("1", "BASIC", "0"), Component("2", "HRA", "BASIC + 2")],
+            overrides: [], annualCtc: 0, bulkSalaryInputs: true);
+        Assert.Equal(0m, Amount(row, "BASIC"));
+        Assert.Equal(2m, Amount(row, "HRA"));
+    }
+
+    [Fact]
+    public void Employee_can_override_a_positive_daily_rate_with_zero()
+    {
+        var daily = Component("1", "DAILY", "625", calculation: "Daily Rate");
+        var row = Calculate([daily], days: 10, overrides: new() { ["1"] = 0 }, annualCtc: 0, bulkSalaryInputs: true);
+        Assert.Equal(0m, Amount(row, "DAILY"));
+        Assert.Equal(0m, row.NetPay);
     }
 
     [Theory]

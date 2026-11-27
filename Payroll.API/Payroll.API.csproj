@@ -22,6 +22,8 @@
     <EmbeddedResource Include="Assets\OfferLetters\**\*" />
     <EmbeddedResource Include="Database\InternalInterviews.sql" />
     <EmbeddedResource Include="Database\ExcelPayslips.sql" />
+    <EmbeddedResource Include="Database\Migrations\20261127_employee_import_jobs.sql" LogicalName="Payroll.API.Database.EmployeeImportJobs.sql" />
+    <EmbeddedResource Include="Database\Migrations\20261127_employee_salary_template_policies.sql" LogicalName="Payroll.API.Database.EmployeeSalaryTemplatePolicies.sql" />
     <Content Include="Assets\Parsing\WindowsPdfOcr.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Remove="FrevoPilot\node_modules\**;FrevoPilot\tests\**" />
     <Content Include="FrevoPilot\**\*.mjs;FrevoPilot\**\*.md" Exclude="FrevoPilot\node_modules\**;FrevoPilot\tests\**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />

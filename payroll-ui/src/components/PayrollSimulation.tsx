@@ -1,5 +1,5 @@
 import { clientChoice, clientSelectProps } from './ClientOption'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Alert, Button, Collapse, Modal, Select, Spin, Tag } from 'antd'
 import type { Client, Component, Structure } from '../types/payroll'
 import { simulateSalary, type SimulationResult, type SourceSalaryScenario } from '../services/payrollCalculationService'
@@ -27,44 +27,42 @@ const convertedCtc = (value: string, factor: number) => {
 function TemplatePayrollSimulation({ template, components, clients, fixedClientId, sourceScenario, payslipDesign, onClose, onEmployeeMode }: PayrollSimulationProps & { onEmployeeMode?: () => void }) {
   const ids = String(template.clientId || '').split(/[;,|]/).map(value => Number(value.split(':')[0])).filter(value => value > 0)
   const [clientId, setClientId] = useState<number | undefined>(fixedClientId || (ids.length === 1 ? ids[0] : undefined))
-  const [month, setMonth] = useState(() => { if (sourceScenario?.payPeriod) return sourceScenario.payPeriod; const date = new Date(); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}` })
-  const initialEdits = (period = month): Record<string, string> => {
-    const divisor = sourceScenario?.payrollDays ?? template.excelSource?.payrollDays ?? calendarDaysForSimulation(period) ?? 30
+  const [initialMonth] = useState(() => {
+    const sourcePeriod = sourceScenario && (sourceScenario.payPeriod || template.excelSource?.payPeriod)
+    if (sourcePeriod) return sourcePeriod
+    const date = new Date()
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+  })
+  const [month, setMonth] = useState(initialMonth)
+  const initialEdits = (): Record<string, string> => {
     const annualCtc = sourceScenario ? String(sourceScenario.annualCtc) : template.annualCtc.trim()
-    return { PAYROLL_DAYS: String(divisor), PRESENT_DAYS: String(sourceScenario?.presentDays ?? divisor), PAYABLE_DAYS: String(sourceScenario?.payableDays ?? divisor),
-    ANNUAL_CTC: annualCtc, MONTHLY_CTC: convertedCtc(annualCtc, 1 / 12), SCENARIO_EMPLOYEE_CODE: 'EMPLOYEE-001',
+    return { ANNUAL_CTC: annualCtc, MONTHLY_CTC: convertedCtc(annualCtc, 1 / 12), SCENARIO_EMPLOYEE_CODE: 'EMPLOYEE-001',
     ...Object.fromEntries(Object.entries(sourceScenario?.amountOverrides ?? {}).map(([id, value]) => [`COMPONENT:${id}`, String(value)])) }
   }
   const [edits, setEdits] = useState<Record<string, string>>(() => initialEdits()), [rules, setRules] = useState<Record<string, string>>({})
-  const editedAttendance = useRef(new Set<string>())
   const editInput = (field: string, value: string) => {
-    if (field === 'PAYROLL_DAYS') return
     if (field === 'ANNUAL_CTC' || field === 'MONTHLY_CTC') {
       const amount = value.replaceAll(',', '')
       setEdits(current => ({ ...current, [field]: amount,
         ...(field === 'ANNUAL_CTC' ? { MONTHLY_CTC: convertedCtc(amount, 1 / 12) } : { ANNUAL_CTC: convertedCtc(amount, 12) }) }))
       return
     }
-    editedAttendance.current.add(field)
-    setEdits(current => ({ ...current, [field]: value,
-      ...(field === 'PRESENT_DAYS' && !sourceScenario && !editedAttendance.current.has('PAYABLE_DAYS') ? { PAYABLE_DAYS: value } : {}) }))
+    setEdits(current => ({ ...current, [field]: value }))
   }
   const changeMonth = (period: string) => {
     setMonth(period)
-    setEdits(current => {
-      const defaults = initialEdits(period)
-      if (!sourceScenario) {
-        defaults.PRESENT_DAYS = editedAttendance.current.has('PRESENT_DAYS') ? current.PRESENT_DAYS : defaults.PAYROLL_DAYS
-        defaults.PAYABLE_DAYS = defaults.PRESENT_DAYS
-      }
-      return { ...current, ...Object.fromEntries(['PAYROLL_DAYS', 'PRESENT_DAYS', 'PAYABLE_DAYS'].filter(field => field === 'PAYROLL_DAYS' || !editedAttendance.current.has(field)).map(field => [field, defaults[field]])) }
-    })
+    setEdits(current => ({ ...current, PAYROLL_DAYS: '' }))
   }
   const [retry, setRetry] = useState(0), [loading, setLoading] = useState(false)
   const [state, setState] = useState<{ key: string; scope: string; result: SimulationResult | null; error: string }>({ key: '', scope: '', result: null, error: '' })
-  const numeric = (key: string) => !edits[key]?.trim() ? null : Number(edits[key])
   const calendarDays = calendarDaysForSimulation(month)
-  const days = sourceScenario?.payrollDays ?? template.excelSource?.payrollDays ?? calendarDays
+  const monthScenario = month === initialMonth ? sourceScenario : undefined
+  const savedDays = monthScenario?.payrollDays ?? (template.excelSource?.payPeriod === month ? template.excelSource.payrollDays : undefined)
+  const defaultDays = savedDays !== undefined && Number.isInteger(savedDays) && savedDays >= 1 && savedDays <= 31 ? savedDays : calendarDays
+  const days = edits.PAYROLL_DAYS?.trim() ? Number(edits.PAYROLL_DAYS) : defaultDays
+  const presentText = edits.PRESENT_DAYS ?? String(monthScenario?.presentDays ?? days ?? '')
+  const attendanceEdits: Record<string, string> = { ...edits, PRESENT_DAYS: presentText, PAYABLE_DAYS: edits.PAYABLE_DAYS ?? String(monthScenario?.payableDays ?? presentText) }
+  const numeric = (key: string) => attendanceEdits[key]?.trim() ? Number(attendanceEdits[key]) : null
   const payable = numeric('PAYABLE_DAYS'), present = numeric('PRESENT_DAYS') ?? payable, annual = numeric('ANNUAL_CTC'), monthlyCtc = numeric('MONTHLY_CTC')
   const overrides = Object.fromEntries(Object.entries(edits).filter(([key, value]) => key.startsWith('COMPONENT:') && value.trim() !== '').map(([key, value]) => [key.slice(10), Number(value)]))
   const valid = !!clientId && calendarDays !== null && days !== null && payable !== null && Number.isInteger(days) && days >= 1 && days <= 31
@@ -110,19 +108,19 @@ function TemplatePayrollSimulation({ template, components, clients, fixedClientI
       { name: 'ANNUAL_CTC', value: annual, source: 'Temporary scenario input', unit: 'Amount' }],
     lines: [], gross: null, deductions: null, benefits: null, net: null }
   return <Modal open title={`Payroll worksheet · ${template.name}`} width={1400} zIndex={1600} className="payroll-simulation salary-form-controls salary-worksheet-modal" onCancel={onClose} footer={<><SalarySimulationPayslipPreview mode="Template" design={payslipDesign} result={result} template={draft} components={components} clientId={clientId} clientName={clients.find(client => client.id === clientId)?.name || ''} month={month} current={current && valid} loading={loading} employeeCode={edits.SCENARIO_EMPLOYEE_CODE || 'EMPLOYEE-001'} employeeName={edits.SCENARIO_EMPLOYEE_NAME || 'Template scenario'} /><Button onClick={onClose}>Close</Button></>}>
-    <div className="simulation-run"><Tag color="purple">Template draft · what-if only</Tag>{onEmployeeMode && <Button onClick={event => { event.currentTarget.blur(); onEmployeeMode() }}>Use employee & saved attendance</Button>}<Button onClick={() => { editedAttendance.current.clear(); setEdits(initialEdits()); setRules({}); setRetry(value => value + 1) }}>Reset worksheet</Button></div>
+    <div className="simulation-run"><Tag color="purple">Template draft · what-if only</Tag>{onEmployeeMode && <Button onClick={event => { event.currentTarget.blur(); onEmployeeMode() }}>Use employee & saved attendance</Button>}<Button onClick={() => { setEdits(initialEdits()); setRules({}); setRetry(value => value + 1) }}>Reset worksheet</Button></div>
     <div className="payroll-simulation-controls">
       {!fixedClientId && <label className="simulation-field">Client<Select aria-label="Simulation client" value={clientId} {...clientSelectProps(clients.filter(client => !ids.length || ids.includes(client.id)).map(clientChoice))} onChange={setClientId} /></label>}
-      <label className="simulation-field">Pay month<input aria-label="Template simulation month" type="month" value={month} onChange={event => changeMonth(event.target.value)} /><small>{calendarDays ?? '—'} calendar days · payroll divisor comes from the month or saved template basis</small></label>
+      <label className="simulation-field">Pay month<input aria-label="Template simulation month" type="month" value={month} onChange={event => changeMonth(event.target.value)} /><small>{calendarDays ?? '—'} calendar days · clear the divisor to use the default for this month</small></label>
       <div className="simulation-field"><span>Template</span><b>{template.name}</b></div>
     </div>
     <p className="salary-worksheet-context-note">Enter monthly amounts / daily rates and attendance directly in the highlighted inputs. Each calculated component uses this salary template’s displayed formula; totals recalculate with the payroll engine. Nothing is saved.</p>
     {!sourceScenario && <p className="salary-worksheet-context-note">Payable days follow Present days until you edit Payable days separately.</p>}
-    {!valid && <Alert type="error" message="Check worksheet inputs" description="Select a valid month and enter non-negative attendance / amounts within this template’s payroll basis." />}
+    {!valid && <Alert type="error" message="Check worksheet inputs" description="Select a month, use a whole payroll divisor from 1 to 31, and check the attendance days and amounts against it." />}
     {loading && <p role="status"><Spin size="small" /> Recalculating worksheet with payroll engine…</p>}
     {responseCurrent && state.error && <Alert type="error" showIcon message={state.error} />}
     {usesCtc && <div className="salary-worksheet-ctc-pair"><label className="simulation-field">Annual CTC<input aria-label="Template scenario annual CTC" inputMode="decimal" value={edits.ANNUAL_CTC ?? ''} placeholder="Enter annual CTC" onChange={event => editInput('ANNUAL_CTC', event.target.value)} /></label><label className="simulation-field">Monthly CTC<input aria-label="Template scenario monthly CTC" inputMode="decimal" value={edits.MONTHLY_CTC ?? ''} placeholder="Enter monthly CTC" onChange={event => editInput('MONTHLY_CTC', event.target.value)} /></label><small>Edit either amount. Annual = monthly × 12; monthly = annual ÷ 12. Net pay is calculated separately.</small></div>}
-    <SalarySimulationWorksheet result={worksheetResult} template={draft} components={components} employeeCode={edits.SCENARIO_EMPLOYEE_CODE || 'EMPLOYEE-001'} employeeName={edits.SCENARIO_EMPLOYEE_NAME || 'Template scenario'} month={month} clientName={clients.find(client => client.id === clientId)?.name || ''} edits={edits} onEdit={editInput} onRuleEdit={changeRule} stale={!current} />
+    <SalarySimulationWorksheet result={worksheetResult} template={draft} components={components} defaultPayrollDays={defaultDays} employeeCode={edits.SCENARIO_EMPLOYEE_CODE || 'EMPLOYEE-001'} employeeName={edits.SCENARIO_EMPLOYEE_NAME || 'Template scenario'} month={month} clientName={clients.find(client => client.id === clientId)?.name || ''} edits={attendanceEdits} onEdit={editInput} onRuleEdit={changeRule} stale={!current} />
     {Object.keys(rules).length > 0 && <Alert type="info" message="Formula changes are temporary and apply only to this worksheet. Save template changes separately in the designer after review." />}
     {result && <>
       {result.issues.filter(issue => issue.severity !== 'Info').map((issue, index) => <Alert key={index} type={issue.severity === 'Error' ? 'error' : 'warning'} showIcon message={`${issue.component}: ${issue.message}`} description={issue.action} />)}

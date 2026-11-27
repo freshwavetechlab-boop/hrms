@@ -105,12 +105,26 @@ VALUES(@Import,97748,@Batch,@Import,REPEAT('1',64),REPEAT('2',64),REPEAT('3',64)
             new { Batch, Import, Amount = amount, BatchJson = JsonSerializer.Serialize(value.Batch, Json), Source = JsonSerializer.Serialize(value.Source, Json), Request = JsonSerializer.Serialize(value.Request, Json), Result = JsonSerializer.Serialize(value.Receipt, Json) });
     }
 
-    private async Task<(PayRunEmployee Row, object Tax)> CalculateAsync(MySqlConnection db, MySqlTransaction tx, bool persist, string period = "2026-10")
+    private async Task<(PayRunEmployee Row, object Tax)> CalculateAsync(MySqlConnection db, MySqlTransaction tx, bool persist, string period = "2026-10", bool? mappedTemplateIncludesTds = null)
     {
         var employee = await EmployeeRepository.LoadRecruitmentEmployeeAsync(db, EmployeeId, tx) ?? throw new Exception("Fixture employee missing.");
         var employeeType = typeof(PayRunRepository).GetNestedType("PayRunSourceEmployee", BindingFlags.NonPublic)!;
         var nativeEmployee = JsonSerializer.Deserialize(JsonSerializer.Serialize(employee, Json), employeeType, Json)!;
         var setup = JsonNode.Parse(await PayrollDataTableStore.GetSetupJsonAsync(db, tx))!;
+        if (mappedTemplateIncludesTds is bool includeTds)
+        {
+            var structures = setup["salaryStructures"]!.AsArray();
+            var mapped = structures.Single(s => s!["id"]!.ToString() == employee.SalaryStructureId)!.DeepClone();
+            mapped["id"] = "9774899";
+            if (!includeTds)
+            {
+                var lines = mapped["lines"]!.AsArray();
+                lines.Remove(lines.Single(l => l!["componentId"]!.ToString() == "9774802"));
+            }
+            structures.Add(mapped);
+            employeeType.GetProperty("SalaryInputTemplateId")!.SetValue(nativeEmployee, employee.SalaryStructureId);
+            employeeType.GetProperty("SalaryStructureId")!.SetValue(nativeEmployee, "9774899");
+        }
         setup["professionalTax"] ??= new JsonObject(); setup["professionalTax"]!["enabled"] = false;
         var setupJson = setup.ToJsonString(Json); var runId = persist ? 9774800 : 0;
         var build = typeof(PayRunRepository).GetMethod("BuildEmployee", BindingFlags.NonPublic | BindingFlags.Static)!;
@@ -154,6 +168,28 @@ VALUES(9774800,9774801,97748,'SYNTH-TDS-001',31,31,30000,@Amount,@Net,FALSE,CAST
         Assert.Equal(3000, JsonNode.Parse(withholding.DetailsJson)!["ProjectedMonthlyTds"]!.GetValue<decimal>());
         await tx.RollbackAsync();
         Assert.Equal(0, await db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM tax_computation_snapshots WHERE client_id=97748"));
+    }
+
+    [IsolatedTheory]
+    [InlineData(9905, true)]
+    [InlineData(0, true)]
+    [InlineData(9905, false)]
+    public async Task Employee_template_policy_retains_months_reviewed_tds_or_reports_the_missing_rule(decimal amount, bool includeTds)
+    {
+        await SeedSourceAsync(amount, false);
+        await using var db = await F.OpenAsync();
+        await using var tx = await db.BeginTransactionAsync(IsolationLevel.RepeatableRead, isReadOnly: true);
+        if (includeTds)
+        {
+            var (row, _) = await CalculateAsync(db, tx, false, mappedTemplateIncludesTds: true);
+            Assert.Equal(30000 - amount, row.NetPay);
+            Assert.Equal(amount, row.StatutoryDeductions);
+        }
+        else
+        {
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => CalculateAsync(db, tx, false, mappedTemplateIncludesTds: false));
+            Assert.Contains("matching employee TDS input", error.Message);
+        }
     }
 
     [IsolatedTheory]

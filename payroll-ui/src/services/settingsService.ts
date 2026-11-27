@@ -46,8 +46,13 @@ export type EmployeeImportReviewRow = {
   candidateEmployees?: EmployeeImportCandidateEmployee[]
   identityEvidence?: EmployeeImportIdentityEvidence[]
   canResolveConflict?: boolean
+  canForceSalaryAssignment?: boolean
+  testPayslips?: { runId: number; payPeriod: string; paid: boolean; legacy: boolean }[] | null
 }
 export type EmployeeImportPreflight = {
+  supportsDatedSalaryInputs?: boolean
+  supportsEmployeeSalaryTemplatePolicy?: boolean
+  supportsTestPayrollRemoval?: boolean
   reviewToken: string
   totalRows: number
   canImport: boolean
@@ -220,11 +225,13 @@ export const getEmployeeDeletePreview = (id: number) => getJson<EmployeeDeletePr
 export const deleteEmployee = (id: number) => deleteJson(`/api/employees/${id}`, null, { toast: false })
 export const downloadEmployeeImportTemplate = (clientId: number) => getBlob(`/api/employees/import-template?clientId=${clientId}`)
 const emptyEmployeeImportPreflight: EmployeeImportPreflight = { reviewToken: '', totalRows: 0, canImport: false, requiresConfirmation: false, rows: [], errors: [] }
-export const preflightEmployeeImport = async (clientId: number, file: File, mode: 'insert' | 'update' | 'upsert' = 'upsert'): Promise<ApiResult<EmployeeImportPreflight>> => {
+export const preflightEmployeeImport = async (clientId: number, file: File, mode: 'insert' | 'update' | 'upsert' = 'upsert', forceSalaryAssignment = false, removeTestPayroll = false): Promise<ApiResult<EmployeeImportPreflight>> => {
   const body = new FormData()
   body.append('clientId', String(clientId))
   body.append('mode', mode)
   body.append('file', file)
+  if (forceSalaryAssignment) body.append('forceSalaryAssignment', 'true')
+  if (removeTestPayroll) body.append('removeTestPayroll', 'true')
   try {
     const response = await apiRequest('/api/employees/import-preflight', { method: 'POST', body, toast: false })
     const text = await response.text()
@@ -239,12 +246,14 @@ export const preflightEmployeeImport = async (clientId: number, file: File, mode
     return { ok: false, data: emptyEmployeeImportPreflight, error: error instanceof Error ? error.message : 'Employee identity preflight failed.', status: 0 }
   }
 }
-export const startEmployeeImport = (clientId: number, file: File, mode: 'insert' | 'update' | 'upsert' = 'upsert', reviewToken = '', decisions: EmployeeImportDecision[] = []) => {
+export const startEmployeeImport = (clientId: number, file: File, mode: 'insert' | 'update' | 'upsert' = 'upsert', reviewToken = '', decisions: EmployeeImportDecision[] = [], forceSalaryAssignment = false, removeTestPayroll = false) => {
   const body = new FormData()
   body.append('clientId', String(clientId))
   body.append('mode', mode)
   body.append('file', file)
   if (reviewToken) body.append('reviewToken', reviewToken)
+  if (removeTestPayroll) body.append('removeTestPayroll', 'true')
+  if (forceSalaryAssignment) body.append('forceSalaryAssignment', 'true')
   if (decisions.length) body.append('decisionsJson', JSON.stringify(decisions))
   return postForm<BulkImportStatus>('/api/employees/import-jobs', body, { jobId: '', state: 'Failed', totalRows: 0, completedRows: 0, inserted: 0, updated: 0, errors: [] }, { toast: false })
 }

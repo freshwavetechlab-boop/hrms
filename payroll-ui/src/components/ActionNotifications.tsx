@@ -11,8 +11,10 @@ import { getRecruitmentMomPings } from '../services/recruitmentCaseService'
 import { isUnrestrictedClientAdmin } from '../utils/clientAccess'
 import { dismissOfferMailJob, getOfferMailJobs, validOfferMailJobs, type OfferMailJob } from '../services/recruitmentOfferMailService'
 import type { BulkMailJob } from './BulkMailProgress'
+import { dismissEmployeeImportJob, employeeJobIsRunning, employeeJobTitle, listEmployeeImportJobs, type EmployeeImportJob } from '../services/employeeImportJobs'
+import { notifyEmployeeMasterSaved } from '../services/employeeMasterChanges'
 
-type ActionItem = { key: string; title: string; detail: string; route: string; mailJob?: ExcelPayslipMailJob; offerJob?: OfferMailJob }
+type ActionItem = { key: string; title: string; detail: string; route: string; mailJob?: ExcelPayslipMailJob; offerJob?: OfferMailJob; employeeJob?: EmployeeImportJob }
 type PendingTask = { id: number; stageName: string; resourceType: string; resourceId: string }
 
 // Add future action providers here using authorized, recipient-scoped APIs.
@@ -24,6 +26,8 @@ export default function ActionNotifications() {
   const [items, setItems] = useState<ActionItem[]>([])
   const [jobFeed, setJobFeed] = useState<{ scope: string; items: ExcelPayslipMailJob[] }>({ scope: '', items: [] })
   const [offerFeed, setOfferFeed] = useState<{ scope: string; items: OfferMailJob[] }>({ scope: '', items: [] })
+  const [employeeFeed, setEmployeeFeed] = useState<{ scope: string; items: EmployeeImportJob[] }>({ scope: '', items: [] })
+  const lastEmployeeFeed = useRef(employeeFeed)
   const [dismissing, setDismissing] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -36,18 +40,23 @@ export default function ActionNotifications() {
   const offerScope = `${jobScope}:${canSeeOfferJobs}:${session?.user.clientAccessMode}:${session?.user.assignedClientIds?.join(',')}:${session?.user.recruitmentScopeMode}:${session?.user.recruitmentLocationIds?.join(',')}`
   const currentOfferScope = useRef(offerScope)
   currentOfferScope.current = offerScope
+  const canSeeEmployeeJobs = Boolean(session?.user.permissions.includes('employees.manage'))
+  const employeeScope = `${session?.user.id}:${session?.user.clientId}:${session?.user.clientAccessMode}:${session?.user.assignedClientIds?.join(',')}:${canSeeEmployeeJobs}`
+  const currentEmployeeScope = useRef(employeeScope)
+  currentEmployeeScope.current = employeeScope
   const refresh = useCallback(async () => {
     const attempt = ++generation.current
     if (!session) { setItems([]); setJobFeed({ scope: jobScope, items: [] }); setOfferFeed({ scope: offerScope, items: [] }); setLoading(false); return }
     setLoading(true)
     const canConfigure = session.user.permissions.some(p => ['settings.manage', 'client.settings.manage', 'attendance.manage', 'workflow.manage', 'employees.manage'].includes(p))
-    const [tasks, interviews, configuration, mailJobs, momPings, offerJobs] = await Promise.all([
+    const [tasks, interviews, configuration, mailJobs, momPings, offerJobs, employeeJobs] = await Promise.all([
       getJsonResult<PendingTask[]>('/api/workflows/tasks/pending', [], { loader: false, toast: false }),
       getJsonResult<RecruitmentInterview[]>('/api/recruitment/interviews', [], { loader: false, toast: false }),
       canConfigure ? getAttendanceGaps(session.user.clientId || undefined) : Promise.resolve(null),
       canSeeMailJobs ? getExcelPayslipMailJobs() : Promise.resolve(null),
       getRecruitmentMomPings(),
       canSeeOfferJobs ? getOfferMailJobs() : Promise.resolve(null),
+      canSeeEmployeeJobs ? listEmployeeImportJobs() : Promise.resolve(null),
     ])
     if (attempt !== generation.current) return
     const next: ActionItem[] = (tasks.data || []).map(task => ({ key: `approval:${task.id}`, title: task.stageName || 'Approval required', detail: `${task.resourceType} · ${task.resourceId}`, route: '/tasks' }))
@@ -71,11 +80,35 @@ export default function ActionNotifications() {
     const offersValid = Boolean(offerJobs?.ok && validOfferMailJobs(offerJobs.data.items))
     if (offersValid) setOfferFeed({ scope: offerScope, items: offerJobs!.data.items })
     else if (!canSeeOfferJobs || offerJobs?.status === 403) setOfferFeed({ scope: offerScope, items: [] })
-    setError(!tasks.ok || !momPings.ok || (interviews && !interviews.ok) || (configuration && !configuration.ok) || (mailJobs && !jobsValid) || (offerJobs && !offersValid) ? 'Some notifications could not be refreshed. Any displayed mail progress is the last known status; retry to check the latest.' : '')
+    const receivedEmployees = employeeJobs?.data?.items
+    const employeeJobsValid = employeeJobs?.ok && Array.isArray(receivedEmployees)
+    if (employeeJobsValid) {
+      const previous = lastEmployeeFeed.current
+      if (previous.scope === employeeScope) {
+        const previousStates = new Map(previous.items.map(job => [job.jobId, job.state]))
+        const changedClients = new Map<number, boolean>()
+        for (const job of receivedEmployees) {
+          if (employeeJobIsRunning(job) || previousStates.get(job.jobId) === job.state || !(job.updated || job.inserted || job.state === 'Failed')) continue
+          const cleanup = job.kind === 'salary-template-assignment-cleanup' && job.state === 'Completed' && job.updated > 0
+          changedClients.set(job.clientId, cleanup || changedClients.get(job.clientId) === true)
+        }
+        changedClients.forEach((cleanup, clientId) => notifyEmployeeMasterSaved(clientId, cleanup))
+      }
+      lastEmployeeFeed.current = { scope: employeeScope, items: receivedEmployees }
+      setEmployeeFeed(lastEmployeeFeed.current)
+    } else if (!canSeeEmployeeJobs || employeeJobs?.status === 403 || employeeJobs?.status === 401) {
+      lastEmployeeFeed.current = { scope: '', items: [] }
+      setEmployeeFeed(lastEmployeeFeed.current)
+    }
+    setError(!tasks.ok || !momPings.ok || (interviews && !interviews.ok) || (configuration && !configuration.ok) || (mailJobs && !jobsValid) || (offerJobs && !offersValid) || (employeeJobs && !employeeJobsValid) ? 'Some notifications could not be refreshed. Retry to see the latest progress.' : '')
     setLoading(false)
-  }, [session?.user.id, session?.user.clientId, session?.user.permissions.join('|'), offerScope])
+  }, [session?.user.id, session?.user.clientId, session?.user.permissions.join('|'), offerScope, employeeScope])
 
-  const notifications: ActionItem[] = [...items, ...(canSeeMailJobs && jobFeed.scope === jobScope ? jobFeed.items : [])
+  const notifications: ActionItem[] = [...(canSeeEmployeeJobs && employeeFeed.scope === employeeScope ? employeeFeed.items : []).map(job => ({
+    key: `employee-import:${job.jobId}`, title: employeeJobTitle(job),
+    detail: `${job.clientName} · ${job.state} · ${job.completedRows}/${job.totalRows} processed · ${job.inserted + job.updated} saved`,
+    route: `/employees/master?clientId=${job.clientId}&importJobId=${encodeURIComponent(job.jobId)}`, employeeJob: job
+  })), ...items, ...(canSeeMailJobs && jobFeed.scope === jobScope ? jobFeed.items : [])
     .filter(job => !job.dismissedAtUtc && (!session?.user.clientId || job.clientId === session.user.clientId))
     .map(job => ({ key: `excel-mail:${job.id}`, title: job.status === 'Completed' ? 'Excel payslip email complete' : job.status === 'Needs attention' ? 'Excel payslip email needs attention' : 'Excel payslip email in progress', detail: `${job.clientName} · ${job.month}`, route: `/reports/payroll-reports?report=excel-payslips&clientId=${job.clientId}&batchId=${encodeURIComponent(job.batchId)}&mailJobId=${encodeURIComponent(job.id)}`, mailJob: job })),
     ...(canSeeOfferJobs && offerFeed.scope === offerScope ? offerFeed.items : []).filter(job => !job.dismissedAtUtc).map(job => ({ key: `offer-mail:${job.id}`, title: job.status === 'Completed' ? 'Offer email complete' : job.status === 'Needs attention' ? 'Offer email needs attention' : 'Offer email in progress', detail: `${job.clientName} · ${job.total} offer letters`, route: `/recruitment/offers-and-pre-onboarding?clientId=${job.clientId}&mailJobId=${encodeURIComponent(job.id)}`, offerJob: job }))]
@@ -102,6 +135,17 @@ export default function ActionNotifications() {
     if (result.ok && result.data.ok) { setOfferFeed(current => ({ ...current, items: current.items.filter(item => item.id !== job.id) })); window.dispatchEvent(new Event('hrms:actions-changed')) }
     else setError(result.error || 'Unable to dismiss the offer email notification.')
   }
+  const dismissEmployeeJob = async (job: EmployeeImportJob) => {
+    if (!canSeeEmployeeJobs || employeeJobIsRunning(job) || dismissing) return
+    setDismissing(job.jobId)
+    const result = await dismissEmployeeImportJob(job.jobId, job.clientId)
+    setDismissing('')
+    if (currentEmployeeScope.current !== employeeScope) return
+    if (result.ok && result.data.ok) {
+      setEmployeeFeed(current => ({ ...current, items: current.items.filter(item => item.jobId !== job.jobId) }))
+      window.dispatchEvent(new Event('hrms:actions-changed'))
+    } else setError(result.error || 'Unable to dismiss the employee job notification.')
+  }
 
   useEffect(() => {
     void refresh()
@@ -120,9 +164,11 @@ export default function ActionNotifications() {
           <Typography.Text strong>{item.title}</Typography.Text><br /><Typography.Text type="secondary">{item.detail}</Typography.Text>
           {item.mailJob && <MailJobProgress job={item.mailJob} />}
           {item.offerJob && <MailJobProgress job={item.offerJob} documentLabel="letters" />}
+          {item.employeeJob && employeeJobIsRunning(item.employeeJob) && <Progress size="small" showInfo={false} percent={item.employeeJob.totalRows ? Math.round(item.employeeJob.completedRows * 100 / item.employeeJob.totalRows) : 0} />}
         </Button>
         {item.mailJob?.isComplete && <Button type="link" size="small" loading={dismissing === item.mailJob.id} disabled={Boolean(dismissing)} aria-label={`Dismiss ${item.mailJob.month} Excel payslip email notification`} onClick={() => void dismissJob(item.mailJob!)}>Dismiss</Button>}
         {item.offerJob?.isComplete && <Button type="link" size="small" loading={dismissing === item.offerJob.id} disabled={Boolean(dismissing)} aria-label="Dismiss offer email notification" onClick={() => void dismissOfferJob(item.offerJob!)}>Dismiss</Button>}
+        {item.employeeJob && !employeeJobIsRunning(item.employeeJob) && <Button type="link" size="small" loading={dismissing === item.employeeJob.jobId} disabled={Boolean(dismissing)} aria-label={`Dismiss ${item.title} notification`} onClick={() => void dismissEmployeeJob(item.employeeJob!)}>Dismiss</Button>}
       </List.Item>} />}
     </div>
   }><Badge count={notifications.length} overflowCount={99}><Button className="topbar-icon-btn" icon={<BellOutlined />} aria-label="Notifications" /></Badge></Popover>

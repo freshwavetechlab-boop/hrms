@@ -59,7 +59,8 @@ public partial class PayRunRepository
         if(pending is null&&(evidence is null||evidence.ClientId!=employee.ClientId||evidence.EmployeeId!=employee.Id||evidence.PayrollDays!=payrollDays||evidence.PayableDays!=payableDays))
             throw new InvalidOperationException("Unknown actual presence requires matching reviewed payable-only attendance provenance. No present value was assumed.");
         var structure=setup.Structures.SingleOrDefault(template=>template.Active&&template.Id==employee.SalaryStructureId
-            &&template.ClientId.Split([';',',','|']).Any(value=>value.Split(':')[0].Trim()==employee.ClientId.ToString(CultureInfo.InvariantCulture)));
+            &&(template.ClientId.Split([';',',','|']).Any(value=>value.Split(':')[0].Trim()==employee.ClientId.ToString(CultureInfo.InvariantCulture))
+                || employee.UsesExplicitTemplateInputs && IsSharedSalaryTemplate(template)));
         if(structure is null)throw new InvalidOperationException("Payable-only payroll requires an explicitly assigned active salary template for this client.");
         var expressions=structure.Lines.SelectMany(line=>
         {

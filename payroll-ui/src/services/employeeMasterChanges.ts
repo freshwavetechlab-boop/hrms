@@ -6,21 +6,27 @@ function openChannel() {
   try { return new BroadcastChannel(eventName) } catch { return null }
 }
 
-export function notifyEmployeeMasterSaved(clientId: number) {
+export function notifyEmployeeMasterSaved(clientId: number, testPayrollRemoved = false) {
+  const change = testPayrollRemoved ? { clientId, testPayrollRemoved: true } : clientId
   const channel = openChannel()
   if (!channel) {
-    window.dispatchEvent(new CustomEvent(eventName, { detail: clientId }))
+    window.dispatchEvent(new CustomEvent(eventName, { detail: change }))
     return
   }
-  try { channel.postMessage(clientId) }
-  catch { window.dispatchEvent(new CustomEvent(eventName, { detail: clientId })) }
+  try { channel.postMessage(change) }
+  catch { window.dispatchEvent(new CustomEvent(eventName, { detail: change })) }
   finally { channel.close() }
 }
 
-export function onEmployeeMasterSaved(clientId: number, refresh: () => void) {
+export function onEmployeeMasterSaved(clientId: number, refresh: () => void, filter?: 'testPayrollRemoved') {
   const channel = openChannel()
-  if (channel) channel.onmessage = event => { if (event.data === clientId) refresh() }
-  const onLocal = (event: Event) => { if ((event as CustomEvent).detail === clientId) refresh() }
+  const matches = (changed: unknown) => {
+    const cleanup = changed !== null && typeof changed === 'object' && 'testPayrollRemoved' in changed && changed.testPayrollRemoved === true && 'clientId' in changed
+    const id = cleanup ? changed.clientId : changed
+    return (!filter || cleanup) && typeof id === 'number' && id > 0 && (!clientId || id === clientId)
+  }
+  if (channel) channel.onmessage = event => { if (matches(event.data)) refresh() }
+  const onLocal = (event: Event) => { if (matches((event as CustomEvent).detail)) refresh() }
   window.addEventListener(eventName, onLocal)
   return () => {
     channel?.close()

@@ -27,8 +27,8 @@ public partial class PayRunRepository
         await using var tx = await db.BeginTransactionAsync(IsolationLevel.RepeatableRead, isReadOnly: true, token);
         var setup = ReadPayrollSetup(await PayrollDataTableStore.GetSetupJsonAsync(db, tx));
         var clientReference = clientId.ToString(CultureInfo.InvariantCulture);
-        if (!setup.Structures.Any(s => s.Active && s.Id == templateId && s.ClientId.Split([';', ',', '|'])
-                .Any(v => v.Split(':')[0].Trim() == clientReference)))
+        if (!setup.Structures.Any(s => s.Active && s.Id == templateId && (IsSharedSalaryTemplate(s) || s.ClientId.Split([';', ',', '|'])
+                .Any(v => v.Split(':')[0].Trim() == clientReference))))
             throw new InvalidOperationException("This salary template is not available for the selected client.");
         var output = new List<object>();
         var searchText = search?.Trim() ?? "";
@@ -46,10 +46,15 @@ LEFT JOIN worklocations w ON w.Id=e.WorkLocationId
 WHERE e.ClientId=@ClientId AND " + EmployeeEmploymentRules.EligibleInMonth("e", "@PayPeriod") + @"
  AND (@Search='' OR e.EmployeeCode LIKE @Pattern OR CONCAT(e.FirstName,' ',e.LastName) LIKE @Pattern)
 ORDER BY e.EmployeeCode,e.Id LIMIT @PageSize OFFSET @Offset", new { ClientId = clientId, PayPeriod = payPeriod, Search = searchText, Pattern = "%" + searchText + "%", PageSize = pageSize, Offset = offset }, tx, cancellationToken: token))).ToList();
-            await LoadEmployeeTablesAsync(db, tx, employees, payPeriod!, loadReviewedProfessionalTax: false);
+            // A stored policy is enough to list an employee. Full source evidence is
+            // validated when calculating, including any period-specific location split.
+            var policies = await EmployeeRepository.ReadTemplatePoliciesAsync(db, clientId, employees.Select(e => e.Id).ToArray(), tx);
+            var legacy = employees.Where(e => !policies.ContainsKey(e.Id)).ToList();
+            await LoadEmployeeTablesAsync(db, tx, legacy, payPeriod!, loadReviewedProfessionalTax: false, applyTemplatePolicy: false);
             foreach (var employee in employees)
             {
-                if (!MatchesSimulationTemplate(employee.SalaryStructureId, employee.LocationParts?.Parts.Select(p => p.SalaryStructureId), templateId!)) continue;
+                var assigned = policies.GetValueOrDefault(employee.Id, employee.SalaryStructureId);
+                if (!MatchesSimulationTemplate(assigned, employee.LocationParts?.Parts.Select(p => p.SalaryStructureId), templateId!)) continue;
                 output.Add(new { id = employee.Id, code = employee.EmployeeCode, name = $"{employee.FirstName} {employee.LastName}".Trim() });
                 if (output.Count == 50) break;
             }

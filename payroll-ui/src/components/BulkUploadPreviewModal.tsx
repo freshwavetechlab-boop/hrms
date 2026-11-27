@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Alert, Button, Drawer, Pagination, Space, Tag } from 'antd'
-import { hasCellIssue, type ImportPreviewIssue } from '../utils/importPreview'
+import { hasCellIssue, type ImportPreviewData, type ImportPreviewIssue } from '../utils/importPreview'
+import { resolveEmployeeCtc } from '../utils/employeeCtc'
 
 export type BulkUploadPreviewSheet = {
   name: string
@@ -24,7 +25,9 @@ export type BulkUploadPreviewColumnMeta = { sourceHeader: string; color: string;
 
 export const emptyBulkUploadPreview: BulkUploadPreviewState = { open: false, title: '', fileName: '', headers: [], rows: [], issues: [] }
 
-export default function BulkUploadPreviewModal(p: { preview: BulkUploadPreviewState; importing?: boolean; onCancel: () => void; onConfirm: (preview: BulkUploadPreviewState) => void; onResolveDuplicates?: (mode: 'skip' | 'replace' | 'replaceAll', sheetName: string) => void; uniqueFields?: string[][] }) {
+type SheetValidator = (data: ImportPreviewData) => ImportPreviewIssue[]
+
+export default function BulkUploadPreviewModal(p: { preview: BulkUploadPreviewState; importing?: boolean; syncEmployeeCtc?: boolean; onCancel: () => void; onConfirm: (preview: BulkUploadPreviewState) => void; onResolveDuplicates?: (mode: 'skip' | 'replace' | 'replaceAll', sheetName: string) => void; uniqueFields?: string[][]; validateSheet?: SheetValidator }) {
   const [activeSheet, setActiveSheet] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(100)
@@ -44,14 +47,26 @@ export default function BulkUploadPreviewModal(p: { preview: BulkUploadPreviewSt
     setDraft(p.preview)
     if (p.preview.open) { setActiveSheet(0); setPage(1) }
   }, [p.preview])
-  const applyDraft = (next: BulkUploadPreviewState) => setDraft(rebuildUniqueIssues(next, p.uniqueFields ?? []))
+  const applyDraft = (next: BulkUploadPreviewState) => setDraft(rebuildIssues(next, p.uniqueFields ?? [], p.validateSheet, activeSheet))
   const updateCell = (rowIndex: number, colIndex: number, value: string) => {
+    const editRow = (row: string[]) => {
+      const next = [...row]
+      next[colIndex] = value
+      const headers = current.headers
+      const annualIndex = headers.indexOf('Annual CTC'), monthlyIndex = headers.indexOf('Monthly CTC')
+      if (p.syncEmployeeCtc && annualIndex >= 0 && monthlyIndex >= 0 && (colIndex === annualIndex || colIndex === monthlyIndex)) {
+        const ctc = colIndex === annualIndex ? resolveEmployeeCtc(value, '') : resolveEmployeeCtc('', value)
+        next[annualIndex] = ctc.annual
+        next[monthlyIndex] = ctc.monthly
+      }
+      return next
+    }
     if (draft.sheets?.length) {
-      const nextSheets = draft.sheets.map((sheet, index) => index === activeSheet ? { ...sheet, rows: sheet.rows.map((row, r) => r === rowIndex ? row.map((cell, c) => c === colIndex ? value : cell) : row) } : sheet)
+      const nextSheets = draft.sheets.map((sheet, index) => index === activeSheet ? { ...sheet, rows: sheet.rows.map((row, r) => r === rowIndex ? editRow(row) : row) } : sheet)
       applyDraft({ ...draft, rows: nextSheets.flatMap(sheet => sheet.rows), sheets: nextSheets })
       return
     }
-    const rows = draft.rows.map((row, r) => r === rowIndex ? row.map((cell, c) => c === colIndex ? value : cell) : row)
+    const rows = draft.rows.map((row, r) => r === rowIndex ? editRow(row) : row)
     applyDraft({ ...draft, rows })
   }
   const deleteRow = (rowIndex: number) => {
@@ -105,16 +120,20 @@ export default function BulkUploadPreviewModal(p: { preview: BulkUploadPreviewSt
   </Drawer>
 }
 
-function rebuildUniqueIssues(preview: BulkUploadPreviewState, uniqueFields: string[][]): BulkUploadPreviewState {
-  if (!uniqueFields.length) return preview
+function rebuildIssues(preview: BulkUploadPreviewState, uniqueFields: string[][], validateSheet: SheetValidator | undefined, activeSheet: number): BulkUploadPreviewState {
+  if (!uniqueFields.length && !validateSheet) return preview
   const baseIssues = preview.issues.filter(issue => !issue.message.toLowerCase().includes('duplicates row'))
   if (preview.sheets?.length) {
     const globalOnly = baseIssues.filter(issue => issue.column === 'Client')
-    const sheets = preview.sheets.map(sheet => ({ ...sheet, issues: [...(sheet.issues ?? []).filter(issue => !issue.message.toLowerCase().includes('duplicates row')), ...uniqueIssues(sheet.headers, sheet.rows, uniqueFields)] }))
+    const sheets = preview.sheets.map((sheet, index) => {
+      if (index !== activeSheet) return sheet
+      const issues = validateSheet ? validateSheet(sheet) : [...(sheet.issues ?? []).filter(issue => !issue.message.toLowerCase().includes('duplicates row')), ...uniqueIssues(sheet.headers, sheet.rows, uniqueFields)]
+      return { ...sheet, issues }
+    })
     const issues = [...globalOnly, ...sheets.flatMap(sheet => (sheet.issues ?? []).map(issue => ({ ...issue, message: `${sheet.name}: ${issue.message}` })))]
     return { ...preview, rows: sheets.flatMap(sheet => sheet.rows), issues, sheets }
   }
-  const issues = [...baseIssues, ...uniqueIssues(preview.headers, preview.rows, uniqueFields)]
+  const issues = validateSheet ? [...baseIssues.filter(issue => issue.column === 'Client'), ...validateSheet(preview)] : [...baseIssues, ...uniqueIssues(preview.headers, preview.rows, uniqueFields)]
   return { ...preview, issues }
 }
 

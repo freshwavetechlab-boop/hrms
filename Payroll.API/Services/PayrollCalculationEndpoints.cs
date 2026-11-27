@@ -34,7 +34,7 @@ public static class PayrollCalculationEndpoints
             if (context.Items["User"] is not AuthUser user || !CanAccess(user, request.ClientId, request.Mode is "Employee" or "EmployeeTemplate")) return Results.StatusCode(403);
             PayRunRepository.ValidateSimulationRequest(request);
             return Results.Ok(request.Mode == "Employee" ? await repository.SimulateEmployeeAsync(request, context.RequestAborted)
-                : request.Mode == "EmployeeTemplate" ? await repository.SimulateEmployeeTemplateAsync(request, context.RequestAborted) : PayRunRepository.SimulateTemplate(request));
+                : request.Mode == "EmployeeTemplate" ? await repository.SimulateEmployeeTemplateAsync(request, context.RequestAborted) : PayRunRepository.SimulateTemplate(request, interactive: true));
         });
         group.MapPost("/extract-template", async (SalaryTemplateExcelExtractionRequest request, HttpContext context, SettingsRepository settings) =>
         {

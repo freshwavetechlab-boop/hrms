@@ -20,6 +20,14 @@ public class Employee
     public int? ReportingManagerUserId { get; set; }
     public bool PortalAccess { get; set; }
     public string SalaryStructureId { get; set; } = string.Empty;
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? SalaryTemplatePolicyId { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? SalaryTemplateName { get; internal set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool UsesDatedSalaryInputs { get; internal set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public EmployeeBulkTemplateAssignment? LatestBulkSalaryAssignment { get; internal set; }
     public decimal AnnualCtc { get; set; }
     public string SalaryJson { get; set; } = "{}";
     public string PersonalJson { get; set; } = "{}";
@@ -29,6 +37,8 @@ public class Employee
     public EmployeePaymentDetails PaymentDetails { get; set; } = new();
     public bool IsActive { get; set; } = true;
 }
+
+public sealed record EmployeeBulkTemplateAssignment(string SalaryTemplateId, string? SalaryTemplateName, DateTime EffectiveFrom, DateTime? EffectiveTo);
 
 public class EmployeePersonalDetails
 {

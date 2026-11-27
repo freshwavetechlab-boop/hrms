@@ -27,6 +27,8 @@ type Props = {
   sheet: ImportPreviewSheet
   definition: BulkImportDefinition
   mappings: BulkImportMapping
+  headerRowSelector?: ReactNode
+  salaryControls?: ReactNode
   split?: PreviewNameSplit
   onMap?: (sourceColumnIndex: number, targetCode: string) => void
   onUnmapSource?: (sourceColumnIndex: number) => void
@@ -45,6 +47,7 @@ export default function SmartBulkSourcePreview(p: Props) {
   const currentPage = Math.min(page, lastPage)
   const pageStart = (currentPage - 1) * pageSize
   const visibleRows = p.sheet.rows.slice(pageStart, pageStart + pageSize)
+  const sourceRowNumber = (index: number) => p.adapter?.rowNumbers[index] ?? p.sheet.sourceRowNumbers?.[index] ?? (p.sheet.headerRow ?? 1) + index + 1
   const mappedSourceColumns = useMemo(() => new Set(Object.values(p.mappings)), [p.mappings])
   const groupedOptions = useMemo(() => Array.from(new Set(p.definition.fields.map(field => field.group))).map(group => ({
     label: group,
@@ -62,8 +65,10 @@ export default function SmartBulkSourcePreview(p: Props) {
     afterOpenChange={open => { if (open) { setPage(1); setSelectedColumn(null) } }}
   >
     <div className={`smart-bulk-source-preview${p.split ? ' has-split' : ''}${p.adapter ? ' has-adapter' : ''}`} data-testid="smart-bulk-source-preview">
+      {p.salaryControls}
       <div className="smart-bulk-source-preview-help">
         <div><b>{p.adapter?.helpTitle || 'Split and map directly in this grid'}</b><span>{p.adapter?.helpDescription || 'Use Split name on a source column to create two real working columns. The values visible here are the values sent to the final import review.'}</span></div>
+        {!p.adapter && p.headerRowSelector}
         <Space wrap><Tag color="blue">{p.adapter ? p.adapter.columns.filter(c => c.mapped).length : mappedSourceColumns.size} mapped</Tag><Tag>{Math.max(0, p.sheet.headers.length - (p.adapter ? p.adapter.columns.filter(c => c.mapped).length : mappedSourceColumns.size))} skipped</Tag></Space>
       </div>
 
@@ -137,7 +142,7 @@ export default function SmartBulkSourcePreview(p: Props) {
               </div>
             </th>
           })}</tr></thead>
-          <tbody>{visibleRows.map((row, visibleIndex) => <tr key={pageStart + visibleIndex}><td className="row-number">{p.adapter?.rowNumbers[pageStart + visibleIndex] ?? pageStart + visibleIndex + 2}</td>{p.sheet.headers.map((header, sourceIndex) => {
+          <tbody>{visibleRows.map((row, visibleIndex) => <tr key={pageStart + visibleIndex}><td className="row-number">{sourceRowNumber(pageStart + visibleIndex)}</td>{p.sheet.headers.map((header, sourceIndex) => {
             const field = fieldForSource(sourceIndex)
             const custom = p.adapter?.columns[sourceIndex]
             const mapped = custom?.mapped ?? Boolean(field)

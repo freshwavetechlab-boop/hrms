@@ -165,17 +165,23 @@ public partial class EmployeeRepository
                 if (!alternateIdentifierConflict) hardConflict = true;
             }
 
+            decimal? annualCtc = null;
+            if (includeFieldChanges)
+            {
+                try { annualCtc = ReadImportAnnualCtc(source, map); }
+                catch (InvalidOperationException error) { blocking.Add(error.Message); hardConflict = true; }
+            }
             var canResolveConflict = alternateIdentifierConflict && !hardConflict && importMode != InsertImportMode && reviewCandidates.Count > 0;
             if (canResolveConflict) matchStatus = "IdentityConflict";
             else if (blocking.Count > 0) matchStatus = "Blocked";
             var displayedMatch = canResolveConflict ? null : stableMatch;
-            var changes = !includeFieldChanges || displayedMatch is null ? [] : BuildImportChanges(source, map, displayedMatch);
+            var changes = !includeFieldChanges || displayedMatch is null ? [] : BuildImportChanges(source, map, displayedMatch, annualCtc);
             var candidateEmployees = reviewCandidates.Values.Select(candidate => new EmployeeImportCandidate(
                 candidate.Employee.Id,
                 candidate.Employee.EmployeeCode,
                 $"{candidate.Employee.FirstName} {candidate.Employee.LastName}".Trim(),
                 candidate.Reasons.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
-                includeFieldChanges ? BuildImportChanges(source, map, candidate.Employee) : [])).ToList();
+                includeFieldChanges ? BuildImportChanges(source, map, candidate.Employee, annualCtc) : [])).ToList();
             var identityEvidence = includeFieldChanges ? BuildIdentityEvidence(source, map, byId, byCode, byMobile, byAadhaar, byPan, byBank) : [];
             resultRows.Add(new EmployeeImportPreflightRow(
                 rowNumber,

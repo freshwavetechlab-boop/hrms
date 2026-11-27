@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Alert, Button, Checkbox, Drawer, Select, Space, Spin, Tag } from 'antd'
 import { getClients, getPayRuns } from '../services/payrollService'
+import { onEmployeeMasterSaved } from '../services/employeeMasterChanges'
 import { getRegisterPayRun, getRegisterPayslip, getRegisterPayslipPdf, queueRegisterPayslipMail, type PayslipDeliveryItem, type PayslipDocument, type PayslipMailJobRequest } from '../services/payslipService'
 import { PayslipPreviewLease } from '../utils/payslipDesign'
 import { payslipRegisterRunError } from '../utils/payslipRegister'
@@ -44,6 +45,7 @@ export default function PayslipRegister() {
   const [runLoading, setRunLoading] = useState(false)
   const [runError, setRunError] = useState('')
   const [runLoadRevision, setRunLoadRevision] = useState(0)
+  const [runListRevision, setRunListRevision] = useState(0)
   const [selected, setSelected] = useState<RunEmployee | null>(null)
   const [document, setDocument] = useState<PayslipDocument | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
@@ -66,20 +68,34 @@ export default function PayslipRegister() {
 
   useEffect(() => {
     let active = true
-    // Scope changes invalidate the prior list before its asynchronous refresh.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setRunsReady(false)
     void getClients(true).then(clientRows => {
       if (!active) return
       const available = clientRows.filter(row => row.isActive)
       setClients(available)
       setClientId(current => clientScoped ? scopedClientId : available.some(client => client.id === requestedClientId) ? requestedClientId : available.some(client => client.id === current) ? current : available[0]?.id ?? 0)
     })
-    void getPayRuns().then(runRows => { if (active) { setRuns(runRows); setRunsReady(true) } })
     return () => { active = false }
     // Preference setters are recreated by the shared hook; fetch only when user scope changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientScoped, scopedClientId, requestedClientId])
+
+  useEffect(() => {
+    let active = true
+    setRunsReady(false)
+    void getPayRuns().then(runRows => { if (active) { setRuns(runRows); setRunsReady(true) } })
+    return () => { active = false }
+  }, [clientScoped, scopedClientId, requestedClientId, runListRevision])
+
+  useEffect(() => {
+    if (!clientId) return
+    return onEmployeeMasterSaved(clientId, () => {
+      previewAbort.current?.abort()
+      previewLease.clear()
+      setSelected(null); setDocument(null); setNativePdf(null)
+      setRun(null); setRunsReady(false)
+      setRunListRevision(value => value + 1)
+    }, 'testPayrollRemoved')
+  }, [clientId, previewLease])
 
   const approvedRuns = useMemo(() => runs.filter(item => ['Approved', 'Partially Paid', 'Paid'].includes(item.status)), [runs])
   const clientsWithPayslips = useMemo(() => new Set(approvedRuns.map(item => item.clientId)), [approvedRuns])

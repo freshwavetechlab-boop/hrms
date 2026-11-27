@@ -18,15 +18,44 @@ public partial class PayRunRepository
     {
         if (employee.LocationParts is not null || string.IsNullOrWhiteSpace(employee.SalaryStructureId)) return null;
         var setup = ReadPayrollSetup(setupJson);
-        var structure = setup.Structures.SingleOrDefault(value => value.Id == employee.SalaryStructureId && value.Active);
+        var currentRule = SourceTdsRule(setup, employee.SalaryStructureId);
+        if (!string.IsNullOrEmpty(employee.SalaryInputTemplateId) && employee.SalaryInputTemplateId != employee.SalaryStructureId)
+        {
+            // The receipt identifies the original period assignment. Verify it there before
+            // using its withholding as an input on the employee's newly selected template.
+            var source = employee.HistoricalContextClone();
+            source.SalaryStructureId = employee.SalaryInputTemplateId;
+            var sourceRule = SourceTdsRule(setup, source.SalaryStructureId, includeInactiveTemplate: true);
+            var reviewed = await ReadSourceTdsForRuleAsync(db, tx, source, period, sourceRule);
+            if (reviewed is not null)
+            {
+                if (currentRule is not { Category: "Deduction", ProRata: false } || currentRule.Id != reviewed.ComponentId
+                    || currentRule.Code != reviewed.ComponentCode || !IsEditableTemplateInput(currentRule.CalculationType, currentRule.Formula)
+                    || currentRule.CalculationType == "Daily Rate")
+                    throw new InvalidOperationException($"{employee.EmployeeCode}: the selected salary template needs a matching employee TDS input to apply {period}'s reviewed withholding.");
+                return reviewed;
+            }
+        }
+        return await ReadSourceTdsForRuleAsync(db, tx, employee, period, currentRule);
+    }
+
+    private static ReviewedSourceTdsRule? SourceTdsRule(PayrollSetupData setup, string templateId, bool includeInactiveTemplate = false)
+    {
+        var structure = setup.Structures.SingleOrDefault(value => value.Id == templateId && (value.Active || includeInactiveTemplate));
         if (structure is null) return null;
         var rules = structure.Lines.Select(line => (line, component: setup.Components.SingleOrDefault(value => value.Id == line.ComponentId)))
             .Where(value => value.component is not null && ReviewedSourceTds.IsTds(value.component.Code, value.component.StatutoryType)).ToArray();
         if (rules.Length != 1) return null;
         var (line, component) = rules[0];
-        var rule = new ReviewedSourceTdsRule(component!.Id, component.Code, component.Category, component.StatutoryType,
+        return new ReviewedSourceTdsRule(component!.Id, component.Code, component.Category, component.StatutoryType,
             NormalizeCalculationType(FirstText(line.CalculationType, component.CalculationType)),
             NullableBool(line.ProRataOverride) ?? component.ProRata, FirstText(line.Formula, component.Formula));
+    }
+
+    private static async Task<ReviewedSourceTdsEvidence?> ReadSourceTdsForRuleAsync(MySqlConnection db, MySqlTransaction tx,
+        PayRunSourceEmployee employee, string period, ReviewedSourceTdsRule? rule)
+    {
+        if (rule is null) return null;
         var inputs = employee.SalaryComponents.Count > 0 ? employee.SalaryComponents : ParseSalaryComponentMap(employee.SalaryJson);
         if (rule.CalculationType != "Fixed Amount" || rule.ProRata || !string.IsNullOrWhiteSpace(rule.Formula)
             || !inputs.TryGetValue(rule.Id, out var input) || !await PtTableAsync(db, tx, "excel_payroll_setup_imports")) return null;

@@ -30,17 +30,27 @@ public sealed partial class SalaryTemplateCreateTests
               JSON_OBJECT('id','draft-a','status','Draft','name','Draft A','salaryStructureId',@key,'unknownSavedField',77),
               JSON_OBJECT('id','pub-b','status','Published','name','Published B','salaryStructureId','different'))));
             """, new { key = templateId.ToString() });
+        using var policyDdl = typeof(EmployeeRepository).Assembly.GetManifestResourceStream("Payroll.API.Database.EmployeeSalaryTemplatePolicies.sql")!;
+        using var policyReader = new StreamReader(policyDdl);
+        await f.Db.ExecuteAsync(await policyReader.ReadToEndAsync());
+        await f.Db.ExecuteAsync("INSERT INTO employee_salary_template_policies(EmployeeId,ClientId,SalaryStructureId,AssignedBy) VALUES(42,20,@templateId,'fixture')", new { templateId });
+        var initial = (await f.ReviewDeletionAsync(20, templateId)).Preview!;
+        Assert.Equal("T42", Assert.Single(Assert.Single(initial.Mappings, m => m.Type == "Employee payroll template assignments").Examples));
+        Assert.False((await f.ReviewDeletionAsync(20, templateId, initial.Version)).Deleted);
         async Task<SalaryTemplateMappingPage> Page(int offset = 0, int limit = 25) =>
             (await f.Repository.GetEditableSalaryTemplateMappingsAsync(20, templateId, offset, limit, actor))!;
         Task<bool> Apply(EditableSalaryTemplateMapping m) =>
             f.Repository.UnlinkSalaryTemplateMappingAsync(20, templateId, new(m.Kind, m.Key, m.Version), actor);
-        Assert.Equal(3, (await Page(1, 1)).Total);
+        Assert.Equal(4, (await Page(1, 1)).Total);
         Assert.Single((await Page(1, 1)).Items);
         var links = (await Page()).Items.ToDictionary(m => m.Kind);
         await f.Db.ExecuteAsync("UPDATE employees SET AnnualCtc=132000 WHERE Id=42");
         await Assert.ThrowsAsync<InvalidOperationException>(() => Apply(links["employee"]));
+        await f.Db.ExecuteAsync("UPDATE employee_salary_template_policies SET AssignedAtUtc=DATE_ADD(AssignedAtUtc, INTERVAL 1 SECOND) WHERE EmployeeId=42");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Apply(links["employee-policy"]));
         actor.Permissions.Remove("employees.manage");
-        Assert.DoesNotContain((await Page()).Items, m => m.Kind is "employee" or "basic-pay");
+        Assert.DoesNotContain((await Page()).Items, m => m.Kind is "employee" or "basic-pay" or "employee-policy");
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => Apply(links["employee-policy"]));
         await Assert.ThrowsAsync<UnauthorizedAccessException>(() => Apply(links["basic-pay"]));
         actor.Permissions.Add("employees.manage");
         // A saved period relying on this dated record removes its unlink action even after a preview.
@@ -52,7 +62,8 @@ public sealed partial class SalaryTemplateCreateTests
         Assert.Empty((await Page()).Items);
         Assert.Equal(132000m, await f.Db.ExecuteScalarAsync<decimal>("SELECT AnnualCtc FROM employees WHERE Id=42 AND SalaryStructureId='' AND SalaryJson->>'$.basic'='10000'"));
         Assert.Equal(120000m, await f.Db.ExecuteScalarAsync<decimal>("SELECT AnnualCtc FROM employee_it0008_basic_pay WHERE EmployeeId=42 AND SalaryStructureId='' AND SalaryJson->>'$.basic'='10000'"));
-        Assert.Equal(2, await f.Db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employee_audit_trail WHERE EmployeeId=42 AND ChangedBy=@Email", actor));
+        Assert.Equal(3, await f.Db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employee_audit_trail WHERE EmployeeId=42 AND ChangedBy=@Email", actor));
+        Assert.Equal(0, await f.Db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM employee_salary_template_policies WHERE EmployeeId=42"));
         var payroll = JsonNode.Parse(await f.Db.ExecuteScalarAsync<string>("SELECT CAST(SettingsJson AS CHAR) FROM modulesettings WHERE client_id=20 AND ModuleCode='payroll'"))!;
         Assert.Equal("", payroll["pfPolicyVersions"]![0]!["salaryStructureId"]!.ToString());
         Assert.Equal("77", payroll["pfPolicyVersions"]![0]!["unknownSavedField"]!.ToString());

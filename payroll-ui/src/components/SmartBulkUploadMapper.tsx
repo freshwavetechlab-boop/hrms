@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent } from 'react'
 import { Alert, Button, Checkbox, Drawer, Empty, Input, Select, Space, Tag } from 'antd'
 import { CloudUploadOutlined, DeleteOutlined, DownloadOutlined, LinkOutlined, ReloadOutlined } from '@ant-design/icons'
-import { parseImportPreviewSheets, type ImportPreviewSheet } from '../utils/importPreview'
+import { parseImportSourceSheets, selectImportHeader, type ImportPreviewSheet, type ImportSourceSheet } from '../utils/importPreview'
 import SmartBulkSourcePreview from './SmartBulkSourcePreview'
 import EmployeeCodeGeneration from './EmployeeCodeGeneration'
+import type { Component, Structure } from '../types/payroll'
+import { employeeSalaryInputFields } from '../utils/employeeSalaryImport'
 import {
   autoMapBulkImportColumns,
   bulkImportMappingColor,
@@ -35,13 +37,21 @@ type Props = {
   onDownloadTemplate?: (operation?: BulkImportOperation, selectedFieldCodes?: string[]) => void
   clientCode?: string
   existingEmployeeCodes?: string[]
+  initialSalaryTemplateId?: string
+  initialOperation?: BulkImportOperation
+  salaryTemplates: Structure[]
+  salaryComponents: Component[]
+  salaryLoading: boolean
 }
 
 export default function SmartBulkUploadMapper(p: Props) {
   const [mode, setMode] = useState<ImportMode>('mapped')
-  const [operation, setOperation] = useState<BulkImportOperation>('insert')
+  const [operation, setOperation] = useState<BulkImportOperation>(p.initialOperation ?? 'insert')
   const [sourceFile, setSourceFile] = useState<File | null>(null)
   const [templateFile, setTemplateFile] = useState<File | null>(null)
+  const [salaryTemplateId, setSalaryTemplateId] = useState<string>()
+  const [salaryEffectiveFrom, setSalaryEffectiveFrom] = useState('')
+  const [sourceSheets, setSourceSheets] = useState<ImportSourceSheet[]>([])
   const [sheets, setSheets] = useState<ImportPreviewSheet[]>([])
   const [activeSheetIndex, setActiveSheetIndex] = useState(0)
   const [mappings, setMappings] = useState<BulkImportMapping>({})
@@ -58,16 +68,32 @@ export default function SmartBulkUploadMapper(p: Props) {
   const [templateFields, setTemplateFields] = useState<string[]>(p.definition.fields.map(field => field.code))
   const canvasRef = useRef<HTMLDivElement | null>(null)
   const wasOpenRef = useRef(false)
+  const templateChosen = useRef(false)
   const sourceRefs = useRef(new Map<number, HTMLDivElement>())
   const targetRefs = useRef(new Map<string, HTMLDivElement>())
   const activeSheet = sheets[activeSheetIndex]
+  const activeSource = sourceSheets[activeSheetIndex]
+  const headerRowOptions = useMemo(() => activeSource?.rows.map(row => ({ value: row.rowNumber, label: `Row ${row.rowNumber}` })) ?? [], [activeSource])
   const activeNameSplit = sheetNameSplits[activeSheetIndex]
+  const definitionFor = useCallback((template?: Structure): BulkImportDefinition => {
+    if (!template) return p.definition
+    const fields = p.definition.fields.filter(field => !['SalaryJson', 'SalaryTemplate', 'SalaryTemplateId'].includes(field.code))
+    return { ...p.definition, fields: [...fields, ...employeeSalaryInputFields(template, p.salaryComponents)] }
+  }, [p.definition, p.salaryComponents])
+  const salaryTemplate = p.salaryTemplates.find(template => String(template.id) === salaryTemplateId)
+  const definition = useMemo(() => definitionFor(salaryTemplate), [definitionFor, salaryTemplate])
+  const salaryFieldsMapped = !!salaryTemplate && Object.keys(mappings).some(code => code === 'AnnualCtc' || code === 'MonthlyCtc' || code.startsWith('SALARY_INPUT:'))
+  const missingSalaryDate = salaryFieldsMapped && !salaryEffectiveFrom
 
   const reset = useCallback(() => {
+    templateChosen.current = false
     setMode('mapped')
-    setOperation('insert')
+    setOperation(p.initialOperation ?? 'insert')
     setSourceFile(null)
     setTemplateFile(null)
+    setSalaryTemplateId(undefined)
+    setSalaryEffectiveFrom('')
+    setSourceSheets([])
     setSheets([])
     setActiveSheetIndex(0)
     setMappings({})
@@ -84,7 +110,7 @@ export default function SmartBulkUploadMapper(p: Props) {
     setTemplateFields(p.definition.fields.map(field => field.code))
     sourceRefs.current.clear()
     targetRefs.current.clear()
-  }, [p.clientCode, p.definition.fields, p.existingEmployeeCodes])
+  }, [p.clientCode, p.definition.fields, p.existingEmployeeCodes, p.initialOperation])
 
   useEffect(() => {
     if (p.open && !wasOpenRef.current) reset()
@@ -92,14 +118,14 @@ export default function SmartBulkUploadMapper(p: Props) {
   }, [p.open, reset])
 
   const mappedSourceColumns = useMemo(() => new Set(Object.values(mappings)), [mappings])
-  const missingRequired = useMemo(() => p.definition.fields.filter(field => field.required && !(field.requiredForNew && operation === 'update') && mappings[field.code] === undefined && !(field.code === 'EmployeeCode' && generateEmployeeCodes && operation !== 'update')), [generateEmployeeCodes, mappings, operation, p.definition.fields])
+  const missingRequired = useMemo(() => definition.fields.filter(field => field.required && !(field.requiredForNew && operation === 'update') && mappings[field.code] === undefined && !(field.code === 'EmployeeCode' && generateEmployeeCodes && operation !== 'update')), [generateEmployeeCodes, mappings, operation, definition.fields])
   const sourceColumns = useMemo(() => (activeSheet?.headers ?? []).map((header, index) => ({
     index,
     header: header.trim() || `Unnamed column ${index + 1}`,
     samples: uniqueSamples(activeSheet?.rows ?? [], index)
   })), [activeSheet])
   const visibleSources = sourceColumns.filter(column => matchesSearch([column.header, ...column.samples], sourceSearch))
-  const visibleTargets = p.definition.fields.filter(field => matchesSearch([field.label, field.header, field.group, field.type, ...(field.aliases ?? [])], targetSearch))
+  const visibleTargets = definition.fields.filter(field => matchesSearch([field.label, field.header, field.group, field.type, ...(field.aliases ?? [])], targetSearch))
   const groups = Array.from(new Set(visibleTargets.map(field => field.group)))
 
   const calculateConnectors = useCallback(() => {
@@ -118,11 +144,11 @@ export default function SmartBulkUploadMapper(p: Props) {
       const endX = targetRect.left - canvasRect.left
       const endY = targetRect.top + targetRect.height / 2 - canvasRect.top
       const bend = Math.max(34, (endX - startX) * 0.48)
-      const fieldIndex = p.definition.fields.findIndex(field => field.code === code)
+      const fieldIndex = definition.fields.findIndex(field => field.code === code)
       next.push({ code, color: bulkImportMappingColor(fieldIndex), path: `M ${startX} ${startY} C ${startX + bend} ${startY}, ${endX - bend} ${endY}, ${endX} ${endY}` })
     }
     setConnectors(next)
-  }, [mappings, p.definition.fields])
+  }, [mappings, definition.fields])
 
   useLayoutEffect(() => {
     const frame = window.requestAnimationFrame(calculateConnectors)
@@ -135,27 +161,86 @@ export default function SmartBulkUploadMapper(p: Props) {
   const loadSourceFile = async (file: File) => {
     setBusy(true); setError('')
     try {
-      const parsed = (await parseImportPreviewSheets(file)).filter(sheet => sheet.headers.some(header => header.trim()) && sheet.rows.length)
-      if (!parsed.length) throw new Error('No worksheet with a header row and data was found.')
+      const sources = (await parseImportSourceSheets(file)).filter(sheet => sheet.rows.length > 1)
+      if (!sources.length) throw new Error('No worksheet with a header row and data was found.')
+      const parsed = sources.map(sheet => selectImportHeader(sheet, sheet.rows[0].rowNumber))
       setSourceFile(file)
+      setSourceSheets(sources)
       setSheets(parsed)
       setSheetNameSplits({})
       setActiveSheetIndex(0)
-      setMappings(autoMapBulkImportColumns(parsed[0], p.definition))
+      setMappings(autoMapBulkImportColumns(parsed[0], definition))
       setSelectedSource(null)
     } catch (cause) {
-      setSourceFile(null); setSheets([]); setSheetNameSplits({}); setMappings({})
+      setSourceFile(null); setSourceSheets([]); setSheets([]); setSheetNameSplits({}); setMappings({})
       setError(cause instanceof Error ? cause.message : 'The spreadsheet could not be read.')
     } finally { setBusy(false) }
   }
 
   const changeSheet = (index: number) => {
     setActiveSheetIndex(index)
-    const nextMappings = autoMapBulkImportColumns(sheets[index], p.definition)
+    const nextMappings = autoMapBulkImportColumns(sheets[index], definition)
     setMappings(nextMappings)
     setSelectedSource(null)
     setError('')
   }
+
+  const changeHeaderRow = (rowNumber: number) => {
+    if (!activeSource || rowNumber === activeSheet.headerRow) return
+    const sheet = selectImportHeader(activeSource, rowNumber)
+    setSheets(current => current.map((item, index) => index === activeSheetIndex ? sheet : item))
+    setSheetNameSplits(current => Object.fromEntries(Object.entries(current).filter(([index]) => Number(index) !== activeSheetIndex)))
+    setMappings(autoMapBulkImportColumns(sheet, definition))
+    setSelectedSource(null)
+    setError('')
+  }
+
+  const headerRowSelector = (testId: string) => <label className="smart-bulk-header-row">
+    <span>Header row</span>
+    <Select aria-label="Header row" data-testid={testId} showSearch optionFilterProp="label" disabled={busy}
+      value={activeSheet?.headerRow} options={headerRowOptions} onChange={changeHeaderRow} />
+  </label>
+
+  const changeSalaryTemplate = (id?: string) => {
+    templateChosen.current = true
+    const nextTemplate = p.salaryTemplates.find(template => String(template.id) === id)
+    const nextDefinition = definitionFor(nextTemplate)
+    setSalaryTemplateId(id)
+    setSelectedSource(null)
+    setError('')
+    // Ordinary identity and profile mappings remain usable when the salary basis changes.
+    const keep = new Set(nextDefinition.fields.filter(field => !field.code.startsWith('SALARY_INPUT:')).map(field => field.code))
+    const next = Object.fromEntries(Object.entries(mappings).filter(([code]) => keep.has(code)))
+    if (nextTemplate && activeSheet) {
+      const used = new Set(Object.values(next))
+      const suggestions = autoMapBulkImportColumns(activeSheet, nextDefinition)
+      for (const [code, index] of Object.entries(suggestions)) {
+        if (code.startsWith('SALARY_INPUT:') && !used.has(index)) next[code] = index
+      }
+    }
+    setMappings(next)
+  }
+
+  useEffect(() => {
+    if (p.open && !busy && !templateChosen.current && p.initialSalaryTemplateId &&
+        p.salaryTemplates.some(template => String(template.id) === p.initialSalaryTemplateId)) {
+      changeSalaryTemplate(p.initialSalaryTemplateId)
+    }
+  }, [p.open, busy, p.salaryTemplates, p.initialSalaryTemplateId])
+
+  const salaryMappingControls = <div className="smart-bulk-salary-controls">
+    <label><span>Salary template</span>
+      <Select aria-label="Salary template for mapping" placeholder="Choose to map salary inputs" allowClear showSearch optionFilterProp="label"
+        loading={p.salaryLoading} disabled={busy} value={salaryTemplate?.id.toString()} onChange={changeSalaryTemplate}
+        options={p.salaryTemplates.map(template => ({ value: String(template.id), label: template.name }))}
+        notFoundContent={p.salaryLoading ? 'Loading templates…' : 'No matching saved salary template'} />
+    </label>
+    {salaryTemplate && <>
+      <label><span>Salary effective from</span><Input aria-label="Salary effective from" type="date" value={salaryEffectiveFrom}
+        required={salaryFieldsMapped} onChange={event => setSalaryEffectiveFrom(event.target.value)} /></label>
+      <small>{operation !== 'update' && 'Choose an effective date to give new employees this template and its defaults. '}Map recurring amounts per employee. A blank keeps the saved amount or uses the template default. Enter 0 to pay zero.</small>
+    </>}
+  </div>
 
   const mapColumn = (sourceIndex: number, targetCode: string) => {
     setMappings(current => mapBulkImportColumn(current, targetCode, sourceIndex))
@@ -165,8 +250,8 @@ export default function SmartBulkUploadMapper(p: Props) {
 
   const unmapTarget = (targetCode: string) => setMappings(current => Object.fromEntries(Object.entries(current).filter(([code]) => code !== targetCode)))
   const unmapSource = (sourceIndex: number) => setMappings(current => Object.fromEntries(Object.entries(current).filter(([, index]) => index !== sourceIndex)))
-  const targetForSource = (sourceIndex: number) => p.definition.fields.find(field => mappings[field.code] === sourceIndex)
-  const fieldByCode = (code: string) => p.definition.fields.find(field => field.code === code)
+  const targetForSource = (sourceIndex: number) => definition.fields.find(field => mappings[field.code] === sourceIndex)
+  const fieldByCode = (code: string) => definition.fields.find(field => field.code === code)
 
   const splitPreviewColumn = (sourceIndex: number, strategy: BulkImportNameSplitStrategy) => {
     if (!activeSheet || activeNameSplit) return
@@ -217,10 +302,11 @@ export default function SmartBulkUploadMapper(p: Props) {
   }
 
   const prepare = async () => {
-    if (!sourceFile || !activeSheet || missingRequired.length) return
+    if (!sourceFile || !activeSheet || missingRequired.length || missingSalaryDate) return
     setBusy(true); setError('')
-    try { await p.onPrepared(prepareMappedBulkImport(sourceFile, activeSheet, p.definition, mappings, {
+    try { await p.onPrepared(prepareMappedBulkImport(sourceFile, activeSheet, definition, mappings, {
       operation,
+      employeeSalaryContext: salaryTemplate ? { templateId: String(salaryTemplate.id), effectiveFrom: salaryEffectiveFrom } : undefined,
       employeeCodeGeneration: { enabled: generateEmployeeCodes, prefix: p.clientCode ?? '', digits: employeeCodeDigits, existingCodes: p.existingEmployeeCodes ?? [] },
       preTransformedRows: activeNameSplit?.splitRows,
       sourceColumnTransforms: activeNameSplit ? {
@@ -246,7 +332,7 @@ export default function SmartBulkUploadMapper(p: Props) {
     <Space wrap>
       <Button disabled={busy} onClick={cancel}>Cancel</Button>
       {mode === 'mapped'
-        ? <Button data-testid="smart-bulk-continue" type="primary" loading={busy} disabled={!sourceFile || !activeSheet?.rows.length || !Object.keys(mappings).length || missingRequired.length > 0} onClick={() => void prepare()}>Review mapped data</Button>
+        ? <Button data-testid="smart-bulk-continue" type="primary" loading={busy} disabled={!sourceFile || !activeSheet?.rows.length || !Object.keys(mappings).length || missingRequired.length > 0 || missingSalaryDate} onClick={() => void prepare()}>Review mapped data</Button>
         : <Button data-testid="smart-bulk-template-continue" type="primary" loading={busy} disabled={!templateFile || !p.onTemplateFile} onClick={() => void reviewTemplate()}>Review template</Button>}
     </Space>
   </div>
@@ -256,7 +342,7 @@ export default function SmartBulkUploadMapper(p: Props) {
     width="min(1440px,98vw)"
     placement="right"
     open={p.open}
-    title={<div className="smart-bulk-title"><span>SMART BULK UPLOAD</span><b>{p.definition.moduleLabel}</b><small>Import a standard template or map columns from any Excel/CSV file.</small></div>}
+    title={<div className="smart-bulk-title"><span>SMART BULK UPLOAD</span><b>{definition.moduleLabel}</b><small>Import a standard template or map columns from any Excel/CSV file.</small></div>}
     onClose={cancel}
     maskClosable={!busy}
     closable={!busy}
@@ -271,7 +357,7 @@ export default function SmartBulkUploadMapper(p: Props) {
           { value: 'upsert', label: 'Add new + update existing' }
         ]} />
       </section>
-      {operation === 'update' && <Alert type="info" showIcon message="Bulk update existing employees" description="Use the HRMS update template; keep Employee ID/Code unchanged. Blank cells preserve current data. Grade must exist in Employee Grade master; category must be Highly skilled, Skilled, Semi-skilled, or Unskilled." />}
+      {operation === 'update' && <Alert type="info" showIcon message="Bulk update existing employees" description="Map the existing Employee Code from your spreadsheet or use the HRMS update workbook. Employee ID is optional. Blank cells keep current values. Grades must exist in the Employee Grade master. Valid categories are Highly skilled, Skilled, Semi-skilled and Unskilled." />}
       <div className="smart-bulk-mode-tabs" role="tablist" aria-label="Bulk upload method">
         <button type="button" role="tab" aria-selected={mode === 'mapped'} className={mode === 'mapped' ? 'active' : ''} onClick={() => setMode('mapped')}><LinkOutlined /><span><b>Map any spreadsheet</b><small>Upload different column names and connect them to HRMS fields.</small></span><em>Recommended</em></button>
         <button type="button" role="tab" aria-selected={mode === 'template'} className={mode === 'template' ? 'active' : ''} onClick={() => setMode('template')}><CloudUploadOutlined /><span><b>Use HRMS template</b><small>Upload the standard employee template without manual mapping.</small></span></button>
@@ -282,8 +368,10 @@ export default function SmartBulkUploadMapper(p: Props) {
       {mode === 'template' ? <TemplateUploadPanel file={templateFile} busy={busy} operation={operation} definition={p.definition} selectedFields={templateFields} onSelectedFields={setTemplateFields} onFile={setTemplateFile} onDownload={p.onDownloadTemplate} /> : <>
         <SourceUploadPanel file={sourceFile} busy={busy} onFile={file => void loadSourceFile(file)} onPreview={activeSheet ? () => setSourcePreviewOpen(true) : undefined} />
         {activeSheet && <>
+          {salaryMappingControls}
           <section className="smart-bulk-summary" aria-label="Mapping summary">
-            <div><span>Worksheet</span><Select value={activeSheetIndex} onChange={changeSheet} options={sheets.map((sheet, index) => ({ value: index, label: `${sheet.name} (${sheet.rows.length} rows)` }))} /></div>
+            <div><span>Worksheet</span><Select aria-label="Worksheet" value={activeSheetIndex} onChange={changeSheet} options={sheets.map((sheet, index) => ({ value: index, label: `${sheet.name} (${sheet.rows.length} rows)` }))} /></div>
+            <div>{headerRowSelector('smart-bulk-header-row')}</div>
             <div><span>Detected columns</span><b>{sourceColumns.length}</b></div>
             <div><span>Mapped fields</span><b className="success">{Object.keys(mappings).length}</b></div>
             <div data-testid="smart-bulk-unmapped-count"><span>Skipped columns</span><b>{Math.max(0, sourceColumns.length - mappedSourceColumns.size)}</b></div>
@@ -295,11 +383,11 @@ export default function SmartBulkUploadMapper(p: Props) {
           </EmployeeCodeGeneration>
 
           <section className="smart-bulk-bucket" data-testid="smart-bulk-mapping-bucket">
-            <header><div><b>Mapped pairs</b><span>Matching colours show which uploaded column feeds each HRMS field.</span></div><Button size="small" icon={<ReloadOutlined />} onClick={() => setMappings(autoMapBulkImportColumns(activeSheet, p.definition))}>Auto-map again</Button></header>
+            <header><div><b>Mapped pairs</b><span>Matching colours show which uploaded column feeds each HRMS field.</span></div><Button size="small" icon={<ReloadOutlined />} onClick={() => setMappings(autoMapBulkImportColumns(activeSheet, definition))}>Auto-map again</Button></header>
             <div>{Object.entries(mappings).length ? Object.entries(mappings).map(([code, sourceIndex]) => {
               const field = fieldByCode(code)
               if (!field) return null
-              const color = bulkImportMappingColor(p.definition.fields.indexOf(field))
+              const color = bulkImportMappingColor(definition.fields.indexOf(field))
               return <span className="smart-bulk-pair" data-testid="smart-bulk-mapping-row" data-field-code={field.code} key={code} style={{ '--map-color': color } as CSSProperties}><i />{sourceColumns[sourceIndex]?.header || `Column ${sourceIndex + 1}`}<strong>{'->'}</strong>{field.label}<button type="button" aria-label={`Remove ${field.label} mapping`} onClick={() => unmapTarget(code)}>x</button></span>
             }) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No fields mapped yet" />}</div>
           </section>
@@ -315,7 +403,7 @@ export default function SmartBulkUploadMapper(p: Props) {
                   <div className="smart-bulk-column-head"><div><b>Uploaded columns</b><span>{sourceColumns.length} detected</span></div><Input allowClear value={sourceSearch} onChange={event => setSourceSearch(event.target.value)} placeholder="Find source column..." /></div>
                   {visibleSources.map(column => {
                     const target = targetForSource(column.index)
-                    const targetIndex = target ? p.definition.fields.indexOf(target) : -1
+                    const targetIndex = target ? definition.fields.indexOf(target) : -1
                     const color = target ? bulkImportMappingColor(targetIndex) : '#94a3b8'
                     return <div
                       ref={node => { if (node) sourceRefs.current.set(column.index, node); else sourceRefs.current.delete(column.index) }}
@@ -338,11 +426,11 @@ export default function SmartBulkUploadMapper(p: Props) {
                 <div className="smart-bulk-arrow-guide"><LinkOutlined /><span>Drag or click</span></div>
 
                 <div className="smart-bulk-column smart-bulk-target-list" data-testid="smart-bulk-target-list">
-                  <div className="smart-bulk-column-head"><div><b>HRMS target fields</b><span>{p.definition.fields.length} available</span></div><Input allowClear value={targetSearch} onChange={event => setTargetSearch(event.target.value)} placeholder="Find HRMS field..." /></div>
+                  <div className="smart-bulk-column-head"><div><b>HRMS target fields</b><span>{definition.fields.length} available</span></div><Input allowClear value={targetSearch} onChange={event => setTargetSearch(event.target.value)} placeholder="Find HRMS field..." /></div>
                   {groups.map(group => <section className="smart-bulk-target-group" key={group}><h4>{group}</h4>{visibleTargets.filter(field => field.group === group).map(field => {
                     const sourceIndex = mappings[field.code]
                     const mapped = sourceIndex !== undefined
-                    const color = bulkImportMappingColor(p.definition.fields.indexOf(field))
+                    const color = bulkImportMappingColor(definition.fields.indexOf(field))
                     return <div
                       ref={node => { if (node) targetRefs.current.set(field.code, node); else targetRefs.current.delete(field.code) }}
                       key={field.code}
@@ -365,7 +453,7 @@ export default function SmartBulkUploadMapper(p: Props) {
           </section>
         </>}
       </>}
-      {sourceFile && activeSheet && <SmartBulkSourcePreview open={p.open && sourcePreviewOpen} fileName={sourceFile.name} sheet={activeSheet} definition={p.definition} mappings={mappings} split={activeNameSplit} onMap={mapColumn} onUnmapSource={unmapSource} onSplitColumn={splitPreviewColumn} onSplitStrategyChange={changePreviewSplitStrategy} onUndoSplit={undoPreviewSplit} onClose={() => setSourcePreviewOpen(false)} />}
+      {sourceFile && activeSheet && <SmartBulkSourcePreview key={`${activeSheetIndex}-${activeSheet.headerRow}`} headerRowSelector={headerRowSelector('smart-bulk-preview-header-row')} salaryControls={salaryMappingControls} open={p.open && sourcePreviewOpen} fileName={sourceFile.name} sheet={activeSheet} definition={definition} mappings={mappings} split={activeNameSplit} onMap={mapColumn} onUnmapSource={unmapSource} onSplitColumn={splitPreviewColumn} onSplitStrategyChange={changePreviewSplitStrategy} onUndoSplit={undoPreviewSplit} onClose={() => setSourcePreviewOpen(false)} />}
     </div>
   </Drawer>
 }

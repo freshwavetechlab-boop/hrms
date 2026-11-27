@@ -17,6 +17,9 @@ function deletionGuidance(user: AuthUser): Record<string, string> {
   const excelAccess = !isSelectedClientUser(user)
   return {
     'Shared template': 'This template is shared. Keep it and use a client-specific template for future assignments.',
+    'Employee payroll template assignments': has('employees.manage')
+      ? 'Reassign employees in Employee Master → Bulk tools, or remove their payroll template link here.'
+      : employeeAccess,
     'Employee Master': has('employees.manage')
       ? 'Current links for this client appear above. Links needed by saved payroll are retained. Recheck after queued or processing payroll finishes.'
       : employeeAccess,

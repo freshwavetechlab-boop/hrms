@@ -25,7 +25,7 @@ public partial class SettingsRepository
         bool Has(string permission) => actor.Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);
         return kind switch
         {
-            "employee" or "basic-pay" => Has("employees.manage"),
+            "employee" or "basic-pay" or "employee-policy" => Has("employees.manage"),
             "pf-draft" => Has("tax.statutory.manage"),
             "excel-header" => !SelectedClientAccess.IsSelected(actor) && WorkspacePermissions.CanReadPayslips(actor)
                 && (Has("payroll.run") || Has("payroll.approve") || Has("payroll.payments")),
@@ -63,7 +63,7 @@ public partial class SettingsRepository
             throw new InvalidOperationException("This mapping changed or is protected. Recheck the mappings before removing a link.");
 
         if (item.Kind == "pf-draft") await UnlinkPfDraftAsync(db, tx, clientId, templateId, item.Key);
-        else if (item.Kind is "employee" or "basic-pay") await UnlinkEmployeeMappingAsync(db, tx, clientId, templateId, item, actor);
+        else if (item.Kind is "employee" or "basic-pay" or "employee-policy") await UnlinkEmployeeMappingAsync(db, tx, clientId, templateId, item, actor);
         else await UnlinkExcelMappingAsync(db, tx, clientId, templateId, item);
         await tx.CommitAsync();
         return true;
@@ -74,7 +74,7 @@ public partial class SettingsRepository
     {
         bool Include(string kind) => (onlyKind is null || onlyKind == kind) && CanUnlinkMapping(actor, clientId, kind);
         var items = new List<EditableSalaryTemplateMapping>();
-        if (Include("employee") || Include("basic-pay"))
+        if (Include("employee") || Include("basic-pay") || Include("employee-policy"))
         {
             long? rowId = null;
             if (onlyKey is not null)
@@ -82,7 +82,7 @@ public partial class SettingsRepository
                 if (!long.TryParse(onlyKey, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) || parsed <= 0) return items;
                 rowId = parsed;
             }
-            items.AddRange(await ReadEditableEmployeeMappingsAsync(db, tx, clientId, templateId, Include("employee"), Include("basic-pay"), rowId));
+            items.AddRange(await ReadEditableEmployeeMappingsAsync(db, tx, clientId, templateId, Include("employee"), Include("basic-pay"), Include("employee-policy"), rowId));
         }
         if (Include("pf-draft"))
         {
@@ -125,18 +125,33 @@ public partial class SettingsRepository
     }
 
     private static async Task<List<EditableSalaryTemplateMapping>> ReadEditableEmployeeMappingsAsync(MySqlConnection db,
-        MySqlTransaction tx, int clientId, long templateId, bool master, bool basicPay, long? rowId)
+        MySqlTransaction tx, int clientId, long templateId, bool master, bool basicPay, bool policy, long? rowId)
     {
         var args = new { clientId, key = templateId.ToString(CultureInfo.InvariantCulture), rowId };
         var items = new List<EditableSalaryTemplateMapping>();
         var tables = (await db.QueryAsync<string>(@"SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE()
-AND table_name IN ('employee_it0008_basic_pay','payruns','payrunemployees')", transaction: tx)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+AND table_name IN ('employee_it0008_basic_pay','employee_salary_template_policies','payruns','payrunemployees')", transaction: tx)).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var hasHistory = tables.Contains("employee_it0008_basic_pay");
         var hasRuns = tables.Contains("payruns") && tables.Contains("payrunemployees");
         if (tables.Contains("payruns") != tables.Contains("payrunemployees"))
             throw new InvalidOperationException("Payroll tables are incomplete. Employee mappings could not be verified.");
         if (hasRuns && await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM payruns WHERE ClientId=@clientId AND Status IN ('Processing','Queued'))", args, tx))
             return items;
+        if (policy && tables.Contains("employee_salary_template_policies"))
+        {
+            var policies = await db.QueryAsync<(int EmployeeId, string EmployeeCode, DateTime AssignedAtUtc)>("""
+                SELECT p.EmployeeId,e.EmployeeCode,p.AssignedAtUtc FROM employee_salary_template_policies p
+                JOIN employees e ON e.Id=p.EmployeeId AND e.ClientId=p.ClientId
+                WHERE p.ClientId=@clientId AND p.SalaryStructureId=@key
+                """ + (rowId.HasValue ? " AND p.EmployeeId=@rowId" : ""), args, tx);
+            foreach (var entry in policies)
+            {
+                var key = entry.EmployeeId.ToString(CultureInfo.InvariantCulture);
+                items.Add(new("employee-policy", key, "Employee payroll template assignment", entry.EmployeeCode,
+                    "Remove the employee’s payroll template policy. New calculations will use the salary assignment available for the pay month.",
+                    EditableMappingVersion(clientId, templateId, "employee-policy", key, entry.AssignedAtUtc)));
+            }
+        }
         if (master)
         {
             // Older payroll can rely on Employee Master as the fallback when no effective Basic Pay row exists.
@@ -190,15 +205,19 @@ AND table_name IN ('employee_it0008_basic_pay','payruns','payrunemployees')", tr
         EditableSalaryTemplateMapping item, AuthUser actor)
     {
         var master = item.Kind == "employee";
+        var policy = item.Kind == "employee-policy";
         var args = new { clientId, id = long.Parse(item.Key, CultureInfo.InvariantCulture), key = templateId.ToString(CultureInfo.InvariantCulture),
-            actor = actor.Email, date = EmployeeEmploymentRules.Today, field = master ? "Salary Template Id" : "Basic Pay salary template #" + item.Key };
-        var employeeId = master ? args.id : await db.ExecuteScalarAsync<long>("SELECT EmployeeId FROM employee_it0008_basic_pay WHERE Id=@id AND ClientId=@clientId", args, tx);
+            actor = actor.Email, date = EmployeeEmploymentRules.Today, field = policy ? "Payroll template policy" : master ? "Salary Template Id" : "Basic Pay salary template #" + item.Key };
+        var employeeId = master || policy ? args.id : await db.ExecuteScalarAsync<long>("SELECT EmployeeId FROM employee_it0008_basic_pay WHERE Id=@id AND ClientId=@clientId", args, tx);
         var audit = await db.ExecuteAsync("""
             INSERT INTO employee_audit_trail(EmployeeId,EmployeeCode,ActionType,InfotypeCode,FieldName,OldValue,NewValue,EffectiveFrom,ChangedBy)
             SELECT Id,EmployeeCode,'Salary template unlink','0008',@field,@key,'',@date,@actor FROM employees WHERE ClientId=@clientId AND Id=@employeeId
             """, new { args.clientId, employeeId, args.field, args.key, args.date, args.actor }, tx);
         var table = master ? "employees" : "employee_it0008_basic_pay";
-        if (audit != 1 || await db.ExecuteAsync($"UPDATE {table} SET SalaryStructureId='' WHERE ClientId=@clientId AND Id=@id AND SalaryStructureId=@key", args, tx) != 1)
+        var unlink = policy
+            ? "DELETE FROM employee_salary_template_policies WHERE ClientId=@clientId AND EmployeeId=@id AND SalaryStructureId=@key"
+            : $"UPDATE {table} SET SalaryStructureId='' WHERE ClientId=@clientId AND Id=@id AND SalaryStructureId=@key";
+        if (audit != 1 || await db.ExecuteAsync(unlink, args, tx) != 1)
             throw new InvalidOperationException("The employee salary mapping changed. Recheck it before unlinking.");
     }
 

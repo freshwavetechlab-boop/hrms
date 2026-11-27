@@ -417,7 +417,7 @@ public sealed class SelectedClientOwnershipStore(IConfiguration configuration, I
             if (Guid.TryParse(reference.Value, out var jobId) && services is not null)
                 owner = reference.Resource switch
                 {
-                    "employee-import-job" => services.GetService<EmployeeRepository>()?.GetImportJob(jobId)?.ClientId,
+                    "employee-import-job" when services.GetService<EmployeeRepository>() is { } employees => await employees.ImportJobClientIdAsync(jobId),
                     "leave-type-import-job" => services.GetService<LeaveAttendanceRepository>()?.GetLeaveTypeImportJob(jobId)?.ClientId,
                     "holiday-import-job" => services.GetService<LeaveAttendanceRepository>()?.GetHolidayImportJob(jobId)?.ClientId,
                     _ => null

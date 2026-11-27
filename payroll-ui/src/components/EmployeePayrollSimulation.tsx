@@ -61,18 +61,18 @@ function EmployeeRowCalculation({ mode, clientId, employeeId, payPeriod, templat
       report({ baseline, result: lastResult.current, loading: false, current: false, error: 'Enter the cleared attendance days, or reset to saved inputs.' }); return
     }
     const scenario = employeePresentScenario(baseline, payPeriod, edits)
-    const payrollDays = mode === 'EmployeeTemplate' ? baseline.inputs.find(value => value.name === 'PAYROLL_DAYS')?.value ?? calendarDaysForSimulation(payPeriod) : scenario.payrollDays
+    const payrollDays = scenario.payrollDays ?? baseline.inputs.find(value => value.name === 'PAYROLL_DAYS')?.value ?? calendarDaysForSimulation(payPeriod)
     const input = employeeSimulationInput({ clientId, employeeId, payPeriod, payrollDays: payrollDays === null ? '' : String(payrollDays), presentDays: scenario.presentDays === null ? '' : String(scenario.presentDays), payableDays: scenario.payableDays === null ? '' : String(scenario.payableDays), annualCtc: scenario.annualCtc === null ? '' : String(scenario.annualCtc) })
     const amountOverrides = Object.fromEntries(Object.entries(edits).filter(([key, value]) => key.startsWith('COMPONENT:') && value.trim() !== '').map(([key, value]) => [key.slice(10), Number(value)]))
     const clearedComponentIds = Object.keys(edits).filter(key => key.startsWith('COMPONENT:') && !edits[key].trim()).map(key => key.slice(10))
     const invalidMonthlyCtc = !!edits.MONTHLY_CTC?.trim() && (!Number.isFinite(Number(edits.MONTHLY_CTC)) || Number(edits.MONTHLY_CTC) < 0)
     if (!input || invalidMonthlyCtc || Object.values(amountOverrides).some(value => !Number.isFinite(value) || value < 0)) {
-      report({ baseline, result: lastResult.current, loading: false, current: false, error: 'Enter valid days and amounts. This what-if input must respect the saved payroll divisor; source extra-duty and split-period allocations require their reviewed native inputs.' }); return
+      report({ baseline, result: lastResult.current, loading: false, current: false, error: 'Enter a whole payroll divisor from 1 to 31 and check the attendance days and amounts against it.' }); return
     }
     let active = true
     report({ baseline, result: lastResult.current, loading: true, current: false, error: '' })
     const timer = window.setTimeout(() => {
-      void limited(async () => active ? simulateSalary({ ...input, mode, amountOverrides, template, components, ...(mode === 'EmployeeTemplate' ? { clearedComponentIds, clearAnnualCtc: owns(edits, 'ANNUAL_CTC') && !edits.ANNUAL_CTC.trim() } : {}) }) : null).then(response => {
+      void limited(async () => active ? simulateSalary({ ...input, payrollDays: edits.PAYROLL_DAYS ? input.payrollDays : null, mode, amountOverrides, template, components, ...(mode === 'EmployeeTemplate' ? { clearedComponentIds, clearAnnualCtc: owns(edits, 'ANNUAL_CTC') && !edits.ANNUAL_CTC.trim() } : {}) }) : null).then(response => {
         if (!active || !response) return
         const valid = response.ok && response.data !== null && matches(response.data)
         if (valid) lastResult.current = response.data
@@ -144,7 +144,15 @@ export default function EmployeePayrollSimulation({ template, components, client
   const activeState = activeEmployee ? rowState(activeEmployee.id) : undefined
   const result = activeState?.result
   const employeeIsCurrent = (employeeId: number) => !!rowState(employeeId)?.current && rowState(employeeId)?.requestKey === `${contextKey(mode, clientId, employeeId, payPeriod, template, components)}:${JSON.stringify(editsByEmployee[employeeId] ?? {})}`
-  const edit = (id: number, field: string, value: string) => { if (field === 'PAYROLL_DAYS') return; periodChosen.current = true; setActiveEmployeeId(id); setStates(current => current[id] ? { ...current, [id]: { ...current[id], current: false } } : current); setEditsByEmployee(current => ({ ...current, [id]: { ...current[id], [field]: value } })) }
+  const edit = (id: number, field: string, value: string) => {
+    periodChosen.current = true
+    setActiveEmployeeId(id)
+    setEditsByEmployee(current => {
+      const next = { ...current[id], [field]: value }
+      if (field === 'PAYROLL_DAYS' && !value) delete next.PAYROLL_DAYS
+      return { ...current, [id]: next }
+    })
+  }
   const editCtc = (field: 'ANNUAL_CTC' | 'MONTHLY_CTC', value: string) => {
     if (!activeEmployee) return
     const clean = value.replace(/,/g, '')
@@ -155,7 +163,8 @@ export default function EmployeePayrollSimulation({ template, components, client
   const complete = selectedEmployees.filter(employee => employeeIsCurrent(employee.id) && rowState(employee.id)?.result?.complete).length
   const rows: SalaryWorksheetEmployeeRow[] = selectedEmployees.map(employee => {
     const state = rowState(employee.id)
-    return { key: String(employee.id), result: state?.result ?? pendingResult(employee, clientId!, payPeriod, mode, template), employeeCode: employee.code, employeeName: employee.name, edits: editsByEmployee[employee.id] ?? {}, onEdit: (field, value) => edit(employee.id, field, value), stale: !employeeIsCurrent(employee.id), status: state?.error || (state?.loading ? 'Calculating' : employeeIsCurrent(employee.id) && state?.result?.complete ? 'Ready' : 'Needs input') }
+    const defaultPayrollDays = state?.baseline?.inputs.find(input => input.name === 'PAYROLL_DAYS')?.value ?? calendarDaysForSimulation(payPeriod)
+    return { key: String(employee.id), result: state?.result ?? pendingResult(employee, clientId!, payPeriod, mode, template), employeeCode: employee.code, employeeName: employee.name, defaultPayrollDays, edits: editsByEmployee[employee.id] ?? {}, onEdit: (field, value) => edit(employee.id, field, value), stale: !employeeIsCurrent(employee.id), status: state?.error || (state?.loading ? 'Calculating' : employeeIsCurrent(employee.id) && state?.result?.complete ? 'Ready' : 'Needs input') }
   })
   const activeIssues = result?.issues.filter(issue => issue.severity !== 'Info') ?? []
   const emptyMaster = loadedRoster && !employeeSearchPending && !searchError && roster.total === 0
@@ -183,7 +192,7 @@ export default function EmployeePayrollSimulation({ template, components, client
         setActiveEmployeeId(current => current && bounded.includes(current) ? current : bounded[0])
         setEditsByEmployee(current => Object.fromEntries(Object.entries(current).filter(([id]) => bounded.includes(Number(id)))))
       }} popupMatchSelectWidth={false} dropdownStyle={{ zIndex: 1700 }} /></label>
-      <label className="simulation-field">Pay month<input aria-label="Employee simulation month" type="month" value={payPeriod} onChange={event => { periodChosen.current = true; setPayPeriod(event.target.value); setEditsByEmployee({}); setStates({}) }} /><small>{calendarDaysForSimulation(payPeriod) ?? '—'} calendar days · saved payroll divisor takes priority</small></label>
+      <label className="simulation-field">Pay month<input aria-label="Employee simulation month" type="month" value={payPeriod} onChange={event => { periodChosen.current = true; setPayPeriod(event.target.value); setEditsByEmployee({}); setStates({}) }} /><small>{calendarDaysForSimulation(payPeriod) ?? '—'} calendar days · clear the divisor to use the saved monthly divisor or calendar days</small></label>
       <label className="simulation-field">Calculation basis<Select aria-label="Employee calculation basis" value={mode} onChange={changeMode} options={[{ value: 'EmployeeTemplate', label: 'Current template what-if' }, { value: 'Employee', label: 'Saved employee payroll', disabled: !template.id }]} popupMatchSelectWidth={false} dropdownStyle={{ zIndex: 1700 }} /></label>
     </div>
     {loadedRoster && roster.total !== null && !searchError && <p className="salary-worksheet-context-note">{roster.total} Employee Master records for this client.{mode === 'EmployeeTemplate' ? <> Test <b>{template.name}</b> without a salary assignment.</> : ' Saved payroll assignments are checked when you select an employee.'}</p>}

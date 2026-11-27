@@ -109,8 +109,11 @@ export function calculateSalaryDetails(ctc: number, components: Component[], sal
     if (payableDays > payrollDays || presentDays > payrollDays) throw Error('Payable/present days cannot exceed payroll days.')
     if ((component.calculationType === 'Daily Rate') !== (calcType === 'Daily Rate')) throw Error('Use a separate component to change between daily and monthly calculation.')
     if (calcType === 'Daily Rate') {
-      dailyRate = Number(overrides[String(component.id)] ?? source)
-      if (component.category !== 'Earning' || !Number.isFinite(dailyRate) || dailyRate <= 0) throw Error('Daily wages require a positive numeric rate and an earning component.')
+      const employeeRate = overrides[String(component.id)]
+      const hasEmployeeRate = employeeRate != null && String(employeeRate).trim() !== ''
+      dailyRate = Number(hasEmployeeRate ? employeeRate : source)
+      if (component.category !== 'Earning' || !Number.isFinite(dailyRate) || dailyRate < 0 || dailyRate === 0 && !hasEmployeeRate)
+        throw Error('Daily wages require an earning with a positive configured rate or a non-negative employee rate.')
       monthly = dailyRate * payrollDays
     }
     else if (calcType === 'Manual / Variable') monthly = 0

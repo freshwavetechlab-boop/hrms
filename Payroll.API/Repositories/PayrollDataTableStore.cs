@@ -315,12 +315,27 @@ ON DUPLICATE KEY UPDATE WorkWeek=@WorkWeek,SalaryDays=@SalaryDays,FixedDays=@Fix
                 client.PayScheduleJson = JsonSerializer.Serialize(ToDto(schedule), JsonOptions);
     }
 
+    internal static async Task ApplyEmployeeSalaryTableAsync(MySqlConnection connection, IReadOnlyCollection<Employee> employees, MySqlTransaction? tx = null)
+    {
+        if (employees.Count == 0) return;
+        var ids = employees.Select(employee => employee.Id).ToArray();
+        var rows = (await connection.QueryAsync<EmployeeSalaryComponentRow>("SELECT EmployeeId,ComponentId,Amount FROM employeesalarycomponents WHERE EmployeeId IN @ids", new { ids }, tx)).ToLookup(row => row.EmployeeId);
+        foreach (var employee in employees)
+        {
+            if (!rows.Contains(employee.Id)) continue;
+            var salary = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+            foreach (var row in rows[employee.Id]) salary[row.ComponentId] = row.Amount;
+            employee.SalaryComponents = salary;
+            employee.SalaryJson = JsonSerializer.Serialize(salary, JsonOptions);
+        }
+    }
+
     public static async Task ApplyEmployeeTablesAsync(MySqlConnection connection, IEnumerable<Employee> employees, MySqlTransaction? tx = null)
     {
         var list = employees.ToList();
         if (list.Count == 0) return;
         var ids = list.Select(x => x.Id).ToArray();
-        var salaryRows = (await connection.QueryAsync<EmployeeSalaryComponentRow>("SELECT EmployeeId,ComponentId,Amount FROM employeesalarycomponents WHERE EmployeeId IN @ids", new { ids }, tx)).GroupBy(x => x.EmployeeId).ToDictionary(g => g.Key, g => g.ToList());
+        await ApplyEmployeeSalaryTableAsync(connection, list, tx);
         var personalRows = (await connection.QueryAsync<EmployeePersonalRow>("SELECT * FROM employeepersonaldetails WHERE EmployeeId IN @ids", new { ids }, tx)).ToDictionary(x => x.EmployeeId);
         var paymentRows = (await connection.QueryAsync<EmployeePaymentRow>(@"
 SELECT
@@ -349,13 +364,6 @@ LEFT JOIN (
 
         foreach (var employee in list)
         {
-            if (salaryRows.TryGetValue(employee.Id, out var salaries) && salaries.Count > 0)
-            {
-                var salary = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
-                foreach (var row in salaries) salary[row.ComponentId] = row.Amount;
-                employee.SalaryComponents = salary;
-                employee.SalaryJson = JsonSerializer.Serialize(salary, JsonOptions);
-            }
             if (personalRows.TryGetValue(employee.Id, out var personal))
             {
                 var root = ParseRoot(employee.PersonalJson);

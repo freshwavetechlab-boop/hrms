@@ -69,7 +69,8 @@ FROM excel_payroll_setup_imports WHERE id=@ImportId AND client_id=@ClientId AND 
     {
         if (employee.AttendancePolicySnapshot?.Source.StartsWith("Excel payable override;", StringComparison.Ordinal) != true) return;
         var template = setup.Structures.SingleOrDefault(t => t.Active && t.Id == employee.SalaryStructureId
-            && t.ClientId.Split([';', ',', '|']).Any(value => value.Split(':')[0].Trim() == employee.ClientId.ToString(CultureInfo.InvariantCulture)))
+            && (t.ClientId.Split([';', ',', '|']).Any(value => value.Split(':')[0].Trim() == employee.ClientId.ToString(CultureInfo.InvariantCulture))
+                || employee.UsesExplicitTemplateInputs && IsSharedSalaryTemplate(t)))
             ?? throw new InvalidOperationException("Excel payable override requires an explicitly assigned active salary template.");
         var expressions = template.Lines.SelectMany(line => {
             var component = setup.Components.SingleOrDefault(c => c.Id == line.ComponentId && c.Active)

@@ -1,9 +1,10 @@
 import { clientChoice } from '../components/ClientOption'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { emptyEmployeeFields, getEmployeeFields, type EmployeeFieldExchange } from '../utils/employeeFields'
 import { Alert, Button, Select, Spin } from 'antd'
 import { getClients, getEmployees, getPayrollEmployeeOptions, getPayRuns } from '../services/payrollService'
+import { onEmployeeMasterSaved } from '../services/employeeMasterChanges'
 import { runReportResult, type ReportResult } from '../services/reportingService'
 import { getEmployeeManagerUsers, getSetup, getWorkLocations } from '../services/settingsService'
 import { setup0 } from '../data/payrollDefaults'
@@ -93,6 +94,8 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
   const [employeeDataReady, setEmployeeDataReady] = useState(false), [employeeLookupReady, setEmployeeLookupReady] = useState(false), [setupReady, setSetupReady] = useState(false), [payRunsReady, setPayRunsReady] = useState(false)
   const [filterScope, setFilterScope] = useState('')
   const [reportLoading, setReportLoading] = useState(false), [reportError, setReportError] = useState(''), [reportReloadKey, setReportReloadKey] = useState(0)
+  const [cleanupRevision, setCleanupRevision] = useState(0)
+  const initializedFilters = useRef('')
   const [payRunId, setPayRunId] = useState(0), [employeeId, setEmployeeId] = useState(0), [componentCode, setComponentCode] = useState('')
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7)), [fromDate, setFromDate] = useState(`${new Date().toISOString().slice(0, 7)}-01`), [toDate, setToDate] = useState(new Date().toISOString().slice(0, 10))
   const periodCodes = ['daily-attendance', 'attendance-punches', 'attendance-trend', 'leave-utilization', 'leave-approval-status']
@@ -110,6 +113,13 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
   const [fieldExchange, setFieldExchange] = useState<EmployeeFieldExchange>(emptyEmployeeFields)
   const [fieldsReady, setFieldsReady] = useState(false)
   const [fieldsError, setFieldsError] = useState('')
+  useEffect(() => {
+    if (!clientId) return
+    return onEmployeeMasterSaved(clientId, () => {
+      if (showPayRun) setPayRunsReady(false)
+      setCleanupRevision(value => value + 1)
+    }, 'testPayrollRemoved')
+  }, [clientId, showPayRun])
   useEffect(() => {
     let active = true; setFieldsReady(false); setFieldExchange(emptyEmployeeFields); setFieldsError('')
     if (isEmployeeMaster && clientId) void getEmployeeFields(clientId).then(data => { if (active) { setFieldExchange(data); setFieldsReady(true) } }).catch(error => { if (active) setFieldsError(error.message) })
@@ -141,7 +151,7 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
     setPayRunsReady(false)
     if (showPayRun) void getPayRuns().then(rows => { if (active) { setPayRuns(rows); setPayRunsReady(true) } })
     return () => { active = false }
-  }, [showPayRun, clientScoped, scopedClientId])
+  }, [showPayRun, clientScoped, scopedClientId, cleanupRevision])
   useEffect(() => {
     let active = true
     setEmployeeDataReady(false)
@@ -171,6 +181,9 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
   }, [isEmployeeMaster])
   useEffect(() => {
     if (showPayRun && !payRunsReady) return
+    const filterContext = JSON.stringify([activeReport.code, clientId, linkedEmployeeId, requestedClientId, requestedPayRunId, requestedMonth, requestedFrom, requestedTo])
+    if (initializedFilters.current === filterContext) return
+    initializedFilters.current = filterContext
     const useReference = linkedEmployeeId > 0 && clientId === requestedClientId
     setEmployeeId(useReference ? linkedEmployeeId : 0)
     setComponentCode('')
@@ -211,7 +224,7 @@ function ReportingWorkspace({ activeReport }: { activeReport: ReportDefinition }
       else setReportError(response.status ? `The report service returned status ${response.status}. Please retry or contact the administrator if it continues.` : 'The report service could not be reached. Check the local API and retry.')
     }).finally(() => { if (!cancelled) setReportLoading(false) })
     return () => { cancelled = true }
-  }, [clientId, activeReport, month, fromDate, toDate, payRunId, employeeId, componentCode, showMonth, showPeriod, showPayRun, showEmployee, showComponent, reportReloadKey, showClassifications, classificationFilters.employmentType, classificationFilters.skillCategory, filterScope, payRunsReady])
+  }, [clientId, activeReport, month, fromDate, toDate, payRunId, employeeId, componentCode, showMonth, showPeriod, showPayRun, showEmployee, showComponent, reportReloadKey, cleanupRevision, showClassifications, classificationFilters.employmentType, classificationFilters.skillCategory, filterScope, payRunsReady])
   const employeeByCode = useMemo(() => new Map(employees.filter(employee => employee.clientId === clientId).map(employee => [employee.employeeCode.toLowerCase(), employee])), [employees, clientId])
   const employeeForRow = (row: ReportRow) => employeeByCode.get(String(row['Employee Code'] ?? '').toLowerCase())
   const reportColumns: Column<ReportRow>[] = [...result.columns.map(column => ({ key: column, label: column, value: (row: ReportRow) => reportAttendanceValue(column, row[column]) })), ...(isEmployeeMaster ? fieldExchange.fields.map(field => ({ key: field.code, label: field.field.label, value: (row: ReportRow) => fieldExchange.values[employeeForRow(row)?.id || 0]?.[field.code] || '' })) : [])]

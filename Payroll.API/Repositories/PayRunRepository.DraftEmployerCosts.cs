@@ -43,12 +43,15 @@ public partial class PayRunRepository
         if(saved.Count!=ids.Length)throw new InvalidOperationException("Select only included employees from this exact saved draft.");
         var setup=ReadPayrollSetup(await PayrollDataTableStore.GetSetupJsonAsync(db,tx));
         var assigned=(await db.QueryAsync<(int Id,string SalaryStructureId)>("SELECT Id,SalaryStructureId FROM employees WHERE ClientId=@ClientId AND Id IN @Ids",new{request.ClientId,Ids=ids},tx)).ToDictionary(row=>row.Id,row=>row.SalaryStructureId);
+        var policies = await EmployeeRepository.ReadTemplatePoliciesAsync(db, request.ClientId, ids, tx);
         var existing=(await db.QueryAsync<PayrollAdjustment>("SELECT * FROM payrolladjustments WHERE PayRunId=@Id AND ClientId=@ClientId AND ReasonCode=@Reason AND Status='Applied' FOR UPDATE",new{Id=id,request.ClientId,Reason=EmployerCostReason},tx)).ToList();
         var pending=new List<PayrollAdjustment>();var unchanged=0;
         foreach(var row in request.Rows)
         {
             var component=setup.Components.SingleOrDefault(c=>c.Active&&c.Category=="Benefit"&&c.ComponentRole=="Employer Contribution"&&c.Code.Equals(row.ComponentCode.Trim(),StringComparison.OrdinalIgnoreCase));
-            var template=setup.Structures.SingleOrDefault(s=>s.Active&&s.Id==assigned[row.EmployeeId]&&s.ClientId.Split([';',',','|']).Any(v=>v.Split(':')[0].Trim()==request.ClientId.ToString()));
+            var templateId = policies.GetValueOrDefault(row.EmployeeId, assigned[row.EmployeeId]);
+            var template=setup.Structures.SingleOrDefault(s=>s.Active&&s.Id==templateId&&(s.ClientId.Split([';',',','|']).Any(v=>v.Split(':')[0].Trim()==request.ClientId.ToString())
+                || policies.ContainsKey(row.EmployeeId) && IsSharedSalaryTemplate(s)));
             if(component is null||template is null||!template.Lines.Any(line=>line.ComponentId==component.Id))
                 throw new InvalidOperationException("Each employer cost must use an active employer-contribution component in the employee's assigned client template.");
             var prefix=$"Employer cost ref:{row.Reference};";

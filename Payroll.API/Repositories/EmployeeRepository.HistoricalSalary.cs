@@ -16,6 +16,8 @@ public partial class EmployeeRepository
         public int EmployeeId { get; set; }
         public int ClientId { get; set; }
         public string ActionType { get; set; } = "";
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+        public bool IsBulkSalaryInput { get; set; }
         public DateTime EffectiveFrom { get; set; }
         public DateTime? EffectiveTo { get; set; }
         public string Status { get; set; } = "";

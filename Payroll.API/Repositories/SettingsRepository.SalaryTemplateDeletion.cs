@@ -64,7 +64,7 @@ FROM salarystructurelines WHERE StructureId=@templateId ORDER BY SortOrder,Id" +
         // Some installations have never enabled the optional payroll/location/import modules.
         // If a table exists, a missing column or an unreadable query must fail closed.
         var tables = (await db.QueryAsync<string>(@"SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE()
-AND table_name IN ('employee_it0008_basic_pay','employee_payroll_location_assignments','excel_payslip_batches',
+AND table_name IN ('employee_it0008_basic_pay','employee_salary_template_policies','employee_payroll_location_assignments','excel_payslip_batches',
 'excel_payroll_setup_imports','payrunemployees','payroll_calculation_traces')", transaction: tx)).ToHashSet(StringComparer.OrdinalIgnoreCase);
         async Task Add(string type, string query)
         {
@@ -79,6 +79,13 @@ AND table_name IN ('employee_it0008_basic_pay','employee_payroll_location_assign
                         ELSE 'Assignment outside this client' END Label
             FROM employees WHERE SalaryStructureId=@key
             """);
+        if (tables.Contains("employee_salary_template_policies"))
+            await Add("Employee payroll template assignments", """
+                SELECT CASE WHEN p.ClientId=@clientId THEN COALESCE(e.EmployeeCode,CONCAT('Employee #',p.EmployeeId))
+                            ELSE 'Assignment outside this client' END Label
+                FROM employee_salary_template_policies p LEFT JOIN employees e ON e.Id=p.EmployeeId AND e.ClientId=p.ClientId
+                WHERE p.SalaryStructureId=@key
+                """);
         if (tables.Contains("employee_it0008_basic_pay"))
             await Add("Employee salary history", """
                 SELECT CASE WHEN ClientId=@clientId THEN CONCAT('Employee #',EmployeeId,' · ',DATE_FORMAT(EffectiveFrom,'%Y-%m-%d'),' · ',Status)

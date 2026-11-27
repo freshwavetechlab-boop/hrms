@@ -41,12 +41,24 @@ public partial class PayRunRepository
         return (components, structure);
     }
 
-    public static PayrollSimulationResult SimulateTemplate(PayrollSimulationRequest request)
+    internal static (int? Days, string Source) InteractiveSimulationDivisor(PayrollSimulationRequest request, PayRunAttendance? attendance = null)
+    {
+        if (request.PayrollDays is int manual) return (manual, "Temporary what-if input");
+        if (attendance is { FromMonthlySnapshot: true, WorkingDays: >= 1 and <= 31 }
+            && attendance.WorkingDays == decimal.Truncate(attendance.WorkingDays))
+            return ((int)attendance.WorkingDays, "Saved monthly attendance divisor");
+        if (DateTime.TryParseExact(request.PayPeriod + "-01", "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var month))
+            return (DateTime.DaysInMonth(month.Year, month.Month), "Calendar month");
+        return (null, "Select a pay month");
+    }
+
+    public static PayrollSimulationResult SimulateTemplate(PayrollSimulationRequest request, bool interactive = false)
     {
         ValidateSimulationRequest(request);
         var result = new PayrollSimulationResult { Mode = "Template", ClientId = request.ClientId, PayPeriod = request.PayPeriod, TemplateId = request.TemplateId, Coverage = "Draft template arithmetic using the payroll engine. Employee amounts, approved adjustments, dated PF, professional tax and projected TDS are included only in Employee mode. No data is saved." };
         var (components, structure) = SimulationSetup(request.Snapshot!, request.TemplateId);
-        if (!CheckDays(result, request.PayrollDays, request.PresentDays, request.PayableDays, extraDutyUnits: request.ReviewedExtraDutyUnits)) return result;
+        var (divisor, divisorSource) = interactive ? InteractiveSimulationDivisor(request) : (request.PayrollDays, "What-if input");
+        if (!CheckDays(result, divisor, request.PresentDays, request.PayableDays, extraDutyUnits: request.ReviewedExtraDutyUnits)) return result;
         var usesCtc = structure.Lines.Any(l => {
             var c = components.First(x => x.Id == l.ComponentId);
             return FormulaReferences(ComponentFormula(l, c)).Any(t => t is "CTC" or "GROSS" or "MONTHLY_CTC" or "ANNUAL_CTC")
@@ -58,7 +70,7 @@ public partial class PayRunRepository
         if (!result.Complete) return result;
         try
         {
-            CalculateStructureLines(components, structure, decimal.Round((request.AnnualCtc ?? 0) / 12m, 2), request.PayrollDays!.Value, request.PresentDays!.Value, request.PayableDays!.Value,
+            CalculateStructureLines(components, structure, decimal.Round((request.AnnualCtc ?? 0) / 12m, 2), divisor!.Value, request.PresentDays!.Value, request.PayableDays!.Value,
                 overrides: request.AmountOverrides, trace: result.Lines, reviewedExtraDutyUnits: request.ReviewedExtraDutyUnits,namedInputs:request.NamedInputs);
             result.Gross = result.Lines.Where(l => IsPayableEarningCategory(l.Category)).Sum(l => l.Earned);
             result.Deductions = result.Lines.Where(l => IsDeductionCategory(l.Category)).Sum(l => l.Earned);
@@ -66,7 +78,7 @@ public partial class PayRunRepository
             result.Net = Math.Max(0, result.Gross.Value - result.Deductions.Value);
         }
         catch (Exception e) when (e is InvalidOperationException or OverflowException or FormatException) { result.Lines.Clear(); result.Issues.Add(new("Error", "Calculation", e.Message, "Correct the indicated component or add its dependency, then simulate again.")); }
-        result.Inputs = [new("PAYROLL_DAYS", request.PayrollDays, "What-if input", "Days"), new("PRESENT_DAYS", request.PresentDays, "What-if input", "Days"), new("PAYABLE_DAYS", request.PayableDays, "What-if input", "Days"), new("ANNUAL_CTC", request.AnnualCtc, "Template / what-if input", "Amount")];
+        result.Inputs = [new("PAYROLL_DAYS", divisor, divisorSource, "Days"), new("PRESENT_DAYS", request.PresentDays, "What-if input", "Days"), new("PAYABLE_DAYS", request.PayableDays, "What-if input", "Days"), new("ANNUAL_CTC", request.AnnualCtc, "Template / what-if input", "Amount")];
         return result;
     }
 
@@ -159,7 +171,7 @@ public partial class PayRunRepository
         ValidateSimulationRequest(request);
         await using var db = CreateConnection(); await db.OpenAsync(token);
         await using var tx = await db.BeginTransactionAsync(IsolationLevel.RepeatableRead, isReadOnly: true, token);
-        var result=await SimulateEmployeeInTransactionAsync(db,tx,request,token);
+        var result=await SimulateEmployeeInTransactionAsync(db,tx,request,token,interactive:true);
         await tx.RollbackAsync(token);
         return result;
     }
@@ -185,7 +197,7 @@ public partial class PayRunRepository
     // witness. The caller owns its transaction, locks and no-save boundary.
     private async Task<PayrollSimulationResult> SimulateEmployeeInTransactionAsync(MySqlConnection db, MySqlTransaction tx,
         PayrollSimulationRequest request, CancellationToken token, Action<EmployeeSimulationEvidence>? capture=null, FormulaWorkbookContext? workbook=null,
-        HistoricalSalarySimulationAssignment? historicalAssignment=null,HistoricalSimulationContext? historicalContext=null)
+        HistoricalSalarySimulationAssignment? historicalAssignment=null,HistoricalSimulationContext? historicalContext=null,bool interactive=false)
     {
         ValidateSimulationRequest(request);
         var historicalData=historicalContext is null?null:UseHistoricalSimulationContext(db,tx,request,historicalAssignment,historicalContext);
@@ -197,7 +209,7 @@ public partial class PayRunRepository
             throw new InvalidOperationException(await BeforeJoiningEmployeeErrorAsync(db, tx, request.ClientId, request.EmployeeId!.Value, request.PayPeriod)
                 ?? "No active employee belongs to this client with the selected ID.");
         result.Employee = $"{employee.EmployeeCode} - {employee.FirstName} {employee.LastName}".Trim();
-        if(shared is null) await LoadEmployeeTablesAsync(db, tx, [employee], request.PayPeriod, loadReviewedProfessionalTax: historicalAssignment is null);
+        if(shared is null) await LoadEmployeeTablesAsync(db, tx, [employee], request.PayPeriod, loadReviewedProfessionalTax: historicalAssignment is null, applyTemplatePolicy: historicalAssignment is null);
         if(historicalData is not null&&historicalContext!.PreparationErrors.TryGetValue(employee.Id,out var preparationError))preparationError.Throw();
         if(historicalData is not null&&historicalContext!.DeferredPt.Contains(employee.Id))await LoadReviewedProfessionalTaxAsync(db,tx,[employee],request.PayPeriod);
         if (historicalAssignment is not null)
@@ -220,6 +232,7 @@ public partial class PayRunRepository
             }
             else if(historicalData is null)await LoadReviewedProfessionalTaxAsync(db, tx, [employee], request.PayPeriod);
         }
+        ValidateTemplatePolicyLocations(employee);
         result.LocationAllocations=employee.LocationParts;
         result.EmployeeCode = employee.EmployeeCode;
         result.EmployeeName = $"{employee.FirstName} {employee.LastName}".Trim();
@@ -247,7 +260,9 @@ public partial class PayRunRepository
             return result;
         }
         var json = shared?.SetupJson ?? await PayrollDataTableStore.GetSetupJsonAsync(db, tx); var setup = ReadPayrollSetup(json);
-        var structure = setup.Structures.FirstOrDefault(s => s.Active && s.Id == employee.SalaryStructureId && s.ClientId.Split([';', ',', '|']).Any(v => v.Split(':')[0].Trim() == request.ClientId.ToString(CultureInfo.InvariantCulture)));
+        var structure = setup.Structures.FirstOrDefault(s => s.Active && s.Id == employee.SalaryStructureId &&
+            (s.ClientId.Split([';', ',', '|']).Any(v => v.Split(':')[0].Trim() == request.ClientId.ToString(CultureInfo.InvariantCulture))
+             || employee.UsesExplicitTemplateInputs && IsSharedSalaryTemplate(s)));
         if (structure is null && employee.LocationParts is null) { result.Issues.Add(new("Error", "Salary assignment", "Employee has no explicit active salary template for this client.", "Assign the intended salary template in Employee Master. Simulation will not guess a template.")); return result; }
         var allocationTemplateIds=employee.LocationParts?.Parts.Select(part=>part.SalaryStructureId).Distinct().ToArray();
         result.TemplateId = allocationTemplateIds is null ? structure!.Id : string.Join(";",allocationTemplateIds);
@@ -268,9 +283,11 @@ public partial class PayRunRepository
         result.AttendanceEvidence = DescribeAttendanceInput(attendance, request);
         if(employee.NamedInputs?.ReportedPeriodProof?.NativeAttendance is { } reportedNative && result.AttendanceEvidence is { } reportedDescription)
             result.AttendanceEvidence=reportedDescription with { CycleStart=reportedNative.CycleStart,CycleEnd=reportedNative.CycleEnd };
-        var period = request.PayrollDays ?? (attendance?.WorkingDays > 0 ? (int?)Math.Ceiling(attendance.WorkingDays) : null);
+        // Workbook and historical proof callers retain their exact native payroll inputs.
+        var (period, divisorSource) = interactive ? InteractiveSimulationDivisor(request, attendance)
+            : (request.PayrollDays ?? (attendance?.WorkingDays > 0 ? (int?)Math.Ceiling(attendance.WorkingDays) : null), request.PayrollDays.HasValue ? "What-if" : "Attendance / policy");
         var present = request.PresentDays ?? attendance?.PresentDays; var payable = request.PayableDays ?? attendance?.PayableDays;
-        result.Inputs = [new("PAYROLL_DAYS", period, request.PayrollDays.HasValue ? "What-if" : "Attendance / policy", "Days"), new("PRESENT_DAYS", present, request.PresentDays.HasValue ? "What-if" : present.HasValue ? "Attendance result" : "Actual presence not supplied", "Days"), new("PAYABLE_DAYS", payable, request.PayableDays.HasValue ? "What-if" : "Attendance result", "Days"), new("ANNUAL_CTC", request.AnnualCtc ?? employee.AnnualCtc, request.AnnualCtc.HasValue ? "What-if" : "Effective employee salary (engine may fall back to salary/template target)", "Amount")];
+        result.Inputs = [new("PAYROLL_DAYS", period, divisorSource, "Days"), new("PRESENT_DAYS", present, request.PresentDays.HasValue ? "What-if" : present.HasValue ? "Attendance result" : "Actual presence not supplied", "Days"), new("PAYABLE_DAYS", payable, request.PayableDays.HasValue ? "What-if" : "Attendance result", "Days"), new("ANNUAL_CTC", request.AnnualCtc ?? employee.AnnualCtc, request.AnnualCtc.HasValue ? "What-if" : "Effective employee salary (engine may fall back to salary/template target)", "Amount")];
         if (!CheckDays(result, period, present, payable,attendance?.PayableOnlyEvidence is not null||historicalAssignment?.ReportedAttendanceSeed is not null,
             attendance?.PayableOnlyEvidence?.ReviewedExtraDutyUnits == true)) return result;
         // Workbook context already validated this exact roster/attendance in the same read-only transaction.
@@ -280,7 +297,12 @@ public partial class PayRunRepository
         if (!string.IsNullOrWhiteSpace(attendance?.PolicyError)) { result.Issues.Add(new("Error", "Attendance policy", attendance.PolicyError, "Resolve attendance policy errors before relying on payroll.")); return result; }
         if (attendance is null) result.Issues.Add(new("Warning", "Attendance", "Using hypothetical days: no attendance record exists for this period.", "Record attendance before running actual payroll."));
         employee.SimulationAnnualCtc = request.AnnualCtc;
-        foreach (var item in request.AmountOverrides) employee.SalaryComponents[item.Key] = item.Value;
+        foreach (var item in request.AmountOverrides)
+        {
+            if (employee.UsesExplicitTemplateInputs && setup.Components.FirstOrDefault(c => c.Id == item.Key) is { } component)
+                employee.SalaryComponents.Remove(component.Code);
+            employee.SalaryComponents[item.Key] = item.Value;
+        }
         if(employee.LocationParts is null)result.Issues.AddRange(InspectTemplate(setup.Components, structure!, employee.SalaryComponents,employee.NamedInputs));
         else foreach(var part in employee.LocationParts.Parts)
         {

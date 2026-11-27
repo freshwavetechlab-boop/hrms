@@ -12,7 +12,7 @@ using System.Xml.Linq;
 
 namespace Payroll.API.Repositories;
 
-public partial class EmployeeRepository(IConfiguration configuration, AuthRepository authRepository, NotificationRepository notificationRepository)
+public partial class EmployeeRepository(IConfiguration configuration, AuthRepository authRepository, NotificationRepository notificationRepository, ILogger<EmployeeRepository>? logger = null)
 {
     private const string InsertImportMode = "insert";
     private const string UpdateImportMode = "update";
@@ -25,13 +25,32 @@ public partial class EmployeeRepository(IConfiguration configuration, AuthReposi
     private static readonly string[] It0001ImportHeaders = ["Work Email", "Department", "Designation", "Grade", "Employee Type", "Employee Category", "Work Location Id", "Work Location", "Reporting Manager User Id", "Reporting Manager Email", "Portal Access"];
     private static readonly string[] It0002ImportHeaders = ["First Name", "Last Name", "Gender", "Date Of Birth", "Mobile", "PAN", "Aadhaar", "UAN Number", "ESIC Number"];
     private static readonly string[] It0006ImportHeaders = ["Address", "Correspondence Address", "Permanent Address", "City", "District", "State"];
-    private static readonly string[] It0008ImportHeaders = ["Salary Template Id", "Salary Template", "Annual CTC", "Salary Json"];
+    private static readonly string[] It0008ImportHeaders = ["Salary Template Id", "Salary Template", "Annual CTC", "Monthly CTC", "Salary Json"];
     private static readonly string[] It0009ImportHeaders = ["Bank Name", "Bank Account No", "IFSC", "Payment Mode"];
     private MySqlConnection Connection() => new(configuration.GetConnectionString("Default"));
-    public async Task InitializeAsync() { await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db); }
+    public async Task InitializeAsync()
+    {
+        await using var db = Connection();
+        await db.OpenAsync();
+        await EnsureEmployeeInfotypeTablesAsync(db);
+        await EnsureImportJobSchemaAsync(db);
+        await EnsureTemplatePolicySchemaAsync(db);
+    }
     // Startup initialization creates the infotype tables. Directory reads should
     // not execute DDL and INFORMATION_SCHEMA probes on every refresh.
-    public async Task<IEnumerable<Employee>> GetAsync(int? clientId = null) { await using var db = Connection(); await db.OpenAsync(); var rows = (await db.QueryAsync<Employee>("SELECT * FROM employees WHERE (@ClientId IS NULL OR ClientId=@ClientId) ORDER BY FirstName, LastName", new { ClientId = clientId })).ToList(); await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, rows); await ApplyEmploymentStatusAsync(db, rows); return rows; }
+    public async Task<IEnumerable<Employee>> GetAsync(int? clientId = null)
+    {
+        await using var db = Connection();
+        await db.OpenAsync();
+        var rows = (await db.QueryAsync<Employee>("SELECT * FROM employees WHERE (@ClientId IS NULL OR ClientId=@ClientId) ORDER BY FirstName, LastName", new { ClientId = clientId })).ToList();
+        await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, rows);
+        var dated = await CurrentDirectorySalaryAsync(db, clientId);
+        foreach (var row in rows)
+            if (dated.TryGetValue(row.Id, out var salary)) ApplyDirectorySalaryView(row, salary);
+        await ApplyDirectoryTemplateLabelsAsync(db, rows, clientId);
+        await ApplyEmploymentStatusAsync(db, rows);
+        return rows;
+    }
     public async Task<int?> GetClientIdAsync(int employeeId) { await using var db = Connection(); await db.OpenAsync(); return await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM employees WHERE Id=@EmployeeId", new { EmployeeId = employeeId }); }
     public async Task<IEnumerable<WorkflowApprover>> GetManagerUsersAsync(int? clientId = null)
     {
@@ -47,6 +66,8 @@ ORDER BY u.DisplayName,u.Email", new { ClientId = clientId });
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db);
         await EnsureDefaultTaxProfileTableAsync(db);
+        if (employee.Id > 0 && NormalizeInfotypeCodes(infotypeCode)?.SetEquals(["0008"]) == true)
+            await EnsureTemplatePolicyAvailableForWriteAsync(db);
         await using var tx = await db.BeginTransactionAsync();
         await db.ExecuteScalarAsync<int>("SELECT Id FROM clients WHERE Id=@ClientId FOR UPDATE", new { employee.ClientId }, tx);
         if (employee.Id > 0 && await db.ExecuteScalarAsync<int?>("SELECT ClientId FROM employees WHERE Id=@Id FOR UPDATE", new { employee.Id }, tx) != employee.ClientId)
@@ -59,6 +80,13 @@ ORDER BY u.DisplayName,u.Email", new { ClientId = clientId });
         if (bankOnly)
             employee = BankInfotypeState(await LoadEmployeeAsync(db, employee.Id, tx)
                 ?? throw new InvalidOperationException("Employee not found."), employee);
+        if (employee.Id > 0 && !personalOnly && !bankOnly &&
+            await PrepareDirectorySalaryEditAsync(db, tx, employee, infotypeCode, changedBy))
+        {
+            var receipt = await ReadSavedEmployeeCodeAsync(db, tx, employee.Id, employee.ClientId);
+            await tx.CommitAsync();
+            return receipt;
+        }
         var identity = (await PreviewRecruitmentAsync(employee, db, tx)).Rows.Single();
         if (identity.BlockingReasons.Count > 0) throw new InvalidOperationException(string.Join(" ", identity.BlockingReasons));
         if (identity.MatchedEmployeeId.HasValue && identity.MatchedEmployeeId != employee.Id)
@@ -70,7 +98,7 @@ ORDER BY u.DisplayName,u.Email", new { ClientId = clientId });
         return saved;
     }
 
-    private static async Task<int> SaveWithOpenConnectionAsync(MySqlConnection db, Employee employee, string changedBy = "System", string? infotypeCode = null, string? changeReason = null, MySqlTransaction? tx = null, DateTime? effectiveDate = null, bool synchronizeAttendancePolicies = true, bool salaryOnly = false, bool personalOnly = false, bool bankOnly = false)
+    private static async Task<int> SaveWithOpenConnectionAsync(MySqlConnection db, Employee employee, string changedBy = "System", string? infotypeCode = null, string? changeReason = null, MySqlTransaction? tx = null, DateTime? effectiveDate = null, bool synchronizeAttendancePolicies = true, bool salaryOnly = false, bool personalOnly = false, bool bankOnly = false, bool datedSalaryForHire = false)
     {
         if (salaryOnly) ValidateExcelSalaryOnlyScope(employee,infotypeCode,synchronizeAttendancePolicies);
         var wasNew = employee.Id == 0;
@@ -114,7 +142,8 @@ DateOfJoining=@DateOfJoining WHERE Id=@Id AND ClientId=@ClientId", employee, tx)
         if (bankOnly)
             await WriteAuditRowsAsync(db, after, before, actionType, effectiveDate ?? EffectiveDate(after), changedBy ?? "", NormalizeInfotypeCodes(infotypeCode), tx);
         else
-            await WriteCurrentInfotypesAsync(db, after, actionType, effectiveDate ?? EffectiveDate(after), reason, changedBy, before, wasNew ? null : NormalizeInfotypeCodes(infotypeCode), tx);
+            await WriteCurrentInfotypesAsync(db, after, actionType, effectiveDate ?? EffectiveDate(after), reason, changedBy, before,
+                wasNew && datedSalaryForHire ? ["0000", "0001", "0002", "0006", "0009"] : wasNew ? null : NormalizeInfotypeCodes(infotypeCode), tx);
         if (synchronizeAttendancePolicies) await SyncAttendancePolicyMappingsAsync(db, after, before, tx);
         await RecruitmentEmployeeMasterSync.EmployeeSavedAsync(db, tx, before, after, changedBy ?? "System");
         return employee.Id;
@@ -238,12 +267,13 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         return await ImportCsvAsync(clientId, file, mode, null, null);
     }
 
-    public async Task<EmployeeImportResult> ImportCsvAsync(int clientId, IFormFile? file, string? mode, Guid? reviewToken, string? decisionsJson)
+    public async Task<EmployeeImportResult> ImportCsvAsync(int clientId, IFormFile? file, string? mode, Guid? reviewToken, string? decisionsJson, string? forceSalaryActor = null, int requestedByUserId = 0, string? cleanupActor = null)
     {
         if (!TryNormalizeImportMode(mode, out var normalizedMode, out var error))
             return new EmployeeImportResult(0, 0, 0, [error]);
-        var prepared = await PrepareReviewedImportAsync(clientId, file, normalizedMode, reviewToken, decisionsJson);
+        var prepared = await PrepareReviewedImportAsync(clientId, file, normalizedMode, reviewToken, decisionsJson, forceSalaryActor, cleanupActor);
         if (prepared.Error is not null) return prepared.Error;
+        if (requestedByUserId > 0) prepared.Workbook!.AssignmentActor = $"User #{requestedByUserId}";
         return await ImportWorkbookAsync(clientId, prepared.Workbook!, normalizedMode);
     }
 
@@ -257,46 +287,35 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         return await StartImportCsvJobAsync(clientId, file, mode, null, null);
     }
 
-    public async Task<EmployeeImportJobStatus> StartImportCsvJobAsync(int clientId, IFormFile? file, string? mode, Guid? reviewToken, string? decisionsJson)
+    public async Task<EmployeeImportJobStatus> StartImportCsvJobAsync(int clientId, IFormFile? file, string? mode, Guid? reviewToken, string? decisionsJson, string? forceSalaryActor = null, int requestedByUserId = 0, string? cleanupActor = null)
     {
         if (!TryNormalizeImportMode(mode, out var normalizedMode, out var modeError))
         {
-            var failed = new EmployeeImportJobStatus(Guid.NewGuid(), "Failed", 0, 0, 0, 0, [modeError]) { ClientId = clientId };
-            ImportJobs[failed.JobId] = failed;
+            var failed = new EmployeeImportJobStatus(Guid.NewGuid(), "Failed", 0, 0, 0, 0, [modeError]) { ClientId = clientId, RequestedByUserId = requestedByUserId };
+            RememberImportRejection(failed);
             return failed;
         }
-        var prepared = await PrepareReviewedImportAsync(clientId, file, normalizedMode, reviewToken, decisionsJson);
+        var prepared = await PrepareReviewedImportAsync(clientId, file, normalizedMode, reviewToken, decisionsJson, forceSalaryActor, cleanupActor);
         if (prepared.Error is not null)
         {
             var result = prepared.Error;
             var state = result.RequiresConfirmation ? "NeedsConfirmation" : "Failed";
-            var failed = new EmployeeImportJobStatus(Guid.NewGuid(), state, result.TotalRows, 0, 0, 0, result.Errors, result.ReviewToken, result.RequiresConfirmation, result.ReviewRows) { ClientId = clientId };
-            ImportJobs[failed.JobId] = failed;
+            var failed = new EmployeeImportJobStatus(Guid.NewGuid(), state, result.TotalRows, 0, 0, 0, result.Errors, result.ReviewToken, result.RequiresConfirmation, result.ReviewRows) { ClientId = clientId, RequestedByUserId = requestedByUserId };
+            RememberImportRejection(failed);
             return failed;
         }
         var workbook = prepared.Workbook!;
-        var totalRows = CountImportRows(workbook);
-        var job = new EmployeeImportJobStatus(Guid.NewGuid(), "Queued", totalRows, 0, 0, 0, []) { ClientId = clientId };
-        ImportJobs[job.JobId] = job;
-        _ = Task.Run(async () =>
-        {
-            SetJob(job.JobId, current => current with { State = "Processing" });
-            var result = await ImportWorkbookAsync(clientId, workbook, normalizedMode, (completed, inserted, updated) => SetJob(job.JobId, current => current with { CompletedRows = completed, Inserted = inserted, Updated = updated }));
-            SetJob(job.JobId, current => current with { State = result.Errors.Count > 0 ? "Failed" : "Completed", CompletedRows = result.TotalRows, Inserted = result.Inserted, Updated = result.Updated, Errors = result.Errors });
-        });
-        return job;
+        return await QueueEmployeeImportAsync(clientId, requestedByUserId, workbook, normalizedMode);
     }
 
-    public EmployeeImportJobStatus? GetImportJob(Guid jobId) => ImportJobs.TryGetValue(jobId, out var job) ? job : null;
-
-    public async Task<EmployeeImportPreflightResult> PreflightImportCsvAsync(int clientId, IFormFile file, string? mode)
+    public async Task<EmployeeImportPreflightResult> PreflightImportCsvAsync(int clientId, IFormFile file, string? mode, string? forceSalaryActor = null, string? cleanupActor = null)
     {
         PruneImportReviews();
         if (!TryNormalizeImportMode(mode, out var normalizedMode, out var modeError))
             return new EmployeeImportPreflightResult(Guid.Empty, 0, false, false,
                 [new EmployeeImportPreflightRow(1, "Employees", "", "Blocked", null, null, null, [], [modeError], [])],
                 DateTime.UtcNow);
-        var workbook = await ParseImportWorkbookAsync(file);
+        var workbook = (await ParseImportWorkbookAsync(file)) with { ForceSalaryActor = forceSalaryActor ?? "", CleanupActor = cleanupActor };
         var result = await BuildImportPreflightAsync(clientId, workbook, normalizedMode);
         if (result.ReviewToken != Guid.Empty)
             ImportReviews[result.ReviewToken] = new EmployeeImportReviewState(clientId, normalizedMode, workbook, result, result.ExpiresAtUtc, await HashFileAsync(file));
@@ -304,7 +323,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
     }
 
     private async Task<(EmployeeImportWorkbook? Workbook, EmployeeImportResult? Error)> PrepareReviewedImportAsync(
-        int clientId, IFormFile? file, string normalizedMode, Guid? reviewToken, string? decisionsJson)
+        int clientId, IFormFile? file, string normalizedMode, Guid? reviewToken, string? decisionsJson, string? forceSalaryActor, string? cleanupActor)
     {
         PruneImportReviews();
         if (reviewToken.HasValue)
@@ -317,6 +336,16 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
             {
                 RestoreImportReview(reviewToken.Value, review);
                 return (null, new EmployeeImportResult(review.Result.TotalRows, 0, 0, ["Review token does not belong to this client/import mode."]));
+            }
+            if (!string.Equals(review.Workbook.ForceSalaryActor, forceSalaryActor ?? "", StringComparison.Ordinal))
+            {
+                RestoreImportReview(reviewToken.Value, review);
+                return (null, new EmployeeImportResult(review.Result.TotalRows, 0, 0, ["Use the same administrator and force setting that reviewed this assignment."]));
+            }
+            if (review.Workbook.CleanupActor != cleanupActor)
+            {
+                RestoreImportReview(reviewToken.Value, review);
+                return (null, new EmployeeImportResult(review.Result.TotalRows, 0, 0, ["Use the same administrator and test payroll cleanup option as the preview."]));
             }
             if (file is null || file.Length == 0)
             {
@@ -337,6 +366,9 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
             return (confirmed.Workbook, null);
         }
 
+        if (cleanupActor is not null) return (null, new EmployeeImportResult(0, 0, 0, ["Preview and confirm the test payroll records before removal."]));
+        if (!string.IsNullOrEmpty(forceSalaryActor))
+            return (null, new EmployeeImportResult(0, 0, 0, ["Review the forced salary template assignment before submitting it."]));
         if (file is null || file.Length == 0)
             return (null, new EmployeeImportResult(0, 0, 0, ["Select an employee CSV or Excel file."]));
         var workbook = await ParseImportWorkbookAsync(file);
@@ -357,6 +389,17 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         var token = Guid.NewGuid();
         var expiresAt = DateTime.UtcNow.Add(ImportReviewLifetime);
         var totalRows = CountImportRows(workbook);
+        var header = GetEmployeeDataSheet(workbook).FirstOrDefault() ?? [];
+        var hasCleanupHeader = header.Any(h => Norm(h) == Norm(RemoveTestPayroll));
+        if (hasCleanupHeader != (workbook.CleanupActor is not null) || hasCleanupHeader &&
+            (importMode != UpdateImportMode || workbook.ForceSalaryDefaults || workbook.Sheets.Count != 1
+            || !header.Any(h => Norm(h) == Norm(AssignSalaryOnly)) || !header.Any(h => Norm(h) == Norm(AssignTemplatePolicy))))
+            return new(Guid.Empty, totalRows, false, false, [new(1, "Employees", "", "Blocked", null, null, null, [],
+                ["Test payroll removal requires an administrator's reviewed bulk salary template assignment."], [])], expiresAt);
+        if (workbook.ForceSalaryDefaults && (importMode != UpdateImportMode || workbook.Sheets.Count != 1
+            || GetEmployeeDataSheet(workbook).FirstOrDefault()?.Any(header => Norm(header) == Norm(AssignSalaryOnly)) != true))
+            return new(Guid.Empty, totalRows, false, false, [new(1, "Employees", "", "Blocked", null, null, null, [],
+                ["Force is available only for a template-only assignment of selected Employee Master records."], [])], expiresAt);
         if (totalRows == 0)
             return new EmployeeImportPreflightResult(token, 0, false, false,
                 [new EmployeeImportPreflightRow(1, "Employees", "", "Blocked", null, null, null, [], ["Import file has no data rows."], [])],
@@ -365,18 +408,45 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         // The identity preflight applies to the flat Employees worksheet. Existing
         // infotype workbooks retain their established Employee Code contract.
         if (HasDataSheet(workbook, "0001 Org Assignment", "0002 Personal Data", "0006 Addresses", "0008 Basic Pay", "0009 Bank Details"))
+        {
+            if (workbook.Sheets.Values.Any(sheet => sheet.FirstOrDefault()?.Any(h => Norm(h) == Norm(SalaryInputDate) || Norm(h) == Norm(AssignSalaryOnly) || h.Contains(SalaryInputMarker, StringComparison.OrdinalIgnoreCase)) == true))
+                return new(token, totalRows, false, false, [new(1, "Employees", "", "Blocked", null, null, null, [],
+                    ["Import mapped salary inputs in a flat Employees worksheet without additional infotype sheets."], [])], expiresAt);
+            var payRows = GetSheet(workbook, "0008 Basic Pay");
+            if (payRows.Count > 1)
+            {
+                var payMap = HeaderMap(payRows[0]);
+                var errors = new List<EmployeeImportPreflightRow>();
+                for (var i = 1; i < payRows.Count; i++)
+                {
+                    try { ReadImportAnnualCtc(payRows[i], payMap); }
+                    catch (InvalidOperationException error)
+                    {
+                        errors.Add(new(i + 1, "0008 Basic Pay", Cell(payRows[i], payMap, "Employee Code"), "Blocked",
+                            null, null, null, [], [error.Message], []));
+                    }
+                }
+                if (errors.Count > 0) return new(Guid.Empty, totalRows, false, false, errors, expiresAt);
+            }
             return new EmployeeImportPreflightResult(token, totalRows, true, false, [], expiresAt);
+        }
 
         await using var ownedDb = activeDb is null ? Connection() : null;
         var db = activeDb ?? ownedDb!;
         if (activeDb is null) await db.OpenAsync();
-        var existing = (await db.QueryAsync<Employee>("SELECT * FROM employees WHERE ClientId=@clientId", new { clientId }, tx)).ToList();
-        await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, existing, tx);
-        var resultRows = BuildImportIdentityPreflightRows(workbook, importMode, existing, includeFieldChanges: !identityOnly);
         var rows = GetEmployeeDataSheet(workbook);
         var map = rows.Count > 0 ? HeaderMap(rows[0]) : new Dictionary<string, int>();
+        var assignmentOnly = HasHeader(map, AssignSalaryOnly);
+        var existing = assignmentOnly
+            ? await ReadTemplateAssignmentTargetsAsync(db, clientId, rows.Skip(1).Select(row => AssignmentEmployeeId(row, map)).Where(id => id > 0).Distinct().ToArray(), tx,
+                HasHeader(map, AssignTemplatePolicy) || HasHeader(map, ApplyTemplateForward))
+            : (await db.QueryAsync<Employee>("SELECT * FROM employees WHERE ClientId=@clientId", new { clientId }, tx)).ToList();
+        if (!assignmentOnly) await PayrollDataTableStore.ApplyEmployeeTablesAsync(db, existing, tx);
+        var resultRows = assignmentOnly
+            ? BuildTemplateAssignmentRows(rows, map, GetEmployeeDataSheetName(workbook), existing)
+            : BuildImportIdentityPreflightRows(workbook, importMode, existing, includeFieldChanges: !identityOnly);
 
-        if (validateConfigured)
+        if (validateConfigured && !assignmentOnly)
         {
             var forms = await EmployeeAttributeRepository.ExchangeFormsAsync(db, clientId, tx);
             var columns = EmployeeAttributeRepository.Columns(forms).ToDictionary(column => column.Code, StringComparer.OrdinalIgnoreCase);
@@ -398,6 +468,9 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                 resultRows[index] = item with { Changes = [..item.Changes, ..changes.Where(change => change.OldValue != change.NewValue)], BlockingReasons = [..item.BlockingReasons, ..errors], MatchStatus = errors.Count > 0 ? "Blocked" : item.MatchStatus, CanResolveConflict = errors.Count == 0 && item.CanResolveConflict };
             }
         }
+
+        if (!identityOnly && rows.Count > 0)
+            await ReviewBulkSalaryAsync(db, tx, clientId, workbook, rows, map, existing, resultRows, importMode);
 
         // A mixed workbook remains actionable: blocked rows can be explicitly
         // skipped while clean rows proceed. All-blocked/fatal files cannot import.
@@ -509,6 +582,35 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                         var otherOwners = evidence?.Candidates.Where(candidate => candidate.EmployeeId != employeeId.Value).ToList() ?? [];
                         if (otherOwners.Count > 0)
                             errors.Add($"{prefix}: imported {change.Label} already belongs to {string.Join(", ", otherOwners.Select(candidate => candidate.EmployeeCode))}; choose keepExisting.");
+                    }
+                }
+                if (HasHeader(map, AssignSalaryOnly))
+                {
+                    var removePayslips = selectedChanges.Any(change => change.Field == TestPayslipsField)
+                        && fieldChoices.GetValueOrDefault(TestPayslipsField) == "useImported";
+                    if (selectedChanges.Any(change => change.Field == TestPayslipsField) && !removePayslips)
+                        errors.Add($"{prefix}: skip this row or explicitly confirm removing its reviewed test payslips.");
+                    if (fieldChoices.GetValueOrDefault("salaryTemplateId") == "keepExisting" || !removePayslips && selectedChanges.All(change => change.Field != "salaryTemplateId"))
+                        skipRows.Add(reviewRow.RowNumber);
+                }
+                else if (HasHeader(map, SalaryInputDate))
+                {
+                    var source = rows[reviewRow.RowNumber - 1];
+                    var mapped = ReadSalaryInputColumns(rows[0]);
+                    if (fieldChoices.GetValueOrDefault("salaryTemplateId") == "keepExisting")
+                    {
+                        if (selectedChanges.Any(change => (change.Field == "annualCtc" || change.Field.StartsWith("salaryInput:", StringComparison.Ordinal)) &&
+                            fieldChoices.GetValueOrDefault(change.Field) == "useImported"))
+                            errors.Add($"{prefix}: imported salary amounts belong to the selected template. Apply that template or keep the existing salary amounts.");
+                        foreach (var column in mapped)
+                            if (column.Index < source.Count) source[column.Index] = "";
+                        BlankImportField(source, map, "annualCtc");
+                    }
+                    if (Cell(source, map, "Annual CTC").Length == 0 && Cell(source, map, "Monthly CTC").Length == 0
+                        && mapped.All(column => string.IsNullOrWhiteSpace(source.ElementAtOrDefault(column.Index))))
+                    {
+                        BlankImportField(source, map, "salaryTemplateId");
+                        SetImportCell(source, map, SalaryInputDate, "");
                     }
                 }
                 EnsureImportHeader(rows, map, "Employee ID");
@@ -653,7 +755,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         }).ToList();
     }
 
-    private static List<EmployeeImportFieldChange> BuildImportChanges(List<string> row, Dictionary<string, int> map, Employee? existing)
+    private static List<EmployeeImportFieldChange> BuildImportChanges(List<string> row, Dictionary<string, int> map, Employee? existing, decimal? annualCtc)
     {
         // New rows are initial data capture, not changes requiring per-row approval.
         if (existing is not { } current) return [];
@@ -694,7 +796,8 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         Add("Portal Access", "portalAccess", current.PortalAccess ? "TRUE" : "FALSE", sensitive: true, compare: NormalizeBoolean);
         Add("Active", "active", current.IsActive ? "TRUE" : "FALSE", payrollImpact: true, compare: NormalizeBoolean);
         Add("Salary Template Id", "salaryTemplateId", current.SalaryStructureId ?? "", payrollImpact: true);
-        Add("Annual CTC", "annualCtc", current.AnnualCtc.ToString(System.Globalization.CultureInfo.InvariantCulture), payrollImpact: true, compare: NormalizeNumber);
+        if (annualCtc is { } amount && current.AnnualCtc != amount)
+            changes.Add(new("annualCtc", "Annual CTC", ExcelMasterNumber(current.AnnualCtc), ExcelMasterNumber(amount), false, true));
         Add("Salary Json", "salaryJson", current.SalaryJson ?? "{}", payrollImpact: true);
         Add("PAN", "pan", personal.PanNumber, sensitive: true, compare: NormalizePanForComparison);
         Add("Aadhaar", "aadhaar", personal.AadhaarNumber, sensitive: true, compare: NormalizeAadhaarForComparison);
@@ -767,10 +870,6 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
             _ => (value ?? "").Trim().ToLowerInvariant()
         };
     private static string NormalizeDate(string? value) => TryDate(value ?? "", out var date) ? date : (value ?? "").Trim();
-    private static string NormalizeNumber(string? value) =>
-        decimal.TryParse((value ?? "").Replace(",", ""), System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var number)
-            ? number.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture)
-            : (value ?? "").Trim();
     private static string MaskIdentityValue(string field, string? value)
     {
         var normalized = NormalizeAlphaNumeric(value);
@@ -794,7 +893,16 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         new(workbook.Sheets.ToDictionary(
             sheet => sheet.Key,
             sheet => sheet.Value.Select(row => row.ToList()).ToList(),
-            StringComparer.OrdinalIgnoreCase));
+            StringComparer.OrdinalIgnoreCase))
+        {
+            SalaryWitnesses = new(workbook.SalaryWitnesses),
+            SalaryTemplateWitnesses = new(workbook.SalaryTemplateWitnesses),
+            ForceSalaryActor = workbook.ForceSalaryActor,
+            CleanupActor = workbook.CleanupActor,
+            TestPayrollReviews = new(workbook.TestPayrollReviews),
+            TemplatePolicyWitnesses = new(workbook.TemplatePolicyWitnesses),
+            AssignmentActor = workbook.AssignmentActor
+        };
 
     private static string GetEmployeeDataSheetName(EmployeeImportWorkbook workbook)
     {
@@ -827,6 +935,13 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
 
     private static void BlankImportField(List<string> row, Dictionary<string, int> map, string field)
     {
+        if (field.StartsWith("salaryInput:", StringComparison.OrdinalIgnoreCase))
+        {
+            var suffix = Norm(SalaryInputMarker + field["salaryInput:".Length..] + "]");
+            foreach (var (header, index) in map)
+                if (header.EndsWith(suffix, StringComparison.OrdinalIgnoreCase) && index < row.Count) row[index] = "";
+            return;
+        }
         var headers = field switch
         {
             "dateOfJoining" => new[] { "Date Of Joining" },
@@ -834,7 +949,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
             "portalAccess" => ["Portal Access"],
             "active" => ["Active"],
             "salaryTemplateId" => ["Salary Template Id"],
-            "annualCtc" => ["Annual CTC"],
+            "annualCtc" => ["Annual CTC", "Monthly CTC"],
             "salaryJson" => ["Salary Json"],
             "mobile" => ["Mobile"],
             "pan" => ["PAN"],
@@ -894,14 +1009,14 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         {
             "Employee Code", "First Name", "Last Name", "Gender", "Date Of Joining", "Date Of Birth", "Work Email", "Mobile",
             "Department", "Designation", "Grade", "Employee Type", "Employee Category", "Work Location", "Reporting Manager Email", "Portal Access", "Active",
-            "Salary Template", "Annual CTC", "PAN", "Aadhaar", "UAN Number", "ESIC Number", "Address", "Correspondence Address",
+            "Salary Template", "Annual CTC", "Monthly CTC", "PAN", "Aadhaar", "UAN Number", "ESIC Number", "Address", "Correspondence Address",
             "Permanent Address", "Bank Name", "Bank Account No", "IFSC", "Payment Mode", "Change Reason"
         };
         var employeeExample = new[]
         {
             "EMP001", "Rahul", "Sharma", "Male", "2026-04-01", "1995-01-15", "rahul@example.com", "9876543210",
             First("Department", ""), First("Designation", ""), First("Employee Grade", ""), First("Employment Type", ""), First("Employee Category", SkillCategories[0]), location?.Name ?? "", manager?.Email ?? "",
-            "TRUE", "TRUE", template?.Name ?? "", template?.AnnualCtc ?? "600000", "ABCDE1234F", "123412341234", "100200300400", "",
+            "TRUE", "TRUE", template?.Name ?? "", template?.AnnualCtc ?? "600000", "", "ABCDE1234F", "123412341234", "100200300400", "",
             "Local address", "Correspondence address", "Permanent address", "HDFC Bank", "50100123456789", "HDFC0001234", "Bank Transfer", "Initial upload"
         };
         var instructions = new List<string[]>
@@ -919,7 +1034,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
             new[] { "Work Location", "No", "Use the work location name, not ID.", "Existing names are reused; new names are added to this client after validation." },
             new[] { "Reporting Manager Email", "No", "Use manager login email from Users.", "Must match an active user for the client or global user." },
             new[] { "Salary Template", "No", "Use salary template name, not ID.", "Must match one active salary template for the client." },
-            new[] { "Annual CTC", "No", "Numeric amount only.", "If blank, template CTC is used where available." },
+            new[] { "Annual CTC / Monthly CTC", "No", "Fill either amount. Monthly CTC is multiplied by 12.", "If you fill both, Monthly CTC must equal Annual CTC divided by 12, rounded to two decimals." },
             new[] { "Portal Access / Active", "No", "TRUE/FALSE, YES/NO, 1/0, Active/Inactive.", "Defaults are preserved for existing employees." },
             new[] { "Bank / Address / Statutory IDs", "No", "Fill text values directly.", "Stored as provided. Format validation is currently relaxed." }
         };
@@ -941,12 +1056,18 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
         return BuildXlsx(("Employees", new[] { employeeHeaders, employeeExample }), ("Instructions", instructions), ("References", references));
     }
 
-    async Task<EmployeeImportResult> ImportWorkbookAsync(int clientId, EmployeeImportWorkbook workbook, string importMode, Action<int, int, int>? progress = null)
+    async Task<EmployeeImportResult> ImportWorkbookAsync(int clientId, EmployeeImportWorkbook workbook, string importMode, Func<int, int, int, Task>? progress = null)
     {
         await using var db = Connection(); await db.OpenAsync(); await EnsureEmployeeInfotypeTablesAsync(db); await PayrollDataTableStore.EnsureAsync(db);
+        var totalRows = CountImportRows(workbook);
+        var inserted = 0;
+        var updated = 0;
+        var completed = 0;
         try
         {
-            var totalRows = CountImportRows(workbook);
+            var employeeRows = GetEmployeeDataSheet(workbook);
+            if (employeeRows.FirstOrDefault() is { } headers && HasHeader(HeaderMap(headers), AssignSalaryOnly))
+                return await ImportTemplateAssignmentsAsync(db, clientId, workbook, employeeRows, importMode, progress);
             if (totalRows == 0) return new EmployeeImportResult(0, 0, 0, ["Import file has no data rows."]);
             var validDrops = (await db.QueryAsync<(string Type, string Value)>("SELECT Type, Value FROM dropdownmasters WHERE IsActive=TRUE AND (ClientId=0 OR ClientId=@clientId) AND Type IN ('Department','Designation','Employee Grade','Employee Category','Employment Type')", new { clientId })).GroupBy(x => x.Type).ToDictionary(x => x.Key, x => x.Select(v => v.Value).ToHashSet(StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
             if (!validDrops.TryGetValue("Employee Category", out var categoryValues)) validDrops["Employee Category"] = categoryValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1022,6 +1143,19 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
             {
                 draft.Infotypes.Add(infotypeCode);
                 if (!string.IsNullOrWhiteSpace(reason)) draft.ChangeReason = reason.Trim();
+            }
+
+            void ApplyCtc(Employee employee, List<string> row, Dictionary<string, int> map, SalaryTemplateRef? template, string sheet, int rowNumber)
+            {
+                try
+                {
+                    if (ReadImportAnnualCtc(row, map) is { } ctc) employee.AnnualCtc = ctc;
+                    else if (HasHeader(map, "Annual CTC") && (!HasHeader(map, "Monthly CTC") || employee.Id == 0)
+                        && template is not null && employee.AnnualCtc <= 0
+                        && decimal.TryParse(template.AnnualCtc, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var defaultCtc))
+                        employee.AnnualCtc = defaultCtc;
+                }
+                catch (InvalidOperationException error) { errors.Add($"{sheet} row {rowNumber}: {error.Message}"); }
             }
 
             bool AddCodeError(string sheet, int rowNumber, string code, HashSet<string> seen)
@@ -1164,16 +1298,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                         ? ResolveSalaryTemplate(Cell(row, map, "Salary Template Id"), Cell(row, map, "Salary Template"), salaryTemplateById, salaryTemplateByName, errors, sheet, rowNumber)
                         : null;
                     if (template is not null) employee.SalaryStructureId = template.Id;
-                    if (HasHeader(map, "Annual CTC"))
-                    {
-                        var ctcText = Cell(row, map, "Annual CTC");
-                        if (!string.IsNullOrWhiteSpace(ctcText))
-                        {
-                            if (decimal.TryParse(ctcText, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var ctc)) employee.AnnualCtc = ctc;
-                            else errors.Add($"{sheet} row {rowNumber}: Annual CTC must be numeric.");
-                        }
-                        else if (template is not null && decimal.TryParse(template.AnnualCtc, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var templateCtc) && employee.AnnualCtc <= 0) employee.AnnualCtc = templateCtc;
-                    }
+                    ApplyCtc(employee, row, map, template, sheet, rowNumber);
                     if (HasHeader(map, "Salary Json"))
                     {
                         var salaryJson = Cell(row, map, "Salary Json");
@@ -1208,10 +1333,14 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                 }
             }
 
-            void ProcessFlatRows(List<List<string>> rows)
+            async Task ProcessFlatRows(List<List<string>> rows)
             {
                 if (rows.Count < 2) return;
                 var map = HeaderMap(rows[0]);
+                var salaryColumns = ReadSalaryInputColumns(rows[0]);
+                var mappedSalary = salaryColumns.Count > 0 || HasHeader(map, SalaryInputDate) || HasHeader(map, AssignSalaryOnly);
+                var salaryRules = mappedSalary ? await ReadBulkSalaryRulesAsync(db, null, clientId,
+                    rows.Skip(1).Select(row => Cell(row, map, "Salary Template Id")).Where(id => id.Length > 0).Distinct().ToArray()) : null;
                 var writesActions = HasAnyHeader(map, It0000ImportHeaders);
                 var writesOrg = HasAnyHeader(map, It0001ImportHeaders);
                 var writesPersonal = HasAnyHeader(map, It0002ImportHeaders);
@@ -1286,11 +1415,25 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                         SetIfAny(value => personal.State = value, Cell(row, map, "State"));
                         Mark(draft, "0006", reason);
                     }
-                    if (writesPay)
+                    if (mappedSalary)
+                    {
+                        try
+                        {
+                            var salaryPatch = ReadBulkSalaryPatch(row, map, salaryColumns, salaryRules!, importMode);
+                            draft.SalaryPatch = employee.Id > 0 && salaryPatch?.NewHireDefaults == true ? null : salaryPatch;
+                        }
+                        catch (InvalidOperationException error) { errors.Add($"Employees row {rowNumber}: {error.Message}"); }
+                    }
+                    if (mappedSalary)
+                    {
+                        draft.ScopedSalaryImport = true;
+                        if (!string.IsNullOrWhiteSpace(reason)) draft.ChangeReason = reason;
+                    }
+                    if (writesPay && !mappedSalary)
                     {
                         var template = HasAnyHeader(map, "Salary Template Id", "Salary Template") ? ResolveSalaryTemplate(Cell(row, map, "Salary Template Id"), Cell(row, map, "Salary Template"), salaryTemplateById, salaryTemplateByName, errors, "Employees", rowNumber) : null;
                         if (template is not null) employee.SalaryStructureId = template.Id;
-                        if (HasHeader(map, "Annual CTC")) { var ctcText = Cell(row, map, "Annual CTC"); if (!string.IsNullOrWhiteSpace(ctcText)) { if (decimal.TryParse(ctcText, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var ctc)) employee.AnnualCtc = ctc; else errors.Add($"Employees row {rowNumber}: Annual CTC must be numeric."); } else if (template is not null && decimal.TryParse(template.AnnualCtc, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var templateCtc) && employee.AnnualCtc <= 0) employee.AnnualCtc = templateCtc; }
+                        ApplyCtc(employee, row, map, template, "Employees", rowNumber);
                         if (HasHeader(map, "Salary Json")) { var salaryJson = Cell(row, map, "Salary Json"); if (!string.IsNullOrWhiteSpace(salaryJson)) { if (TrySalaryMap(salaryJson, out var salary)) { employee.SalaryJson = salaryJson; employee.SalaryComponents = salary; } else errors.Add($"Employees row {rowNumber}: Salary Json must contain numeric component amounts."); } }
                         Mark(draft, "0008", reason);
                     }
@@ -1315,7 +1458,7 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                 ProcessPayRows(GetSheet(workbook, "0008 Basic Pay"), "0008 Basic Pay");
                 ProcessBankRows(GetSheet(workbook, "0009 Bank Details"), "0009 Bank Details");
             }
-            else ProcessFlatRows(GetEmployeeDataSheet(workbook));
+            else await ProcessFlatRows(GetEmployeeDataSheet(workbook));
 
             foreach (var draft in drafts.Values)
             {
@@ -1363,7 +1506,6 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
             }
 
             await EnsureDefaultTaxProfileTableAsync(db);
-            var inserted = 0; var updated = 0; var completed = 0;
             var savedEmployees = new List<Employee>();
             foreach (var draft in drafts.Values.OrderBy(x => x.FirstRow))
             {
@@ -1376,30 +1518,44 @@ ORDER BY EmployeeCode, InfotypeCode", new { clientId });
                     var identity = (await PreviewRecruitmentAsync(draft.Employee, db, tx)).Rows.Single();
                     if (identity.BlockingReasons.Count > 0 || identity.MatchedEmployeeId.HasValue && identity.MatchedEmployeeId != draft.Employee.Id)
                         throw new InvalidOperationException($"Employees row {draft.FirstRow}: identity changed or conflicts with an existing employee. Review the upload again.");
-                    await SaveWithOpenConnectionAsync(db, draft.Employee, "Bulk Upload", isNew ? null : string.Join(',', draft.Infotypes.OrderBy(x => x)), draft.ChangeReason, tx);
+                    var infotypes = isNew ? null : string.Join(',', draft.Infotypes.OrderBy(x => x));
+                    if (draft.SalaryPatch != null)
+                        await SaveBulkSalaryDraftAsync(db, tx, draft, workbook, infotypes);
+                    else if (!draft.ScopedSalaryImport || isNew || draft.Infotypes.Count > 0)
+                        await SaveWithOpenConnectionAsync(db, draft.Employee, "Bulk Upload", infotypes, draft.ChangeReason, tx);
                     var error = await EmployeeAttributeRepository.SaveExchangeAsync(db, tx, draft.Employee.Id, clientId, customForms, draft.CustomValues, "BULK_UPLOAD", draft.Employee.EmployeeCode, 0, allowIncomplete: !isNew);
                     if (error.Length > 0) throw new InvalidOperationException($"Employees row {draft.FirstRow}: {error}");
                     await tx.CommitAsync();
                 }
-                if (draft.Employee.IsActive && draft.Employee.PortalAccess) savedEmployees.Add(draft.Employee);
-                if (isNew) inserted++; else updated++;
+                if (draft.Employee.IsActive && draft.Employee.PortalAccess && (!draft.ScopedSalaryImport || isNew || draft.Infotypes.Count > 0))
+                    savedEmployees.Add(draft.Employee);
+                if (isNew) inserted++;
+                else if (!draft.ScopedSalaryImport || draft.SalaryPatch != null || draft.Infotypes.Count > 0 || draft.CustomValues.Any(value => !string.IsNullOrWhiteSpace(value.Value)))
+                    updated++;
                 completed++;
-                if (completed == drafts.Count || completed % 25 == 0) progress?.Invoke(Math.Min(totalRows, completed), inserted, updated);
+                if (progress is not null && (completed == drafts.Count || completed % 25 == 0))
+                    await progress(Math.Min(totalRows, completed), inserted, updated);
             }
             if (savedEmployees.Count > 0) _ = Task.Run(() => ProvisionAndQueueWelcomeBatchAsync(savedEmployees));
             return new EmployeeImportResult(totalRows, inserted, updated, []);
         }
-        catch (Exception ex) { return new EmployeeImportResult(0, 0, 0, [$"Import failed: {ex.Message}"]); }
+        catch (Exception ex) { return new EmployeeImportResult(totalRows, inserted, updated, [$"Import failed: {ex.Message}"]) { ProcessedRows = completed }; }
     }
 
-    internal static bool TrySalaryMap(string json, out Dictionary<string, decimal> salary)
+    internal static bool TrySalaryMap(string json, out Dictionary<string, decimal> salary, bool allowLegacyNumericStrings = false)
     {
         salary = [];
-        try { salary = JsonSerializer.Deserialize<Dictionary<string, decimal>>(json) ?? []; return json.TrimStart().StartsWith('{'); }
+        try
+        {
+            var options = allowLegacyNumericStrings ? SalaryReadOptions : null;
+            salary = JsonSerializer.Deserialize<Dictionary<string, decimal>>(json, options) ?? [];
+            return json.TrimStart().StartsWith('{');
+        }
         catch (JsonException) { return false; }
     }
 
-    static void SetJob(Guid jobId, Func<EmployeeImportJobStatus, EmployeeImportJobStatus> update) => ImportJobs.AddOrUpdate(jobId, _ => update(new EmployeeImportJobStatus(jobId, "Processing", 0, 0, 0, 0, [])), (_, current) => update(current));
+    private static readonly JsonSerializerOptions SalaryReadOptions = new() { NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString };
+
 
     async Task ProvisionAndQueueWelcomeAsync(Employee employee)
     {
@@ -2050,6 +2206,8 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@table AND COLUMN_NAME=@column", ne
         public int FirstRow { get; } = firstRow;
         public HashSet<string> Infotypes { get; } = new(StringComparer.OrdinalIgnoreCase);
         public string ChangeReason { get; set; } = "Bulk upload";
+        public BulkSalaryPatch? SalaryPatch { get; set; }
+        public bool ScopedSalaryImport { get; set; }
         public List<EmployeeFieldInput> CustomValues { get; } = [];
     }
     private sealed class LocationRef
@@ -2076,7 +2234,17 @@ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=@table AND COLUMN_NAME=@column", ne
     private sealed record SheetRef(string Name, string Path);
 }
 
-public record EmployeeImportWorkbook(Dictionary<string, List<List<string>>> Sheets);
+public record EmployeeImportWorkbook(Dictionary<string, List<List<string>>> Sheets)
+{
+    internal string ForceSalaryActor { get; init; } = "";
+    internal string? CleanupActor { get; init; }
+    internal Dictionary<int, PayRunRepository.TemplateCleanupReview> TestPayrollReviews { get; init; } = [];
+    internal Dictionary<int, string> TemplatePolicyWitnesses { get; init; } = [];
+    internal string AssignmentActor { get; set; } = "Bulk Upload";
+    internal bool ForceSalaryDefaults => ForceSalaryActor.Length > 0;
+    internal Dictionary<int, string> SalaryWitnesses { get; init; } = [];
+    internal Dictionary<string, string> SalaryTemplateWitnesses { get; init; } = [];
+}
 public record EmployeeImportDecision(
     int RowNumber,
     string Sheet,
@@ -2114,14 +2282,24 @@ public record EmployeeImportPreflightRow(
     List<EmployeeImportFieldChange> Changes,
     List<EmployeeImportCandidate>? CandidateEmployees = null,
     List<EmployeeImportIdentityEvidence>? IdentityEvidence = null,
-    bool CanResolveConflict = false);
+    bool CanResolveConflict = false,
+    bool CanForceSalaryAssignment = false)
+{
+    public IReadOnlyList<EmployeeTestPayslip>? TestPayslips { get; init; }
+}
 public record EmployeeImportPreflightResult(
     Guid ReviewToken,
     int TotalRows,
     bool CanImport,
     bool RequiresConfirmation,
     List<EmployeeImportPreflightRow> Rows,
-    DateTime ExpiresAtUtc);
+    DateTime ExpiresAtUtc)
+{
+    [System.Text.Json.Serialization.JsonPropertyName("supportsDatedSalaryInputs")]
+    public bool SupportsDatedSalaryInputs => true;
+    public bool SupportsEmployeeSalaryTemplatePolicy => true;
+    public bool SupportsTestPayrollRemoval => true;
+}
 public record EmployeeImportResult(
     int TotalRows,
     int Inserted,
@@ -2129,7 +2307,10 @@ public record EmployeeImportResult(
     List<string> Errors,
     Guid? ReviewToken = null,
     bool RequiresConfirmation = false,
-    List<EmployeeImportPreflightRow>? ReviewRows = null);
+    List<EmployeeImportPreflightRow>? ReviewRows = null)
+{
+    internal int ProcessedRows { get; init; }
+}
 public record EmployeeImportJobStatus(
     Guid JobId,
     string State,
@@ -2143,6 +2324,11 @@ public record EmployeeImportJobStatus(
     List<EmployeeImportPreflightRow>? ReviewRows = null)
 {
     public int? ClientId { get; init; }
+    internal int RequestedByUserId { get; init; }
+    public string ClientName { get; init; } = "";
+    public string Kind { get; init; } = "employee-import";
+    public string Operation { get; init; } = "";
+    public DateTime CreatedAtUtc { get; init; } = DateTime.UtcNow;
 }
 public record EmployeeDeletePreview(int EmployeeId, string EmployeeCode, string EmployeeName, List<string> Links, bool CanDelete)
 {

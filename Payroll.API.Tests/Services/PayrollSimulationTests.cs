@@ -13,6 +13,50 @@ public class PayrollSimulationTests
         ClientId = 11, TemplateId = "1", PayrollDays = 30, PresentDays = 14, PayableDays = 14, AnnualCtc = 184968,
         Snapshot = new("Template", 11, "", 184968, components.ToList(), components.Select(c => new PayrollReviewLine(c.Id)).ToList())
     };
+    [Theory]
+    [InlineData("2026-01", 31)]
+    [InlineData("2026-02", 28)]
+    [InlineData("2028-02", 29)]
+    [InlineData("2026-11", 30)]
+    public void DailyAttendanceDoesNotSetTheInteractiveDivisor(string month, int expected)
+    {
+        var request = Request(Wage("31000"));
+        request.PayPeriod = month;
+        request.PayrollDays = null;
+        var daily = new PayRunRepository.PayRunAttendance { WorkingDays = 4, PresentDays = 0, PayableDays = 4 };
+        var (days, source) = PayRunRepository.InteractiveSimulationDivisor(request, daily);
+        Assert.Equal(expected, days);
+        Assert.Equal("Calendar month", source);
+        request.PresentDays = daily.PresentDays;
+        request.PayableDays = daily.PayableDays;
+        var result = PayRunRepository.SimulateTemplate(request, interactive: true);
+        Assert.True(result.Complete);
+        Assert.Equal(decimal.Round(31000m * 4 / expected, 2), result.Gross);
+        Assert.Equal(expected, result.Inputs.Single(i => i.Name == "PAYROLL_DAYS").Value);
+        Assert.Equal(0, result.Inputs.Single(i => i.Name == "PRESENT_DAYS").Value);
+        Assert.Equal(4, result.Inputs.Single(i => i.Name == "PAYABLE_DAYS").Value);
+        // Evidence calculations still require the exact divisor from their caller.
+        Assert.False(PayRunRepository.SimulateTemplate(request).Complete);
+    }
+
+    [Fact]
+    public void InteractiveDivisorUsesEmployeeMonthlySnapshotAndSupportsTemporaryOverride()
+    {
+        var request = Request(Wage());
+        request.PayPeriod = "2026-11";
+        request.PayrollDays = null;
+        var snapshot = new PayRunRepository.PayRunAttendance { FromMonthlySnapshot = true, WorkingDays = 26 };
+        Assert.Equal((26, "Saved monthly attendance divisor"), PayRunRepository.InteractiveSimulationDivisor(request, snapshot));
+        request.PayrollDays = 24;
+        Assert.Equal((24, "Temporary what-if input"), PayRunRepository.InteractiveSimulationDivisor(request, snapshot));
+        Assert.Equal(26, snapshot.WorkingDays);
+        request.PayrollDays = null;
+        Assert.Equal(26, PayRunRepository.InteractiveSimulationDivisor(request, snapshot).Days);
+        snapshot.WorkingDays = 32;
+        Assert.Equal(30, PayRunRepository.InteractiveSimulationDivisor(request, snapshot).Days);
+        snapshot.WorkingDays = 26.5m;
+        Assert.Equal(30, PayRunRepository.InteractiveSimulationDivisor(request, snapshot).Days);
+    }
     [Fact] public void CatalogueOnlyAdvertisesImplementedSystemInputs()
     {
         var values = PayrollValueCatalogue.Resolve(25000, 30, 20, 22.5m, new() { ["EARNINGS_BEFORE_THIS"] = 18000, ["FIXED_EARNINGS_BEFORE_THIS"] = 18000, ["FIXED_EARNINGS"] = 18000, ["GROSS_EARNED"] = 13500 });
@@ -51,6 +95,30 @@ public class PayrollSimulationTests
         Assert.Equal(0, PayRunRepository.SimulateTemplate(Request(Wage("0"))).Gross);
         var r = Request(Wage("")); r.AmountOverrides["1"] = 0;
         Assert.Equal(0, PayRunRepository.SimulateTemplate(r).Gross);
+    }
+
+    [Fact] public void EmployeeWhatIfUsesConfiguredLiteralUntilAnEmployeeSuppliesAnAmount()
+    {
+        var request = Request(Wage("500"), Deduction());
+        request.Snapshot = request.Snapshot! with { Lines = [new("1", Value: "125"), new("2")] };
+        var input = PayRunRepository.ResolveEmployeeTemplateComponentInputs(request, new Dictionary<string, decimal>(), "Employee amount");
+        Assert.Single(input);
+        Assert.Equal(125m, input["1"].Value);
+        Assert.Equal("Component / template default", input["1"].Source);
+        Assert.Equal(0m, PayRunRepository.ResolveEmployeeTemplateComponentInputs(request, new Dictionary<string, decimal> { ["1"] = 0 }, "Employee amount")["1"].Value);
+        request.Snapshot = request.Snapshot with { Lines = [new("1", Value: "0"), new("2")] };
+        Assert.Equal(0m, PayRunRepository.ResolveEmployeeTemplateComponentInputs(request, new Dictionary<string, decimal>(), "Employee amount")["1"].Value);
+        request.ClearedComponentIds = ["1"];
+        Assert.Null(PayRunRepository.ResolveEmployeeTemplateComponentInputs(request, new Dictionary<string, decimal>(), "Employee amount")["1"].Value);
+    }
+    [Fact] public void EmployeeWhatIfNeverDefaultsOverConflictingInputsOrTreatsMissingDefaultAsZero()
+    {
+        var request = Request(Wage("150"));
+        var conflicting = PayRunRepository.ResolveEmployeeTemplateComponentInputs(request, new Dictionary<string, decimal> { ["1"] = 0, ["WAGES"] = 100 }, "Employee amount");
+        Assert.Null(conflicting["1"].Value);
+        Assert.Null(PayRunRepository.ResolveEmployeeTemplateComponentInputs(Request(Wage("")), new Dictionary<string, decimal>(), "Employee amount")["1"].Value);
+        request.AmountOverrides["1"] = 0;
+        Assert.Equal(0m, PayRunRepository.ResolveEmployeeTemplateComponentInputs(request, new Dictionary<string, decimal> { ["1"] = 100 }, "Employee amount")["1"].Value);
     }
     [Fact] public void OverrideFlowsThroughDependentFormulas()
     {

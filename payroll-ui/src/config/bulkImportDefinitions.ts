@@ -35,7 +35,8 @@ export const employeeBulkImportDefinition: BulkImportDefinition = {
     field('Active', 'Active', 'Employment', 'boolean', ['Is Active', 'Employment Status', 'Employee Status', 'Status'], { defaultValue: 'TRUE' }),
 
     field('SalaryTemplate', 'Salary Template', 'Payroll', 'lookup', ['Pay Template', 'Salary Structure', 'Pay Structure']),
-    field('AnnualCtc', 'Annual CTC', 'Payroll', 'number', ['CTC', 'Annual Salary', 'Yearly CTC', 'Annual Compensation']),
+    field('AnnualCtc', 'Annual CTC', 'Payroll', 'number', ['Annual Salary', 'Yearly CTC', 'Annual Compensation', 'CTC per annum'], { description: 'Monthly CTC is Annual CTC divided by 12, rounded to two decimal places.' }),
+    field('MonthlyCtc', 'Monthly CTC', 'Payroll', 'number', ['CTC per month', 'Monthly Cost to Company'], { description: 'Annual CTC is Monthly CTC multiplied by 12.' }),
 
     field('Pan', 'PAN', 'Statutory', 'text', ['PAN Number', 'Permanent Account Number']),
     field('Aadhaar', 'Aadhaar', 'Statutory', 'text', ['Aadhaar Number', 'Aadhar', 'Aadhar Number', 'UID']),

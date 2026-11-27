@@ -11,12 +11,12 @@ import { calculationChoices, calculationKind, componentChangeImpact, displayForm
 import './SalaryComponentEditor.css'
 import './SalaryFormControls.css'
 
-type Props = { value: Component; original?: Component; clientId?: number; components: Component[]; usedBy: string[]; saving: boolean; onChange: (value: Component) => void; onSave: () => Promise<void>; onClose: () => void }
+type Props = { categoryPicker?: { options: readonly string[]; onChange: (category: string) => void }; value: Component; original?: Component; clientId?: number; components: Component[]; usedBy: string[]; saving: boolean; onChange: (value: Component) => void; onSave: () => Promise<void>; onClose: () => void }
 function Field({ label, text, example, children, wide = false, options }: { label: string; text: string; example: string; children: ReactNode; wide?: boolean; options?: SalaryHelpOption[] }) {
   const choices = options ?? (label === 'Calculation method' ? calculationHelp : label === 'Adjust for payable days' ? attendanceHelp : label === 'Fixed / variable classification' ? payTypeHelp : [])
   return <div className={`salary-editor-field${wide ? ' wide' : ''}`}><div className="salary-editor-label"><span>{label}</span><SalaryFieldHelp label={label} text={text} example={example} options={choices} /></div>{children}</div>
 }
-export default function SalaryComponentEditor({ value, original, clientId, components, usedBy, saving, onChange, onSave, onClose }: Props) {
+export default function SalaryComponentEditor({ categoryPicker, value, original, clientId, components, usedBy, saving, onChange, onSave, onClose }: Props) {
   const [attempted, setAttempted] = useState(false)
   const [formulaOpen, setFormulaOpen] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
@@ -60,12 +60,15 @@ export default function SalaryComponentEditor({ value, original, clientId, compo
     ['Correction of', value.correctionOf || 'Not set', 'Preserved reference only; it does not automatically reverse salary.', 'Correct a previous payment through the adjustment process with the original period.']
   ]
   return <>
-    <Drawer open title={original ? 'Edit salary component' : 'Add salary component'} width="min(760px, 100vw)" onClose={onClose} className="salary-component-editor salary-form-controls" maskClosable={false}
-      footer={<div className="salary-editor-footer"><PayrollAdvisor components={components} component={value} fixedClientId={clientId} onDisableProration={() => patch({ proRata: false })} /><Button onClick={onClose}>Cancel</Button><Button type="primary" loading={saving} onClick={() => void save()}>Save component</Button></div>}>
+    <Drawer open zIndex={categoryPicker ? 1100 : undefined} title={original ? 'Edit salary component' : 'Add salary component'} width="min(760px, 100vw)" onClose={onClose} className="salary-component-editor salary-form-controls" maskClosable={false} keyboard={!saving} closable={!saving}
+      footer={<div className="salary-editor-footer"><PayrollAdvisor components={components} component={value} fixedClientId={clientId} onDisableProration={() => patch({ proRata: false })} /><Button disabled={saving} onClick={onClose}>Cancel</Button><Button type="primary" loading={saving} onClick={() => void save()}>Save component</Button></div>}>
       {attempted && errors.length > 0 && <Alert type="error" showIcon message="Check these fields" description={<ul>{errors.map(error => <li key={error}>{error}</li>)}</ul>} />}
       <div className="salary-guide-trigger"><SalarySetupGuide value={value} original={original} components={components} usedBy={usedBy} onChange={onChange} /></div>
       <section className="salary-editor-section"><h3>Basic details</h3><div className="salary-editor-grid">
-        <Field label="Category" text="Determines whether the component is an earning, employee deduction or employer cost. Chosen from the salary component tab." example="Wages: Earning. Loan recovery: Deduction. Employer insurance: Benefit."><Input readOnly value={value.category === 'Benefit' ? 'Employer Benefit' : value.category} aria-label="Category" /></Field>
+        <Field label="Category" text="Groups this salary component in the master library and template." example="Wages: Earning. Loan recovery: Deduction. Employer insurance: Benefit.">
+          {categoryPicker ? <Select aria-label="Category" value={value.category} options={categoryPicker.options.map(category => ({ value: category, label: category === 'Benefit' ? 'Employer Benefit' : category }))} onChange={categoryPicker.onChange} disabled={saving} />
+            : <Input readOnly value={value.category === 'Benefit' ? 'Employer Benefit' : value.category} aria-label="Category" />}
+        </Field>
         <Field label="Component name" text="Name printed on payroll outputs. Renaming does not change the formula code." example="Special Allowance is easier to read on a payslip than SPL_ALW."><Input value={value.name} onChange={event => patch({ name: event.target.value })} aria-label="Component name" /></Field>
         <Field label="Component code" text="Unique identifier used by formulas and imports. Existing codes are locked; create a new component for a different identity." example="WAGES can be referenced as WAGES_EARNED in another calculation."><Input value={value.code} disabled={!!original} onChange={event => patch({ code: event.target.value.toUpperCase().replace(/\s/g, '_') })} aria-label="Component code" /></Field>
         <Field label="Active" text="Available for new assignments. Deactivating a component used by a template can block future payroll; historical payroll is not recalculated." example="Remove it from future templates before marking it inactive."><Checkbox checked={value.active} onChange={event => patch({ active: event.target.checked })}>Active</Checkbox></Field>

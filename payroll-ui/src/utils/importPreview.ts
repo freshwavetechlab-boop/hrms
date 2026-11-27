@@ -1,7 +1,9 @@
 export type ImportPreviewIssue = { rowNumber: number; column?: string; message: string }
 export type ImportPreviewRow = Record<string, string>
 export type ImportPreviewData = { headers: string[]; rows: string[][] }
-export type ImportPreviewSheet = ImportPreviewData & { name: string }
+export type ImportPreviewSheet = ImportPreviewData & { name: string; headerRow?: number; sourceRowNumbers?: number[] }
+type ImportSourceRow = { rowNumber: number; values: string[] }
+export type ImportSourceSheet = { name: string; rows: ImportSourceRow[] }
 export type ImportPreviewRules = {
   required?: string[]
   unique?: string[][]
@@ -17,20 +19,39 @@ const textDecoder = new TextDecoder()
 const norm = (value: string) => value.replace(/[\s_-]/g, '').toLowerCase()
 
 export async function parseImportPreviewFile(file: File): Promise<ImportPreviewData> {
-  const rows = file.name.toLowerCase().endsWith('.xlsx') ? (await parseXlsxSheets(file))[0]?.rows ?? [] : parseCsv(await file.text())
-  return normalizeRows(rows)
+  const [sheet] = await parseImportSourceSheets(file)
+  return defaultPreview(sheet)
 }
 
 export async function parseImportPreviewSheets(file: File): Promise<ImportPreviewSheet[]> {
-  if (!file.name.toLowerCase().endsWith('.xlsx')) return [{ name: 'CSV', ...normalizeRows(parseCsv(await file.text())) }]
-  return (await parseXlsxSheets(file)).map(sheet => ({ name: sheet.name, ...normalizeRows(sheet.rows) })).filter(sheet => sheet.headers.length)
+  const sheets = (await parseImportSourceSheets(file)).map(sheet => ({ name: sheet.name, ...defaultPreview(sheet) }))
+  return file.name.toLowerCase().endsWith('.xlsx') ? sheets.filter(sheet => sheet.headers.length) : sheets
 }
 
-function normalizeRows(rows: string[][]): ImportPreviewData {
-  const firstNonEmpty = rows.findIndex(row => row.some(cell => cell.trim()))
-  if (firstNonEmpty < 0) return { headers: [], rows: [] }
-  const headers = rows[firstNonEmpty].map(cell => cell.trim())
-  return { headers, rows: rows.slice(firstNonEmpty + 1).filter(row => row.some(cell => cell.trim())) }
+export async function parseImportSourceSheets(file: File): Promise<ImportSourceSheet[]> {
+  if (file.name.toLowerCase().endsWith('.xlsx')) return parseXlsxSheets(file)
+  const rows = parseCsv(await file.text()).map((values, index) => ({ rowNumber: index + 1, values }))
+  return [{ name: 'CSV', rows: rows.filter(hasSourceValues) }]
+}
+
+function hasSourceValues(row: ImportSourceRow) {
+  return row.values.some(cell => cell.trim())
+}
+
+function defaultPreview(sheet: ImportSourceSheet): ImportPreviewData {
+  return { headers: (sheet.rows[0]?.values ?? []).map(cell => cell.trim()), rows: sheet.rows.slice(1).map(row => row.values) }
+}
+
+export function selectImportHeader(sheet: ImportSourceSheet, headerRow: number): ImportPreviewSheet {
+  const index = sheet.rows.findIndex(row => row.rowNumber === headerRow)
+  const data = index < 0 ? [] : sheet.rows.slice(index + 1)
+  return {
+    name: sheet.name,
+    headerRow,
+    headers: (sheet.rows[index]?.values ?? []).map(cell => cell.trim()),
+    rows: data.map(row => row.values),
+    sourceRowNumbers: data.map(row => row.rowNumber),
+  }
 }
 
 export function validateImportPreview(data: ImportPreviewData, rules: ImportPreviewRules): ImportPreviewIssue[] {
@@ -110,7 +131,7 @@ async function parseXlsxSheets(file: File) {
   const sheets = targets.map(sheet => {
     const xml = entries.get(sheet.path)
     return xml ? { name: sheet.name, rows: parseSheet(xml, shared) } : null
-  }).filter((sheet): sheet is { name: string; rows: string[][] } => Boolean(sheet))
+  }).filter((sheet): sheet is ImportSourceSheet => Boolean(sheet))
   if (!sheets.length) throw new Error('No worksheets found.')
   return sheets
 }
@@ -176,17 +197,22 @@ function parseWorkbookSheets(workbookXml = '', relsXml = '') {
 
 function parseSheet(xml: string, shared: string[]) {
   const doc = new DOMParser().parseFromString(xml, 'application/xml')
+  let previousRow = 0
   return Array.from(doc.getElementsByTagName('row')).map(row => {
     const values: string[] = []
-    Array.from(row.getElementsByTagName('c')).forEach(cell => {
+    const cells = Array.from(row.getElementsByTagName('c'))
+    const position = Number(row.getAttribute('r') || cells[0]?.getAttribute('r')?.match(/\d+$/)?.[0])
+    const rowNumber = Number.isSafeInteger(position) && position > 0 ? position : previousRow + 1
+    previousRow = rowNumber
+    cells.forEach(cell => {
       const index = cellIndex(cell.getAttribute('r') ?? 'A1')
       while (values.length < index) values.push('')
       const type = cell.getAttribute('t') ?? ''
       const raw = type === 'inlineStr' ? cell.getElementsByTagName('t')[0]?.textContent ?? '' : cell.getElementsByTagName('v')[0]?.textContent ?? ''
       values.push(type === 's' ? shared[Number(raw)] ?? '' : raw)
     })
-    return values
-  })
+    return { rowNumber, values }
+  }).filter(hasSourceValues)
 }
 
 function cellIndex(reference: string) {

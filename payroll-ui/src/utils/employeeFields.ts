@@ -2,6 +2,7 @@ import type { EmployeeAttributeField, EmployeeAttributeForm } from '../types/emp
 import { employeeBulkImportDefinition } from '../config/bulkImportDefinitions'
 import type { BulkImportDefinition, BulkImportFieldType } from './smartBulkImport'
 import { downloadXlsx } from './xlsx'
+import { resolveEmployeeCtc } from './employeeCtc'
 import type { Employee, WorkLocation, WorkflowApprover, Structure } from '../types/payroll'
 import { getJsonResult } from '../services/apiClient'
 
@@ -33,6 +34,7 @@ export function employeeImportDefinition(exchange: EmployeeFieldExchange): BulkI
 }
 
 export function employeeFieldValue(row: Employee, code: string, locations: WorkLocation[], users: WorkflowApprover[], templates: Structure[]) {
+  if (code === 'MonthlyCtc') return resolveEmployeeCtc(String(row.annualCtc ?? ''), '').monthly
   const personal = row.personalDetails, bank = row.paymentDetails
   const values: Record<string, unknown> = {
     EmployeeId: row.id || '', WorkLocationId: row.workLocationId || '', ReportingManagerUserId: row.reportingManagerUserId || '', SalaryTemplateId: row.salaryStructureId, SalaryJson: row.salaryJson, City: personal.city, District: personal.district, State: personal.state,

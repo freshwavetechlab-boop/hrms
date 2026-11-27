@@ -13,6 +13,15 @@ function load(name) {
 const { evaluatePayrollFormula: evaluate, inspectPayrollFormula, payrollFormulaErrorKind } = load('payrollFormula')
 const { validateSalaryTemplateFormula: validate, suggestSalaryTemplateFormula: suggest } = load('salaryTemplateFormulaValidation')
 const { calculateSalaryDetails } = load('salary')
+test('employee daily rate zero takes precedence while a blank override uses the template rate', () => {
+  const component = { id: '1', code: 'WAGES', calculationType: 'Daily Rate', category: 'Earning', value: '450', active: true }
+  const calculate = overrides => calculateSalaryDetails(0, [component], { lines: [{ componentId: '1' }] }, overrides)[0]
+  assert.equal(calculate({ '1': 0 }).monthly, 0)
+  assert.equal(calculate({ '1': '' }).dailyRate, 450)
+  assert.equal(calculate({}).monthly, 13500)
+  component.value = '0'
+  assert.match(calculate({}).error, /positive configured rate/i)
+})
 const cases = JSON.parse(readFileSync(new URL('./fixtures/salary-formula-parity.json', import.meta.url), 'utf8'))
 for (const fixture of cases) test(`native payroll parity: ${fixture.name}`, () => {
   assert.ok(Math.abs(evaluate(fixture.formula, fixture.values) - fixture.expected) < 1e-8)

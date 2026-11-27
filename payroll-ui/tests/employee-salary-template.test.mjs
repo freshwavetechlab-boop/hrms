@@ -15,6 +15,20 @@ const foreign = { id: 316748801016, clientId: '33', name: 'Other client salary s
 const owned = { id: 271, clientId: '55', name: 'Selected client template', active: true, annualCtc: '', lines: [] }
 const sample = () => ({ id: 5225, clientId: 55, employeeCode: 'SYN-000205', salaryStructureId: '', annualCtc: 436800, salaryJson: '{"11":"28000","12":"8400"}', salaryComponents: { 11: 28000, 12: 8400 } })
 
+test('test payroll cleanup requires an opted-in review matching the payslips listed, including on an already assigned employee', () => {
+  const employee = sample()
+  const row = { rowNumber: 2, sheet: 'Employees', matchedEmployeeId: employee.id, matchedEmployeeCode: employee.employeeCode,
+    matchStatus: 'MatchedByEmployeeId', blockingReasons: [], changes: [{ field: 'removeTestPayslips', oldValue: '2', newValue: '0' }],
+    testPayslips: [{ runId: 10, paid: true }, { runId: 11, paid: false }] }
+  const review = { reviewToken: 'fixture', totalRows: 1, canImport: true, rows: [row] }
+  assert.equal(helpers.reviewedSalaryAssignment(review, [employee], '271').ready, 0)
+  const result = helpers.reviewedSalaryAssignment(review, [employee], '271', true)
+  assert.equal(result.ready, 1)
+  assert.deepEqual(result.decisions[0].fieldChoices, { removeTestPayslips: 'useImported' })
+  row.testPayslips.pop()
+  assert.equal(helpers.reviewedSalaryAssignment(review, [employee], '271', true).ready, 0)
+})
+
 test('employee choices never fall back to a foreign client and support shared/multi-client definitions', () => {
   assert.deepEqual(helpers.employeeSalaryTemplates([foreign], 55), [])
   const shared = { ...owned, id: 272, clientId: '0' }
@@ -31,6 +45,16 @@ test('employee choices never fall back to a foreign client and support shared/mu
 test('the salary workspace retains global zero-string and authorized multi-client definitions', () => {
   const rows = [foreign, { ...owned, clientId: '0' }, { ...owned, id: 272, clientId: '' }, { ...owned, id: 273, clientId: '17;55' }, { ...owned, id: 274, clientId: '208|33' }]
   assert.deepEqual(helpers.salaryTemplatesForVisibleClients(rows, new Set(['55'])).map(row => row.id), [271, 272, 273])
+})
+
+test('the directory distinguishes an unassigned template from a saved ID awaiting a label', () => {
+  for (const id of [undefined, '', '0', '0:legacy']) assert.equal(helpers.currentSalaryTemplateLabel({ salaryStructureId: id }), 'Without salary template')
+  assert.equal(helpers.currentSalaryTemplateLabel({ salaryStructureId: '271:legacy' }), 'Template #271')
+  assert.equal(helpers.currentSalaryTemplateLabel({ salaryStructureId: '271', salaryTemplateName: 'Main' }), 'Main')
+  const mapped = { salaryStructureId: '271', salaryTemplatePolicyId: '271', salaryTemplateName: 'Main',
+    latestBulkSalaryAssignment: { salaryTemplateId: '17', salaryTemplateName: 'Older payroll template' } }
+  assert.equal(helpers.currentSalaryTemplateLabel(mapped), 'Main')
+  assert.notEqual(helpers.employeeSalaryAssignmentKey(mapped), helpers.employeeSalaryAssignmentKey({ ...mapped, salaryTemplatePolicyId: null }))
 })
 
 const source = read('../src/pages/EmployeePage.tsx')
@@ -53,6 +77,10 @@ function harness(overrides = {}) {
     employee: sample(), setup: { salaryStructures: [foreign], salaryComponents: [] }, salaryOverrides: {}, chosenStructure: undefined,
     employee0: { ...sample(), id: 0, clientId: 0, employeeCode: '', annualCtc: 0, salaryJson: '{}', salaryComponents: {} },
     editorGeneration: { current: 0 }, currentClientFilter: { current: 55 }, clientFilter: 55,
+    rosterRef: { current: [] }, editorRosterTemplate: { current: '' }, updatedAssignment: undefined,
+    dataScope: 'test', currentDataScope: { current: 'test' }, saveInFlight: { current: false },
+    editedCode: false, editKind: 'none', setSavingEmployee() {}, notifyEmployeeMasterSaved() {},
+    setSavedEmployee: value => { context.savedEmployee = value }, setSaveError: value => { context.saveError = value },
     normalizeEmployeeDetails: row => ({ ...row }), inferSalaryOverrides: () => ({}),
     hasDailyRateComponents: () => false, dailyRateSalary: false,
     calcSalary: (ctc, structure) => { calls.calc.push([ctc, structure?.id]); return '{"11":"30000","12":"9000"}' },
@@ -146,6 +174,33 @@ test('manual Basic Pay edits while unassigned change only the selected stored co
   assert.equal(h.context.employee.salaryComponents[11], 29000)
   assert.equal(h.context.employee.salaryComponents[12], 8400)
   assert.equal(h.calls.calc.length, 0)
+})
+
+test('Basic Pay keeps mapped employee inputs and CTC when it opens or the user changes the policy', async () => {
+  const other = { ...owned, id: 272, annualCtc: '960000' }
+  const employee = { ...sample(), salaryStructureId: '271', salaryTemplatePolicyId: '271',
+    salaryComponents: { 11: 0 }, salaryJson: '{"11":0}' }
+  const h = harness({ employee, setup: { salaryStructures: [owned, other], salaryComponents: [] } })
+  await h.context.editEmployee(employee, '0008')
+  assert.equal(h.context.employee.salaryStructureId, '271')
+  h.context.applyStructure('272')
+  assert.equal(h.context.employee.annualCtc, employee.annualCtc)
+  assert.deepEqual({ ...h.context.employee.salaryComponents }, { 11: 0 })
+  assert.equal(h.context.employee.salaryStructureId, '272')
+  assert.equal(h.context.employee.salaryTemplatePolicyId, '271', 'the save still identifies the assignment that was edited')
+  assert.equal(h.calls.calc.length, 0)
+})
+
+test('a policy maps Basic Pay inputs by ID or code and leaves derived values to its own formulas', () => {
+  const components = [
+    { id: 11, code: 'BASIC' }, { id: 12, code: 'PHONE' }, { id: 13, code: 'HRA' }, { id: 14, code: 'UNUSED' }
+  ]
+  const h = harness({ setup: { salaryStructures: [owned], salaryComponents: components },
+    employeeSalaryInputFields: () => [{ code: 'SALARY_INPUT:11' }, { code: 'SALARY_INPUT:12' }] })
+  vm.runInContext(compile(actual('inferSalaryOverrides')), h.context)
+  const result = h.context.inferSalaryOverrides({ ...sample(), salaryTemplatePolicyId: '271', salaryStructureId: '271',
+    salaryComponents: { basic: 20000, 12: 0, HRA: 999, 14: 77 } }, owned)
+  assert.deepEqual({ ...result }, { 11: '20000', 12: '0' })
 })
 
 test('a template with no positive CTC preset retains the employee CTC during explicit selection', () => {

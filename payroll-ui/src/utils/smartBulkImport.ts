@@ -1,5 +1,6 @@
 import type { ImportPreviewSheet } from './importPreview'
 import { buildXlsxBlob } from './xlsx'
+import { resolveEmployeeCtc } from './employeeCtc'
 
 export type BulkImportFieldType = 'text' | 'email' | 'number' | 'date' | 'boolean' | 'lookup'
 
@@ -30,6 +31,7 @@ export type BulkImportNameSplitStrategy = 'first-token' | 'last-token'
 
 export type BulkImportTransformOptions = {
   operation?: BulkImportOperation
+  employeeSalaryContext?: { templateId: string; effectiveFrom: string }
   employeeCodeGeneration?: {
     enabled: boolean
     prefix: string
@@ -85,12 +87,24 @@ export function normalizeBulkImportHeader(value: string) {
 }
 
 export function autoMapBulkImportColumns(sheet: ImportPreviewSheet, definition: BulkImportDefinition): BulkImportMapping {
-  const source = sheet.headers.map((header, index) => ({ index, normalized: normalizeBulkImportHeader(header.match(/\[(CUSTOM:[A-Z0-9_]+:[A-Z0-9_]+:[A-Z0-9_]+)\]\s*$/i)?.[1] || header) }))
+  const source = sheet.headers.map((header, index) => ({ index, normalized: normalizeBulkImportHeader(header.match(/\[(CUSTOM:[A-Z0-9_]+:[A-Z0-9_]+:[A-Z0-9_]+|SALARY_INPUT:\d+)\]\s*$/i)?.[1] || header) }))
   const used = new Set<number>()
   const result: BulkImportMapping = {}
+  const salaryAliases = new Map<string, number>()
+  for (const field of definition.fields.filter(field => field.code.startsWith('SALARY_INPUT:'))) {
+    for (const alias of new Set(field.aliases?.map(normalizeBulkImportHeader))) salaryAliases.set(alias, (salaryAliases.get(alias) ?? 0) + 1)
+  }
   for (const field of definition.fields) {
     const candidates = [field.header, ...(!field.code.startsWith('CUSTOM:') ? [field.label] : []), field.code, ...(field.aliases ?? [])].map(normalizeBulkImportHeader).filter(Boolean)
-    const match = source.find(column => !used.has(column.index) && candidates.includes(column.normalized))
+    const isSalary = field.code.startsWith('SALARY_INPUT:')
+    const matches = source.filter(column => !(definition.moduleCode === 'EMPLOYEE' && column.normalized === 'ctc')
+      && !used.has(column.index) && candidates.includes(column.normalized)
+      && (!isSalary || (salaryAliases.get(column.normalized) ?? 0) <= 1))
+    // A sheet can contain separate monthly and earned columns both labelled BASIC.
+    // Let the user pick one instead of silently taking whichever appears first.
+    const marked = isSalary ? matches.filter(column => column.normalized === normalizeBulkImportHeader(field.code)) : []
+    const eligible = marked.length ? marked : matches
+    const match = !isSalary || eligible.length === 1 ? eligible[0] : undefined
     if (!match) continue
     result[field.code] = match.index
     used.add(match.index)
@@ -117,17 +131,35 @@ export function prepareMappedBulkImport(file: File, sheet: ImportPreviewSheet, d
   if (split && mappings[firstNameCode] === undefined) transformedCodes.add(firstNameCode)
   if (split && mappings[lastNameCode] === undefined) transformedCodes.add(lastNameCode)
   if (codeGeneration) transformedCodes.add('EmployeeCode')
+  const mapEmployeeCtc = definition.moduleCode === 'EMPLOYEE' && (mappings.AnnualCtc !== undefined || mappings.MonthlyCtc !== undefined)
+  const isCtcField = (code: string) => mapEmployeeCtc && (code === 'AnnualCtc' || code === 'MonthlyCtc')
   // Upsert must remain sparse: an unmapped default such as Active or Portal
   // Access must not overwrite an existing employee. Insert mode may materialize
   // defaults because every row is guaranteed to be new.
-  const outputFields = definition.fields.filter(field => mappings[field.code] !== undefined || transformedCodes.has(field.code) || (operation === 'insert' && field.defaultValue !== undefined) || field.required)
+  const outputFields = definition.fields.filter(field => mappings[field.code] !== undefined || isCtcField(field.code) || transformedCodes.has(field.code) || (operation === 'insert' && field.defaultValue !== undefined) || field.required)
   const outputHeaders = outputFields.map(field => field.header)
+  const salaryFields = outputFields.filter(field => field.code.startsWith('SALARY_INPUT:')
+    || (isCtcField(field.code) && options.employeeSalaryContext && mappings[field.code] !== undefined))
+  const assignNewHires = operation !== 'update' && !!options.employeeSalaryContext?.effectiveFrom
+  const salaryContext = salaryFields.length || assignNewHires ? options.employeeSalaryContext : undefined
+  if (salaryFields.length || assignNewHires) {
+    if (!salaryContext || !/^[1-9]\d*$/.test(salaryContext.templateId) || !/^\d{4}-\d{2}-\d{2}$/.test(salaryContext.effectiveFrom)) {
+      throw new Error('Choose a salary template and effective date for the mapped salary inputs.')
+    }
+    if (['SalaryJson', 'SalaryTemplate', 'SalaryTemplateId'].some(code => mappings[code] !== undefined)) {
+      throw new Error('Remove the separate Salary Json or Salary Template mapping before mapping individual salary inputs.')
+    }
+    outputHeaders.push('Salary Template Id', 'Salary Effective From')
+  }
   const generatedCodes = buildEmployeeCodes(sheet.rows, mappings.EmployeeCode, codeGeneration)
   let splitNames = options.preTransformedRows ?? 0
   const outputRows = sheet.rows.map((row, rowIndex) => {
     const nameParts = split ? splitBulkImportName(row[split.sourceColumnIndex] ?? '', split.strategy) : null
     if (nameParts?.firstName || nameParts?.lastName) splitNames++
-    return outputFields.map(field => {
+    const ctc = mapEmployeeCtc ? resolveEmployeeCtc(row[mappings.AnnualCtc] ?? '', row[mappings.MonthlyCtc] ?? '', !salaryContext) : null
+    const values = outputFields.map(field => {
+      if (ctc && field.code === 'AnnualCtc') return ctc.annual
+      if (ctc && field.code === 'MonthlyCtc') return ctc.monthly
       const sourceIndex = mappings[field.code]
       if (sourceIndex !== undefined) {
         const direct = row[sourceIndex] ?? ''
@@ -138,22 +170,31 @@ export function prepareMappedBulkImport(file: File, sheet: ImportPreviewSheet, d
       if (field.code === lastNameCode && nameParts) return nameParts.lastName
       return operation === 'insert' ? field.defaultValue ?? '' : ''
     })
+    if (salaryContext) {
+      const hasSalaryInput = salaryFields.some(field => row[mappings[field.code]]?.trim())
+      const useTemplate = hasSalaryInput || assignNewHires
+      values.push(useTemplate ? salaryContext.templateId : '', useTemplate ? salaryContext.effectiveFrom : '')
+    }
+    return values
   })
   const mappedSourceColumns = new Set(Object.values(mappings))
   if (split) mappedSourceColumns.add(split.sourceColumnIndex)
   const sourceColumns = sheet.headers.length
   const outputName = `${withoutExtension(file.name)}-${definition.moduleCode.toLowerCase()}-mapped.xlsx`
-  const columns = outputFields.map(field => {
+  const columns: PreparedBulkImportColumn[] = outputFields.map(field => {
     const sourceColumnIndex = mappings[field.code]
     const mapped = sourceColumnIndex !== undefined
-    const generated = field.code === 'EmployeeCode' && Boolean(codeGeneration)
+    const derivedCtc = !mapped && isCtcField(field.code)
+    const generated = derivedCtc || field.code === 'EmployeeCode' && Boolean(codeGeneration)
     const sourceTransform = sourceColumnIndex === undefined ? undefined : options.sourceColumnTransforms?.[sourceColumnIndex]
     const transformed = (transformedCodes.has(field.code) || Boolean(sourceTransform)) && !generated
     return {
       targetCode: field.code,
       targetHeader: field.header,
       sourceColumnIndex,
-      sourceHeader: sourceTransform
+      sourceHeader: derivedCtc
+        ? field.code === 'MonthlyCtc' ? 'Annual CTC ÷ 12' : 'Monthly CTC × 12'
+        : sourceTransform
         ? sourceTransform
         : mapped
           ? sheet.headers[sourceColumnIndex] || `Column ${sourceColumnIndex + 1}`
@@ -166,6 +207,13 @@ export function prepareMappedBulkImport(file: File, sheet: ImportPreviewSheet, d
       kind: generated ? 'generated' as const : transformed ? 'transformed' as const : mapped ? 'mapped' as const : 'default' as const
     }
   })
+  if (salaryContext) {
+    const color = bulkImportMappingColor(definition.fields.length)
+    columns.push(
+      { targetCode: 'SalaryTemplateId', targetHeader: 'Salary Template Id', sourceHeader: 'Selected salary template', kind: 'generated', color },
+      { targetCode: 'SalaryEffectiveFrom', targetHeader: 'Salary Effective From', sourceHeader: 'Selected salary effective date', kind: 'generated', color },
+    )
+  }
   return {
     file: new File([buildXlsxBlob([{ name: definition.targetSheetName, rows: [outputHeaders, ...outputRows] }])], outputName, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
     sourceFileName: file.name,

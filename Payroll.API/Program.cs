@@ -4804,25 +4804,29 @@ app.MapGet("/api/employees/import-template", async (OrganizationRepository organ
 .WithName("DownloadEmployeeImportTemplate")
 .WithOpenApi();
 
-app.MapPost("/api/employees/import-preflight", async (EmployeeRepository repository, [FromForm] ClientFileUploadRequest request, HttpContext context) =>
+app.MapPost("/api/employees/import-preflight", async (EmployeeRepository repository, [FromForm] EmployeeFileUploadRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "employees.manage") || !CanAccessClient(context, request.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (!request.TryAuthorizeForce(CurrentUser(context), out var forceSalaryActor)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
     if (request.File is null || request.File.Length == 0) return Results.BadRequest(new { error = "Select an employee CSV or Excel file." });
-    var result = await repository.PreflightImportCsvAsync(request.ClientId, request.File, request.Mode);
+    if (!request.TryAuthorizeTestCleanup(CurrentUser(context), out var cleanupActor)) return Results.StatusCode(403);
+    var result = await repository.PreflightImportCsvAsync(request.ClientId, request.File, request.Mode, forceSalaryActor, cleanupActor);
     return result.CanImport ? Results.Ok(result) : Results.UnprocessableEntity(result);
 })
 .DisableAntiforgery()
 .WithName("PreflightEmployeeImport")
 .WithOpenApi();
 
-app.MapPost("/api/employees/import", async (EmployeeRepository repository, [FromForm] ClientFileUploadRequest request, HttpContext context) =>
+app.MapPost("/api/employees/import", async (EmployeeRepository repository, [FromForm] EmployeeFileUploadRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "employees.manage") || !CanAccessClient(context, request.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (!request.TryAuthorizeForce(CurrentUser(context), out var forceSalaryActor)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
     if (request.File is null || request.File.Length == 0)
         return Results.BadRequest(new { error = "Select an employee CSV or Excel file." });
-    var result = await repository.ImportCsvAsync(request.ClientId, request.File, request.Mode, request.ReviewToken, request.DecisionsJson);
+    if (!request.TryAuthorizeTestCleanup(CurrentUser(context), out var cleanupActor)) return Results.StatusCode(403);
+    var result = await repository.ImportCsvAsync(request.ClientId, request.File, request.Mode, request.ReviewToken, request.DecisionsJson, forceSalaryActor, CurrentUser(context).Id, cleanupActor);
     return result.RequiresConfirmation
         ? Results.Conflict(result)
         : result.Errors.Count > 0 ? Results.BadRequest(result) : Results.Ok(result);
@@ -4831,22 +4835,46 @@ app.MapPost("/api/employees/import", async (EmployeeRepository repository, [From
 .WithName("ImportEmployees")
 .WithOpenApi();
 
-app.MapPost("/api/employees/import-jobs", async (EmployeeRepository repository, [FromForm] ClientFileUploadRequest request, HttpContext context) =>
+app.MapPost("/api/employees/import-jobs", async (EmployeeRepository repository, [FromForm] EmployeeFileUploadRequest request, HttpContext context) =>
 {
     if (!HasPermission(context, "employees.manage") || !CanAccessClient(context, request.ClientId)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (!request.TryAuthorizeForce(CurrentUser(context), out var forceSalaryActor)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (request.ClientId <= 0) return Results.BadRequest(new { error = "Select a client." });
     if (request.File is null || request.File.Length == 0)
         return Results.BadRequest(new { error = "Select an employee CSV or Excel file." });
-    return Results.Accepted($"/api/employees/import-jobs", await repository.StartImportCsvJobAsync(request.ClientId, request.File, request.Mode, request.ReviewToken, request.DecisionsJson));
+    if (!request.TryAuthorizeTestCleanup(CurrentUser(context), out var cleanupActor)) return Results.StatusCode(403);
+    var job = await repository.StartImportCsvJobAsync(request.ClientId, request.File, request.Mode, request.ReviewToken, request.DecisionsJson,
+        forceSalaryActor, CurrentUser(context).Id, cleanupActor);
+    return Results.Accepted($"/api/employees/import-jobs/{job.JobId}", job);
 })
 .DisableAntiforgery()
 .WithName("StartEmployeeImportJob")
 .WithOpenApi();
 
-app.MapGet("/api/employees/import-jobs/{jobId:guid}", (EmployeeRepository repository, Guid jobId) =>
-    repository.GetImportJob(jobId) is { } job ? Results.Ok(job) : Results.NotFound(new { error = "Import job not found." }))
+app.MapGet("/api/employees/import-jobs", async (EmployeeRepository repository, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (!EmployeeRepository.CanSeeEmployeeImportJobs(user)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return Results.Ok(new { items = await repository.OwnEmployeeImportJobsAsync(user) });
+}).WithName("ListOwnEmployeeImportJobs").WithOpenApi();
+
+app.MapGet("/api/employees/import-jobs/{jobId:guid}", async (EmployeeRepository repository, Guid jobId, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (!EmployeeRepository.CanSeeEmployeeImportJobs(user)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var job = (await repository.OwnEmployeeImportJobsAsync(user, jobId)).SingleOrDefault();
+    return job is null ? Results.NotFound(new { error = "Import job not found." }) : Results.Ok(job);
+})
 .WithName("GetEmployeeImportJob")
 .WithOpenApi();
+
+app.MapPost("/api/employees/import-jobs/{jobId:guid}/dismiss", async (EmployeeRepository repository, Guid jobId, HttpContext context) =>
+{
+    var user = CurrentUser(context);
+    if (!EmployeeRepository.CanSeeEmployeeImportJobs(user)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return await repository.DismissEmployeeImportJobAsync(user, jobId)
+        ? Results.Ok(new { ok = true }) : Results.NotFound(new { error = "No finished employee job to dismiss." });
+}).WithName("DismissEmployeeImportJob").WithOpenApi();
 
 ExcelPayslipEndpoints.Map(app, CanViewPayslipRegister, CanSendPayslips, CanAccessClient, CurrentUser);
 app.MapExcelPayrollSetup();

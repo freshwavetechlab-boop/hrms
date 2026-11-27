@@ -55,7 +55,7 @@ WHERE e.ClientId=@ClientId AND e.Id IN @Ids AND "+EmployeeEmploymentRules.Eligib
         var data=new FormulaWorkbookContext(map,setupJson,[],[],null!);
         var result=new HistoricalSimulationContext(db,tx,clientId,period,controlBasisOnly?"ActualControlBasis":assignments is null?"Saved":"Proposed",data,ids);
         if(assignments is not null)foreach(var assignment in assignments)result.AssignmentHashes[assignment.EmployeeId]=HistoricalAssignmentHash(assignment);
-        try{await LoadEmployeeTablesAsync(db,tx,employees,period,loadReviewedProfessionalTax:false);}
+        try{await LoadEmployeeTablesAsync(db,tx,employees,period,loadReviewedProfessionalTax:false,applyTemplatePolicy:assignments is null);}
         catch(InvalidOperationException){result.Fallback=true;return result;}
         map.Clear();foreach(var employee in employees)map.Add(employee.Id,employee.HistoricalContextClone());
         if(controlBasisOnly)return result;

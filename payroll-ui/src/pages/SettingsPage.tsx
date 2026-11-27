@@ -57,7 +57,11 @@ const componentTabs = ['Earning', 'Deduction', 'Reimbursement', 'Benefit', 'Corr
 type ComponentCategory = (typeof componentTabs)[number]
 const componentRoleOptions = ['Regular Earning', 'Regular Deduction', 'Statutory Deduction', 'Employer Contribution', 'Employer Benefit', 'Reimbursement', 'Variable Pay', 'Arrear / Correction', 'Recovery'] as const
 const statutoryTypeOptions = ['None', 'TDS', 'Professional Tax', 'PF Employee', 'PF Employer', 'VPF', 'EPS', 'ESI Employee', 'ESI Employer', 'LWF Employee', 'LWF Employer', 'NPS Employee', 'NPS Employer', 'Workmen Compensation'] as const
-const defaultComponentRole = (category: string) => category === 'Deduction' ? 'Regular Deduction' : category === 'Reimbursement' ? 'Reimbursement' : category === 'Benefit' ? 'Employer Contribution' : category === 'Correction' ? 'Arrear / Correction' : 'Regular Earning'
+const defaultComponentRole = (category: string) => category === 'Deduction' ? 'Regular Deduction' : category === 'Reimbursement' ? 'Reimbursement' : category === 'Benefit' ? 'Employer Benefit' : category === 'Correction' ? 'Arrear / Correction' : 'Regular Earning'
+const newComponentClassification = (category: string) => ({
+  category, componentRole: defaultComponentRole(category),
+  statutoryType: 'None', taxable: category === 'Earning', proRata: category === 'Earning',
+})
 const ptSlab0: ProfessionalTaxSlab = { id: 0, state: '', salaryFrom: '0', salaryTo: '', deductionAmount: '', effectiveFrom: new Date().toISOString().slice(0, 10), effectiveTo: '', gender: 'All', notes: '', active: true }
 const calculationOptions = calculationChoices.map(item => item.value)
 const settingsSetup0: Setup = setup0
@@ -190,6 +194,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const [searchParams] = useSearchParams()
   const requestedPayslipClientId = Number(searchParams.get('clientId')) || 0
   const clientScopedAdmin = Boolean(session?.user.clientId && !session.user.permissions.includes('settings.manage'))
+  const canCreateSharedSalaryMaster = !!session?.user.permissions.includes('settings.manage') && !isSelectedClientUser(session.user) && !isSelectedClientUser(session.originalUser)
   const payslipFixedClientId = clientScopedAdmin || isSelectedClientUser(session?.originalUser) ? Number(session?.user.clientId) || 0 : 0
   const toast = useToast()
   const [org, setOrg] = useState(org0), [setup, setSetup] = useState(settingsSetup0), [clients, setClients] = useState<Client[]>([]), [client, setClient] = useState(client0)
@@ -206,7 +211,7 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
   const [organizationTab, setOrganizationTab] = useState<OrganizationTab>('Organization')
   const [statutoryTab, setStatutoryTab] = useState<StatutoryTab>('Income Tax Rules')
   const [ptSlab, setPtSlab] = useState<ProfessionalTaxSlab>(ptSlab0)
-  const [componentDrawerOpen, setComponentDrawerOpen] = useState(false)
+  const [componentEditor, setComponentEditor] = useState<{ onCreated?: (saved: Component) => void } | null>(null)
   const [componentTemplateDownloaded, setComponentTemplateDownloaded] = useState(false)
   const [componentUpload, setComponentUpload] = useState<SettingsBulkUpload>({ open: false, state: 'uploading', percent: 0, summary: { totalRows: 0 } })
   const [salaryTemplateDownloaded, setSalaryTemplateDownloaded] = useState(false)
@@ -773,9 +778,16 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     notify(response.ok ? 'Dropdown value deleted.' : response.error || 'Dropdown delete failed.', response.ok ? 'success' : 'error')
     if (response.ok) await load()
   }
-  const openNewComponent = () => { setComponent({ ...component0, category: componentTab, componentRole: componentTab === 'Benefit' ? 'Employer Benefit' : defaultComponentRole(componentTab), taxable: componentTab === 'Earning', proRata: componentTab === 'Earning' }); setComponentDrawerOpen(true) }
+  const openNewComponent = (category: string, onCreated?: (saved: Component) => void) => {
+    setComponent({ ...component0, ...newComponentClassification(category) })
+    setComponentEditor({ onCreated })
+  }
   const persistComponentSetup = async (nextSetup: Setup, success: string) => { setComponentSaving(true); const response = await saveSetup(nextSetup, { toast: false }); setComponentSaving(false); if (!response.ok) { notify(response.error || 'Unable to save salary components.', 'error'); return false } setSetup(nextSetup); notify(success); return true }
   const saveComponent = async () => {
+    if (componentEditor?.onCreated && !canCreateSharedSalaryMaster) {
+      notify('You need permission to create shared salary components.', 'error')
+      return
+    }
     const original = setup.salaryComponents.find(item => item.id === component.id)
     const row = { ...component, id: component.id || Date.now(), code: original ? original.code : component.code.trim().toUpperCase() }
     const errors = validateSalaryComponent(row, setup.salaryComponents, original)
@@ -786,16 +798,17 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
         const response = await saveSalaryComponent(row, original, { toast: false })
         if (!response.ok) { notify(response.error || 'Unable to save salary component.', 'error'); return }
         setSetup(current => ({ ...current, salaryComponents: [...current.salaryComponents.filter(item => item.id !== response.data.id), response.data] }))
-        notify(original ? 'Salary component updated successfully.' : 'Salary component added successfully.')
-        setComponent({ ...component0, category: componentTab }); setComponentDrawerOpen(false)
+        notify(componentEditor?.onCreated && !response.data.active ? 'Component saved as inactive. Activate it in Salary Components to add it to a template.' : original ? 'Salary component updated successfully.' : 'Salary component added successfully.')
+        componentEditor?.onCreated?.(response.data)
+        setComponent({ ...component0, category: componentTab }); setComponentEditor(null)
       } finally { setComponentSaving(false) }
       return
     }
     const nextSetup = { ...setup, salaryComponents: [...setup.salaryComponents.filter(item => item.id !== row.id), row] }
-    if (await persistComponentSetup(nextSetup, original ? 'Salary component updated successfully.' : 'Salary component added successfully.')) { setComponent({ ...component0, category: componentTab }); setComponentDrawerOpen(false) }
+    if (await persistComponentSetup(nextSetup, original ? 'Salary component updated successfully.' : 'Salary component added successfully.')) { setComponent({ ...component0, category: componentTab }); setComponentEditor(null) }
   }
-  const editComponent = (row: Component) => { if (componentTabs.includes(row.category as ComponentCategory)) setComponentTab(row.category as ComponentCategory); setComponent(normalizeComponentForUi(row)); setComponentDrawerOpen(true) }
-  const deleteComponent = async (row: Component) => { if (blockDeleteIfLinked(row.name || row.code, componentDeleteLinks(row))) return; if (!window.confirm(`Delete ${row.name || row.code}?`)) return; await persistComponentSetup({ ...setup, salaryComponents: setup.salaryComponents.filter(item => item.id !== row.id) }, 'Salary component deleted successfully.'); if (component.id === row.id) { setComponent({ ...component0, category: componentTab }); setComponentDrawerOpen(false) } }
+  const editComponent = (row: Component) => { if (componentTabs.includes(row.category as ComponentCategory)) setComponentTab(row.category as ComponentCategory); setComponent(normalizeComponentForUi(row)); setComponentEditor({}) }
+  const deleteComponent = async (row: Component) => { if (blockDeleteIfLinked(row.name || row.code, componentDeleteLinks(row))) return; if (!window.confirm(`Delete ${row.name || row.code}?`)) return; await persistComponentSetup({ ...setup, salaryComponents: setup.salaryComponents.filter(item => item.id !== row.id) }, 'Salary component deleted successfully.'); if (component.id === row.id) { setComponent({ ...component0, category: componentTab }); setComponentEditor(null) } }
   const toggleBillingModule = async (enabled: boolean) => {
     const response = await saveClientBillingModule({ isEnabled: enabled, advancedCostingEnabled: billingAdvancedEnabled })
     notify(response.ok ? enabled ? 'Client billing configuration enabled.' : 'Client billing configuration disabled.' : response.error || 'Unable to update billing module.', response.ok ? 'success' : 'error')
@@ -1007,11 +1020,12 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     </AntCard>
   }
   const componentRows = setup.salaryComponents.filter(item => item.category === componentTab)
-  const renderComponentDrawer = () => componentDrawerOpen ? <SalaryComponentEditor value={component}
+  const renderComponentDrawer = () => componentEditor ? <SalaryComponentEditor value={component}
+    categoryPicker={componentEditor.onCreated ? { options: componentTabs, onChange: category => setComponent(current => ({ ...current, ...newComponentClassification(category) })) } : undefined}
     clientId={session?.user.clientId || undefined}
     original={setup.salaryComponents.find(item => item.id === component.id)} components={setup.salaryComponents}
     usedBy={setup.salaryStructures.filter(item => item.lines.some(line => String(line.componentId) === String(component.id))).map(item => item.name)}
-    saving={componentSaving} onChange={setComponent} onSave={saveComponent} onClose={() => setComponentDrawerOpen(false)} /> : null
+    saving={componentSaving} onChange={setComponent} onSave={saveComponent} onClose={() => { if (!componentSaving) setComponentEditor(null) }} /> : null
 
 
   const pfPolicyTab = tab === 'Statutory Setup' && statutoryTab === 'PF Policy Versions'
@@ -1072,8 +1086,8 @@ export default function SettingsPage({ tab, onMessage }: { tab: SettingsTab; onM
     {tab === 'AI Integration' && <AiIntegrationSettings />}
     {tab === 'Scheduled Jobs' && <ScheduledJobsManager />}
     {tab === 'Attachments' && <AttachmentSettings />}
-    {tab === 'Salary Components' && <Card t="Salary components"><PageTabs items={componentTabs} value={componentTab} onChange={item => { setComponentTab(item); setComponent(normalizeComponentForUi({ ...component0, category: item })); setComponentDrawerOpen(false) }} label="Salary component categories" getLabel={item => `${item}s`} /><div className="component-table-head"><div><b>{componentTab}s</b><span>Maintain salary component formulas, flags, and payroll order.</span></div><Space className="settings-master-actions" size={8} wrap><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={downloadSalaryComponentTemplate}>Template</Button><label className={`settings-upload-action ${!componentTemplateDownloaded ? 'disabled' : ''}`} title={componentTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!componentTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadSalaryComponents(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button type="primary" icon={<PlusOutlined />} disabled={componentSaving} onClick={openNewComponent}>Add {componentTab}</Button></Space></div><DataTable rows={componentRows} actions={row => <span className="row-actions"><button type="button" onClick={() => editComponent(row)}>Edit</button><button type="button" className="danger" disabled={componentSaving} onClick={() => void deleteComponent(row)}>Delete</button></span>} emptyText={`No ${componentTab.toLowerCase()} components configured yet.`} exportFileName={`salary-${componentTab.toLowerCase()}-components`} columns={[{ key: 'code', label: 'Code' }, { key: 'name', label: 'Name' }, { key: 'componentType', label: 'Type' }, { key: 'componentRole', label: 'Role' }, { key: 'statutoryType', label: 'Statutory', render: item => item.statutoryType && item.statutoryType !== 'None' ? item.statutoryType : '-' }, { key: 'calculationType', label: 'Calculation' }, { key: 'payType', label: 'Pay Type' }, { key: 'priority', label: 'Priority' }, { key: 'locked', label: 'Lock', render: item => componentUsed(item.id, setup) ? 'Locked' : 'Open' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} /></Card>}
-    {tab === 'Salary Templates' && <SalaryTemplateDesigner fixedClientId={clientScopedAdmin ? Number(session?.user.clientId || 0) : undefined} clients={clients} employees={employees} locations={locations} canCreateComponentMasters={!!session?.user.permissions.includes('settings.manage') && !isSelectedClientUser(session.originalUser)} components={setup.salaryComponents} structure={structure} setStructure={setStructure} templates={salaryTemplatesForVisibleClients(setup.salaryStructures, activeClientIds)} onTemplateDeleted={id => {
+    {tab === 'Salary Components' && <Card t="Salary components"><PageTabs items={componentTabs} value={componentTab} onChange={item => { setComponentTab(item); setComponent(normalizeComponentForUi({ ...component0, category: item })); setComponentEditor(null) }} label="Salary component categories" getLabel={item => `${item}s`} /><div className="component-table-head"><div><b>{componentTab}s</b><span>Maintain salary component formulas, flags, and payroll order.</span></div><Space className="settings-master-actions" size={8} wrap><Button className="settings-toolbar-secondary" icon={<DownloadOutlined />} onClick={downloadSalaryComponentTemplate}>Template</Button><label className={`settings-upload-action ${!componentTemplateDownloaded ? 'disabled' : ''}`} title={componentTemplateDownloaded ? 'Upload Excel or CSV' : 'Download template first'}><input type="file" disabled={!componentTemplateDownloaded} accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={event => { void uploadSalaryComponents(event.target.files?.[0] ?? null); event.currentTarget.value = '' }} /><UploadOutlined />Bulk upload</label><Button type="primary" icon={<PlusOutlined />} disabled={componentSaving} onClick={() => openNewComponent(componentTab)}>Add {componentTab}</Button></Space></div><DataTable rows={componentRows} actions={row => <span className="row-actions"><button type="button" onClick={() => editComponent(row)}>Edit</button><button type="button" className="danger" disabled={componentSaving} onClick={() => void deleteComponent(row)}>Delete</button></span>} emptyText={`No ${componentTab.toLowerCase()} components configured yet.`} exportFileName={`salary-${componentTab.toLowerCase()}-components`} columns={[{ key: 'code', label: 'Code' }, { key: 'name', label: 'Name' }, { key: 'componentType', label: 'Type' }, { key: 'componentRole', label: 'Role' }, { key: 'statutoryType', label: 'Statutory', render: item => item.statutoryType && item.statutoryType !== 'None' ? item.statutoryType : '-' }, { key: 'calculationType', label: 'Calculation' }, { key: 'payType', label: 'Pay Type' }, { key: 'priority', label: 'Priority' }, { key: 'locked', label: 'Lock', render: item => componentUsed(item.id, setup) ? 'Locked' : 'Open' }, { key: 'active', label: 'Status', render: item => item.active ? 'Active' : 'Inactive' }]} /></Card>}
+    {tab === 'Salary Templates' && <SalaryTemplateDesigner fixedClientId={clientScopedAdmin ? Number(session?.user.clientId || 0) : undefined} clients={clients} employees={employees} locations={locations} canCreateComponentMasters={canCreateSharedSalaryMaster} onCreateComponent={canCreateSharedSalaryMaster ? openNewComponent : undefined} components={setup.salaryComponents} structure={structure} setStructure={setStructure} templates={salaryTemplatesForVisibleClients(setup.salaryStructures, activeClientIds)} onTemplateDeleted={id => {
       setSetup(current => ({ ...current, salaryStructures: current.salaryStructures.filter(item => item.id !== id) }))
       notify('Salary template deleted.')
     }} saveTemplate={saveStructure} saving={templateSaving} templateDownloaded={salaryTemplateDownloaded} onDownloadTemplate={downloadSalaryTemplateTemplate} onUploadTemplate={uploadSalaryTemplates} />}

@@ -5,15 +5,23 @@ import type { Component, Structure } from '../types/payroll'
 import { alignSalaryWorksheetRows, resolveSalaryWorksheetSelection, salaryColumnLetter, salarySimulationSummary, type SalaryWorksheetCell, type SalaryWorksheetSelection } from '../utils/salarySimulationWorksheet'
 import './SalarySimulationWorksheet.css'
 
-export type SalaryWorksheetEmployeeRow = { key: string; result: SimulationResult; employeeCode?: string; employeeName?: string; edits: Record<string, string>; onEdit: (key: string, value: string) => void; stale?: boolean; status?: string }
+export type SalaryWorksheetEmployeeRow = { key: string; result: SimulationResult; employeeCode?: string; employeeName?: string; defaultPayrollDays?: number | null; edits: Record<string, string>; onEdit: (key: string, value: string) => void; stale?: boolean; status?: string }
 const display = (value: number | string | null | undefined) => value == null ? '' : typeof value === 'number' ? value.toLocaleString('en-IN', { maximumFractionDigits: 8 }) : value
-export default function SalarySimulationWorksheet({ result, employeeCode, employeeName, month, clientName, edits, onEdit, onRuleEdit, stale = false, rows, presentOnly = false, onRowSelect, template, components }: {
+function PayrollDivisorInput({ saved, edit, onEdit }: { saved: number | null | undefined; edit?: string; onEdit: (value: string) => void }) {
+  const [clearing, setClearing] = useState(false)
+  const fallback = saved == null ? '' : String(saved)
+  return <Input aria-label="Simulation Payroll divisor" type="number" inputMode="numeric" min={1} max={31} step={1}
+    value={edit || (clearing ? '' : fallback)} placeholder={fallback}
+    onChange={event => { setClearing(!event.target.value); onEdit(event.target.value) }} onBlur={() => setClearing(false)} />
+}
+export default function SalarySimulationWorksheet({ result, employeeCode, employeeName, defaultPayrollDays, month, clientName, edits, onEdit, onRuleEdit, stale = false, rows, presentOnly = false, onRowSelect, template, components }: {
   result: SimulationResult; employeeCode?: string; employeeName?: string; month: string; clientName: string;
+  defaultPayrollDays?: number | null;
   edits: Record<string, string>; onEdit: (key: string, value: string) => void; onRuleEdit?: (componentId: string, formula: string) => void; stale?: boolean;
   rows?: SalaryWorksheetEmployeeRow[]; presentOnly?: boolean; onRowSelect?: (key: string) => void;
   template?: Structure; components?: Component[];
 }) {
-  const sources: SalaryWorksheetEmployeeRow[] = rows ?? [{ key: String(result.employeeId || 'scenario'), result, employeeCode, employeeName, edits, onEdit, stale }]
+  const sources: SalaryWorksheetEmployeeRow[] = rows ?? [{ key: String(result.employeeId || 'scenario'), result, employeeCode, employeeName, defaultPayrollDays, edits, onEdit, stale }]
   const models = useMemo(() => sources.map(source => salarySimulationSummary(source.result, { employeeCode: source.employeeCode, employeeName: source.employeeName, month, clientName, template, components })), [rows, result, employeeCode, employeeName, month, clientName, template, components]) // eslint-disable-line react-hooks/exhaustive-deps
   const aligned = useMemo(() => {
     if (!template) return alignSalaryWorksheetRows(models)
@@ -28,8 +36,7 @@ export default function SalarySimulationWorksheet({ result, employeeCode, employ
   const { row: rowIndex, column: columnIndex } = resolveSalaryWorksheetSelection(selection, sources.map(row => row.key), aligned.keys)
   const source = sources[rowIndex], model = models[rowIndex], cell = aligned.rows[rowIndex]?.[columnIndex]
   const refs = useRef(new Map<string, HTMLButtonElement | HTMLInputElement>())
-  const canEdit = (inputKey?: string) => !!inputKey && inputKey !== 'PAYROLL_DAYS'
-    && (!presentOnly || ['PRESENT_DAYS', 'PAYABLE_DAYS'].includes(inputKey))
+  const canEdit = (inputKey?: string) => !!inputKey && (!presentOnly || ['PAYROLL_DAYS', 'PRESENT_DAYS', 'PAYABLE_DAYS'].includes(inputKey))
   useEffect(() => { setFormulaDraft(cell?.configuredFormula || cell?.formula || String(cell?.value ?? '')) }, [cell?.address, cell?.formula, cell?.configuredFormula, cell?.value])
   useEffect(() => { setRuleEditing(false) }, [cell?.address])
   const select = (row: number, column: number, focus = false) => {
@@ -54,7 +61,9 @@ export default function SalarySimulationWorksheet({ result, employeeCode, employ
         : <strong>{display(item.value) || 'Not supplied'}</strong>}</label>)}
     </div>
     <div className="salary-worksheet-attendance" aria-label="Simulation attendance">
-      {(model.attendance ?? []).map(item => <label key={item.inputKey || item.label}><span>{item.label}</span>{canEdit(item.inputKey)
+      {(model.attendance ?? []).map(item => <label key={item.inputKey || item.label}><span>{item.label}</span>{item.inputKey === 'PAYROLL_DAYS'
+        ? <PayrollDivisorInput key={`${source.key}:${month}`} saved={source.defaultPayrollDays} edit={source.edits.PAYROLL_DAYS} onEdit={value => source.onEdit('PAYROLL_DAYS', value)} />
+        : canEdit(item.inputKey)
         ? <Input aria-label={`Simulation ${item.label}`} inputMode="decimal" value={source.edits[item.inputKey!] ?? String(item.value ?? '')} placeholder="Enter days" onChange={event => source.onEdit(item.inputKey!, event.target.value)} />
         : <strong>{display(item.value) || 'Not supplied'}</strong>}</label>)}
       {rows && <span className="salary-worksheet-attendance-context">Attendance and totals for <b>{source.employeeCode} · {source.employeeName}</b>. Select another employee row to review it.</span>}

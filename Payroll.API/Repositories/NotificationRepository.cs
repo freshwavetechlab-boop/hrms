@@ -432,7 +432,14 @@ WHERE Id=@Id AND (Status IN ('Pending','Retry') OR (EventCode IN (@ExcelEvent,@E
     {
         await using var db = Db();
         await db.OpenAsync();
-        var registerPdf = await db.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM notification_queue WHERE Id=@Id AND EventCode=@Event)", new { Id=id,Event=RegisterPdfEvent });
+        var queuedEvent = await db.QuerySingleOrDefaultAsync<(string EventCode, string ResourceType)>("SELECT EventCode,ResourceType FROM notification_queue WHERE Id=@id", new { id });
+        if (queuedEvent is ("PAYSLIP.SEND", "PayRunEmployee"))
+        {
+            await db.ExecuteAsync(@"UPDATE notification_queue q JOIN payrunemployees p ON p.ClientId=q.ClientId AND CAST(p.Id AS CHAR)=q.ResourceId
+SET q.Status='Pending',q.RetryCount=0,q.ErrorMessage='',q.SentAt=NULL WHERE q.Id=@id AND q.Status<>'Cancelled'", new { id });
+            return;
+        }
+        var registerPdf = queuedEvent.EventCode == RegisterPdfEvent;
         if (registerPdf || await IsCorrectedExcelDeliveryAsync(db, id))
         {
             await db.ExecuteAsync(@"UPDATE notification_queue SET Status=@Pending,RetryCount=0,ErrorMessage=''

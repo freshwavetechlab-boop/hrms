@@ -2,6 +2,7 @@ import type { SimulationResult } from '../services/payrollCalculationService'
 import { buildPayrollFormulaWorkbook } from './payrollFormulaWorkbook'
 import type { XlsxCell } from './xlsx'
 import type { Component, Structure } from '../types/payroll'
+import { firstSalaryRuleText, salaryCalculationKind, salaryInputMethodIsEditable } from './salaryTemplateInput'
 
 export type SalaryWorksheetCell = { address: string; label: string; value: string | number | null; formula: string; configuredFormula?: string; source?: string; inputKey?: string; inputValue?: string | number | null; inputUnit?: 'Daily rate' | 'Monthly amount'; editInFormulaBarOnly?: boolean; ruleComponentId?: string; category?: string; pending?: boolean }
 export const salaryColumnLetter = (index: number) => { let result = ''; for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) result = String.fromCharCode(65 + (n - 1) % 26) + result; return result }
@@ -46,16 +47,6 @@ export function alignSalaryWorksheetRows(models: { cells: SalaryWorksheetCell[];
   }) }
 }
 export const simulationUsesCtc = (result: SimulationResult | null) => !!result?.lines.some(line => /\b(?:CTC|GROSS|MONTHLY_CTC|ANNUAL_CTC)\b/i.test(`${line.formula} ${line.baseComponent || ''}`) || line.calculationType === 'Residual / Balancing' && !line.baseComponent)
-const firstSimulationText = (...values: (string | undefined)[]) => values.find(value => !!value?.trim())?.trim() || ''
-// Match the native calculator's aliases before the first result is available.
-const simulationCalculationKind = (value: string) => {
-  if (value === 'Daily Rate') return 'Daily Rate'
-  const kind = value.trim().toLowerCase()
-  if (['percentage of ctc', 'percentage of component', 'formula'].includes(kind)) return 'Formula'
-  if (['balancing amount', 'residual / balancing'].includes(kind)) return 'Residual / Balancing'
-  if (['manual entry', 'manual override', 'manual / variable'].includes(kind)) return 'Manual / Variable'
-  return kind === 'slab based' ? 'Slab Based' : 'Fixed Amount'
-}
 
 /** One payable amount per template component; native outputs remain the money authority. */
 export function salarySimulationSummary(result: SimulationResult, context: Parameters<typeof salarySimulationWorksheet>[1]): { cells: SalaryWorksheetCell[]; attendance: SalaryWorksheetCell[]; identity: SalaryWorksheetCell[]; notice: string } {
@@ -81,19 +72,17 @@ export function salarySimulationSummary(result: SimulationResult, context: Param
     const rule = detail.cells.find(cell => cell.ruleComponentId === id)
     const policy = !!native && (native.source.includes('Effective-dated PF') || native.source.startsWith('Projected TDS')
       || native.source.startsWith('Reviewed source-period TDS') || native.source.startsWith('Reviewed source-bound '))
-    const configuredType = firstSimulationText(configuredRule?.calculationType, component?.calculationType)
-    const method = simulationCalculationKind(firstSimulationText(native?.calculationType, configuredType))
+    const configuredType = firstSalaryRuleText(configuredRule?.calculationType, component?.calculationType)
+    const method = salaryCalculationKind(firstSalaryRuleText(native?.calculationType, configuredType))
     // Template value precedes the component's default formula in the engine.
     // In particular a Formula with value "0" is a numeric monthly input, not
     // the component's inherited BASIC/GROSS formula.
-    const expression = native ? native.formula.trim() : firstSimulationText(configuredRule?.formula, configuredRule?.value, component?.formula, component?.value)
+    const expression = native ? native.formula.trim() : firstSalaryRuleText(configuredRule?.formula, configuredRule?.value, component?.formula, component?.value)
     const literal = expression.replace(/^=/, '').trim()
     const numericConstant = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(literal)
       && Number.isFinite(Number(literal))
-    const percentage = ['percentage of ctc', 'percentage of component'].includes(configuredType.toLowerCase())
     const employeeTemplate = result.mode === 'EmployeeTemplate'
-    const manual = (['Fixed Amount', 'Daily Rate', 'Manual / Variable'].includes(method)
-      || method === 'Formula' && numericConstant && !percentage)
+    const manual = salaryInputMethodIsEditable(method, configuredType, numericConstant)
       && !!component?.active && !policy && (employeeTemplate || !component.statutoryType?.trim() || component.statutoryType.trim().toLowerCase() === 'none')
     const inputKey = !policy && component?.active ? raw?.inputKey || (manual ? `COMPONENT:${id}` : undefined) : undefined
     const initialValue = ['Fixed Amount', 'Daily Rate'].includes(method) ? literal.replaceAll(',', '') : literal

@@ -6,7 +6,7 @@
 .salary-component-heading { min-width: 0; }
 .salary-component-heading h3, .salary-component-library h3 { font-size: 14px; font-weight: 650; color: var(--stc-ink); margin: 0; line-height: 1.5; }
 .salary-component-heading h3 > span, .salary-component-count { color: #6546cc; background: #f0ecff; border-radius: 5px; font-size: 10px; padding: 2px 6px; margin-left: 5px; }
-.salary-component-heading p, .salary-component-library header p { color: var(--stc-muted); font-size: 11px; margin: 3px 0 0; line-height: 1.5; }
+.salary-component-heading p { color: var(--stc-muted); font-size: 11px; margin: 3px 0 0; line-height: 1.5; }
 .salary-component-toolbar { display: flex; gap: 8px; align-items: center; min-width: 0; }
 .salary-component-toolbar > .ant-input-affix-wrapper { width: 250px; max-width: 100%; font-size: 12px; }
 .salary-component-toolbar > .ant-btn { color: #6546cc; border-color: #dcd3fa; font-size: 12px; font-weight: 600; }
@@ -71,7 +71,7 @@
 .salary-component-library-drawer .ant-drawer-body { display: flex; padding: 18px; min-height: 0; overflow: hidden; }
 .salary-component-library-drawer .ant-drawer-header { padding: 16px 18px; }
 .salary-component-library { display: flex; flex: 1; flex-direction: column; gap: 14px; min-height: 0; min-width: 0; color: var(--stc-ink); }
-.salary-component-library > header { flex-shrink: 0; }
+.salary-component-library > header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
 .salary-component-library > .ant-input-affix-wrapper { flex-shrink: 0; }
 .salary-component-categories { display: flex; flex-wrap: wrap; gap: 5px; flex-shrink: 0; }
 .salary-component-categories > button { color: #697386; background: #f7f8fb; border: 1px solid transparent; border-radius: 6px; padding: 6px 8px; min-height: 28px; font-size: 11px; font-weight: 500; box-shadow: none; }
@@ -83,8 +83,6 @@
 .salary-component-library-item strong { font-size: 12px; line-height: 1.4; font-weight: 600; overflow-wrap: anywhere; }
 .salary-component-library-item > div > span { font-size: 10px; line-height: 1.5; color: #7d8799; overflow-wrap: anywhere; }
 .salary-component-library-item small { font-size: 10px; color: #7d8799; line-height: 1.5; }
-.salary-component-library-item .salary-component-usage { color: #7756b8; }
-.salary-component-library > .ant-checkbox-wrapper { flex-shrink: 0; margin: 0; color: #475467; font-size: 11px; }
 .salary-component-library-item > .ant-btn { padding-inline: 8px; font-size: 11px; }
 .salary-component-library-item.is-added > .ant-btn:disabled { color: #458368; }
 @container (max-width: 900px) {

@@ -12,7 +12,6 @@ import SalaryTemplateComponents from './SalaryTemplateComponents'
 import SalaryTemplateDeleteDialog from './SalaryTemplateDeleteDialog'
 import SalaryFormulaInput from './SalaryFormulaInput'
 import { salaryFormulaSuggestions } from '../utils/salaryFormulaSuggestions'
-import { salaryComponentLibraryScope } from '../utils/salaryComponentLibraryScope'
 import { moveSalaryTemplateLine } from '../utils/salaryTemplateComponentOrder'
 import { validateSalaryTemplateFormula } from '../utils/salaryTemplateFormulaValidation'
 import { salaryTemplateClientIds, scopeSalaryTemplates, preferredSalaryTemplate, templateForClient } from '../utils/salaryTemplateContext'
@@ -44,6 +43,7 @@ type SalaryTemplateDesignerProps = {
   employees?: Pick<Employee, 'id' | 'clientId' | 'isActive'>[]
   locations?: WorkLocation[]
   canCreateComponentMasters?: boolean
+  onCreateComponent?: (category: string, onCreated: (component: Component) => void) => void
   components: Component[]
   structure: Structure
   setStructure: (s: Structure) => void
@@ -56,7 +56,7 @@ type SalaryTemplateDesignerProps = {
   onUploadTemplate?: (file: File | null) => void | Promise<void>
 }
 
-export default function SalaryTemplateDesigner({ fixedClientId, clients, employees = [], locations = [], canCreateComponentMasters = false, components: savedComponents, structure, setStructure, templates, onTemplateDeleted, saveTemplate, saving = false, templateDownloaded = false, onDownloadTemplate, onUploadTemplate }: SalaryTemplateDesignerProps) {
+export default function SalaryTemplateDesigner({ fixedClientId, clients, employees = [], locations = [], canCreateComponentMasters = false, onCreateComponent, components: savedComponents, structure, setStructure, templates, onTemplateDeleted, saveTemplate, saving = false, templateDownloaded = false, onDownloadTemplate, onUploadTemplate }: SalaryTemplateDesignerProps) {
   const session = useAuthSession()
   const templateNameId = useId()
   const [draftComponents, setDraftComponents] = useState<Component[]>([])
@@ -110,7 +110,6 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
   const knownFormulaTokens = new Set(availableFormulaValues.map(value => value.token))
   const reviewTokens = catalogue.loading || catalogue.error || !catalogue.values.length ? undefined : knownFormulaTokens
   const payrollFormulaTokens = availableFormulaValues.filter(v => !v.componentId).map(v => ({ token: v.token, meaning: v.meaning + ' Source: ' + v.source + '. ' + v.availability }))
-  const libraryScope = salaryComponentLibraryScope(components, templates, clientId, clients, includedComponentIds)
   const exampleEarning = catalogueComponents.find(component => component.active && component.category === 'Earning' && String(component.id) !== String(selectedComponent?.id))
   const formulaExample = exampleEarning ? `MIN(${exampleEarning.code.toUpperCase()}_EARNED, 15000) * 12%` : 'ROUND(MONTHLY_CTC * 10%, 0)'
 
@@ -119,7 +118,7 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
   const add = (id: string) => {
     const component = componentById.get(id)
     if (component && !lines.some(line => String(line.componentId) === id)) {
-      const nextLine = { componentId: id, value: component.formula || component.value || (component.calculationType === 'Formula' ? '0' : '') }
+      const nextLine: StructureLine = { componentId: id, value: '0', calculationType: component.calculationType === 'Daily Rate' ? 'Daily Rate' : 'Fixed Amount' }
       setStructure({ ...structure, lines: [...lines, nextLine] })
       setSelectedLineId(id)
     }
@@ -145,7 +144,7 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
     if (!selectedLine) return
     const current = selectedLine.formula || selectedLine.value || ''
     const cleanToken = token.includes('(') ? token : `${token}`
-    updateLine(selectedLine.componentId, { calculationType: 'Formula', formula: current ? `${current} ${cleanToken}` : cleanToken, value: '' })
+    updateLine(selectedLine.componentId, { calculationType: 'Formula', formula: current && current !== '0' ? `${current} ${cleanToken}` : cleanToken, value: '' })
     setFormulaMode('advanced')
   }
   const applyGeneratedFormula = () => {
@@ -330,7 +329,7 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
         </div>
         {calculationErrors.length > 0 && <Alert type="error" showIcon message="Review template calculation" description={calculationErrors.join(' ')} />}
         {catalogue.error && <Alert type="warning" showIcon message="Formula suggestions are unavailable" description={catalogue.error} action={<Button onClick={catalogue.reload}>Retry</Button>} />}
-        <SalaryTemplateComponents key={`${clientId}:${openedTemplateId || 'new'}`} components={components} lines={lines} formulaValues={catalogue.values} reviewTokens={builderOpen ? undefined : reviewTokens} libraryPrimaryIds={libraryScope.primaryIds} componentUsageLabels={libraryScope.usageLabels} selectedLineId={selectedLineId} onSelect={setSelectedLineId} onAdd={add} onRemove={remove} onMove={moveTo} onUpdate={updateLine} onConfigure={configure} disabled={saving} />
+        <SalaryTemplateComponents key={`${clientId}:${openedTemplateId || 'new'}`} components={components} lines={lines} formulaValues={catalogue.values} reviewTokens={builderOpen ? undefined : reviewTokens} onCreateComponent={onCreateComponent} selectedLineId={selectedLineId} onSelect={setSelectedLineId} onAdd={add} onRemove={remove} onMove={moveTo} onUpdate={updateLine} onConfigure={configure} disabled={saving} />
         <details className="salary-workspace-advanced"><summary>Optional template simulation basis</summary><p>Employee simulation uses the employee’s saved salary and attendance. This optional value is used only by template-input simulation.</p><label>Test annual package<input aria-label="Template test annual package" inputMode="decimal" value={structure.annualCtc} onChange={event => setStructure({ ...structure, annualCtc: event.target.value.replace(/\D/g, '') })} /></label></details>
         {structure.excelSource && <details className="salary-workspace-advanced"><summary>Imported Excel source · {structure.excelSource.sheetName}</summary><p>{structure.excelSource.fileName} · Header row {structure.excelSource.headerRow} · {structure.excelSource.payPeriod}{structure.excelSource.workLocationLabel ? ` · ${structure.excelSource.workLocationLabel}` : ''}. Sample employee amounts are used only in the temporary simulation. Employee salary inputs and location assignments remain in their existing Master flows.</p><div className="salary-template-source-formulas">{structure.excelSource.columns.filter(column => column.originalFormula).map(column => <div key={column.columnIndex}><strong>{column.sourceHeader}</strong><code>Excel: {column.originalFormula}</code><code>Native: {column.nativeFormula || 'Control / source input'}</code></div>)}</div></details>}
         </>}
@@ -350,7 +349,7 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
             <p>Choose a calculation style, select values, and validate before saving the salary template.</p>
           </div>
           {!selectedComponent || !selectedLine ? <p className="formula-help">Add or select a template component to configure its calculation.</p> : selectedComponent.calculationType === 'Daily Rate' ? <div className="formula-builder-grid">
-            <div className="formula-builder-field"><div className="formula-builder-field-heading"><label htmlFor={`${templateNameId}-daily-rate`}>Daily rate</label><SalaryFieldHelp label="Template daily rate" text="Overrides the component default for this template. Employee Master can supply a different per-day rate. Existing monthly components cannot be converted into daily rates." example="Rate 700 x 22 payable days = Rs 15,400. Zero payable days gives zero wages." /></div><input id={`${templateNameId}-daily-rate`} value={selectedLine.value || selectedComponent.value} onChange={event => updateLine(selectedLine.componentId, { value: event.target.value, formula: '', calculationType: 'Daily Rate', proRataOverride: 'false' })} /></div>
+            <div className="formula-builder-field"><div className="formula-builder-field-heading"><label htmlFor={`${templateNameId}-daily-rate`}>Daily rate</label><SalaryFieldHelp label="Template daily rate" text="Overrides the component default for this template. Employee Master can supply a different per-day rate. Existing monthly components cannot be converted into daily rates." example="Rate 700 x 22 payable days = Rs 15,400. Zero payable days gives zero wages." /></div><input id={`${templateNameId}-daily-rate`} value={selectedLine.formula || selectedLine.value || selectedComponent.formula || selectedComponent.value || ''} placeholder="0" onFocus={event => { if (event.target.value === '0') event.target.select() }} onChange={event => updateLine(selectedLine.componentId, { value: event.target.value || '0', formula: '', calculationType: 'Daily Rate', proRataOverride: 'false' })} /></div>
             <div className="formula-builder-field"><div className="formula-builder-field-heading"><label htmlFor={`${templateNameId}-payable-units`}>Payable units</label><SalaryFieldHelp label="Payable units" text="Uses attendance payable days once. The full-month equivalent is daily rate x payroll days; earned wages are daily rate x payable days." example="WAGES_MONTHLY at rate 700 for 30 days is 21,000; WAGES_EARNED for 22 days is 15,400." /></div><input id={`${templateNameId}-payable-units`} readOnly value="Attendance payable days" /></div>
             <button type="button" onClick={() => updateLine(selectedLine.componentId, { value: '', formula: '', calculationType: '', proRataOverride: '' })}>Use component default</button>
           </div> : <>
@@ -367,7 +366,7 @@ export default function SalaryTemplateDesigner({ fixedClientId, clients, employe
               {formulaMode === 'ceiling' && <label>Ceiling<input value={ceiling} onChange={event => setCeiling(event.target.value.replace(/[^\d.]/g, ''))} placeholder="15000" /></label>}
               <div className="formula-builder-field"><div className="formula-builder-field-heading"><label htmlFor={`${templateNameId}-pro-rata`}>Pro-rata</label><SalaryFieldHelp label="Template attendance adjustment" text="Decide whether to reduce this result for unpaid days. Already-earned formulas usually need no second adjustment." example="18,000 x 26/30 = 15,600; a formula based on WAGES_EARNED already uses attendance." options={[{ label:'Use component setting',meaning:'Inherit the master setting. Future changes to that default can affect this line.',example:'If the master says Yes, this line applies attendance adjustment.' }, { ...attendanceHelp[0], label:'Apply pro-rata' }, { ...attendanceHelp[1], label:'Do not pro-rate' }]} /></div><Select id={`${templateNameId}-pro-rata`} aria-label="Pro-rata" showSearch optionFilterProp="label" value={selectedLine.proRataOverride || 'inherit'} onChange={value => updateLine(selectedLine.componentId, { proRataOverride: value })} options={[{ value: 'inherit', label: 'Use component setting' }, { value: 'true', label: 'Apply pro-rata' }, { value: 'false', label: 'Do not pro-rate' }]} /></div>
             </div>
-            {formulaMode === 'advanced' && <div className="formula-editor"><label htmlFor={`${templateNameId}-advanced-formula`}>Formula</label><SalaryFormulaInput id={`${templateNameId}-advanced-formula`} reviewTokens={reviewTokens} disabled={saving} label="Advanced salary formula" multiline value={selectedLine.formula || selectedLine.value || ''} values={catalogue.values} includedComponentIds={includedComponentIds} excludeComponentId={String(selectedComponent.id)} onChange={value => updateLine(selectedLine.componentId, { calculationType: 'Formula', formula: value, value: '' })} placeholder={selectedComponent.formula || selectedComponent.value || '0'} defaultOnClear={!selectedComponent.formula?.trim() && !selectedComponent.value?.trim()} title={`Example: ${formulaExample}`} /></div>}
+            {formulaMode === 'advanced' && <div className="formula-editor"><label htmlFor={`${templateNameId}-advanced-formula`}>Formula</label><SalaryFormulaInput id={`${templateNameId}-advanced-formula`} reviewTokens={reviewTokens} disabled={saving} label="Advanced salary formula" multiline value={selectedLine.formula || selectedLine.value || ''} values={catalogue.values} includedComponentIds={includedComponentIds} excludeComponentId={String(selectedComponent.id)} onChange={value => updateLine(selectedLine.componentId, { calculationType: 'Formula', formula: value, value: '' })} defaultOnClear title={`Example: ${formulaExample}`} /></div>}
             {formulaMode !== 'advanced' && <button type="button" className="formula-apply" onClick={applyGeneratedFormula}>{formulaMode === 'default' ? 'Reset to component default' : 'Apply formula'}</button>}
             {catalogue.loading && <Alert type="info" message="Loading engine inputs..." />}
             {catalogue.error && <Alert type="error" message={catalogue.error} action={<Button onClick={catalogue.reload}>Retry</Button>} />}

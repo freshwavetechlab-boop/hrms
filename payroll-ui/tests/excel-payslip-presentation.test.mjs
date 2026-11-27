@@ -46,15 +46,22 @@ test('Employee Master save notifies matching clients in this window and another 
     return module
   }
   const first = loadTab(), second = loadTab(), received = [], subscriptions = []
-  const heard = (tab, label) => new Promise(resolve => {
-    subscriptions.push(tab.onEmployeeMasterSaved(9, () => { received.push(label); resolve() }))
+  const heard = (tab, label, filter) => new Promise(resolve => {
+    subscriptions.push(tab.onEmployeeMasterSaved(9, () => { received.push(label); resolve() }, filter))
   })
   try {
     const updates = Promise.all([heard(first, 'first'), heard(second, 'second')])
     subscriptions.push(second.onEmployeeMasterSaved(11, () => received.push('wrong client')))
+    const cleanup = heard(second, 'cleanup only', 'testPayrollRemoved')
     first.notifyEmployeeMasterSaved(9)
     await updates
     assert.deepEqual(received.sort(), ['first', 'second'])
+    subscriptions.splice(0, 2).forEach(unsubscribe => unsubscribe())
+    received.length = 0
+    const afterCleanup = heard(first, 'directory', undefined)
+    first.notifyEmployeeMasterSaved(9, true)
+    await Promise.all([cleanup, afterCleanup])
+    assert.deepEqual(received.sort(), ['cleanup only', 'directory'])
   } finally { subscriptions.forEach(unsubscribe => unsubscribe()) }
 })
 
